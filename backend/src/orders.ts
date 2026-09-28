@@ -52,6 +52,13 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
            LIMIT 1`, [user.id]);
         if (!membership) throw forbidden();
         limits = membership.limits;
+        if (body.paymentMode === 'four_installments' && limits.installmentAccess === false)
+          throw conflict('خرید اقساطی در پلن عضویت شما فعال نیست.');
+        const maxQuantityPerLine = limits.maxQuantityPerLine;
+        if (typeof limits.maxOrderLines === 'number' && body.items.length > limits.maxOrderLines)
+          throw conflict('تعداد اقلام سفارش از سقف پلن بالاتر است.');
+        if (typeof maxQuantityPerLine === 'number' && body.items.some((item) => item.quantity > maxQuantityPerLine))
+          throw conflict('تعداد یک قلم از سقف پلن بالاتر است.');
         if (typeof limits.maxOrdersPerMonth === 'number' && limits.maxOrdersPerMonth >= 0) {
           const count = await one<{ count: string }>(client,
             `SELECT count(*)::text AS count FROM orders WHERE buyer_id = $1 AND order_type = 'wholesale'
@@ -82,6 +89,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       const subtotal = addRial(lines.map((line) => line.total));
       if (body.orderType === 'wholesale') {
         if (typeof limits.maxOrderValueRial === 'string' && subtotal > rial(limits.maxOrderValueRial)) throw conflict('مبلغ سفارش از سقف پلن بالاتر است.');
+        if (typeof limits.minOrderValueRial === 'string' && subtotal < rial(limits.minOrderValueRial)) throw conflict('مبلغ سفارش از کف خرید این پلن کمتر است.');
         const suppliers = new Set(lines.map((line) => line.variant.supplier_id ?? 'kolbe'));
         if (typeof limits.maxSuppliersPerOrder === 'number' && suppliers.size > limits.maxSuppliersPerOrder) throw conflict('تعداد تأمین‌کنندگان سفارش از سقف پلن بالاتر است.');
       }
