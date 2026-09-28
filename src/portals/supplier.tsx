@@ -9,7 +9,6 @@ import { useStore } from "../data/store";
 import { SUB_STATUS, isTerminal, type SubStatus } from "../data/platform";
 import { SubOrderDesk } from "../components/orders";
 import { AuthScreens } from "./studio";
-import { SeriesBuilder } from "./supplier-series";
 import { SeriesTemplateManager, SeriesTemplatePicker } from "./series-templates";
 import { SupplierWallet, SupplierBankForm, useWallet } from "./supplier-wallet";
 import { TicketCenter } from "../components/support";
@@ -170,7 +169,7 @@ function SupplierBrand() {
 const ME = { id: "s1", name: "نیلگون" };
 
 function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark: (v: boolean) => void; onLogout: () => void }) {
-  const { products, orders, setStatus, addProduct, updateProductSeries, transitionSub } = useStore();
+  const { products, orders, setStatus, addProduct, transitionSub } = useStore();
   const mine = products.filter((p) => p.supplierId === ME.id);
   const mySubs = orders.flatMap((o) => o.subOrders.filter((s) => s.supplierId === ME.id).map((sub) => ({ parent: o, sub })));
   const pendingSubs = mySubs.filter((i) => i.sub.status === "pending_supplier");
@@ -183,16 +182,6 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   const [form, setForm] = useState({ name: "", category: "پیراهن", desc: "", stock: "" });
   const [draftSeries, setDraftSeries] = useState<SeriesDef[]>([]);
   const [draftColorIds, setDraftColorIds] = useState<string[]>(["orange", "black", "cream"]);
-  const [seriesProductId, setSeriesProductId] = useState("p2");
-  const [workingSeries, setWorkingSeries] = useState<SeriesDef[]>(() => mine.find((p) => p.id === "p2")?.series ?? mine[0]?.series ?? []);
-  const seriesProduct = mine.find((p) => p.id === seriesProductId) ?? mine[0];
-  const chooseSeriesProduct = (id: string) => {
-    const product = mine.find((p) => p.id === id);
-    if (!product) return;
-    setSeriesProductId(id);
-    setWorkingSeries(product.series.map((s) => ({ ...s, composition: { ...s.composition }, colorIds: s.colorIds ? [...s.colorIds] : undefined })));
-    setTab("series");
-  };
   const [invQ, setInvQ] = useState("");
   const ops = useOps();
   const wallet = useWallet(ME.id);
@@ -240,7 +229,6 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
     { v: "dashboard", label: "داشبورد", icon: <LayoutDashboard size={17} /> },
     { v: "products", label: "محصولات", icon: <Package size={17} /> },
     { v: "templates", label: "قالب‌های سری", icon: <Layers size={17} /> },
-    { v: "series", label: "سری‌بندی محصولات", icon: <Boxes size={17} /> },
     { v: "rfq", label: "درخواست‌های تأیید", icon: <Inbox size={17} />, badge: pendingSubs.length || undefined },
     { v: "orders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: mySubs.filter((i) => i.sub.status === "paid").length || undefined },
     { g: "عملیات" },
@@ -437,7 +425,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                                 ? <Switch on={live} onToggle={() => { setStatus(p.id, live ? "draft" : "published"); flash(live ? `${p.name} از بازارچه خارج شد` : `${p.name} دوباره در بازارچه نمایش داده می‌شود`); }} />
                                 : <span className="text-xs text-[var(--kv-faint)]">{st === "pending" ? "منتظر کلبه" : "—"}</span>}
                             </td>
-                            <td><button onClick={() => chooseSeriesProduct(p.id)} className="text-[13px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت سری‌ها</button></td>
+                            <td><button onClick={() => setTab("templates")} className="text-[13px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت سری‌ها</button></td>
                           </tr>
                         );
                       })}
@@ -445,22 +433,6 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                   </table>
                 </div>
               </Card>
-            </div>
-          )}
-
-          {tab === "series" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[235px_minmax(0,1fr)]">
-              <div className="space-y-2">
-                <p className="mb-2 text-[13px] font-bold">محصولات شما</p>
-                {mine.map((p) => <button key={p.id} onClick={() => chooseSeriesProduct(p.id)} className={cn("flex w-full items-center gap-3 rounded-[12px] border p-2.5 text-right transition-colors", seriesProduct?.id === p.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)] bg-[var(--kv-surface)] hover:border-[var(--kv-line-strong)]")}><img src={p.images[0]} alt="" className="h-14 w-11 shrink-0 rounded-[8px] object-cover" /><span className="min-w-0"><b className="block truncate text-[12.5px]">{p.name}</b><span className="text-[11px] text-[var(--kv-muted)]">{fmtNum(p.series.length)} سری · {p.status === "published" ? "منتشر" : STATUS_LABEL[p.status ?? "pending"]}</span></span></button>)}
-              </div>
-              {seriesProduct && <Card className="h-fit p-5 md:p-6">
-                <div className="mb-5 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--kv-line)] pb-4"><div><p className="text-[16px] font-extrabold">{seriesProduct.name}</p><p className="mt-1 text-[12px] text-[var(--kv-muted)]">{seriesProduct.sku} · {fmtNum(seriesProduct.colors.length)} رنگ · موجودی کل {fmtNum(seriesProduct.stock)} تکه</p></div><Status value={seriesProduct.status === "published" ? "فعال" : STATUS_LABEL[seriesProduct.status ?? "pending"]} /></div>
-                {ops.seriesTemplates.some((t) => t.ownerId === ME.id) && <div className="mb-5 flex flex-wrap items-center gap-2 rounded-[12px] bg-[var(--kv-surface-2)]/50 p-3"><span className="text-[12.5px] font-bold">افزودن از قالب:</span>{ops.seriesTemplates.filter((t) => t.ownerId === ME.id).map((t) => <Btn key={t.id} size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => setWorkingSeries([...workingSeries, { id: `from-${t.id}-${Date.now()}`, name: workingSeries.some((s) => s.name === t.name) ? `${t.name} ۲` : t.name, composition: { ...t.composition }, pieces: Object.values(t.composition).reduce((a, b) => a + b, 0), moqSeries: t.defaultMoq, pricePerSeries: seriesProduct.wholesaleFrom, available: true, colorIds: seriesProduct.colors.map((c) => c.id) }])}>{t.name}</Btn>)}</div>}
-                <SeriesBuilder key={`${seriesProduct.id}-${workingSeries.length}`} value={workingSeries} onChange={setWorkingSeries} colors={seriesProduct.colors} />
-                {restrict.noPublish && <p className="mt-3 text-[12px] text-[var(--kv-danger)]">ویرایش محصول برای حساب شما محدود شده است: {restrict.reason}</p>}
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--kv-line)] pt-5"><p className="max-w-[48ch] text-[12px] leading-6 text-[var(--kv-muted)]">بعد از ذخیره تغییراتِ محصول منتشرشده، کلبه سری‌بندی تازه را بازبینی می‌کند. سفارش‌های ثبت‌شده قبلی با ترکیب و قیمت زمان خرید باقی می‌مانند.</p><Btn variant="accent" disabled={restrict.noPublish || !workingSeries.length || workingSeries.some((s) => !s.name.trim() || !s.pieces || s.pricePerSeries < 1 || s.moqSeries < 1)} onClick={() => { updateProductSeries(seriesProduct.id, workingSeries); flash("سری‌بندی ذخیره و برای بازبینی کلبه ارسال شد."); }}>ذخیره سری‌بندی محصول</Btn></div>
-              </Card>}
             </div>
           )}
 

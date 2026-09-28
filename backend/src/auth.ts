@@ -51,10 +51,15 @@ export async function principal(request: FastifyRequest, pool: DbPool, config: C
   const access = await pool.query<{ role_code: string; permission_code: string | null }>(
     `SELECT ur.role_code, rp.permission_code FROM user_roles ur
      LEFT JOIN role_permissions rp ON rp.role_code = ur.role_code WHERE ur.user_id = $1`, [row.id]);
+  const planPermissions = await pool.query<{ permission_code: string }>(
+    `SELECT unnest(p.permissions) AS permission_code FROM memberships m
+     JOIN membership_plans p ON p.id = m.plan_id
+     WHERE m.user_id = $1 AND m.status = 'active' AND m.starts_at <= now() AND m.ends_at > now()`, [row.id]);
   return {
     id: row.id, displayName: row.display_name, sessionId,
     roles: [...new Set(access.rows.map((item) => item.role_code))],
-    permissions: [...new Set(access.rows.map((item) => item.permission_code).filter((code): code is string => !!code))],
+    permissions: [...new Set([...access.rows.map((item) => item.permission_code),
+      ...planPermissions.rows.map((item) => item.permission_code)].filter((code): code is string => !!code))],
   };
 }
 
