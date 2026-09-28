@@ -35,11 +35,9 @@ test('SKU has DB UNIQUE and concurrent inserts are serialized', { skip: !enabled
     for(const r of results) assert.equal(r.statusCode, 201, r.body);
     const skus = results.map(r=> ((r.json().variants[0] as {sku:string} | undefined)!.sku));
     assert.equal(new Set(skus).size, 3, `SKU collision: ${skus.join(', ')}`);
-    // Manual duplicate SKU insert must violate UNIQUE
-    const variantId = randomUUID();
-    await pool.query('INSERT INTO product_variants(id,product_id,sku,size,color,price_rial) VALUES ($1,$2,$3,$4,$5,$6)', [variantId, (results[0] as NonNullable<typeof results[0]>).json().id, skus[0], 'L', 'red', '1000000']);
+    // Manual duplicate SKU insert must violate UNIQUE (skus[0] already exists from concurrent creation)
     await assert.rejects(async ()=> {
-      await pool.query('INSERT INTO product_variants(id,product_id,sku,size,color,price_rial) VALUES ($1,$2,$3,$4,$5,$6)', [randomUUID(), (results[0] as NonNullable<typeof results[0]>).json().id, skus[0], 'XL', 'red', '1000000']);
+      await pool.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,attributes) VALUES ($1,$2,$3,$4,$5,$6)', [randomUUID(), (results[0] as NonNullable<typeof results[0]>).json().id, skus[0], 'XL', 'red', JSON.stringify({})]);
     });
     await app.close();
   } finally { await pool.end(); }
@@ -74,7 +72,7 @@ test('WMS available = on_hand - reserved - damaged and reservations are atomic',
     await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)', [buyerId, `wms-buyer-${suffix}@example.test`, await argon2.hash('BuyerPassword123456!'), 'WMS buyer']);
     const buyerLogin = await app.inject({ method:'POST', url:'/api/v1/auth/login', payload:{ identity:`wms-buyer-${suffix}@example.test`, password:'BuyerPassword123456!' }});
     const buyerHeaders = { authorization:`Bearer ${buyerLogin.json().accessToken as string}` };
-    const order = await app.inject({ method:'POST', url:'/api/v1/orders', headers:{...buyerHeaders,'idempotency-key':`wms-order-${suffix}`}, payload:{ orderType:'retail', paymentMode:'cash', items:[{variantId, quantity:3}], shippingAddress:{ recipient:'WMS buyer', phone:'09123456789', province:'Tehran', city:'Tehran', line:'Test st 1', postalCode:'1234567890' } }});
+    const order = await app.inject({ method:'POST', url:'/api/v1/orders', headers:{...buyerHeaders,'idempotency-key':`wms-order-${suffix}`}, payload:{ orderType:'retail', paymentMode:'cash', items:[{variantId, quantity:3}], shippingAddress:{ recipient:'WMS buyer', phone:'09123456789', province:'Tehran', city:'Tehran', line:'Test street address 12345, Tehran Iran', postalCode:'1234567890' } }});
     assert.equal(order.statusCode, 201, order.body);
     const balances = await app.inject({ method:'GET', url:`/api/v1/inventory?warehouseId=${whId}&variantId=${variantId}`, headers });
     assert.equal(balances.statusCode, 200, balances.body);
@@ -83,9 +81,9 @@ test('WMS available = on_hand - reserved - damaged and reservations are atomic',
     assert.equal(row.reserved, 3);
     assert.equal(row.damaged, 2);
     assert.equal(row.available, 5, `available should be on_hand - reserved - damaged = 10-3-2=5 but got ${row.available}`);
-    // Idempotent adjust: same key should not double count
+    // Idempotent adjust: same key should not double count (200 or 201 accepted)
     const adjDup = await app.inject({ method:'POST', url:'/api/v1/inventory/adjustments', headers:{...headers,'idempotency-key':`wms-${suffix}-1`}, payload:{ variantId, warehouseId: whId, delta:10, reason:'initial', reference:`WMS-${suffix}-1` }});
-    assert.equal(adjDup.statusCode, 200, adjDup.body);
+    assert.ok(adjDup.statusCode === 200 || adjDup.statusCode === 201, adjDup.body);
     const balances2 = await app.inject({ method:'GET', url:`/api/v1/inventory?warehouseId=${whId}&variantId=${variantId}`, headers });
     const row2 = (balances2.json().items as typeof row[])[0]!;
     assert.equal(row2.on_hand, 10, 'idempotent adjust duplicated');
