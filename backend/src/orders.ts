@@ -8,6 +8,7 @@ import { addRial, asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { postSupplierEarnings } from './wallet.js';
+import { recordRedemption, resolveCouponDiscount, resolveFestivalDiscount, type DiscountContext } from './coupons.js';
 
 const checkout = z.object({
   orderType: z.enum(['retail', 'wholesale']),
@@ -19,6 +20,7 @@ const checkout = z.object({
     province: z.string().trim().min(2).max(120), city: z.string().trim().min(2).max(120),
     line: z.string().trim().min(10).max(500), postalCode: z.string().regex(/^\d{10}$/),
   }),
+  couponCode: z.string().trim().max(40).optional(),
 });
 const orderStatus = z.enum(['pending_payment', 'paid', 'processing', 'preparing', 'ready_to_ship', 'in_transit', 'shipped', 'delivered', 'cancelled', 'returned']);
 type OrderStatus = z.infer<typeof orderStatus>;
@@ -29,7 +31,7 @@ const allowed: Record<OrderStatus, OrderStatus[]> = {
 };
 
 type VariantRow = {
-  variant_id: string; sku: string; product_id: string; product_name: string; supplier_id: string | null;
+  variant_id: string; sku: string; product_id: string; product_name: string; product_category: string; supplier_id: string | null;
   cash_price_rial: string; installment_price_rial: string | null; wholesale_price_rial: string | null;
   status: string; active: boolean;
 };
@@ -74,6 +76,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       for (const item of body.items) {
         const variant = await one<VariantRow>(client,
           `SELECT v.id AS variant_id, v.sku, v.active, p.id AS product_id, p.name AS product_name,
+                  p.category AS product_category,
                   p.supplier_id, p.cash_price_rial, p.installment_price_rial, p.wholesale_price_rial, p.status
            FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = $1`, [item.variantId]);
         if (!variant || !variant.active || variant.status !== 'published') throw notFound();
@@ -96,7 +99,19 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       const percent = body.orderType === 'wholesale' && typeof limits.discountPercent === 'number'
         && Number.isInteger(limits.discountPercent) && limits.discountPercent >= 0 && limits.discountPercent <= 90
         ? BigInt(limits.discountPercent) : 0n;
-      const discount = subtotal * percent / 100n;
+      const planDiscount = subtotal * percent / 100n;
+      const context: DiscountContext = {
+        userId: user.id,
+        orderType: body.orderType,
+        isVip: user.roles.includes('vip'),
+        lines: lines.map((line) => ({ productId: line.variant.product_id, category: line.variant.product_category, total: line.total })),
+      };
+      const promo = body.couponCode
+        ? await resolveCouponDiscount(client, context, body.couponCode)
+        : await resolveFestivalDiscount(client, context);
+      if (body.couponCode && promo.source === 'none') throw badRequest(promo.note ?? 'کد تخفیف معتبر نیست.');
+      let discount = planDiscount + promo.discountRial;
+      if (discount > subtotal) discount = subtotal;
       const total = subtotal - discount;
       await client.query(
         `INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,subtotal_rial,discount_rial,total_rial,shipping_address)
@@ -138,6 +153,9 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         [paymentIntentId, `PAY-${sequence!.number}`, orderId, provider, total.toString()]);
       await audit(client, user.id, 'order.created', 'order', orderId, undefined, { reference, totalRial: total.toString() }, request.ip);
       await outbox(client, 'order.created', 'order', orderId, { orderId, reference });
+      if (promo.couponId && promo.discountRial > 0n) {
+        await recordRedemption(client, promo.couponId, user.id, orderId, promo.discountRial);
+      }
       const response = { id: orderId, reference, status: 'pending_payment', subtotalRial: asRial(subtotal), discountRial: asRial(discount), totalRial: asRial(total), paymentIntentId,
         paymentAvailable: availableProviders.has(provider) };
       await completeIdempotency(client, user.id, 'order.create', key, response);

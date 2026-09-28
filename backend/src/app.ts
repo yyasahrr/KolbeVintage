@@ -17,6 +17,8 @@ import { registerInvoiceRoutes } from './invoices.js';
 import { registerWalletRoutes } from './wallet.js';
 import { registerSupplierRoutes } from './suppliers.js';
 import { registerMarketplaceRoutes } from './marketplace.js';
+import { registerPromoRoutes } from './promo.js';
+import { registerCrmRoutes } from './crm.js';
 import { registerTicketRoutes } from './tickets.js';
 import { registerNotificationRoutes } from './notifications.js';
 import { registerAdminRoutes } from './admin.js';
@@ -56,6 +58,8 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   registerWalletRoutes(app, pool, config);
   registerSupplierRoutes(app, pool, config);
   registerMarketplaceRoutes(app, pool, config);
+  registerPromoRoutes(app, pool, config);
+  registerCrmRoutes(app, pool, config);
   registerTicketRoutes(app, pool, config);
   registerNotificationRoutes(app, pool, config);
   registerAdminRoutes(app, pool, config);

@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import { createPool, transaction, one } from './db.js';
 import { loadConfig } from './config.js';
 import { MeliPayamakSms } from './melipayamak.js';
+import { runAutomation } from './crm.js';
 
 const config = loadConfig();
 if (!config.REDIS_URL) throw new Error('REDIS_URL is required for the worker.');
@@ -89,8 +90,19 @@ const smsPump = async () => {
 };
 const smsTimer = setInterval(() => void smsPump().catch((error) => console.error('SMS pump failed', error)), 2000);
 await smsPump();
+// CRM automations (item 16): the birthday rule runs at most once a day per user.
+const crmPump = async () => {
+  const due = await pool.query<{ id: string }>(
+    `SELECT id FROM crm_automations WHERE active AND automation_type = 'birthday_sms'
+       AND (last_run_at IS NULL OR last_run_at < now() - interval '20 hours')`);
+  for (const item of due.rows) {
+    await runAutomation(pool, item.id).catch((error) => console.error('CRM automation failed', item.id, error instanceof Error ? error.message : error));
+  }
+};
+const crmTimer = setInterval(() => void crmPump().catch((error) => console.error('CRM pump failed', error)), 3600_000);
+await crmPump();
 const shutdown = async () => {
-  clearInterval(timer); clearInterval(smsTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
+  clearInterval(timer); clearInterval(smsTimer); clearInterval(crmTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
 };
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
