@@ -108,7 +108,8 @@ const inDays = (d: number) => new Date(Date.now() + d * 86400000).toISOString().
 export const HERO_VIDEO = "https://videos.pexels.com/video-files/5822173/5822173-hd_1920_1080_25fps.mp4";
 export const HERO_VIDEO_ALT = "https://videos.pexels.com/video-files/8485166/8485166-hd_1920_1080_25fps.mp4";
 
-const seed = (): OpsState => ({
+const USE_DEMO_SEED_OPS = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+const seed = (): OpsState => USE_DEMO_SEED_OPS ? ({
   hero: {
     template: "split", eyebrow: "کالکشن پاییز ۱۴۰۴", title: "سبک‌های ماندگار\nبرای امروز و فردا",
     subtitle: "منتخب پوشاک کلاسیک و مدرن از بهترین تأمین‌کنندگان؛ با ضمانت اصالت، برگشت آسان و ارسال به سراسر کشور.",
@@ -218,6 +219,29 @@ const seed = (): OpsState => ({
   ],
   notes: [{ id: "n1", customerId: "c1", text: "سایز M در بارانی و L در پیراهن؛ رنگ‌های خنثی را ترجیح می‌دهد.", at: "هفته پیش" }],
   tags: { c1: ["VIP بالقوه", "رنگ خنثی"], c7: ["پرخرج"] },
+}) : ({
+  hero: { template: "split", eyebrow: "", title: "", subtitle: "", ctaLabel: "", ctaTarget: "shop", secondaryLabel: "", secondaryTarget: "shop", image: "", video: "", poster: "", overlay: 0, align: "right", slides: [], mosaic: [] },
+  blocks: [],
+  quickSupport: { enabled: false, title: "", hours: "", channels: [] },
+  n8n: { webhookUrl: "", enabled: false },
+  seriesTemplates: [],
+  banks: {},
+  withdrawals: [],
+  commissions: {},
+  applicationForm: { title: "", intro: "", active: false, fields: [] },
+  applications: [],
+  extraSuppliers: [],
+  restrictions: [],
+  tickets: [],
+  returns: [],
+  sms: { provider: "", apiKey: "", sender: "", connected: false, pricePerPart: 0 },
+  smsCampaigns: [],
+  coupons: [],
+  festivals: [],
+  leads: [],
+  tasks: [],
+  notes: [],
+  tags: {},
 });
 
 type ListKey = { [K in keyof OpsState]: OpsState[K] extends { id: string }[] ? K : never }[keyof OpsState];

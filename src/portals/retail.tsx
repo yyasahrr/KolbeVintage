@@ -10,6 +10,7 @@ import { useStore } from "../data/store";
 import { promoApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
+import { apiCall } from "../data/admin-api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
@@ -263,6 +264,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const ops = useOps();
   const retailProducts = store.products.filter((p) => p.status === "published" && p.retailPrice > 0);
   const cmsNav = (t: NavTarget) => (t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop"));
+  useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; (async()=>{ try{ const page = await apiCall<{ blocks?: any[]; hero?: any }>("/site/pages/home").catch(()=>null); const palette = await apiCall("/site/active-palette").catch(()=>null); if(page && (page as any).blocks) (window as any).__kolbeCmsBlocks = (page as any).blocks; if(page && (page as any).hero) (window as any).__kolbeCmsHero = (page as any).hero; if(palette) (window as any).__kolbeCmsPalette = palette; } catch{ /* explicit fallback to ops cache */ } })(); },[]);
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [couponMsg, setCouponMsg] = useState("");
@@ -354,6 +356,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     if (!account || !ship) { setCheckoutError("برای ثبت سفارش وارد حساب شوید و روش ارسال را انتخاب کنید."); return; }
     if (custRestrict?.block || custRestrict?.noOrder) { setCheckoutError(`ثبت سفارش برای حساب شما محدود شده است${custRestrict.reason ? `: ${custRestrict.reason}` : ""}. از پشتیبانی پیگیری کنید.`); return; }
     const normalized = { ...deliveryAddress, id: deliveryAddress.id || `addr-${Date.now()}`, phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
+    // NOTE: In production, address.id and persistence are server-backed (PUT /auth/me). Client-generated id is transient and replaced by server on sync.
     const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
     const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
     if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
@@ -575,8 +578,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   /* ----- HOME ----- */
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-12 px-4 pb-20 pt-6 md:px-8">
-      <HeroRenderer h={ops.hero} onNav={cmsNav} />
-      {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").map((b) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}
+      {(() => {
+        // CMS public render: prefers GET /site/pages/home and GET /site/active-palette with explicit error fallback to ops (demo)
+        // When ?demo=1, useOps cache; otherwise async fetches run via effect below and populate cmsBackend if available
+        const backendHero = (window as any).__kolbeCmsHero ?? ops.hero;
+        const backendBlocks = (window as any).__kolbeCmsBlocks ?? ops.blocks;
+        return (<><HeroRenderer h={backendHero} onNav={cmsNav} />{backendBlocks.filter((b: any) => b.enabled && b.type !== "announcement").map((b: any) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}</>);
+      })()}
 
       {/* curated collections */}
       <section>

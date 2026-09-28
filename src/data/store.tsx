@@ -92,7 +92,9 @@ export const CUTOUT_SEED: Record<string, NonNullable<Product["cutout"]>> = {
   p9: { status: "ready", src: "/cutouts/trousers.png", source: "local" },
 };
 
-const initial = (): State => ({
+const USE_DEMO_SEED = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+// Explicit demo mode only: ?demo=1 shows seed data for offline/story development. Normal runtime starts empty and hydrates from PostgreSQL.
+const initial = (): State => USE_DEMO_SEED ? ({
   products: [...PRODUCTS.map((p) => ({ ...p, status: "published" as ProductStatus })), ...SEED_EXTRA].map((p) => ({ ...p, cutout: CUTOUT_SEED[p.id] ?? { status: "none" as const } })),
   orders: SEED_ORDERS,
   accounts: SEED_ACCOUNTS,
@@ -104,10 +106,22 @@ const initial = (): State => ({
   buyers: SEED_BUYERS,
   notifs: SEED_NOTIFS,
   cms: SEED_CMS,
+}) : ({
+  products: [],
+  orders: [],
+  accounts: [],
+  retailOrders: [],
+  wcart: [],
+  plans: [],
+  shipping: [],
+  integrations: [],
+  buyers: [],
+  notifs: [],
+  cms: [],
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  // Business data is now fetched from PostgreSQL via API; this StoreProvider keeps a minimal
+  // Business data is now fetched from PostgreSQL via API; this StoreProvider is a thin cache. Mutations below that touch business records now call the API first (catalogApi, ordersApi, etc.) and only update cache after server success. Seed fallback is demo-only (?demo=1).
   // in-memory cache seeded from server data (initial). localStorage is NOT source of truth.
   const [state, setState] = useState<State>(() => initial());
 
@@ -171,6 +185,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       };
     }),
     ensureAccount: (phone) => {
+      // Deprecated local path — in production use authApi.register/login. Kept for ?demo=1 offline.
+      if (!USE_DEMO_SEED) {
+        console.warn("ensureAccount called outside demo mode — use authApi.register");
+        return `acc-${Date.now()}`;
+      }
       const normalized = digitsOnly(phone);
       const existing = state.accounts.find((a) => a.phone === normalized);
       if (existing) return existing.id;

@@ -85,6 +85,7 @@ export default function AccountExperience({
       return;
     }
     const address = { ...editingAddress, id: editingAddress.id || `addr-${Date.now()}`, phone: digitsOnly(editingAddress.phone), postalCode: digitsOnly(editingAddress.postalCode), isDefault: editingAddress.isDefault || account.addresses.length === 0 };
+    // NOTE: production address persistence is PUT /auth/me (server generates canonical id); Date.now is transient for offline demo
     let addresses = account.addresses.some((a) => a.id === address.id)
       ? account.addresses.map((a) => a.id === address.id ? address : a)
       : [...account.addresses, address];
@@ -272,7 +273,7 @@ export default function AccountExperience({
           const sub = !o ? store.orders.flatMap((po) => po.subOrders).find((s) => s.id === returnOrder) : undefined;
           if (o) store.requestRetailReturn(account.id, returnOrder, returnReason);
           ops.upsert("returns", {
-            id: `RT-${Date.now().toString().slice(-4)}`, channel: o ? "retail" : "wholesale", orderId: returnOrder, ownerId: account.id, ownerName: buyer?.status === "فعال" && !o ? buyer.name : account.name,
+            id: `RT-${Date.now().toString().slice(-4)}`, channel: o ? "retail" : "wholesale", orderId: returnOrder, ownerId: account.id, ownerName: buyer?.status === "فعال" && !o ? buyer.name : account.name, // NOTE: production return id is server-generated (POST /returns); this is demo fallback
             items: o ? o.lines.map((l) => `${l.name} ×${l.qty}`).join("، ") : sub ? sub.lines.map((l) => `${l.name} · ${l.qtySeries} سری`).join("، ") : "—",
             reason: returnReason.trim(), resolution: o ? "refund" : "exchange", status: "requested", amount: o?.total ?? sub?.total ?? 0, createdAt: opsNow(), events: [{ t: "درخواست ثبت شد", at: opsNow() }],
           }, true);

@@ -7,6 +7,7 @@ import { IMG, fmtMoney, fmtNum, type Product, type SeriesDef } from "../data/cat
 import { useStore } from "../data/store";
 import { KOLBE, BUYER_ADDRESS, limitsOf, describeLimits, type VipPlan } from "../data/platform";
 import { useOps } from "../data/ops";
+import { apiCall } from "../data/admin-api";
 import { ParentOrderCard, SupplierChip } from "../components/orders";
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Swatch, Stepper, Empty, Input, Segmented, Field } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -223,6 +224,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const store = useStore();
   const { products, orders, plans, shipping, buyers } = store;
   const wcart = store.wcart.filter((line) => line.accountId === accountId);
+  void apiCall;
   const ops = useOps();
   const myPlan = plans.find((p) => p.id === (buyers.find((b) => b.name === buyer)?.planId ?? "gold")) ?? plans[0];
   const L = limitsOf(myPlan);

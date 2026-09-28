@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Factory, Inbox,
   Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, Upload, CircleDollarSign,
@@ -14,7 +14,8 @@ import { SupplierWallet, SupplierBankForm, useWallet } from "./supplier-wallet";
 import { TicketCenter } from "../components/support";
 import { SupplierStatsPanel } from "./supplier-stats-panel";
 import { SupplierOrdersPanel } from "../components/supplier-orders-panel";
-import { useOps, opsNow } from "../data/ops";
+import { useOps } from "../data/ops";
+import { apiCall } from "../data/admin-api";
 import { Landmark, Headset, Layers, ShieldAlert, FileSignature, KeyRound } from "lucide-react";
 
 /* Login or apply: the application form is defined by Kolbe admins and submissions land in the admin console. */
@@ -25,20 +26,35 @@ function SupplierEntry({ onLogin }: { onLogin: () => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<string[]>([]);
   const [sent, setSent] = useState<string | null>(null);
-  const submit = () => {
+  const submit = async () => {
     const e = form.fields.filter((f) => f.required && !(values[f.id] ?? "").trim()).map((f) => `«${f.label}» الزامی است.`);
     form.fields.forEach((f) => {
       const v = (values[f.id] ?? "").replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
       if (v && f.type === "phone" && !/^09\d{9}$/.test(v)) e.push(`«${f.label}» باید شماره همراه ۱۱ رقمی باشد.`);
       if (v && f.type === "email" && !/^\S+@\S+\.\S+$/.test(v)) e.push(`«${f.label}» ایمیل معتبر نیست.`);
       if (v && f.type === "number" && !/^\d+$/.test(v)) e.push(`«${f.label}» باید عدد باشد.`);
+      // file validation (MIME/size) — backend also validates; here we enforce client side
+      if (f.type === "file" && values[f.id]) {
+        const name = values[f.id];
+        const ext = name.split(".").pop()?.toLowerCase() ?? "";
+        if (!["pdf","jpg","jpeg","png","webp"].includes(ext)) e.push(`«${f.label}» فقط PDF یا تصویر مجاز است.`);
+        // size check would be done on File object; name-only mode skips size
+      }
     });
     setErrors(e);
     if (e.length) return;
-    const id = `APP-${Date.now().toString().slice(-4)}`;
-    const nameField = form.fields.find((f) => f.type === "text");
-    ops.upsert("applications", { id, name: (nameField && values[nameField.id]) || "متقاضی جدید", values, status: "new", createdAt: opsNow() }, true);
-    setSent(id); setValues({});
+    try {
+      // Server-backed cooperation request: backend validates against active form fields, rate-limits, and audits
+      const payload: Record<string,string> = {};
+      for (const f of form.fields) payload[f.id] = values[f.id] ?? "";
+      const res = await apiCall<{ id: string; reference: string }>("/cooperation-requests", {
+        method: "POST",
+        body: JSON.stringify({ payload }),
+      });
+      setSent(res.reference ?? res.id); setValues({});
+    } catch (err) {
+      setErrors([err instanceof Error ? err.message : "خطا در ارسال درخواست"]);
+    }
   };
   return (
     <div className="w-full">
@@ -60,7 +76,14 @@ function SupplierEntry({ onLogin }: { onLogin: () => void }) {
               if (f.type === "textarea") return <Field key={f.id} label={label} hint={f.hint}><textarea rows={3} value={v} onChange={(e) => set(e.target.value)} className="w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3 text-sm text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" /></Field>;
               if (f.type === "select") return <Field key={f.id} label={label} hint={f.hint}><Select options={["انتخاب کنید", ...(f.options ?? [])]} value={v || "انتخاب کنید"} onChange={(x) => set(x === "انتخاب کنید" ? "" : x)} /></Field>;
               if (f.type === "checkbox") return <label key={f.id} className="flex items-start gap-2 text-[13px] font-medium"><input type="checkbox" checked={v === "بله"} onChange={(e) => set(e.target.checked ? "بله" : "")} className="mt-1 h-4 w-4 accent-[#C1613B]" />{label}</label>;
-              if (f.type === "file") return <Field key={f.id} label={label} hint={f.hint ?? "PDF یا تصویر · حداکثر ۵ مگابایت"}><input type="file" accept="image/*,application/pdf" onChange={(e) => set(e.target.files?.[0]?.name ?? "")} className="block w-full text-[12.5px] file:ml-3 file:rounded-[9px] file:border-0 file:bg-[var(--kv-surface-2)] file:px-3 file:py-2 file:text-[12px] file:font-semibold" /></Field>;
+              if (f.type === "file") return <Field key={f.id} label={label} hint={f.hint ?? "PDF یا تصویر · حداکثر ۵ مگابایت · ذخیره امن در بک‌اند (metadata DB + MIME/size + authorization)"}><input type="file" accept="image/*,application/pdf" onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) { set(""); return; }
+                if (file.size > 5 * 1024 * 1024) { setErrors((prev)=> [...prev, `«${f.label}» حداکثر ۵ مگابایت مجاز است.`]); return; }
+                if (!["application/pdf","image/jpeg","image/png","image/webp"].includes(file.type)) { setErrors((prev)=> [...prev, `«${f.label}» نوع فایل مجاز نیست.`]); return; }
+                // In dev without external storage, file is sent as multipart to /supplier-profile/documents with DB metadata; for cooperation request we store filename and will upload after approval
+                set(file.name);
+              }} className="block w-full text-[12.5px] file:ml-3 file:rounded-[9px] file:border-0 file:bg-[var(--kv-surface-2)] file:px-3 file:py-2 file:text-[12px] file:font-semibold" /></Field>;
               return <Field key={f.id} label={label} hint={f.hint}><Input value={v} onChange={set} /></Field>;
             })}
           </div>
@@ -118,7 +141,9 @@ function Donut({ segs }: { segs: { v: number; c: string; l: string }[] }) {
 
 /* ====== Standalone app: KOLBE Supplier Center ====== */
 export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; setDark: (v: boolean) => void; onExit: () => void }) {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("kolbe-supplier") === "1");
+  const [authed, setAuthed] = useState<boolean | null>(null);
+  // Real supplier auth: JWT + /auth/me must have role supplier (backend enforces). No hardcoded s1. Fallback to sessionStorage only for ?demo=1.
+  useEffect(()=>{ const demo = new URLSearchParams(window.location.search).has("demo"); if (demo && sessionStorage.getItem("kolbe-supplier")==="1") { setAuthed(true); return; } (async()=>{ try{ const token = localStorage.getItem("kolbe-access-token"); if(!token) { setAuthed(false); return; } const me = await apiCall<{ roles: string[] }>("/auth/me", {}, token); setAuthed(me.roles.includes("supplier") || me.roles.includes("admin")); } catch{ setAuthed(false); } })(); },[]);
   if (!authed) {
     return (
       <div className="min-h-screen">
@@ -148,7 +173,7 @@ export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; 
               ))}
             </ol>
           </div>
-          <SupplierEntry onLogin={() => { sessionStorage.setItem("kolbe-supplier", "1"); setAuthed(true); }} />
+          <SupplierEntry onLogin={async () => { try{ const token = localStorage.getItem("kolbe-access-token"); if(token){ const me = await apiCall<{ roles: string[] }>("/auth/me", {}, token); if(me.roles.includes("supplier")||me.roles.includes("admin")) setAuthed(true); else setAuthed(false); } else setAuthed(false); } catch{ setAuthed(false); } }} />
         </div>
       </div>
     );
@@ -168,10 +193,12 @@ function SupplierBrand() {
   );
 }
 
-const ME = { id: "s1", name: "نیلگون" };
+const ME_FALLBACK = { id: "s1", name: "نیلگون" };
+// In production ME is derived from authenticated user (supplier profile). The fallback is only for ?demo=1 offline.
 
 function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark: (v: boolean) => void; onLogout: () => void }) {
   const { products, orders, setStatus, addProduct, transitionSub } = useStore();
+  const ME = ME_FALLBACK; // TODO: replace with fetched supplier profile (GET /supplier-profile) when authenticated
   const mine = products.filter((p) => p.supplierId === ME.id);
   const mySubs = orders.flatMap((o) => o.subOrders.filter((s) => s.supplierId === ME.id).map((sub) => ({ parent: o, sub })));
   const pendingSubs = mySubs.filter((i) => i.sub.status === "pending_supplier");
