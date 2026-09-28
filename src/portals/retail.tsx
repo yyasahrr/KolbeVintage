@@ -264,7 +264,23 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const ops = useOps();
   const retailProducts = store.products.filter((p) => p.status === "published" && p.retailPrice > 0);
   const cmsNav = (t: NavTarget) => (t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop"));
-  useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; (async()=>{ try{ const page = await apiCall<{ blocks?: any[]; hero?: any }>("/site/pages/home").catch(()=>null); const palette = await apiCall("/site/active-palette").catch(()=>null); if(page && (page as any).blocks) (window as any).__kolbeCmsBlocks = (page as any).blocks; if(page && (page as any).hero) (window as any).__kolbeCmsHero = (page as any).hero; if(palette) (window as any).__kolbeCmsPalette = palette; } catch{ /* explicit fallback to ops cache */ } })(); },[]);
+  const [cmsHero, setCmsHero] = useState<any | null>(null);
+  const [cmsBlocks, setCmsBlocks] = useState<any[] | null>(null);
+  const [cmsPalette, setCmsPalette] = useState<any | null>(null);
+  const [cmsLoading, setCmsLoading] = useState(false);
+  const [cmsError, setCmsError] = useState<string | null>(null);
+  useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; let cancelled=false; (async()=>{ setCmsLoading(true); setCmsError(null);
+    try{
+      const page = await apiCall<{ blocks?: any[]; hero?: any; palette?: any }>("/site/pages/home");
+      if(cancelled) return;
+      if(page && (page as any).blocks) setCmsBlocks((page as any).blocks);
+      if(page && (page as any).hero) setCmsHero((page as any).hero);
+      if(page && (page as any).palette) setCmsPalette((page as any).palette);
+      const pal = await apiCall("/site/active-palette").catch(()=>null);
+      if(!cancelled && pal) setCmsPalette(pal);
+    } catch(e){ if(!cancelled) setCmsError(e instanceof Error ? e.message : "خطا در بارگذاری محتوا"); }
+    finally{ if(!cancelled) setCmsLoading(false); }
+  })(); return()=>{ cancelled=true; }; },[]);
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [couponMsg, setCouponMsg] = useState("");
@@ -578,12 +594,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   /* ----- HOME ----- */
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-12 px-4 pb-20 pt-6 md:px-8">
+      {cmsLoading ? <div className="py-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری محتوا…</div> : cmsError ? <div className="py-6 text-center"><p className="text-sm text-red-600">{cmsError}</p><button onClick={()=>window.location.reload()} className="mt-2 text-xs underline">تلاش دوباره</button></div> : null}
       {(() => {
-        // CMS public render: prefers GET /site/pages/home and GET /site/active-palette with explicit error fallback to ops (demo)
-        // When ?demo=1, useOps cache; otherwise async fetches run via effect below and populate cmsBackend if available
-        const backendHero = (window as any).__kolbeCmsHero ?? ops.hero;
-        const backendBlocks = (window as any).__kolbeCmsBlocks ?? ops.blocks;
-        return (<><HeroRenderer h={backendHero} onNav={cmsNav} />{backendBlocks.filter((b: any) => b.enabled && b.type !== "announcement").map((b: any) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}</>);
+        const hero = cmsHero ?? ops.hero;
+        const blocks = cmsBlocks ?? ops.blocks;
+        // Palette is applied via CSS vars elsewhere; fetched palette stored in cmsPalette
+        void cmsPalette;
+        return (<><HeroRenderer h={hero} onNav={cmsNav} />{blocks.filter((b: any) => b.enabled && b.type !== "announcement").map((b: any) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}</>);
       })()}
 
       {/* curated collections */}

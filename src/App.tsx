@@ -48,9 +48,11 @@ export default function App() {
       "کلبه وینتج — فروشگاه پوشاک کلاسیک و مدرن";
   }, [site]);
 
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   return (
     <StoreProvider>
       <OpsProvider>
+        {isDemo && <div className="sticky top-0 z-[100] w-full bg-amber-100 py-1.5 text-center text-xs font-bold text-amber-900">DEMO MODE — داده‌ها نمایشی هستند (?demo=1)</div>}
         {site === "supplier" && <SupplierApp dark={dark} setDark={setDark} onExit={() => { window.location.hash = "#/"; }} />}
         {site === "admin" && <AdminApp dark={dark} setDark={setDark} />}
         {site === "public" && <Storefront dark={dark} setDark={setDark} />}

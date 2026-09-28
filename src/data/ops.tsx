@@ -2,6 +2,8 @@
    localStorage is retained only for non-sensitive UI prefs; authoritative operations state lives in PostgreSQL. */
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
 import { IMG } from "./catalog";
+import { apiCall } from "./admin-api";
+import { getAccessToken } from "./api";
 
 /* ---------------- CMS ---------------- */
 export type HeroTemplate = "split" | "fullbleed" | "video" | "carousel" | "minimal" | "mosaic";
@@ -247,7 +249,7 @@ const seed = (): OpsState => USE_DEMO_SEED_OPS ? ({
 type ListKey = { [K in keyof OpsState]: OpsState[K] extends { id: string }[] ? K : never }[keyof OpsState];
 type ItemOf<K extends ListKey> = OpsState[K] extends (infer U)[] ? U : never;
 
-type Ops = OpsState & {
+type Ops = OpsState & { loading: boolean; error: string | null; clearError: () => void; 
   set: <K extends keyof OpsState>(key: K, value: OpsState[K]) => void;
   upsert: <K extends ListKey>(key: K, item: ItemOf<K>, prepend?: boolean) => void;
   remove: <K extends ListKey>(key: K, id: string) => void;
@@ -259,29 +261,133 @@ const Ctx = createContext<Ops | null>(null);
 const KEY = "kolbe-ops-v1";
 
 export function OpsProvider({ children }: { children: ReactNode }) {
-  // Ops state now comes from server (/api/v1/admin/*). Keep in-memory seed as placeholder; do not persist business data to localStorage.
+  // Operations state is authoritative in PostgreSQL. This provider is a facade cache over /api/v1/admin/*.
+  // No business data is produced/edited independently; every mutation is request → backend → cache.
+  // Demo mode ?demo=1 uses in-memory seed; normal runtime hydrates from server and shows loading/error.
   const [state, setState] = useState<OpsState>(() => seed());
-  // Business data is server-backed; we keep only UI prefs in localStorage (none currently).
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    // Optionally refresh from server APIs on mount (CMS, coupons, etc.) — omitted here to avoid unauthenticated calls.
+    if (USE_DEMO_SEED_OPS) return;
+    const token = getAccessToken();
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        const [cmsPages, coupons, festivals, tickets, crmContacts] = await Promise.all([
+          apiCall<{ items: unknown[] }>("/admin/cms/pages", {}, token).catch(() => null),
+          apiCall<{ items: Coupon[] }>("/admin/coupons", {}, token).catch(() => null),
+          apiCall<{ items: Festival[] }>("/admin/festivals", {}, token).catch(() => null),
+          apiCall<{ items: Ticket[] }>("/tickets", {}, token).catch(() => null),
+          apiCall<{ items: Lead[] }>("/admin/crm/contacts", {}, token).catch(() => null),
+        ]);
+        if (cancelled) return;
+        setState((s) => ({
+          ...s,
+          blocks: (cmsPages as any)?.items?.[0]?.blocks ?? s.blocks,
+          hero: (cmsPages as any)?.items?.[0]?.hero ?? s.hero,
+          coupons: (coupons as any)?.items ?? s.coupons,
+          festivals: (festivals as any)?.items ?? s.festivals,
+          tickets: (tickets as any)?.items ?? s.tickets,
+          leads: (crmContacts as any)?.items ?? s.leads,
+        }));
+      } catch (e) { if (!cancelled) setError(e instanceof Error ? e.message : "خطا در بارگذاری ops"); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
   }, []);
   useEffect(() => {
-    const on = (e: StorageEvent) => { if (e.key === KEY && e.newValue) { try { setState(JSON.parse(e.newValue)); } catch { /* ignore */ } } };
+    const on = (e: StorageEvent) => { if (USE_DEMO_SEED_OPS && e.key === KEY && e.newValue) { try { setState(JSON.parse(e.newValue)); } catch { /* ignore */ } } };
     window.addEventListener("storage", on);
     return () => window.removeEventListener("storage", on);
   }, []);
 
   const value: Ops = {
-    ...state,
-    set: (key, v) => setState((s) => ({ ...s, [key]: v })),
-    upsert: (key, item, prepend) => setState((s) => {
-      const list = s[key] as unknown as { id: string }[];
+    ...state, loading, error, clearError: () => setError(null),
+    set: (key, v) => {
+      if (USE_DEMO_SEED_OPS) { setState((s) => ({ ...s, [key]: v })); return; }
+      // Map known keys to backend; otherwise treat as transient local (not business authoritative)
+      const token = getAccessToken();
+      const map: Record<string,string> = {
+        hero: "/admin/cms/pages", blocks: "/admin/cms/pages",
+        quickSupport: "/admin/site-settings/support-widget",
+      };
+      const path = map[key as string];
+      if (!path) { // no backend mapping — keep local but warn
+        console.warn(`ops.set ${String(key)} has no backend mapping — treating as local UI pref`);
+        setState((s) => ({ ...s, [key]: v }));
+        return;
+      }
+      const body = key === "quickSupport" ? v : { hero: key === "hero" ? v : undefined, blocks: key === "blocks" ? v : undefined };
+      apiCall(path, { method: key === "quickSupport" ? "PUT" : "PATCH", body: JSON.stringify(body) }, token ?? undefined)
+        .then(() => setState((s) => ({ ...s, [key]: v })))
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
+    },
+    upsert: (key, item, prepend) => {
+      if (USE_DEMO_SEED_OPS) {
+        setState((s) => {
+          const list = s[key] as unknown as { id: string }[];
+          const it = item as unknown as { id: string };
+          const exists = list.some((x) => x.id === it.id);
+          const next = exists ? list.map((x) => (x.id === it.id ? it : x)) : prepend ? [it, ...list] : [...list, it];
+          return { ...s, [key]: next };
+        });
+        return;
+      }
+      const token = getAccessToken();
       const it = item as unknown as { id: string };
+      const list = state[key] as unknown as { id: string }[];
       const exists = list.some((x) => x.id === it.id);
-      const next = exists ? list.map((x) => (x.id === it.id ? it : x)) : prepend ? [it, ...list] : [...list, it];
-      return { ...s, [key]: next };
-    }),
-    remove: (key, id) => setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })),
+      const endpoint: Record<string,{ create: string; update: (id:string)=>string }> = {
+        coupons: { create: "/admin/coupons", update: (id) => `/admin/coupons/${id}` },
+        festivals: { create: "/admin/festivals", update: (id) => `/admin/festivals/${id}` },
+        tickets: { create: "/tickets", update: (id) => `/tickets/${id}` },
+        returns: { create: "/returns", update: (id) => `/returns/${id}/inspect` },
+        applications: { create: "/cooperation-requests", update: (id) => `/admin/cooperation-requests/${id}/review` },
+        leads: { create: "/admin/crm/contacts", update: (id) => `/admin/crm/contacts/${id}` },
+      };
+      const ep = endpoint[key as string];
+      if (!ep) {
+        console.warn(`ops.upsert ${String(key)} has no backend mapping — local only`);
+        setState((s) => {
+          const list2 = s[key] as unknown as { id: string }[];
+          const next = exists ? list2.map((x) => (x.id === it.id ? it : x)) : prepend ? [it, ...list2] : [...list2, it];
+          return { ...s, [key]: next };
+        });
+        return;
+      }
+      const path = exists ? ep.update(it.id) : ep.create;
+      const method = exists ? "PATCH" : "POST";
+      apiCall(path, { method, body: JSON.stringify(item) }, token ?? undefined)
+        .then((res: any) => {
+          const returnedId = res?.id ?? it.id;
+          setState((s) => {
+            const list2 = s[key] as unknown as { id: string }[];
+            const next = exists ? list2.map((x) => (x.id === it.id ? { ...it, id: returnedId } : x)) : prepend ? [{ ...it, id: returnedId }, ...list2] : [...list2, { ...it, id: returnedId }];
+            return { ...s, [key]: next };
+          });
+        })
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
+    },
+    remove: (key, id) => {
+      if (USE_DEMO_SEED_OPS) { setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })); return; }
+      const token = getAccessToken();
+      const delMap: Record<string,string> = {
+        coupons: `/admin/coupons/${id}/deactivate`,
+        festivals: `/admin/festivals/${id}`,
+        tickets: `/tickets/${id}`,
+      };
+      const path = delMap[key as string];
+      if (!path) {
+        console.warn(`ops.remove ${String(key)} has no backend mapping`);
+        setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) }));
+        return;
+      }
+      apiCall(path, { method: key === "coupons" ? "POST" : "DELETE" }, token ?? undefined)
+        .then(() => setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })))
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
+    },
     restrictionFor: (type, id) => {
       const today = new Date().toISOString().slice(0, 10);
       const active = state.restrictions.filter((r) => r.subjectType === type && r.subjectId === id && (!r.until || r.until >= today));

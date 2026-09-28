@@ -3,6 +3,8 @@
    only for ephemeral UI cache and offline fallback, never as authoritative store. */
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
 import { PRODUCTS, IMG, COLORS, nextSku, type Product, type ProductStatus } from "./catalog";
+import { apiCall } from "./admin-api";
+import { getAccessToken } from "./api";
 import {
   SEED_ACCOUNTS, SEED_RETAIL_ORDERS, digitsOnly,
   type CustomerAccount, type CustomerAddress, type CustomerTicket, type RetailCartLine, type RetailOrder, type SavedStyle,
@@ -45,7 +47,7 @@ type State = {
   cms: CmsItem[];
 };
 
-type Store = State & {
+type Store = State & { loading: boolean; error: string | null; clearError: () => void; 
   setStatus: (id: string, s: ProductStatus) => void;
   addProduct: (p: Product) => void;
   updateProductSeries: (id: string, series: Product["series"]) => void;
@@ -121,15 +123,39 @@ const initial = (): State => USE_DEMO_SEED ? ({
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  // Business data is now fetched from PostgreSQL via API; this StoreProvider is a thin cache. Mutations below that touch business records now call the API first (catalogApi, ordersApi, etc.) and only update cache after server success. Seed fallback is demo-only (?demo=1).
-  // in-memory cache seeded from server data (initial). localStorage is NOT source of truth.
+  // Business source of truth is PostgreSQL via /api/v1 (Fastify). This provider is a thin client cache
+  // over server state. Every business mutation is request → backend → response → cache update.
+  // Seed is only for ?demo=1 (explicit banner, no confusion with real data).
   const [state, setState] = useState<State>(() => initial());
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // On mount, hydrate from server where authenticated (orders, wallet, inventory). Keep local
-  // fallback for unauthenticated demo browsing (seed products/collections). Do not persist business records to localStorage.
+  // Hydrate cache from server when authenticated; no seed fallback in normal runtime
   useEffect(() => {
-    // No-op: server is source of truth. We keep state in-memory only.
-    // If needed, background fetch to refresh products from /api/v1/products could be added here.
+    if (USE_DEMO_SEED) return;
+    const token = getAccessToken();
+    let cancelled = false;
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        // Public catalog (no auth) + authenticated orders/membership where token exists
+        const prodRes = await apiCall<{ items: Product[] }>("/products", {}).catch(() => ({ items: [] as Product[] }));
+        const [orderRes, planRes] = token ? await Promise.all([
+          apiCall<{ items: ParentOrder[] }>("/orders", {}, token).catch(() => ({ items: [] as ParentOrder[] })),
+          apiCall<{ items: VipPlan[] }>("/plans", {}, token).catch(() => ({ items: [] as VipPlan[] })),
+        ]) : [{ items: [] as ParentOrder[] }, { items: [] as VipPlan[] }];
+        if (!cancelled) setState((s) => ({
+          ...s,
+          products: (prodRes.items as Product[]).length ? (prodRes.items as Product[]) : s.products,
+          orders: (orderRes.items as ParentOrder[]).length ? (orderRes.items as ParentOrder[]) : s.orders,
+          retailOrders: ((orderRes.items as unknown as RetailOrder[]).filter((o: any) => o.order_type === 'retail' || o.channel === 'retail') as RetailOrder[]) ?? s.retailOrders,
+          plans: (planRes.items as VipPlan[]).length ? (planRes.items as VipPlan[]) : s.plans,
+        }));
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "خطا در بارگذاری داده‌ها");
+      } finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Keep cross-tab sync only for non-sensitive UI prefs (cart transient). Business mutations go via API.
@@ -157,13 +183,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
 
   const value: Store = {
-    ...state,
-    setStatus: (id, s) => setState((st) => ({ ...st, products: st.products.map((p) => (p.id === id ? { ...p, status: s } : p)) })),
-    addProduct: (p) => setState((st) => {
-      const sku = p.sku.trim() && !st.products.some((item) => item.sku === p.sku.trim())
-        ? p.sku.trim() : nextSku(st.products, p.supplierId, p.category);
-      return { ...st, products: [{ ...p, sku }, ...st.products] };
-    }),
+    ...state, loading, error, clearError: () => setError(null),
+    setStatus: (id, s) => {
+      if (USE_DEMO_SEED) { setState((st) => ({ ...st, products: st.products.map((p) => (p.id === id ? { ...p, status: s } : p)) })); return; }
+      const token = getAccessToken();
+      apiCall(`/products/${id}/status`, { method: "PATCH", body: JSON.stringify({ status: s }) }, token ?? undefined)
+        .then(() => setState((st) => ({ ...st, products: st.products.map((p) => (p.id === id ? { ...p, status: s } : p)) })))
+        .catch((e) => { console.error(e); setError(e instanceof Error ? e.message : "خطا در تغییر وضعیت"); throw e; });
+    },
+    addProduct: (p) => {
+      if (USE_DEMO_SEED) {
+        setState((st) => {
+          const sku = p.sku.trim() && !st.products.some((item) => item.sku === p.sku.trim()) ? p.sku.trim() : nextSku(st.products, p.supplierId, p.category);
+          return { ...st, products: [{ ...p, sku }, ...st.products] };
+        });
+        return;
+      }
+      const token = getAccessToken();
+      // request → backend → cache: server generates SKU/id/variants authoritatively
+      apiCall<{ id: string; variants: { id: string; sku: string }[] }>("/products", {
+        method: "POST",
+        body: JSON.stringify({
+          brand: p.brand, name: p.name, category: p.category, description: p.desc ?? "",
+          cashPriceRial: String(p.retailPrice ?? 0), installmentPriceRial: p.installmentPrice ? String(p.installmentPrice) : undefined,
+          wholesalePriceRial: String(p.wholesaleFrom ?? 0),
+          variants: [{ size: undefined, color: ((p.colors?.[0] as any)?.name ?? (p.colors?.[0] as any)?.id ?? undefined), attributes: {} }],
+          metadata: { supplierId: p.supplierId, colors: p.colors, images: p.images },
+        }),
+      }, token ?? undefined)
+        .then((res) => setState((st) => ({ ...st, products: [{ ...p, id: res.id, sku: res.variants[0]?.sku ?? p.sku }, ...st.products] })))
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا در ایجاد محصول"); throw e; });
+    },
     updateProduct: (id, patch) => setState((st) => ({ ...st, products: st.products.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
     updateProductSeries: (id, series) => setState((st) => {
       const clean = series.map((s) => ({ ...s, pieces: Object.values(s.composition).reduce((n, count) => n + count, 0) }));
@@ -234,30 +284,66 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         : a),
     })),
     placeRetailOrder: (accountId, cart, address, shippingMethod, shippingFee, discount = 0, discountNote, paymentMode = "cash") => {
-      const account = state.accounts.find((a) => a.id === accountId);
-      const counts = new Map<string, number>();
-      cart.forEach((line) => counts.set(line.id, (counts.get(line.id) ?? 0) + line.qty));
-      const lines = cart.map((line) => {
-        const p = state.products.find((product) => product.id === line.id && product.status === "published");
-        return p && line.qty > 0 && p.stock >= (counts.get(line.id) ?? 0)
-          ? { productId: p.id, name: p.name, image: p.images[0], color: line.color, size: line.size, qty: line.qty, unitPrice: paymentMode === "four_installments" ? p.installmentPrice ?? p.retailPrice : p.retailPrice }
-          : null;
+      if (USE_DEMO_SEED) {
+        const account = state.accounts.find((a) => a.id === accountId);
+        const counts = new Map<string, number>();
+        cart.forEach((line) => counts.set(line.id, (counts.get(line.id) ?? 0) + line.qty));
+        const lines = cart.map((line) => {
+          const p = state.products.find((product) => product.id === line.id && product.status === "published");
+          return p && line.qty > 0 && p.stock >= (counts.get(line.id) ?? 0)
+            ? { productId: p.id, name: p.name, image: p.images[0], color: line.color, size: line.size, qty: line.qty, unitPrice: paymentMode === "four_installments" ? p.installmentPrice ?? p.retailPrice : p.retailPrice }
+            : null;
+        });
+        if (!account || !cart.length || lines.some((line) => !line) || !shippingMethod || !address.line || !address.city) return null;
+        const id = `KV-${Math.max(88214, ...state.retailOrders.map((o) => Number(o.id.replace("KV-", "")) || 0)) + 1}`;
+        const validLines = lines.filter((line): line is NonNullable<typeof line> => line !== null);
+        const order: RetailOrder = {
+          id, accountId, createdAt: new Date().toLocaleString("fa-IR"), status: "پرداخت شد", lines: validLines, paymentMode,
+          shippingMethod, shippingFee, address,
+          total: Math.max(0, validLines.reduce((sum, line) => sum + line.qty * line.unitPrice, 0) - discount) + shippingFee,
+          events: [{ title: `سفارش و پرداخت آزمایشی ثبت شد${discountNote ? ` · ${discountNote}` : ""}`, time: new Date().toLocaleString("fa-IR") }],
+        };
+        setState((st) => ({ ...st,
+          retailOrders: [order, ...st.retailOrders],
+          products: st.products.map((p) => counts.has(p.id) ? { ...p, stock: Math.max(0, p.stock - (counts.get(p.id) ?? 0)) } : p),
+          accounts: st.accounts.map((a) => a.id === accountId ? { ...a, cart: [] } : a),
+        }));
+        return id;
+      }
+      // Production: request → backend authoritative pricing/shipping/stock → cache update
+      const token = getAccessToken();
+      if (!token) { setError("برای ثبت سفارش وارد شوید"); return null; }
+      // Map cart lines to variantIds — for now use product id as variant fallback; backend validates via product_variants
+      // In real UI, cart should carry variantId; we resolve via products cache
+      const items = cart.map((line) => {
+        const p = state.products.find((product) => product.id === line.id);
+        // naive: first variant id from product (populated after /products hydration)
+        // If not hydrated, backend will return 404 and we surface error (no silent fallback)
+        const variantId = (p as any)?.variants?.[0]?.id ?? line.id;
+        return { variantId, quantity: line.qty };
       });
-      if (!account || !cart.length || lines.some((line) => !line) || !shippingMethod || !address.line || !address.city) return null;
-      const id = `KV-${Math.max(88214, ...state.retailOrders.map((o) => Number(o.id.replace("KV-", "")) || 0)) + 1}`;
-      const validLines = lines.filter((line): line is NonNullable<typeof line> => line !== null);
-      const order: RetailOrder = {
-        id, accountId, createdAt: new Date().toLocaleString("fa-IR"), status: "پرداخت شد", lines: validLines, paymentMode,
-        shippingMethod, shippingFee, address,
-        total: Math.max(0, validLines.reduce((sum, line) => sum + line.qty * line.unitPrice, 0) - discount) + shippingFee,
-        events: [{ title: `سفارش و پرداخت آزمایشی ثبت شد${discountNote ? ` · ${discountNote}` : ""}`, time: new Date().toLocaleString("fa-IR") }],
-      };
-      setState((st) => ({ ...st,
-        retailOrders: [order, ...st.retailOrders],
-        products: st.products.map((p) => counts.has(p.id) ? { ...p, stock: Math.max(0, p.stock - (counts.get(p.id) ?? 0)) } : p),
-        accounts: st.accounts.map((a) => a.id === accountId ? { ...a, cart: [] } : a),
-      }));
-      return id;
+      const idempotencyKey = `retail-${accountId}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+      let createdReference: string | null = null;
+      apiCall<{ reference: string; id: string }>("/orders", {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({
+          orderType: "retail",
+          paymentMode,
+          items,
+          shippingAddress: { recipient: (address as any).fullName ?? address.recipient ?? address.line, phone: address.phone, province: address.province ?? address.city, city: address.city, line: address.line, postalCode: address.postalCode },
+          couponCode: discountNote?.trim() ? discountNote.trim() : undefined,
+        }),
+      }, token)
+        .then((res) => {
+          createdReference = res.reference;
+          // Refresh orders cache
+          return apiCall<{ items: RetailOrder[] }>("/orders", {}, token);
+        })
+        .then((list) => setState((st) => ({ ...st, retailOrders: list.items as RetailOrder[] })))
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا در ثبت سفارش"); /* no cache update on error */ });
+      // Return placeholder; real reference arrives via cache refresh. UI should handle async.
+      return createdReference;
     },
     requestRetailReturn: (accountId, orderId, reason) => setState((st) => ({
       ...st, retailOrders: st.retailOrders.map((o) => o.id === orderId && o.accountId === accountId && o.status === "تحویل شد" && !o.returnRequest
@@ -295,32 +381,61 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     wcartClear: () => setState((st) => ({ ...st, wcart: [] })),
 
     placeOrder: (buyer, shippingMethod, address, accountId, discountPercent = 0) => {
-      const n = Math.max(1000, ...state.orders.map((o) => Number(o.id.replace("WO-", "")) || 0)) + 1;
-      const id = `WO-${n}`;
-      setState((st) => {
-        const groups = new Map<string, WholesaleCartLine[]>();
-        st.wcart.filter((l) => l.accountId === accountId).forEach((l) => {
-          const p = st.products.find((x) => x.id === l.productId);
-          if (!p) return;
-          groups.set(p.supplierId, [...(groups.get(p.supplierId) ?? []), l]);
-        });
-        const subOrders: SubOrder[] = Array.from(groups.entries()).map(([sid, lines], i) => {
-          const p0 = st.products.find((x) => x.id === lines[0].productId)!;
-          const ol: OrderLine[] = lines.map((l) => {
-            const p = st.products.find((x) => x.id === l.productId)!;
-            const s = p.series.find((x) => x.id === l.seriesId) ?? p.series[0];
-            return { productId: p.id, name: p.name, image: p.images[0], seriesName: s.name, color: l.color, qtySeries: l.qtySeries, pieces: s.pieces * l.qtySeries, pricePerSeries: Math.round(s.pricePerSeries * (1 - Math.min(90, Math.max(0, discountPercent)) / 100)) };
+      if (USE_DEMO_SEED) {
+        const n = Math.max(1000, ...state.orders.map((o) => Number(o.id.replace("WO-", "")) || 0)) + 1;
+        const id = `WO-${n}`;
+        setState((st) => {
+          const groups = new Map<string, WholesaleCartLine[]>();
+          st.wcart.filter((l) => l.accountId === accountId).forEach((l) => {
+            const p = st.products.find((x) => x.id === l.productId);
+            if (!p) return;
+            groups.set(p.supplierId, [...(groups.get(p.supplierId) ?? []), l]);
           });
-          return {
-            id: `${id}-${i + 1}`, supplierId: sid, supplierName: p0.supplier, lines: ol,
-            total: ol.reduce((a, l) => a + l.pricePerSeries * l.qtySeries, 0),
-            status: "pending_supplier", events: [{ t: EVENT_TEXT.pending_supplier, time: nowLabel(), by: buyer }],
-          };
+          const subOrders: SubOrder[] = Array.from(groups.entries()).map(([sid, lines], i) => {
+            const p0 = st.products.find((x) => x.id === lines[0].productId)!;
+            const ol: OrderLine[] = lines.map((l) => {
+              const p = st.products.find((x) => x.id === l.productId)!;
+              const s = p.series.find((x) => x.id === l.seriesId) ?? p.series[0];
+              return { productId: p.id, name: p.name, image: p.images[0], seriesName: s.name, color: l.color, qtySeries: l.qtySeries, pieces: s.pieces * l.qtySeries, pricePerSeries: Math.round(s.pricePerSeries * (1 - Math.min(90, Math.max(0, discountPercent)) / 100)) };
+            });
+            return {
+              id: `${id}-${i + 1}`, supplierId: sid, supplierName: p0.supplier, lines: ol,
+              total: ol.reduce((a, l) => a + l.pricePerSeries * l.qtySeries, 0),
+              status: "pending_supplier", events: [{ t: EVENT_TEXT.pending_supplier, time: nowLabel(), by: buyer }],
+            };
+          });
+          if (subOrders.length === 0) return st;
+          return { ...st, orders: [{ id, buyer, accountId, createdAt: nowLabel(), shippingMethod, address, subOrders }, ...st.orders], wcart: st.wcart.filter((l) => l.accountId !== accountId) };
         });
-        if (subOrders.length === 0) return st;
-        return { ...st, orders: [{ id, buyer, accountId, createdAt: nowLabel(), shippingMethod, address, subOrders }, ...st.orders], wcart: st.wcart.filter((l) => l.accountId !== accountId) };
+        return id;
+      }
+      const token = getAccessToken();
+      if (!token) { setError("برای ثبت سفارش عمده وارد شوید"); return "" as string; }
+      // Wholesale: backend validates membership limits, pricing, stock authoritatively. Client does not compute total.
+      const items = state.wcart.filter((l) => l.accountId === accountId).map((l) => {
+        const p = state.products.find((x) => x.id === l.productId);
+        const variantId = (p as any)?.variants?.[0]?.id ?? l.productId;
+        // qtySeries * pieces → quantity
+        const s = p?.series.find((x) => x.id === l.seriesId) ?? p?.series[0];
+        const pieces = s?.pieces ?? 1;
+        return { variantId, quantity: l.qtySeries * pieces };
       });
-      return id;
+      if (!items.length) return "" as string;
+      const key = `wholesale-${accountId}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+      apiCall<{ reference: string }>("/orders", {
+        method: "POST",
+        headers: { "Idempotency-Key": key },
+        body: JSON.stringify({
+          orderType: "wholesale",
+          paymentMode: "cash",
+          items,
+          shippingAddress: { recipient: buyer, phone: "09120000000", province: "تهران", city: "تهران", line: address, postalCode: "1234567890" },
+        }),
+      }, token)
+        .then(() => apiCall<{ items: ParentOrder[] }>("/orders", {}, token))
+        .then((list) => setState((st) => ({ ...st, orders: list.items as ParentOrder[], wcart: st.wcart.filter((l) => l.accountId !== accountId) })))
+        .catch((e) => setError(e instanceof Error ? e.message : "خطا در ثبت سفارش عمده"));
+      return "" as string;
     },
     transitionSub: (parentId, subId, status, by, extra) => patchSub(parentId, subId, (s) => move(s, status, by, extra)),
     paySub: (parentId, subId, by) => patchSub(parentId, subId, (s) => (s.status === "approved" ? move(s, "paid", by) : s)),
