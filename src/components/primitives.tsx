@@ -309,3 +309,30 @@ export function Checkbox({ checked, onChange, label }: { checked: boolean; onCha
     </label>
   );
 }
+
+/* ---------- Server-state helpers: Loading / Error / Empty / Permission ---------- */
+export function LoadingState({ label = "در حال بارگذاری…" }: { label?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-6 py-10 text-center animate-[fadeIn_0.3s_ease]">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--kv-line-strong)] border-t-[var(--kv-accent)]" aria-label="loading" />
+      <p className="mt-3 text-[13px] font-medium text-[var(--kv-muted)]">{label}</p>
+    </div>
+  );
+}
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-danger)]/20 bg-[var(--kv-danger)]/[0.04] px-6 py-10 text-center">
+      <p className="text-[13px] font-bold text-[var(--kv-danger)]">خطا در بارگذاری</p>
+      <p className="mt-1.5 max-w-[40ch] text-[12.5px] leading-6 text-[var(--kv-muted)]">{message}</p>
+      {onRetry && <Btn variant="soft" size="sm" className="mt-4" onClick={onRetry}>تلاش دوباره</Btn>}
+    </div>
+  );
+}
+export function PermissionDenied({ message = "دسترسی لازم را ندارید." }: { message?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-dashed border-[var(--kv-line-strong)] bg-[var(--kv-surface)] px-6 py-10 text-center">
+      <p className="text-[14px] font-bold">دسترسی محدود</p>
+      <p className="mt-1.5 text-[12.5px] text-[var(--kv-muted)]">{message}</p>
+    </div>
+  );
+}

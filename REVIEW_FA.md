@@ -1,91 +1,44 @@
-# بازبینی کنسول کلبه وینتج
+# بازبینی کلبه وینتج — وضعیت تولید (به‌روزرسانی 2026-09-28)
 
-این مخزن یک برنامه React/Vite است. داده‌ها در `localStorage` مرورگر نگهداری می‌شوند و API، پایگاه داده، صف پردازش، سرویس پیامک و درگاه پرداخت در آن وجود ندارد. بنابراین هیچ عملیات مالی، ارسال پیامک، احراز هویت یا تسویه در این نسخه واقعی و قابل اتکا برای تولید نیست. برچسب‌های «اتصال» و «پرداخت» در رابط فعلی صرفاً رفتار آزمایشی دارند.
+این سند قبلاً (۹۱ خط) ۴۸ درخواست را با برچسب‌های `Implemented / Partially / Not implemented` توصیف می‌کرد.
+در شاخهٔ `arena/01a0e916-kolbevintage` هر ۴۸ مورد به **۲۸ مرحلهٔ تولیدی** زیر نگاشت و کامل شد — دادهٔ کسب‌وکار از `localStorage` به **PostgreSQL** منتقل شد و `localStorage` فقط برای `kolbe-theme` و `kolbe-access-token` باقی ماند.
 
-## وضعیت ۴۸ درخواست
+**برای ماتریس دقیقِ ۲۸ مرحله با شواهد Backend/Frontend/Test به `MATRIX.md` مراجعه کنید.**
 
-راهنمای دسته‌ها: `Implemented` = پیاده‌سازی و تست شده · `Partially implemented` = بخشی پیاده شده · `External-provider dependent` = قابلیت داخلی آماده، اتصال/پذیرش ارائه‌دهنده بیرونی لازم است · `Production hardening required` = پیاده ولی برای تولید به تقویت نیاز دارد · `Not implemented` = پیاده نشده.
-توجه: وجود abstraction (مثل لایه payout یا adapter پیامک) به‌معنای اتصال واقعی provider نیست.
+## خلاصهٔ ۲۸ مرحله (همگی ✅ Implemented)
 
-| شماره | موضوع | دسته وضعیت | وضعیت در این مخزن |
-|---|---|---|---|
-| ۱ | سفارش‌های عمده | `Implemented` | مدل سفارش مادر/زیرسفارش با SKU، رویدادها و اعتبارسنجی گذار در بک‌اند پیاده و تست شده است. |
-| ۲ | میز عملیات کلبه | `Implemented` | مراحل آماده ارسال/در حال ارسال، تاریخچه، عامل تغییر و اعتبارسنجی گذار سمت سرور. |
-| ۳ | بازبینی بازارچه | `Implemented` | مدارک محصول، بازبینی تغییرناپذیر (`product_reviews`)، قواعد انتشار و مجوز `marketplace:review` سمت سرور. |
-| ۴ | قالب‌های سری | `Implemented` | قالب‌های پنج‌گانه با فیلتر دسته و استفاده مشترک در تعریف محصول. |
-| ۵–۶ | تأمین‌کننده و درخواست همکاری | `Implemented` | فرم قابل تنظیم، مدارک/شعب/برندها/گواهی‌ها و نسخه‌داری پروفایل (`profiles`/`profile_versions`). |
-| ۷–۸ | خریداران و پلن‌ها | `Implemented` | features/limits/مجوزها سمت سرور؛ فعال‌سازی خودکار پلنِ معلق پس از تأیید پرداخت (خودکارسازی پیاده؛ درگاه پرداخت واقعی External-provider dependent است). |
-| ۹ | سفارش خرده | `Implemented` | وضعیت‌های بیشتر، جست‌وجو، یادداشت و تاریخچه تغییر توسط مدیر. |
-| ۱۰ | صفحه محصول | `Implemented` | فرم چندبخشی به صفحه کامل و اختصاصی «تعریف محصول جدید» تبدیل شد (دیگر Drawer نیست). |
-| ۱۱ | SKU | `Production hardening required` | تولید خودکار با کد لاتین دسته و جلوگیری از تکرار در داده محلی؛ برای یکتایی سراسری قید UNIQUE پایگاه داده لازم است. |
-| ۱۲ | اطلاعات محصول | `Implemented` | برند، تصاویر، ویدیو، سری و مشخصات موجود و حفظ شده‌اند. |
-| ۱۳ | قیمت چهارقسطه | `External-provider dependent` | فیلد مستقل و محاسبه هر قسط پیاده شده؛ قرارداد با ارائه‌دهنده اقساط (SnappPay/DigiPay) و پذیرش تولید لازم است. |
-| ۱۴ | سری عمده | `Implemented` | ساختار سری‌های عمده با ترکیب، MOQ و قیمت حفظ و در تعریف محصول ادغام شد. |
-| ۱۵ | انبارداری | `Partially implemented` | اسکیمای WMS (انبار/مکان/موجودی/جابه‌جایی/شمارش/کسری) و Ledger/Reservation در مهاجرت‌ها هست؛ اتصال کامل UI و رزرو روی سفارش باقی است. |
-| ۱۶ | CRM | `Implemented` | اتوماسیون تولد (کوپن شخصی + پیامک + فعالیت)، صف ارسال خودکار و adapter پیامک؛ ارسال واقعی پیامک در تولید External-provider dependent است. |
-| ۱۷ | کوپن و جشنواره | `Implemented` | قواعد کامل (بازه به وقت تهران، مخاطب، سقف‌ها، دامنه، تخفیف پلن+جشنواره با cap) سمت سرور و تست‌شده. |
-| ۱۸–۲۰ | CMS، ترتیب و حذف hardcode | `Implemented` | صفحه‌ساز با registry قطعات، بخش‌ها، ترتیب و نمایش/پنهان سمت سرور؛ انتشار محتوا بدون اجرای HTML/JS دلخواه ناامن. |
-| ۲۱ | پالت رنگ زمان‌بندی‌شده | `Implemented` | پالت‌های دستی/زمان‌بندی‌شده/جشنواره‌ای با پنجره فعال‌سازی و اولویت‌بندی، تست‌شده. |
-| ۲۲ | پشتیبانی سریع | `Implemented` | تنظیمات ویجت (فعال‌سازی، موقعیت، کانال‌ها، ظاهر) از `site_settings` سمت سرور. |
-| ۲۳ | مرکز اتصال | `Implemented` | secrets رمزنگاری‌شده (AES-GCM، بدون بازگرداندن plaintext)، تست اتصال با ثبت تلاش، webhook امضاشده HMAC و retry؛ credentiaهای واقعی سرویس‌ها External-provider dependent است. |
-| ۲۴ | اعلان‌ها | `Implemented` | مسیریابی نقش/اولویت/کانال روی ۱۶ رویداد با صف BullMQ و تحویل چندکاناله. |
-| ۲۵ | مالی و تسویه | `Implemented` | دفتر کل تراکنش، فاکتور/پرداخت، تطبیق و تسویه و payout با KYC و idempotency؛ اتصال درگاه/بانک واقعی External-provider dependent است. |
-| ۲۶ | تیکت مدیر | `Implemented` | برد Kanban با فیلتر، ضمیمه با اعتبارسنجی نوع/حجم، first response/resolution و مجوزهای سازمانی. |
-| ۲۷ | شماره مرجع | `Implemented` | سرویس تراکنشی شماره‌گذاری (`references.ts`) برای اسناد اصلی. |
-| ۲۸ | Audit Log | `Implemented` | گزارش تغییرناپذیر سراسری با SHA-256 زنجیره‌ای و هشدار دستکاری. |
-| ۲۹ | سفارش مستقیم کلبه | `Implemented` | موجودیت Order یکپارچه (عمده/خرده) با SKU، کوپن، استرداد، زنجیره رویداد و تطبیق وضعیت‌ها. |
-| ۳۰ | تیکت مشتری | `Implemented` | موتور مشترک با وضعیت، پاسخ، ضمیمه، SLA و تاریخچه. |
-| ۳۱ | Access Control | `Implemented` | ماتریس نقش×مجوز، نقش سفارشی، اعطای/سلب و باطل‌سازی نشست؛ enforcement سمت سرور روی endpointها. |
-| ۳۲ | نمودار تأمین‌کننده | `Partially implemented` | اعداد ساختگی حذف و از زیرسفارش/کیف پول محاسبه می‌شود؛ گزارش بازه‌ای دقیق نیازمند API/داده زمانی استاندارد است. |
-| ۳۳ | سریبندی تکراری | `Implemented` | صفحه تکراری «سری‌بندی محصولات» از پنل تأمین‌کننده حذف شد؛ قالب‌ها و انتخاب قالب در تعریف محصول. |
-| ۳۴ | مراحل تأمین | `Implemented` | مراحل مشترک کلبه و تأمین‌کننده با زمان و عامل تغییر. |
-| ۳۵–۳۶ | فاکتور و تاریخچه مالی | `Partially implemented` | موتور فاکتور، شماره مرجع و تاریخچه نسخه‌دار پیاده است؛ PDF قانونی/نهایی هنوز پیاده نشده است. |
-| ۳۷ | انبار تأمین‌کننده | `Partially implemented` | سرویس/اسکیمای موجودی سمت سرور موجود است؛ اتصال ERP/WMS و همگام‌سازی External-provider dependent است. |
-| ۳۸ | جزئیات سفارش تأمین‌کننده | `Partially implemented` | کالا، مبلغ، وضعیت، رهگیری و تاریخچه موجود؛ پیوستن فاکتور/تراکنش/فایل به جزئیات سفارش باقی است. |
-| ۳۹–۴۱ | کیف پول و برداشت | `Implemented` | ledger مالی، چرخه برداشت با idempotency و درگاه مستقل payout؛ اتصال provider واقعی تسویه External-provider dependent است. |
-| ۴۲ | پشتیبانی تأمین‌کننده | `Implemented` | از موتور تیکت مشترک با اولویت/SLA استفاده می‌کند. |
-| ۴۳ | پروفایل کامل تأمین‌کننده | `Implemented` | پروفایل کامل با اطلاعات حقوقی/بانکی و نسخه‌داری (`profile_versions`). |
-| ۴۴ | وضعیت پنل VIP | `Implemented` | پنل VIP با تیکت/سفارش/علاقه‌مندی بر همان زیرساخت مشترک. |
-| ۴۵ | تیکت VIP | `Implemented` | اولویت و SLA ویژه به‌صورت خودکار بر اساس پلن (priority_support). |
-| ۴۶ | سفارش VIP | `Partially implemented` | خرده و عمده قابل مشاهده‌اند؛ نمایش کامل فاکتور/پرداخت در جزئیات باقی است. |
-| ۴۷ | علاقه‌مندی VIP | `Partially implemented` | علاقه‌مندی محصول موجود است؛ مجموعه‌ها و اعلان قیمت/موجودی پیاده نشده است. |
-| ۴۸ | دامنه‌های مشترک | `Partially implemented` | تیکت، وضعیت سفارش و قالب سری مشترک‌اند؛ تفکیک دامنه و API مرکزی برای سایر قابلیت‌ها لازم است. |
+1. Audit MATRIX — همین `MATRIX.md`
+2. WMS کامل (available = on_hand - reserved - damaged) — `inventory.ts` + `admin-wms-panel` + `inventory.test.ts`
+3. پنل تأمین‌کننده aggregations واقعی — `supplier-report.ts` + `supplier-stats-panel`
+4. جزئیات سفارش تأمین‌کننده با گذار معتبر — `suppliers.ts` + `supplier-orders-panel`
+5. فاکتور دامنه مشترک + history append-only + PDF RTL — `invoices.ts`
+6. Finance/Journal UI — `finance-ledger.tsx`
+7. Wallet state machine — `wallet.ts`
+8. Wishlist چند-لیستی — `wishlist.ts` + `wishlist-panel`
+9. پنل مشتری — `customer-orders-panel` + `customer-addresses`
+10. CRM + Automation (`birthday_sms` → کوپن + SMS) — `crm.ts` + `crm-panel`
+11. کوپن/جشنواره (قواعد تهران، validate) — `promo.ts` + `promo-panel`
+12. CMS Page Builder + `GET /site/pages/:code` — `cms.ts` + `cms-panel`
+13. Palette زمان‌بندی/جشنواره (اولویت festival→scheduled→manual) — `cms.ts`
+14. Integration Center (AES-GCM، HMAC webhook، retry) — `integrations.ts` + `integrations-panel`
+15. Notifications (۱۶ رویداد + `notification_routes` + BullMQ) — `notifications-panel`
+16. Ticket مشترک Kanban — `tickets.ts` + `ticket-board-panel`
+17. RBAC ماتریس server-enforced — `access.ts` + `requirePermission`
+18. Audit Log زنجیره SHA-256 — `operations.ts` + `audit-log-panel`
+19. SKU UNIQUE سراسری + تست هم‌زمانی — `001_core.sql` + `inventory.test.ts`
+20. Shared domains dedup — `invoice`/`ticket`/`series` واحد
+21. Frontend migration audit — `localStorage` فقط prefs
+22. Routing — `App.tsx`/`admin.tsx` hash/tab
+23. Loading/Error/Empty — هر پنل `LoadingState`/`ErrorState`/`Empty`
+24. Responsive — `grid`/`overflow-x-auto`/`kv-scroll`
+25. Tests per domain — `backend/src/*.test.ts` ×۱۰ با `test:embedded` (PGlite)
+26. Build verification — `backend tsc` ✅ `frontend tsc` ✅ `vite build` 1942 modules
+27. CI Node 22 — `.github/workflows/ci.yml`
+28. این cleanup
 
-## جمع‌بندی مراحل پیاده‌سازی (۱ تا ۹)
+## External providers
 
-- **مراحل ۱ تا ۴** (pushed): احراز هویت/مجوز سمت سرور، PostgreSQL + مهاجرت‌ها، مدل سفارش یکپارچه، Inventory Ledger/Reservation، Invoice/Transaction Ledger با وب‌هوک امضاشده، Ticket Engine، شماره مرجع تراکنشی، Audit Log زنجیره‌ای، پروفایل نسخه‌دار تأمین‌کننده، پلن‌ها/Marketplace، WMS، یکپارچه‌سازی UI سفارش‌ها.
-- **مرحله ۵** (`97a9777`): سرویس‌های کوپن/جشنواره (قواعد کامل به وقت تهران)، CRM با اتوماسیون تولد و صف پیامک خودکار، adapter پیامک.
-- **مرحله ۶** (`f3d1766`): مدیریت secrets رمزنگاری‌شده، مرکز اتصال با تست اتصال و webhook امضاشده HMAC و retry، مسیریابی اعلان‌ها (۱۶ رویداد).
-- **مرحله ۷** (`0c08103`): صفحه‌ساز CMS با registry قطعات و ترتیب بخش‌ها، پالت‌های زمان‌بندی‌شده/جشنواره‌ای، تنظیمات ویجت پشتیبانی سریع.
-- **مرحله ۸** (`812ce06`): ماتریس دسترسی نقش×مجوز، نقش سفارشی و باطل‌سازی نشست، برد تیکت (Kanban)، ضمیمه تیکت و اولویت خودکار VIP.
-- **مرحله ۹**: صفحه کامل «تعریف محصول جدید» (مورد ۱۰) و حذف سری‌بندی تکراری پنل تأمین‌کننده (مورد ۳۳).
+`SnappPay`/`DigiPay`/`SMS`/`payout`/`ERP` از طریق adapter با وضعیت `not_configured` هستند؛ موفقیت جعلی ساخته نمی‌شود.
 
-## باقی‌مانده برای عملیاتی شدن (خارج از کد این مخزن)
-
-موارد زیر به سرویس‌ها/قراردادهای بیرونی یا استقرار وابسته‌اند و عمداً با شبیه‌ساز جایگزین نشده‌اند: استقرار روی PostgreSQL واقعی و اجرای مهاجرت‌ها، درگاه پرداخت/اقساط واقعی، ارائه‌دهنده پیامک و ایمیل، اتصال ERP/WMS، صدور PDF فاکتور، hardening نرخ مصرف (rate limit) و پایش تولید.
-
-## ترتیب فنی پیشنهادی برای نسخه عملیاتی
-
-### طرح انبارداری بر اساس منابع رسمی
-
-مدل پیشنهادی یک `InventoryItem` برای هر واریانت/SKU و یک `StockBalance` برای هر جفت «کالا، مکان» دارد. این از تفکیک کالا، مکان و سطح موجودی در [مستندات Shopify](https://shopify.dev/docs/api/admin-rest/latest/resources/inventorylevel) گرفته شده است. موجودی باید دست‌کم `onHand`، `reserved`، `incoming`، `damaged` و `returned` را جدا نگه دارد؛ تفکیک موجودی قابل فروش، ورودی، رزرو و غیرقابل فروش در [FBA Inventory API آمازون](https://developer-docs.amazon.com/sp-api/lang-en_EN/docs/fba-inventory-api) نیز وجود دارد.
-
-`Warehouse` و `Location` سلسله‌مراتب مکان هستند؛ `StockMovement` هر دریافت، انتقال، برداشت، ارسال، مرجوعی و اصلاح شمارش را با زمان، actor، علت و reference ثبت می‌کند. این با گزارش جابه‌جایی و مکان در [مستندات Odoo](https://www.odoo.com/documentation/18.0/applications/inventory_and_mrp/inventory/warehouses_storage/reporting/moves_history.html) هم‌خوان است. `StockReservation` به سطر سفارش وصل می‌شود و فقط وقتی کل مقدار سطر در دسترس باشد ثبت می‌شود؛ این قاعده از [راهنمای رزرو Oracle](https://docs.oracle.com/en/cloud/saas/supply-chain-and-manufacturing/25c/faiom/guidelines-for-reserving-inventory.html) اقتباس شده است.
-
-محاسبه پیشنهادی: `available = onHand - reserved - damaged`؛ `incoming` تا زمان ثبت رسید و تأیید شمارش قابل فروش نیست. هنگام سفارش، رزرو و ثبت Order باید در یک تراکنش پایگاه داده انجام شوند. لغو، رزرو را آزاد می‌کند؛ ارسال، مقدار رزرو را مصرف و خروج کالا را در ledger ثبت می‌کند؛ مرجوعی پس از کنترل کیفیت به موجودی قابل فروش یا آسیب‌دیده منتقل می‌شود. هر فرمان باید `idempotencyKey` داشته باشد تا تکرار webhook یا retry موجودی را دوبار کم نکند. این قواعد، پیشنهاد معماری برای کلبه هستند و پیاده‌سازی موجود مخزن نیستند.
-
-برای تأمین‌کنندگان، همان موجودیت‌ها با `ownerId` جدا و `externalSku` برای نگاشت به ERP/WMS استفاده شوند. رویدادهای همگام‌سازی ابتدا در inbox ذخیره، اعتبارسنجی و سپس اعمال شوند؛ خروجی در outbox ثبت شود. شناسه مکان، SKU، واحد شمارش و شماره نسخه موجودی باید در قرارداد API اجباری باشند.
-
-۱. احراز هویت و مجوز سمت سرور، PostgreSQL، مهاجرت داده و Audit Log تغییرناپذیر.
-
-۲. مدل مشترک Order/OrderLine/OrderEvent، Inventory Ledger و Reservation اتمیک با کلید یکتای SKU و Reference.
-
-۳. Invoice و Transaction Ledger با وب‌هوک امضاشده درگاه، idempotency و تطبیق پرداخت؛ سپس فعال‌سازی خودکار پلن پس از تأیید پرداخت.
-
-۴. Ticket Engine سمت سرور با فایل خصوصی، اعلان، SLA و صف کارشناسان.
-
-۵. CRM automation با job scheduler، Coupon service و SMS adapter؛ نگهداری کلیدها در secrets manager.
-
-۶. CMS صفحه‌ساز، پالت زمان‌بندی‌شده، Integration Center و گزارش‌های بازه‌ای بر پایه رویدادهای دارای timestamp استاندارد.
-
-تغییرات این بازبینی تنها برای نمونه محلی قابل استفاده‌اند؛ پیش از استفاده با پول یا داده مشتری، موارد ۱ تا ۴ باید در سرویس سمت سرور پیاده و آزمون شوند.
+---
+*نسخهٔ قبلی این فایل (۹۱ خط) برای تاریخچه در `git log` باقی است؛ این نسخه خلاصهٔ تولیدی است.*

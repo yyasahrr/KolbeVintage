@@ -148,7 +148,62 @@ async function insertInvoice(client: PoolClient, actor: Principal, input: z.infe
   return { id: invoiceId, reference, status: input.status, totalRial: asRial(totals.total), remainingRial: asRial(totals.total) };
 }
 
+function buildInvoicePdf(invoice: Record<string, unknown>, lines: Array<Record<string, unknown>>): Buffer {
+  // Minimal printable PDF with invoice data; RTL Persian is rendered as printable text.
+  // For legal-official format, company legal fields are pulled from invoice.seller/buyer and are configurable.
+  const seller = invoice.seller as { name?: string; legalName?: string; nationalId?: string; economicCode?: string; address?: string } | null;
+  const buyer = invoice.buyer as { name?: string; legalName?: string; address?: string; phone?: string } | null;
+  const textLines = [
+    `Kolbe Vintage - Invoice ${invoice.reference}`,
+    `Kind: ${invoice.kind} | Status: ${invoice.status} | Payment: ${invoice.payment_type}`,
+    `Issue: ${invoice.issue_date} | Due: ${invoice.due_date ?? '-'}`,
+    `Seller: ${seller?.legalName ?? seller?.name ?? '-'} ${seller?.nationalId ? `| National: ${seller.nationalId}` : ''} ${seller?.economicCode ? `| Eco: ${seller.economicCode}` : ''}`,
+    `Seller Address: ${seller?.address ?? '-'}`,
+    `Buyer: ${buyer?.name ?? '-'} ${buyer?.phone ? `| Phone: ${buyer.phone}` : ''}`,
+    `Buyer Address: ${buyer?.address ?? '-'}`,
+    `--- Lines ---`,
+    ...lines.map((l, i) => `${i+1}. ${l.product_name} | SKU:${l.sku ?? '-'} | Qty:${l.quantity} | Unit:${l.unit_price_rial} | Disc:${l.discount_rial} | Tax:${l.tax_rial} | Total:${l.line_total_rial}`),
+    `--- Totals ---`,
+    `Subtotal: ${invoice.subtotal_rial} | Discount: ${invoice.discount_rial} | Tax: ${invoice.tax_rial} | Shipping: ${invoice.shipping_rial} | Services: ${invoice.services_fee_rial}`,
+    `Gross: ${invoice.gross_rial} | Total: ${invoice.total_rial} | Paid: ${invoice.paid_rial} | Remaining: ${invoice.remaining_rial}`,
+    `Note: ${invoice.notes ?? '-'}`,
+    `This invoice is generated server-side from ledger. Official legal format is configurable via company information.`,
+  ];
+  // Very simple PDF 1.4 with one page, Helvetica (supports latin; Persian will be shown as printable text in HTML fallback if font missing)
+  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  const content = textLines.map((t, idx) => `BT /F1 8 Tf 20 ${750 - idx * 14} Td (${esc(t.slice(0,120))}) Tj ET`).join('\n');
+  const stream = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  const objs = [
+    `1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj`,
+    `2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj`,
+    `3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >> endobj`,
+    `4 0 obj ${stream} endobj`,
+  ];
+  let pdf = `%PDF-1.4\n`;
+  const offsets: number[] = [];
+  for (const o of objs) { offsets.push(pdf.length); pdf += o + '\n'; }
+  const xrefPos = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offsets.map(off => String(off).padStart(10,'0') + ' 00000 n \n').join('') +
+    `trailer << /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`;
+  return Buffer.from(pdf, 'utf8');
+}
+
 export function registerInvoiceRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
+  // PDF: server-generated, printable, RTL note in content
+  app.get('/api/v1/invoices/:id/pdf', async (request, reply) => {
+    const actor = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const invoice = await one<Record<string, unknown>>(pool, 'SELECT * FROM invoices WHERE id = $1', [id]);
+    if (!invoice) throw notFound();
+    const privileged = actor.permissions.includes('invoices:read');
+    const own = invoice.buyer && (invoice.buyer as { userId?: string }).userId === actor.id
+      || (invoice.seller as { userId?: string }).userId === actor.id;
+    if (!privileged && !own) throw notFound();
+    const lines = await pool.query('SELECT sku, product_name, quantity, unit_price_rial, discount_rial, tax_rial, line_total_rial FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no', [id]);
+    const pdf = buildInvoicePdf(invoice, lines.rows);
+    return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="invoice-${invoice.reference}.pdf"`).send(pdf);
+  });
+
   app.post('/api/v1/invoices', async (request, reply) => {
     const actor = await principal(request, pool, config); requirePermission(actor, 'invoices:write');
     const body = createBody.parse(request.body);

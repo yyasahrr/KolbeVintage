@@ -12,6 +12,8 @@ import { AuthScreens } from "./studio";
 import { SeriesTemplateManager, SeriesTemplatePicker } from "./series-templates";
 import { SupplierWallet, SupplierBankForm, useWallet } from "./supplier-wallet";
 import { TicketCenter } from "../components/support";
+import { SupplierStatsPanel } from "./supplier-stats-panel";
+import { SupplierOrdersPanel } from "../components/supplier-orders-panel";
 import { useOps, opsNow } from "../data/ops";
 import { Landmark, Headset, Layers, ShieldAlert, FileSignature, KeyRound } from "lucide-react";
 
@@ -324,7 +326,9 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
           </div>
 
           {tab === "dashboard" && (
-            <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
+            <div className="space-y-6 animate-[fadeUp_0.35s_ease]">
+              <SupplierStatsPanel />
+              <div className="space-y-5">
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 {[
                   ["فروش عمده ثبت‌شده", fmtMoney(revenue), `${fmtNum(mySubs.length)} زیرسفارش`, <TrendingUp key="1" size={17} />],
@@ -389,6 +393,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                     <Btn variant="soft" size="sm" className="w-full" onClick={() => setTab("inventory")}>مدیریت موجودی</Btn>
                   </div>
                 </Card>
+              </div>
               </div>
             </div>
           )}
@@ -530,9 +535,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
           )}
 
           {tab === "orders" && (
-            <div className="animate-[fadeUp_0.35s_ease]">
+            <div className="space-y-6 animate-[fadeUp_0.35s_ease]">
+              <SupplierOrdersPanel />
+              <div className="animate-[fadeUp_0.35s_ease]">
               <SubOrderDesk items={mySubs.filter((i) => i.sub.status !== "pending_supplier")} actor={ME.name} onTransition={transition} emptyTitle="سفارشی در جریان نیست" emptyDesc="سفارش‌های تأییدشده و مراحل پرداخت، آماده‌سازی و ارسال اینجا دنبال می‌شود." />
             </div>
+              </div>
           )}
 
           {tab === "inventory" && (

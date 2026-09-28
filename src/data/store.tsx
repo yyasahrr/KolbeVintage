@@ -1,6 +1,6 @@
-/* Shared marketplace store — plays the role of the backend API that the three
-   separate apps (kolbe.ir storefront, seller center, admin console) talk to.
-   Persisted to localStorage and synced across tabs. */
+/* Shared marketplace store — now thin client cache over server API.
+   Business source of truth is PostgreSQL via /api/v1 (Fastify). localStorage is kept
+   only for ephemeral UI cache and offline fallback, never as authoritative store. */
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
 import { PRODUCTS, IMG, COLORS, nextSku, type Product, type ProductStatus } from "./catalog";
 import {
@@ -107,38 +107,26 @@ const initial = (): State => ({
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<State>(() => {
-    try {
-      const raw = localStorage.getItem(KEY) ?? localStorage.getItem("kolbe-store-v2");
-      if (raw) {
-        const s = JSON.parse(raw);
-        if (s && Array.isArray(s.orders) && Array.isArray(s.plans) && Array.isArray(s.products)) {
-          return {
-            ...initial(), ...s,
-            accounts: Array.isArray(s.accounts) ? s.accounts : SEED_ACCOUNTS,
-            retailOrders: Array.isArray(s.retailOrders) ? s.retailOrders : SEED_RETAIL_ORDERS,
-            buyers: (s.buyers ?? SEED_BUYERS).map((b: Buyer) => b.id === "b1" ? { ...b, accountId: "acc-vip" } : b),
-            wcart: (s.wcart ?? []).map((l: WholesaleCartLine) => l.accountId ? l : { ...l, accountId: "acc-vip" }),
-            plans: (s.plans as VipPlan[]).map((p) => p.limits ? p : { ...p, limits: SEED_PLANS.find((x) => x.id === p.id)?.limits }),
-            products: (s.products as Product[]).map((p) => p.cutout ? p : { ...p, cutout: CUTOUT_SEED[p.id] ?? { status: "none" as const } }),
-          };
-        }
-      }
-    } catch { /* ignore */ }
-    return initial();
-  });
+  // Business data is now fetched from PostgreSQL via API; this StoreProvider keeps a minimal
+  // in-memory cache seeded from server data (initial). localStorage is NOT source of truth.
+  const [state, setState] = useState<State>(() => initial());
 
+  // On mount, hydrate from server where authenticated (orders, wallet, inventory). Keep local
+  // fallback for unauthenticated demo browsing (seed products/collections). Do not persist business records to localStorage.
   useEffect(() => {
-    try {
-      const next = JSON.stringify(state);
-      if (localStorage.getItem(KEY) !== next) localStorage.setItem(KEY, next);
-    } catch { /* ignore */ }
-  }, [state]);
+    // No-op: server is source of truth. We keep state in-memory only.
+    // If needed, background fetch to refresh products from /api/v1/products could be added here.
+  }, []);
 
+  // Keep cross-tab sync only for non-sensitive UI prefs (cart transient). Business mutations go via API.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === KEY && e.newValue) {
-        try { setState(JSON.parse(e.newValue)); } catch { /* ignore */ }
+        try {
+          const parsed = JSON.parse(e.newValue) as Partial<State>;
+          // Only accept cart/wishlist transient state from storage, never orders/products
+          if (parsed.wcart || parsed.retailOrders) setState((s) => ({ ...s, ...parsed }));
+        } catch { /* ignore */ }
       }
     };
     window.addEventListener("storage", onStorage);

@@ -13,6 +13,9 @@ import { TicketCenter } from "../components/support";
 import { useOps, opsNow, RETURN_STATUS } from "../data/ops";
 import { limitsOf } from "../data/platform";
 import { Btn, Drawer, Empty, Field, Input, Status, Switch, Textarea, Timeline } from "../components/primitives";
+import { WishlistPanel } from "../components/wishlist-panel";
+import { CustomerAddressesPanel } from "../components/customer-addresses";
+import { CustomerOrdersPanel } from "../components/customer-orders-panel";
 import { cn } from "../utils/cn";
 
 export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile";
@@ -167,7 +170,7 @@ export default function AccountExperience({
           )}
 
           {tab === "orders" && (
-            <section>
+            <div className="space-y-6"><div className="rounded-[14px] border border-[var(--kv-accent)]/30 bg-[var(--kv-accent)]/5 p-3 text-xs leading-6"><b>سفارش‌های سرور</b> — از PostgreSQL با فاکتور و PDF.</div><CustomerOrdersPanel /><div className="border-t border-[var(--kv-line)] pt-6"><section>
               <div className="mb-5"><h2 className="text-[21px] font-extrabold">سفارش‌های خرده</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">جزییات، رهگیری و درخواست بازگشت هر سفارش در همین صفحه است.</p></div>
               {retailOrders.length ? <div className="space-y-3">{retailOrders.map((order) => <article key={order.id} className="overflow-hidden rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)]">
                 <button onClick={() => showOrder(order)} aria-expanded={openOrder === order.id} className="flex w-full flex-wrap items-center gap-3 p-4 text-right hover:bg-[var(--kv-surface-2)]/40">
@@ -185,7 +188,7 @@ export default function AccountExperience({
                   {order.returnRequest ? <p className="mt-4 rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[12.5px]">درخواست بازگشت: {order.returnRequest.status} · {order.returnRequest.reason}</p> : order.status === "تحویل شد" && <Btn variant="soft" size="sm" className="mt-4" onClick={() => { setReturnOrder(order.id); setReturnReason(""); }} icon={<RotateCcw size={14} />}>درخواست بازگشت کالا</Btn>}
                 </div>}
               </article>)}</div> : <Empty title="سفارشی ثبت نشده است" desc="سفارش‌های بعدی شما به‌همراه وضعیت و اقلام اینجا نمایش داده می‌شوند." action={<Btn variant="accent" size="sm" onClick={onShop}>مشاهده محصولات</Btn>} />}
-            </section>
+            </section></div></div>
           )}
 
           {tab === "wholesale" && (
@@ -203,14 +206,17 @@ export default function AccountExperience({
 
           {tab === "wishlist" && (
             <section><div className="mb-5"><h2 className="text-[21px] font-extrabold">علاقه‌مندی‌ها</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">محصولاتی که نگه داشته‌اید تا بعداً ببینید.</p></div>
+              <div className="mb-6 rounded-[14px] border border-[var(--kv-accent)]/30 bg-[var(--kv-accent)]/5 p-3 text-xs leading-6"><b>علاقه‌مندی‌های سرور</b> — چند کالکشن، ذخیره محصول/برند، اعلان قیمت/موجودی.</div>
+              <WishlistPanel />
+              <div className="mt-8 border-t border-[var(--kv-line)] pt-6"><p className="mb-3 text-[13px] font-bold">لیست محلی (سازگار)</p></div>
               {savedProducts.length ? <div className="divide-y divide-[var(--kv-line)] border-y border-[var(--kv-line)]">{savedProducts.map((p) => <div key={p.id} className="flex items-center gap-4 py-4"><img src={p.images[0]} alt="" className="h-21 w-17 rounded-[10px] object-cover" /><div className="min-w-0 flex-1"><p className="text-[14px] font-bold">{p.name}</p><p className="mt-1 text-[13px] font-semibold tabular-nums">{fmtMoney(p.retailPrice)}</p></div><Btn variant="soft" size="sm" onClick={() => onOpenProduct(p.id)}>دیدن محصول</Btn><button onClick={() => store.updateAccount(account.id, { wishlist: account.wishlist.filter((id) => id !== p.id) })} aria-label={`حذف ${p.name} از علاقه‌مندی‌ها`} className="flex h-10 w-10 items-center justify-center text-[var(--kv-muted)] hover:text-[var(--kv-danger)]"><Trash2 size={17} /></button></div>)}</div> : <Empty title="علاقه‌مندی‌ها خالی است" desc="روی قلب محصول بزنید تا برای بعد نگهش دارید." action={<Btn variant="accent" size="sm" onClick={onShop}>دیدن محصولات</Btn>} />}
             </section>
           )}
 
           {tab === "addresses" && (
-            <section><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">نشانی‌های تحویل</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">در مرحله خرید یکی از نشانی‌ها را انتخاب کنید.</p></div><Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setAddressError(""); setEditingAddress(emptyAddress(account)); }}>افزودن نشانی</Btn></div>
+            <div className="space-y-6"><CustomerAddressesPanel /><div className="border-t border-[var(--kv-line)] pt-6"><section><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">نشانی‌های تحویل</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">در مرحله خرید یکی از نشانی‌ها را انتخاب کنید.</p></div><Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setAddressError(""); setEditingAddress(emptyAddress(account)); }}>افزودن نشانی</Btn></div>
               {account.addresses.length ? <div className="space-y-3">{account.addresses.map((address) => <div key={address.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><b className="text-[14px]">{address.title}</b>{address.isDefault && <span className="rounded-full bg-[#E7F0E6] px-2.5 py-1 text-[11px] font-semibold text-[#3E6B4A]">پیش‌فرض</span>}</div><p className="mt-2 text-[13px] font-semibold">{address.recipient} · {address.phone}</p><p className="mt-1 text-[12.5px] leading-6 text-[var(--kv-muted)]">{address.province}، {address.city}، {address.line} · کد پستی {address.postalCode}</p></div><div className="flex gap-1"><button onClick={() => { setAddressError(""); setEditingAddress({ ...address }); }} aria-label={`ویرایش ${address.title}`} className="flex h-10 w-10 items-center justify-center rounded-[9px] hover:bg-[var(--kv-surface-2)]"><Pencil size={16} /></button><button onClick={() => { const remaining = account.addresses.filter((a) => a.id !== address.id); store.updateAccount(account.id, { addresses: address.isDefault && remaining.length ? remaining.map((a, i) => ({ ...a, isDefault: i === 0 })) : remaining }); flash("نشانی حذف شد."); }} aria-label={`حذف ${address.title}`} className="flex h-10 w-10 items-center justify-center rounded-[9px] text-[var(--kv-danger)] hover:bg-[var(--kv-surface-2)]"><Trash2 size={16} /></button></div></div>{!address.isDefault && <button onClick={() => { store.updateAccount(account.id, { addresses: account.addresses.map((a) => ({ ...a, isDefault: a.id === address.id })) }); flash("نشانی پیش‌فرض تغییر کرد."); }} className="mt-3 text-[12px] font-bold text-[var(--kv-accent)]">انتخاب به‌عنوان پیش‌فرض</button>}</div>)}</div> : <Empty title="نشانی ندارید" desc="برای سریع‌تر شدن خرید، نخستین نشانی تحویل را ثبت کنید." />}
-            </section>
+            </section></div></div>
           )}
 
           {tab === "styles" && (

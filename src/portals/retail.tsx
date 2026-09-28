@@ -7,6 +7,7 @@ import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, type Product } from "../da
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
+import { promoApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
@@ -314,8 +315,17 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const shipCost = validCoupon?.type === "freeShip" ? 0 : baseShip;
   const totalDiscount = festivalDiscount + couponDiscount;
   const custRestrict = account ? ops.restrictionFor("customer", account.id) : null;
-  const applyCoupon = () => {
+  const applyCoupon = async () => {
     const code = couponInput.trim().toUpperCase();
+    // Try server validation first (PostgreSQL coupons, audience/scope/time window)
+    try {
+      const items = cart.map((c)=> { const prod = retailProducts.find((pp)=> pp.id===c.id); return { productId: c.id, category: (prod as unknown as {category?:string})?.category ?? "general", totalRial: String(Math.round((prod?.retailPrice ?? 0) * c.qty * 10)) }; });
+      if (items.length) {
+        const res = await promoApi.validate({ code, orderType: "retail", items }) as { valid: boolean; message?: string };
+        if (res.valid) { setCouponCode(code); setCouponMsg(""); return; }
+        if (res.message) { setCouponCode(""); setCouponMsg(res.message); return; }
+      }
+    } catch { /* fallback to local */ }
     const c = ops.coupons.find((x) => x.code === code);
     if (!c) { setCouponCode(""); setCouponMsg("کوپنی با این کد پیدا نشد."); return; }
     if (c.channel !== "retail") { setCouponCode(""); setCouponMsg("این کوپن مخصوص خرید عمده است."); return; }

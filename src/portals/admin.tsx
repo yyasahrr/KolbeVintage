@@ -9,17 +9,26 @@ import { useStore } from "../data/store";
 import { KOLBE, SUB_STATUS, isTerminal, type SubStatus, type VipPlan } from "../data/platform";
 import { ParentOrderCard, SubOrderDesk, SupplierChip } from "../components/orders";
 import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
-import { RetailOrders, ShippingAdmin, NotifAdmin, IntegrationsAdmin } from "./admin-retail";
+import { RetailOrders, ShippingAdmin } from "./admin-retail";
 import { ProductStudio } from "./admin-product";
-import { FinanceCenter, PlansCenter, RestrictionsCenter, ApplicationsCenter, SupportHub } from "./admin-ops";
-import { SmsCenter, CrmCenter, PromoCenter } from "./admin-growth";
-import { CmsCenter } from "./admin-cms";
+import { FinanceCenter, PlansCenter, RestrictionsCenter, ApplicationsCenter } from "./admin-ops";
+import { SmsCenter } from "./admin-growth";
+
 import { SeriesTemplateManager } from "./series-templates";
 import { useOps } from "../data/ops";
-import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent } from "lucide-react";
+import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent, Boxes, FileText, ScrollText } from "lucide-react";
 import { cn } from "../utils/cn";
 import { AdminApiError, apiCall, refreshAdminToken, type ApiRequest } from "../data/admin-api";
 import { AdminServerOrders } from "./admin-server-orders";
+import { AdminWmsPanel } from "./admin-wms-panel";
+import { FinanceLedgerPanel } from "../components/finance-ledger";
+import { AuditLogPanel } from "../components/audit-log-panel";
+import { CrmPanel } from "../components/crm-panel";
+import { PromoPanel } from "../components/promo-panel";
+import { CmsPanel } from "../components/cms-panel";
+import { IntegrationsPanel } from "../components/integrations-panel";
+import { NotificationsPanel } from "../components/notifications-panel";
+import { TicketBoardPanel } from "../components/ticket-board-panel";
 
 /* ====== Standalone app: KOLBE Admin Console (internal; never linked from the public site) ====== */
 export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
@@ -141,15 +150,18 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "rorders", label: "سفارش‌های خرده", icon: <ShoppingBag size={17} /> },
     { v: "rproducts", label: "تعریف محصول", icon: <Tags size={17} /> },
     { v: "shipping", label: "حمل‌ونقل", icon: <Truck size={17} /> },
+    { v: "wms", label: "انبار و موجودی (WMS)", icon: <Boxes size={17} /> },
     { v: "crm", label: "مشتریان (CRM)", icon: <Contact size={17} /> },
     { v: "promo", label: "کوپن و جشنواره", icon: <TicketPercent size={17} /> },
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
     { v: "sms", label: "پنل پیامک", icon: <MessageSquareText size={17} /> },
     { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
     { v: "finance", label: "مالی و تسویه", icon: <Wallet size={17} />, badge: ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length || undefined },
+    { v: "finance-ledger", label: "دفتر کل (Ledger)", icon: <ScrollText size={17} /> },
     { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
     { g: "سیستم" },
     { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: ops.tickets.filter((t) => t.status === "open").length + ops.returns.filter((r) => r.status === "requested").length || undefined },
+    { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
     { v: "restrictions", label: "محدودیت کاربران", icon: <ShieldAlert size={17} /> },
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
   ];
@@ -165,12 +177,15 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     rorders: ["سفارش‌های خرده", "آماده‌سازی، ارسال، مرجوعی"],
     rproducts: ["تعریف محصول", "کاتالوگ کامل، واریانت‌ها، سئو و کانال‌های فروش"],
     shipping: ["حمل‌ونقل", "روش‌های ارسال خرده و عمده"],
+    wms: ["انبار و موجودی (WMS)", "موجودی قابل فروش، رزرو، ورودی و آسیب‌دیده — انتقال و رسید"],
     crm: ["مدیریت ارتباط با مشتری", "بخش‌بندی، پروفایل ۳۶۰ و کمپین"],
     cms: ["مدیریت محتوا", "صفحات، بنرها و مجله"],
     notifs: ["سیستم اعلان", "قالب‌های رویدادی و ارسال دستی"],
     finance: ["سیستم مالی", "تراکنش‌ها، کارمزد و تسویه تأمین‌کنندگان"],
+    "finance-ledger": ["دفتر کل (Ledger)", "روزنامه، حساب‌ها، بدهکار/بستانکار و مغایرت"],
     integrations: ["یکپارچه‌سازی‌ها", "CRM، حسابداری، پیامک، پرداخت و لجستیک"],
     support: ["پشتیبانی و تیکت‌ها", "SLA و صف پاسخ‌گویی"],
+    audit: ["گزارش حسابرسی", "تمام عملیات حساس با actor, IP, مقدار قبلی/جدید"],
     settings: ["تنظیمات و دسترسی", "نقش‌ها، انبارها و اطلاعات فروشگاه"],
     series: ["قالب‌های سری کلبه", "یک‌بار تعریف کنید، در تعریف محصول انتخاب کنید"],
     applications: ["درخواست‌های همکاری تأمین‌کنندگان", "طراحی فرم و بررسی درخواست‌ها"],
@@ -496,10 +511,10 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "plans" && <PlansCenter flash={flash} />}
           {tab === "series" && <div className="animate-[fadeUp_0.35s_ease]"><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></div>}
           {tab === "applications" && <ApplicationsCenter flash={flash} />}
-          {tab === "promo" && <PromoCenter flash={flash} />}
+          {tab === "promo" && <PromoPanel />}
           {tab === "sms" && <SmsCenter flash={flash} />}
           {tab === "restrictions" && <RestrictionsCenter flash={flash} />}
-          {tab === "support" && <SupportHub />}
+          {tab === "support" && <TicketBoardPanel />}
           {tab === "plans-legacy" && (
             <div className="animate-[fadeUp_0.35s_ease]">
               <div className="mb-4 flex items-center justify-between">
@@ -538,13 +553,16 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "rorders" && <RetailOrders flash={flash} />}
           {tab === "rproducts" && <ProductStudio flash={flash} />}
           {tab === "shipping" && <ShippingAdmin flash={flash} />}
-          {tab === "crm" && <CrmCenter flash={flash} />}
-          {tab === "cms" && <CmsCenter flash={flash} />}
-          {tab === "notifs" && <NotifAdmin flash={flash} />}
+          {tab === "wms" && <AdminWmsPanel />}
+          {tab === "crm" && <CrmPanel />}
+          {tab === "cms" && <CmsPanel />}
+          {tab === "notifs" && <NotificationsPanel />}
           {tab === "finance" && <FinanceCenter flash={flash} />}
-          {tab === "integrations" && <IntegrationsAdmin flash={flash} />}
+          {tab === "finance-ledger" && <FinanceLedgerPanel />}
+          {tab === "integrations" && <IntegrationsPanel />}
 
           {/* ---------- Support ---------- */}
+          {tab === "audit" && <AuditLogPanel />}
           {tab === "support-legacy" && (
             <div className="grid gap-5 animate-[fadeUp_0.35s_ease] lg:grid-cols-[1fr_360px]">
               <Card className="overflow-hidden">

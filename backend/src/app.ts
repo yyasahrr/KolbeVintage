@@ -24,6 +24,9 @@ import { registerCmsRoutes } from './cms.js';
 import { registerAccessRoutes } from './access.js';
 import { registerTicketRoutes } from './tickets.js';
 import { registerNotificationRoutes } from './notifications.js';
+import { registerWishlistRoutes } from './wishlist.js';
+import { registerAddressRoutes } from './addresses.js';
+import { registerSupplierReportRoutes } from './supplier-report.js';
 import { registerAdminRoutes } from './admin.js';
 
 export async function buildApp(config: Config, paymentAdapters: Record<string, PaymentProviderAdapter> = {}) {
@@ -68,6 +71,9 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   registerAccessRoutes(app, pool, config);
   registerTicketRoutes(app, pool, config);
   registerNotificationRoutes(app, pool, config);
+  registerWishlistRoutes(app, pool, config);
+  registerAddressRoutes(app, pool, config);
+  registerSupplierReportRoutes(app, pool, config);
   registerAdminRoutes(app, pool, config);
   app.addHook('onClose', async () => {
     if (redis) redis.disconnect();

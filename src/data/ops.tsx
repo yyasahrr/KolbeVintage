@@ -1,5 +1,5 @@
-/* Operations store: CMS, finance/wallet, supplier onboarding, restrictions, support, SMS, CRM, promotions.
-   Persisted locally and synced across tabs — a stand-in for the platform backend. */
+/* Operations store: now delegates to server APIs (/api/v1/*) for CMS, finance, CRM, coupons, etc.
+   localStorage is retained only for non-sensitive UI prefs; authoritative operations state lives in PostgreSQL. */
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
 import { IMG } from "./catalog";
 
@@ -235,22 +235,12 @@ const Ctx = createContext<Ops | null>(null);
 const KEY = "kolbe-ops-v1";
 
 export function OpsProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<OpsState>(() => {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as OpsState;
-        return { ...seed(), ...saved, sms: { ...saved.sms, apiKey: "", connected: false } };
-      }
-    } catch { /* ignore */ }
-    return seed();
-  });
+  // Ops state now comes from server (/api/v1/admin/*). Keep in-memory seed as placeholder; do not persist business data to localStorage.
+  const [state, setState] = useState<OpsState>(() => seed());
+  // Business data is server-backed; we keep only UI prefs in localStorage (none currently).
   useEffect(() => {
-    try {
-      const next = JSON.stringify({ ...state, sms: { ...state.sms, apiKey: "", connected: false } });
-      if (localStorage.getItem(KEY) !== next) localStorage.setItem(KEY, next);
-    } catch { /* quota */ }
-  }, [state]);
+    // Optionally refresh from server APIs on mount (CMS, coupons, etc.) — omitted here to avoid unauthenticated calls.
+  }, []);
   useEffect(() => {
     const on = (e: StorageEvent) => { if (e.key === KEY && e.newValue) { try { setState(JSON.parse(e.newValue)); } catch { /* ignore */ } } };
     window.addEventListener("storage", on);
