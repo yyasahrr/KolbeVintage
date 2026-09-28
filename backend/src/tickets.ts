@@ -15,6 +15,25 @@ const createTicket = z.object({
   message: z.string().trim().min(8).max(10000),
 });
 const replyBody = z.object({ message: z.string().trim().min(1).max(10000), internal: z.boolean().default(false) });
+/* Attachment metadata validation (pre-merge checklist): file references must be
+   https URLs, with an allowlisted MIME type and a bounded size when declared. */
+const ATTACHMENT_MIME = new Set([
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'application/pdf', 'video/mp4', 'text/plain',
+]);
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const fileMetaBody = z.record(z.string().max(40), z.unknown()).superRefine((meta, ctx) => {
+  const fail = (message: string) => ctx.addIssue({ code: 'custom', message });
+  if (meta.url !== undefined && (typeof meta.url !== 'string' || !/^https:\/\/\S{1,1000}$/.test(meta.url))) {
+    fail('آدرس فایل پیوست باید https معتبر باشد.');
+  }
+  const mime = meta.mime ?? meta.type;
+  if (mime !== undefined && (typeof mime !== 'string' || !ATTACHMENT_MIME.has(mime))) fail('نوع فایل پیوست مجاز نیست.');
+  const size = meta.size ?? meta.bytes;
+  if (size !== undefined && (typeof size !== 'number' || !Number.isFinite(size) || size <= 0 || size > MAX_ATTACHMENT_BYTES)) {
+    fail('حجم فایل پیوست باید بین ۱ بایت تا ۱۰ مگابایت باشد.');
+  }
+});
 const statusBody = z.object({
   status: z.enum(['new', 'reviewing', 'waiting_user', 'answered', 'escalated', 'resolved', 'closed']),
   department: z.string().trim().max(120).optional(), assigneeId: z.uuid().nullable().optional(),
@@ -114,7 +133,7 @@ export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config:
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = z.object({
       title: z.string().trim().min(2).max(200),
-      fileMeta: z.record(z.string(), z.unknown()).default({}),
+      fileMeta: fileMetaBody.default({}),
       messageId: z.uuid().optional(),
     }).strict().parse(request.body);
     return transaction(pool, async (client) => {

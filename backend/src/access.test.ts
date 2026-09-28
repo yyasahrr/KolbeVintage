@@ -92,6 +92,9 @@ test('access matrix, ticket board, VIP priority and attachments work', { skip: !
     const attachment = await app.inject({ method: 'POST', url: `/api/v1/tickets/${vipTicket.json().id}/attachments`,
       headers: vipHeaders, payload: { title: 'عکس فاکتور', fileMeta: { url: 'https://files.example.test/inv.png' } } });
     assert.equal(attachment.statusCode, 201, attachment.body);
+    const badAttachment = await app.inject({ method: 'POST', url: `/api/v1/tickets/${vipTicket.json().id}/attachments`,
+      headers: vipHeaders, payload: { title: 'فایل نامعتبر', fileMeta: { url: 'http://files.example.test/x.png', mime: 'application/x-sh', size: 50 * 1024 * 1024 } } });
+    assert.equal(badAttachment.statusCode, 400, badAttachment.body);
     await app.inject({ method: 'POST', url: '/api/v1/tickets', headers: vipHeaders, payload: {
       subject: 'درخواست مرجوعی', category: 'مرجوعی', priority: 'low', message: 'می‌خواهم کالا را مرجوع کنم.',
     } });
