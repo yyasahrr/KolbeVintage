@@ -7,6 +7,7 @@ import { one, transaction, type DbPool } from './db.js';
 import { addRial, asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
+import { postSupplierEarnings } from './wallet.js';
 
 const checkout = z.object({
   orderType: z.enum(['retail', 'wholesale']),
@@ -189,6 +190,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         }
       }
       await client.query('UPDATE orders SET status = $2, updated_at = now() WHERE id = $1', [id, body.status]);
+      if (body.status === 'delivered') await postSupplierEarnings(client, id);
       if (body.status === 'cancelled') await client.query("UPDATE payment_intents SET status = 'failed' WHERE order_id = $1 AND status = 'pending'", [id]);
       await client.query('INSERT INTO order_events(id,order_id,from_status,to_status,actor_id,note) VALUES ($1,$2,$3,$4,$5,$6)',
         [randomUUID(), id, order.status, body.status, user.id, body.note ?? null]);

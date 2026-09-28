@@ -14,6 +14,7 @@ import { registerInventoryRoutes } from './inventory.js';
 import { registerOrderRoutes } from './orders.js';
 import { registerPaymentRoutes, type PaymentProviderAdapter } from './payments.js';
 import { registerInvoiceRoutes } from './invoices.js';
+import { registerWalletRoutes } from './wallet.js';
 import { registerTicketRoutes } from './tickets.js';
 import { registerNotificationRoutes } from './notifications.js';
 import { registerAdminRoutes } from './admin.js';
@@ -50,6 +51,7 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   registerOrderRoutes(app, pool, config, new Set(Object.keys(paymentAdapters)));
   registerPaymentRoutes(app, pool, config, paymentAdapters);
   registerInvoiceRoutes(app, pool, config);
+  registerWalletRoutes(app, pool, config);
   registerTicketRoutes(app, pool, config);
   registerNotificationRoutes(app, pool, config);
   registerAdminRoutes(app, pool, config);
