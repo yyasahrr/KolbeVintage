@@ -31,6 +31,7 @@ import { registerSupplierReportRoutes } from './supplier-report.js';
 import { registerAdminRoutes } from './admin.js';
 import { registerShippingRoutes } from './shipping.js';
 import { registerFileRoutes } from './files.js';
+import { registerConsoleRoutes } from './console.js';
 
 export async function buildApp(config: Config, paymentAdapters: Record<string, PaymentProviderAdapter> = {}) {
   const app = Fastify({ logger: config.NODE_ENV === 'test' ? false : { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie'] },
@@ -48,6 +49,12 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ApiError) return reply.code(error.statusCode).send({ code: error.code, message: error.message });
     if (error instanceof ZodError) return reply.code(400).send({ code: 'VALIDATION_ERROR', message: 'داده‌های درخواست معتبر نیست.', issues: error.issues });
+    // Framework-level client errors (empty JSON body, unsupported media type, …) stay 4xx instead of becoming 500.
+    const frameworkError = error as { statusCode?: number; code?: string; message?: string };
+    const statusCode = frameworkError.statusCode;
+    if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
+      return reply.code(statusCode).send({ code: frameworkError.code ?? 'BAD_REQUEST', message: frameworkError.message ?? 'درخواست نامعتبر است.' });
+    }
     if ((error as { code?: string }).code === '23505') return reply.code(409).send({ code: 'CONFLICT', message: 'رکورد تکراری است.' });
     app.log.error(error);
     return reply.code(500).send({ code: 'INTERNAL_ERROR', message: 'خطای داخلی رخ داد.' });
@@ -81,6 +88,7 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   registerAdminRoutes(app, pool, config);
   registerShippingRoutes(app, pool, config);
   registerFileRoutes(app, pool, config);
+  registerConsoleRoutes(app, pool, config);
   app.addHook('onClose', async () => {
     if (redis) redis.disconnect();
     await pool.end();

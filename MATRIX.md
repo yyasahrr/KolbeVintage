@@ -2,6 +2,35 @@
 
 > این ماتریس نگاشت مستقیم ۲۸ دستور کاربری برای تبدیل همهٔ قابلیت‌ها از demo/mock/LocalStorage به تولیدِ End-to-End است. هیچ ویژگی جدیدی اضافه نشده؛ فقط ناقص‌ها تکمیل و دادهٔ کسب‌وکار به PostgreSQL منتقل شد. `LocalStorage` فقط برای `kolbe-theme` و `kolbe-access-token`.
 
+## به‌روزرسانی نهایی ۲۰۲۶-۰۹-۲۸ — FINAL INTERNAL CLEANUP (HEAD 078f676 → جدید)
+
+> **Canonical test harness:** `cd backend && npm run test:embedded` → PGlite + `TEST_DATABASE_URL` + همهٔ ۱۴ migration.
+> **نتیجه:** `tests 47 / pass 47 / fail 0 / skipped 0` (هیچ تست داخلی به‌خاطر environment skip نمی‌شود).
+
+**تغییرات این مرحله (بدون هیچ Feature جدید):**
+
+| مورد | نتیجه | شواهد |
+|------|-------|-------|
+| Test truth | ✅ 47/47/0/0 | `backend npm run test:embedded` (PGlite) |
+| Product editor | ✅ تک‌کانونی | `admin-retail.tsx` دیگر `ProductDefinition` مستقل ندارد و به `ProductStudio` (full page) واگذار می‌کند؛ Create=`POST /products` (id/variants/SKU از سرور)، Edit=`PATCH /products/:id`، Status=`PATCH /products/:id/status`، Media=`POST /files`، n8n از Integration Center |
+| store.tsx legacy mutations | ✅ قفل‌شده | `DEMO_ONLY_METHODS` + `demoOnlyGuard`: بیرون از `?demo=1` هر mutation دمویی **throw** می‌کند (نه mutation بی‌صدا) |
+| TicketCenter | ✅ سرور | `GET /tickets` + `POST /tickets` + `POST /tickets/:id/messages` + `PATCH /tickets/:id` + `POST /tickets/:id/attachments` (multipart) + `GET /tickets/board`؛ نمایش progress/خطا/نام/MIME/حجم/دانلود از `GET /files/:id` (بدون dataURL در حالت سرور) |
+| ReturnsCenter | ✅ سرور | `GET /admin/returns` + `PATCH /admin/returns/:id` با گذارهای `requested→approved/rejected→received→refunded`؛ مرجع `RT-` فقط از سرور |
+| Admin support tab | ✅ | `TicketBoardPanel` (سرور) + `ReturnsCenter` سرور؛ badgeها از `GET /admin/dashboard/summary` |
+| Dashboard badges | ✅ | `GET /admin/dashboard/summary` (pendingProducts/activeOrders/pendingSupplierActions/pendingMemberships/openTickets/pendingReturns/pendingWithdrawals) + fallback محلی فقط در `?demo=1` |
+| CMS | ✅ سرور | `admin-cms.tsx` بازنویسی شد روی `GET/POST/PATCH/DELETE /admin/cms/*` + `GET /admin/cms/pages/:id/sections` (endpoint جدید) + `PUT /admin/site-settings/support-widget`؛ هیچ `b-${Date.now()}` برای محتوای منتشرشده |
+| CMS media | ✅ File Storage | `POST /files` (multipart، MIME/size allowlist)؛ payload فقط شناسهٔ فایل سرور را نگه می‌دارد |
+| WMS | ✅ تک‌کانونی | `AdminWmsPanel` (سرور) تنها UI؛ adjustment/receipt/transfer با `Idempotency-Key` |
+| Supplier Wallet | ✅ سرور | `GET /wallet` + `GET /wallet/entries` + `GET /wallet/withdrawals` + `POST /wallet/withdrawals` (Idempotency-Key) |
+| Membership admin | ✅ سرور | `GET /admin/memberships` + `PATCH /admin/memberships/:id` (pending_payment→active/cancelled با duration سرور) |
+| Cooperation admin | ✅ سرور | `GET /admin/cooperation-requests` + `POST /admin/cooperation-requests/:id/review` + `PUT /admin/cooperation-form` |
+| Restrictions | ✅ دامنهٔ جدید سرور | `014_console_domains.sql` + `GET/POST/PATCH/DELETE /admin/restrictions` + enforcement سرور (`assertNotRestricted`) در `POST /orders`/`POST /tickets`/`POST /returns`/`POST /wallet/withdrawals` |
+| SMS/Campaign | ✅ سرور | `GET/POST/PATCH /admin/sms-campaigns` + `POST /admin/sms-campaigns/:id/send` با state machine `draft→scheduled/queued→sent/failed`؛ provider نبود = `failed/provider_not_configured` (external-dependent) |
+| n8n | ✅ Integration Center | Webhook/enabled از `GET /admin/integrations` + `PATCH /admin/integrations/:id` (دیگر local `ops.n8n` در حالت واقعی) |
+| E2E smoke | ✅ | `backend/scripts/e2e-smoke.mjs`: customer register/login/profile/wishlist/address + product + WMS receipt/adjust + checkout (shipping 0 سرور) + order + return `RT-400000` + ticket/attachment/download + admin console (summary/memberships/restrictions/campaigns/cms/wms/tickets/returns/wallet/finance/audit/cooperation/plans) |
+| Client-generated canonical IDs | ✅ صفر مورد A | تنها موارد باقی‌مانده: idempotency-key، اسلاید/فرم‌های گذرا، و مسیرهای صریح `?demo=1` |
+| CI | ⛔ اجرا نشده | GitHub App این سندباکس مجوز `workflows` ندارد؛ هیچ ادعای CI سبز نمی‌کنیم |
+
 ## به‌روزرسانی ۲۰۲۶-۰۹-۲۸ — Runtime Reality — INTERNAL WORK REMAINS (HEAD 6aebb4a → جدید)
 
 > **Source of Truth این مرحله: Code behavior / API behavior / PostgreSQL / Tests** — نه MATRIX و نه کامنت‌ها. تا وقتی Runtime migration کامل نشده، هیچ ردیفی فقط به‌خاطر وجود فایل Backend به Implemented تغییر نمی‌کند.

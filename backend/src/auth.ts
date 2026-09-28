@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import { one, transaction, type DbPool } from './db.js';
 import { badRequest, conflict, forbidden, unauthorized } from './errors.js';
+import { audit } from './operations.js';
 
 const registration = z.object({
   email: z.email().max(254).optional(),
@@ -152,8 +153,7 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
       await client.query(`UPDATE users SET ${updates.join(', ')}, updated_at = now() WHERE id = $1`, vals);
       const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null }>(client, 'SELECT id, display_name, email, phone, birthday FROM users WHERE id = $1', [user.id]);
       if (!row) throw unauthorized();
-      await client.query(`INSERT INTO audit_logs(id, actor_id, action, entity_type, entity_id, before_state, after_state) VALUES ($1,$2,'profile.updated','user',$3,$4,$5)`,
-        [randomUUID(), user.id, user.id, JSON.stringify(before), JSON.stringify(row)]);
+      await audit(client, user.id, 'profile.updated', 'user', user.id, before, row, request.ip);
       return { id: user.id, displayName: row.display_name, email: row.email, phone: row.phone, birthday: row.birthday ? new Date(row.birthday).toLocaleDateString('fa-IR') : null };
     });
   });

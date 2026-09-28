@@ -42,3 +42,24 @@
 
 ---
 *نسخهٔ قبلی این فایل (۹۱ خط) برای تاریخچه در `git log` باقی است؛ این نسخه خلاصهٔ تولیدی است.*
+
+
+## به‌روزرسانی نهایی — FINAL INTERNAL CLEANUP (۲۰۲۶-۰۹-۲۸)
+
+**آزمون کانونیکال:** `cd backend && npm run test:embedded` → **۴۷ تست / ۴۷ پاس / ۰ خطا / ۰ skip** (PGlite + `TEST_DATABASE_URL`).
+
+**ممیزی grep نهایی (src):** تعداد برخوردها بر اساس کلاس — A (Business Runtime): **۰**، B (گذرا/UI): ۲۱۴، C (صراحتاً `?demo=1`): ۸۷.
+- تنها شناسه‌های ساخته‌شدهٔ سمت کلاینت باقی‌مانده: `Idempotency-Key` سفارش/انبار (کلید idempotency، نه شناسهٔ دامنه)، شناسهٔ اسلایدهای گذرا و فرم‌های محلی، و مسیرهای صریح `?demo=1` که همه با `demoOnlyGuard` محافظت می‌شوند.
+- `useOps`/`useStore` باقی‌مانده فقط در پنل‌هایی است که دادهٔ واقعی آن‌ها از API می‌آید و مقادیر محلی آن‌ها در حالت `?demo=1` یا صرفاً UI گذرا هستند (نمونه: `ops.hero` فقط به‌عنوان fallback تا زمانی که CMS سرور پاسخ نداده باشد).
+
+**دامنه‌های سرور تکمیل‌شده در این مرحله:** restrictions (جدید)، SMS campaigns (جدید)، dashboard summary (جدید)، membership admin (جدید)، `GET /admin/cms/pages/:id/sections` (جدید)، + اتصال CMS/Wallet/Tickets/Returns/Product/Dashboard به API.
+
+**باگ‌های واقعی که اسموک E2E کشف و رفع کرد:**
+1. `audit_logs` در `PATCH /auth/me` با ستون اشتباه (`entity_type`) درج می‌شد → ۵۰۰ (اکنون `audit()` استاندارد).
+2. فیلتر `ip` در `GET /admin/audit-logs` روی نوع `inet` با text مقایسه می‌شد → ۵۰۰ (اکنون `ip::text`).
+3. شناسه‌های seed روش‌های ارسال، UUID معتبر v4 نبودند و `shippingMethodId` در checkout را رد می‌کرد → اصلاح seed + migration ترمیمی.
+4. خطاهای ۴xx سطح فریم‌ورک (بدنهٔ خالی JSON) به ۵۰۰ تبدیل می‌شدند → مدیریت خطا اصلاح شد.
+
+**External-provider dependent (طبیعی):** ارسال پیامک واقعی و درگاه پرداخت واقعی نیازمند credential هستند؛ در نبود آن‌ها کمپین با `failed / provider_not_configured` ثبت می‌شود و پرداخت با adapter تأییدشده انجام می‌شود.
+
+**CI:** GitHub Actions اجرا نمی‌شود (مجوز `workflows` برای GitHub App این محیط موجود نیست) — هیچ ادعای سبز بودن CI نداریم.

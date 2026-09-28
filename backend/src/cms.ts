@@ -169,6 +169,19 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
     });
   });
 
+  app.get('/api/v1/admin/cms/pages/:id/sections', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'cms:read');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const rows = await pool.query(
+      `SELECT s.id, s.page_id, s.title, s.payload, s.visible, s.position, c.code AS component_code
+         FROM cms_sections s JOIN cms_components c ON c.id = s.component_id
+        WHERE s.page_id = $1 ORDER BY s.position, s.created_at`, [id]);
+    return { items: rows.rows.map((r: Record<string, unknown>) => ({
+      id: r.id, pageId: r.page_id, componentCode: r.component_code, title: r.title,
+      payload: r.payload, visible: r.visible, position: r.position,
+    })) };
+  });
+
   app.post('/api/v1/admin/cms/pages/:id/sections', async (request, reply) => {
     const user = await principal(request, pool, config); requirePermission(user, 'cms:manage');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);

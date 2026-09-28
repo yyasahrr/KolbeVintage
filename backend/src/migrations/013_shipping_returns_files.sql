@@ -83,7 +83,7 @@ ON CONFLICT DO NOTHING;
 -- Seed default shipping methods (idempotent)
 INSERT INTO shipping_methods(id, code, name, active, type, base_fee_rial, free_above_rial, estimated_min_days, estimated_max_days, config)
 VALUES
-  ('00000000-0000-0000-0000-000000000001', 'post', 'پست پیشتاز', true, 'standard', 300000, 5000000, 2, 4, '{}'::jsonb),
-  ('00000000-0000-0000-0000-000000000002', 'express', 'پیک فوری تهران', true, 'express', 500000, null, 0, 1, '{}'::jsonb),
-  ('00000000-0000-0000-0000-000000000003', 'pickup', 'تحویل حضوری', true, 'pickup', 0, null, 0, 0, '{}'::jsonb)
+  ('5b1c9a10-0001-4a11-8c01-000000000001', 'post', 'پست پیشتاز', true, 'standard', 300000, 5000000, 2, 4, '{}'::jsonb),
+  ('5b1c9a10-0002-4a11-8c02-000000000002', 'express', 'پیک فوری تهران', true, 'express', 500000, null, 0, 1, '{}'::jsonb),
+  ('5b1c9a10-0003-4a11-8c03-000000000003', 'pickup', 'تحویل حضوری', true, 'pickup', 0, null, 0, 0, '{}'::jsonb)
 ON CONFLICT (code) DO NOTHING;

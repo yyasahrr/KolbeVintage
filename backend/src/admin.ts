@@ -25,7 +25,7 @@ export function registerAdminRoutes(app: FastifyInstance, pool: DbPool, config: 
          AND ($4::text IS NULL OR action = $4)
          AND ($5::timestamptz IS NULL OR created_at >= $5)
          AND ($6::timestamptz IS NULL OR created_at <= $6)
-         AND ($7::text IS NULL OR ip = $7)
+         AND ($7::text IS NULL OR ip::text = $7)
          AND ($8::text IS NULL OR action ILIKE '%' || $8 || '%' OR resource_type ILIKE '%' || $8 || '%')
        ORDER BY created_at DESC LIMIT $9`,
       [query.resourceType ?? null, query.resourceId ?? null, query.actor ?? null, query.action ?? null,

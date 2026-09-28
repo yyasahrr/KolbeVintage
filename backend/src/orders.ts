@@ -6,6 +6,7 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { addRial, asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
+import { assertNotRestricted } from './console.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { postSupplierEarnings } from './wallet.js';
 import { recordRedemption, resolveCouponDiscount, resolveFestivalDiscount, type DiscountContext } from './coupons.js';
@@ -41,6 +42,7 @@ type OrderRow = { id: string; reference: string; buyer_id: string; status: Order
 export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: Config, availableProviders = new Set<string>()) {
   app.post('/api/v1/orders', async (request, reply) => {
     const user = await principal(request, pool, config);
+    await assertNotRestricted(pool, user.id, 'purchase');
     const body = checkout.parse(request.body);
     const key = request.headers['idempotency-key'];
     if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');

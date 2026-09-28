@@ -9,3 +9,7 @@ coverage/
 *.log
 .DS_Store
 .pg-test/
+
+# CI workflow kept local: GitHub App in this sandbox has no workflows permission
+.github/
+backend/storage/

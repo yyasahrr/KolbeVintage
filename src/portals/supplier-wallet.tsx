@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowDownToLine, Banknote, Check, Clock, Landmark, Lock, ShieldCheck, Wallet } from "lucide-react";
 import { fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
 import { useOps, opsNow, bankFromIban, isValidCard, isValidIban, normalizeIban, type SupplierBank, type Withdrawal } from "../data/ops";
 import { AreaChart, DonutChart, Kpi } from "../components/charts";
-import { Btn, Empty, Field, Input, Status } from "../components/primitives";
+import { Btn, Card, Empty, Field, Input, Status } from "../components/primitives";
+import { apiCall } from "../data/admin-api";
 
 export const MIN_WITHDRAW = 1000000;
 const WD_LABEL: Record<Withdrawal["status"], string> = { requested: "در انتظار", approved: "تأیید شد", paid: "پرداخت شد", rejected: "رد شد" };
@@ -41,10 +42,44 @@ export function SupplierWallet({ supplierId, supplierName, noWithdraw, onBank }:
   const bank = ops.banks[supplierId];
   const [amount, setAmount] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  // Server ledger is canonical: GET /wallet + /wallet/entries + /wallet/withdrawals
+  const [server, setServer] = useState<{ availableRial: string; pendingRial: string; totals: Record<string, string> } | null>(null);
+  const [serverEntries, setServerEntries] = useState<{ id: string; kind: string; direction: string; amount_rial: string; reference: string | null; created_at: string }[]>([]);
+  const [serverWithdrawals, setServerWithdrawals] = useState<{ id: string; reference: string; amount_rial: string; status: string; destination: unknown; requested_at: string }[]>([]);
+  const loadServer = () => {
+    if (isDemo) return;
+    apiCall<{ availableRial: string; pendingRial: string; totals: Record<string, string> }>("/wallet").then(setServer).catch(() => setServer(null));
+    apiCall<{ items: typeof serverEntries }>("/wallet/entries?limit=30").then((r) => setServerEntries(r.items)).catch(() => setServerEntries([]));
+    apiCall<{ items: typeof serverWithdrawals }>("/wallet/withdrawals").then((r) => setServerWithdrawals(r.items)).catch(() => setServerWithdrawals([]));
+  };
+  useEffect(loadServer, [isDemo]);
+  const serverBalanceToman = server ? Math.round(Number(server.availableRial) / 10) : null;
+  const serverPendingToman = server ? Math.round(Number(server.pendingRial) / 10) : null;
+  const serverInFlightToman = serverWithdrawals.filter((x) => x.status === "requested" || x.status === "approved").reduce((a, x) => a + Math.round(Number(x.amount_rial) / 10), 0);
   let run = 0;
   const points = w.ledger.map((e) => (run += e.amount));
+  const requestServer = async (a: number) => {
+    try {
+      await apiCall("/wallet/withdrawals", {
+        method: "POST",
+        headers: { "Idempotency-Key": `wd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` },
+        body: JSON.stringify({ amountRial: String(a * 10), destination: { iban: bank?.iban ?? "" } }),
+      });
+      loadServer();
+      setAmount("");
+      setMsg({ ok: true, text: "درخواست برداشت روی سرور ثبت شد و پس از تأیید مالی کلبه تسویه می‌شود." });
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : "خطا در ثبت برداشت" }); }
+  };
   const request = () => {
     const a = Number(amount.replace(/\D/g, ""));
+    if (!isDemo) {
+      if (noWithdraw) return setMsg({ ok: false, text: "برداشت برای حساب شما توسط کلبه محدود شده است. از پشتیبانی پیگیری کنید." });
+      if (a < MIN_WITHDRAW) return setMsg({ ok: false, text: `حداقل مبلغ برداشت ${fmtMoney(MIN_WITHDRAW)} است.` });
+      if (serverBalanceToman !== null && a > serverBalanceToman) return setMsg({ ok: false, text: "مبلغ از موجودی قابل برداشت سرور بیشتر است." });
+      void requestServer(a);
+      return;
+    }
     if (noWithdraw) return setMsg({ ok: false, text: "برداشت برای حساب شما توسط کلبه محدود شده است. از پشتیبانی پیگیری کنید." });
     if (!bank || bank.status !== "verified") return setMsg({ ok: false, text: "ابتدا اطلاعات بانکی باید توسط کلبه تأیید شود." });
     if (a < MIN_WITHDRAW) return setMsg({ ok: false, text: `حداقل مبلغ برداشت ${fmtMoney(MIN_WITHDRAW)} است.` });
@@ -55,9 +90,9 @@ export function SupplierWallet({ supplierId, supplierName, noWithdraw, onBank }:
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Kpi label="موجودی قابل برداشت" value={fmtMoney(w.balance)} hint="پس از کسر کمیسیون" />
-        <Kpi label="در امانت (سفارش‌های در جریان)" value={fmtMoney(w.escrowNet)} hint={`${fmtNum(w.escrowCount)} زیرسفارش · پس از تحویل آزاد می‌شود`} />
-        <Kpi label="در حال واریز" value={fmtMoney(w.inFlight)} hint="درخواست‌های تأییدنشده یا در صف" />
+        <Kpi label="موجودی قابل برداشت" value={fmtMoney(serverBalanceToman ?? w.balance)} hint={server ? "دفتر کل سرور (ریال)" : "پس از کسر کمیسیون"} />
+        <Kpi label="در امانت (سفارش‌های در جریان)" value={fmtMoney(server ? (serverPendingToman ?? 0) : w.escrowNet)} hint={server ? "مانده در انتظار تسویه (سرور)" : `${fmtNum(w.escrowCount)} زیرسفارش · پس از تحویل آزاد می‌شود`} />
+        <Kpi label="در حال واریز" value={fmtMoney(server ? serverInFlightToman : w.inFlight)} hint={server ? "از /wallet/withdrawals" : "درخواست‌های تأییدنشده یا در صف"} />
         <Kpi label={`کمیسیون کلبه (${fmtNum(w.rate)}٪)`} value={fmtMoney(w.commission)} hint={`از ${fmtNum(w.settledCount)} فروش تسویه‌شده`} />
       </div>
 
@@ -111,7 +146,25 @@ export function SupplierWallet({ supplierId, supplierName, noWithdraw, onBank }:
           </div>
         </div>
       </div>
-      <p className="flex items-center gap-1.5 text-[11.5px] text-[var(--kv-muted)]"><Clock size={12} />مبلغ هر زیرسفارش پس از ثبت «تحویل شد» از امانت آزاد و پس از کسر کمیسیون به موجودی قابل برداشت اضافه می‌شود. واریز در این نسخه آزمایشی شبیه‌سازی است.</p>
+      {!isDemo && (
+        <div className="grid gap-5 xl:grid-cols-2">
+          <Card className="overflow-hidden">
+            <p className="p-4 text-[13.5px] font-extrabold">دفتر کل سرور (wallet_entries)</p>
+            <div className="kv-scroll overflow-x-auto"><table className="kv-table min-w-[420px]"><thead><tr><th>نوع</th><th>مبلغ</th><th>مرجع</th><th>تاریخ</th></tr></thead><tbody>
+              {serverEntries.map((e) => <tr key={e.id}><td>{e.kind}{e.direction === "debit" ? " · بدهکار" : ""}</td><td className="tabular-nums">{fmtMoney(Math.round(Number(e.amount_rial) / 10))}</td><td className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{e.reference ?? "—"}</td><td className="text-[11px] text-[var(--kv-muted)]">{String(e.created_at).slice(0, 16).replace("T", " ")}</td></tr>)}
+              {serverEntries.length === 0 && <tr><td colSpan={4} className="py-6 text-center text-[var(--kv-muted)]">تراکنشی ثبت نشده است.</td></tr>}
+            </tbody></table></div>
+          </Card>
+          <Card className="overflow-hidden">
+            <p className="p-4 text-[13.5px] font-extrabold">درخواست‌های برداشت سرور</p>
+            <div className="kv-scroll overflow-x-auto"><table className="kv-table min-w-[420px]"><thead><tr><th>شناسه</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr></thead><tbody>
+              {serverWithdrawals.map((x) => <tr key={x.id}><td className="tabular-nums" dir="ltr">{x.reference}</td><td className="tabular-nums">{fmtMoney(Math.round(Number(x.amount_rial) / 10))}</td><td><Status value={WD_LABEL[x.status as Withdrawal["status"]] ?? x.status} /></td><td className="text-[11px] text-[var(--kv-muted)]">{String(x.requested_at).slice(0, 16).replace("T", " ")}</td></tr>)}
+              {serverWithdrawals.length === 0 && <tr><td colSpan={4} className="py-6 text-center text-[var(--kv-muted)]">درخواست برداشتی ثبت نشده است.</td></tr>}
+            </tbody></table></div>
+          </Card>
+        </div>
+      )}
+      <p className="flex items-center gap-1.5 text-[11.5px] text-[var(--kv-muted)]"><Clock size={12} />{isDemo ? "واریز در این نسخه آزمایشی (demo) شبیه‌سازی است." : "موجودی، تراکنش‌ها و برداشت‌ها از دفتر کل سرور خوانده می‌شود؛ تسویه توسط مالی کلبه تأیید می‌شود."}</p>
     </div>
   );
 }

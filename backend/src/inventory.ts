@@ -6,6 +6,7 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, claimIdempotency, completeIdempotency, requestHash } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
+import { assertNotRestricted } from './console.js';
 
 const warehouseBody = z.object({ code: z.string().regex(/^[A-Z0-9_-]{3,30}$/), name: z.string().trim().min(2).max(120) });
 const locationBody = z.object({ code: z.string().regex(/^[A-Z0-9_-]{2,30}$/), name: z.string().trim().min(2).max(120) });
@@ -375,6 +376,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
   // Returns: inspection -> sellable/damaged (with RT- reference, buyer_id, history via audit)
   app.post('/api/v1/returns', async (request, reply) => {
     const user = await principal(request, pool, config);
+    await assertNotRestricted(pool, user.id, 'return');
     const body = z.object({
       orderId: z.uuid(), orderLineId: z.uuid().optional(),
       reason: z.string().trim().min(4).max(1000),

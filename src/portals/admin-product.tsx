@@ -15,7 +15,26 @@ const CUT_LABEL: Record<Cutout["status"], string> = { none: "بدون تصویر
 
 /* ============ Style-builder cutout pipeline (n8n with local fallback) ============ */
 export function CutoutUploader({ productId, value, onChange, candidates, flash }: { productId: string; value: Cutout; onChange: (c: Cutout) => void; candidates: string[]; flash: F }) {
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const ops = useOps();
+  /* n8n configuration lives in the Integration Center (server) — never as local ops state in production. */
+  const [integration, setIntegration] = useState<{ id: string; enabled: boolean; webhookUrl: string; config: Record<string, unknown> } | null>(null);
+  const loadIntegration = async () => {
+    if (isDemo) return;
+    try {
+      const { apiCall } = await import("../data/admin-api");
+      const res = await apiCall<{ items: { id: string; code: string; enabled: boolean; config: Record<string, unknown> }[] }>("/admin/integrations");
+      const hit = (res.items ?? []).find((i) => i.code === "n8n");
+      if (hit) setIntegration({ id: hit.id, enabled: Boolean(hit.enabled), webhookUrl: String((hit.config ?? {}).webhookUrl ?? ""), config: hit.config ?? {} });
+    } catch { /* integration center not reachable — keep local demo values */ }
+  };
+  useEffect(() => { void loadIntegration(); }, [isDemo]);
+  const updateIntegration = async (patch: { enabled?: boolean; config?: Record<string, unknown> }) => {
+    const { apiCall } = await import("../data/admin-api");
+    if (!integration) throw new Error("یکپارچه‌سازی n8n یافت نشد");
+    await apiCall(`/admin/integrations/${integration.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    await loadIntegration();
+  };
   const ref = useRef<HTMLInputElement>(null);
   const [source, setSource] = useState<string>(value.src && !value.src.startsWith("data:image/png") ? value.src : candidates[0] ?? "");
   const [error, setError] = useState("");
@@ -37,10 +56,12 @@ export function CutoutUploader({ productId, value, onChange, candidates, flash }
   const run = async () => {
     setError("");
     if (!source) { setError("ابتدا تصویر منبع را انتخاب یا بارگذاری کنید."); return; }
-    if (ops.n8n.enabled && ops.n8n.webhookUrl.trim()) {
+    const hookUrl = (!isDemo && integration ? integration.webhookUrl : ops.n8n.webhookUrl).trim();
+    const hookEnabled = isDemo ? ops.n8n.enabled : Boolean(integration?.enabled && hookUrl);
+    if (hookEnabled && hookUrl) {
       onChange({ status: "queued", src: source, source: "n8n", note: "ارسال به n8n" });
       try {
-        const url = await sendToN8n(ops.n8n.webhookUrl.trim(), source, productId);
+        const url = await sendToN8n(hookUrl, source, productId);
         setPreview(url);
         onChange({ status: "ready", src: url, source: "n8n" });
         flash("n8n تصویر آماده استایل‌بیلدر را برگرداند");
@@ -66,12 +87,12 @@ export function CutoutUploader({ productId, value, onChange, candidates, flash }
         </div>
       </div>
       <div className="rounded-[12px] border border-[var(--kv-line)] p-4">
-        <div className="flex items-center justify-between gap-2"><p className="flex items-center gap-2 text-[13px] font-bold"><Workflow size={15} className="text-[var(--kv-accent)]" />اتوماسیون n8n</p><Switch on={ops.n8n.enabled} onToggle={() => ops.set("n8n", { ...ops.n8n, enabled: !ops.n8n.enabled })} /></div>
-        {ops.n8n.enabled ? <Field label="Webhook URL" hint="n8n باید تصویر را (فیلد image) دریافت و JSON با فیلد url یا خود فایل PNG را برگرداند"><Input value={ops.n8n.webhookUrl} onChange={(v) => ops.set("n8n", { ...ops.n8n, webhookUrl: v.trim() })} placeholder="https://n8n.example.ir/webhook/style-cutout" /></Field>
+        <div className="flex items-center justify-between gap-2"><p className="flex items-center gap-2 text-[13px] font-bold"><Workflow size={15} className="text-[var(--kv-accent)]" />اتوماسیون n8n {isDemo ? "(demo)" : "(Integration Center)"}</p><Switch on={integration?.enabled ?? ops.n8n.enabled} onToggle={async () => { if (isDemo) { ops.set("n8n", { ...ops.n8n, enabled: !ops.n8n.enabled }); return; } if (!integration) { flash("ابتدا یکپارچه‌سازی n8n را در «یکپارچه‌سازی‌ها» بسازید"); return; } try { await updateIntegration({ enabled: !integration.enabled }); } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره تنظیمات n8n"); } }} /></div>
+        {(integration?.enabled ?? ops.n8n.enabled) ? <Field label="Webhook URL" hint={isDemo ? "demo: محلی" : "ذخیره‌شده در Integration Center (سرور)"}><Input value={integration?.webhookUrl ?? ops.n8n.webhookUrl} onChange={async (v) => { const url = v.trim(); if (isDemo) { ops.set("n8n", { ...ops.n8n, webhookUrl: url }); return; } if (!integration) { flash("ابتدا یکپارچه‌سازی n8n را در «یکپارچه‌سازی‌ها» بسازید"); return; } setIntegration((prev) => prev ? { ...prev, webhookUrl: url } : prev); try { await updateIntegration({ config: { ...integration.config, webhookUrl: url } }); } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره Webhook"); } }} placeholder="https://n8n.example.ir/webhook/style-cutout" /></Field>
           : <p className="mt-1 text-[12px] text-[var(--kv-muted)]">غیرفعال است؛ پس‌زمینه در مرورگر حذف می‌شود (مناسب عکس‌های پس‌زمینه سفید یا یکدست).</p>}
       </div>
       <div className="flex flex-wrap gap-2">
-        <Btn variant="accent" disabled={busy || !source} onClick={run} icon={busy ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}>{busy ? "در حال پردازش…" : ops.n8n.enabled ? "ارسال به n8n و آماده‌سازی" : "حذف پس‌زمینه و آماده‌سازی"}</Btn>
+        <Btn variant="accent" disabled={busy || !source} onClick={run} icon={busy ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}>{busy ? "در حال پردازش…" : (isDemo ? ops.n8n.enabled : Boolean(integration?.enabled && integration.webhookUrl)) ? "ارسال به n8n و آماده‌سازی" : "حذف پس‌زمینه و آماده‌سازی"}</Btn>
         {value.status === "failed" && <Btn variant="soft" onClick={() => runLocal(source)}>پردازش محلی</Btn>}
         {value.status === "ready" && <Btn variant="ghost" icon={<X size={14} />} onClick={() => { onChange({ status: "none" }); setPreview(null); }}>حذف از استایل‌بیلدر</Btn>}
       </div>
@@ -110,6 +131,7 @@ type Draft = {
 const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", stock: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", series: [], cutout: { status: "none" } });
 
 export function ProductStudio({ flash }: { flash: F }) {
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct } = useStore();
   const [open, setOpen] = useState(false);
   const [sec, setSec] = useState("base");
@@ -130,21 +152,48 @@ export function ProductStudio({ flash }: { flash: F }) {
     d.wholesaleOn && !seriesComplete(d.series) && "سری‌های عمده (قیمت، حداقل و رنگ)", !d.images.length && "دست‌کم یک تصویر",
   ].filter(Boolean) as string[];
 
-  const save = () => {
+  const save = async () => {
     if (issues.length) return;
-    const offered = d.series.filter((s) => s.available);
-    const p: Product = {
-      status: "published", id: `p${Date.now()}`, sku: d.sku.trim() || nextSku(products, KOLBE.id, d.category), brand: d.brand, name: d.name.trim(),
-      supplier: KOLBE.name, supplierId: KOLBE.id, category: d.category, retailPrice: d.retailOn ? Number(d.retail) : 0,
-      installmentPrice: d.retailOn ? Number(d.installment || d.retail) : 0,
-      wholesaleFrom: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.pricePerSeries)) : 0, rating: 0, reviews: 0,
-      colors: d.colors, images: d.images, video: d.video || undefined, cutout: d.cutout,
-      series: d.wholesaleOn ? d.series : [], seriesCount: d.wholesaleOn ? d.series.length : 0,
-      moq: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.moqSeries)) : 1,
-      stock: Number(d.stock) || 0, fabric: d.fabric || "—", desc: d.desc || "توضیحات این محصول در حال تکمیل است.",
-    };
-    addProduct(p); setOpen(false); setD(blank());
-    flash(`«${p.name}» منتشر شد${d.cutout.status === "ready" ? " و به استایل‌بیلدر اضافه شد" : ""}`);
+    if (isDemo) {
+      const offered = d.series.filter((s) => s.available);
+      const p: Product = {
+        status: "published", id: `p${Date.now()}`, sku: d.sku.trim() || nextSku(products, KOLBE.id, d.category), brand: d.brand, name: d.name.trim(),
+        supplier: KOLBE.name, supplierId: KOLBE.id, category: d.category, retailPrice: d.retailOn ? Number(d.retail) : 0,
+        installmentPrice: d.retailOn ? Number(d.installment || d.retail) : 0,
+        wholesaleFrom: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.pricePerSeries)) : 0, rating: 0, reviews: 0,
+        colors: d.colors, images: d.images, video: d.video || undefined, cutout: d.cutout,
+        series: d.wholesaleOn ? d.series : [], seriesCount: d.wholesaleOn ? d.series.length : 0,
+        moq: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.moqSeries)) : 1,
+        stock: Number(d.stock) || 0, fabric: d.fabric || "—", desc: d.desc || "توضیحات این محصول در حال تکمیل است.",
+      };
+      addProduct(p); setOpen(false); setD(blank());
+      flash(`«${p.name}» منتشر شد (demo)${d.cutout.status === "ready" ? " و به استایل‌بیلدر اضافه شد" : ""}`);
+      return;
+    }
+    try {
+      const body: any = {
+        name: d.name.trim(),
+        brand: d.brand, category: d.category,
+        sku: d.sku.trim() || undefined,
+        desc: d.desc, fabric: d.fabric, care: d.care,
+        retailPriceRial: d.retailOn ? String(Number(d.retail)*10) : "0",
+        installmentPriceRial: d.retailOn ? String(Number(d.installment || d.retail)*10) : "0",
+        compareAtRial: d.compare ? String(Number(d.compare)*10) : undefined,
+        stock: Number(d.stock) || 0,
+        colors: d.colors, images: d.images, video: d.video || undefined, cutout: d.cutout,
+        series: d.wholesaleOn ? d.series : [],
+        retailOn: d.retailOn, wholesaleOn: d.wholesaleOn,
+        seoTitle: d.seoTitle, slug: d.slug,
+      };
+      const { apiCall } = await import("../data/admin-api");
+      const res = await apiCall<{ id: string; sku: string }>("/products", { method: "POST", body: JSON.stringify(body) });
+      flash(`«${d.name}» منتشر شد — ${res.sku ?? res.id}`);
+      setOpen(false); setD(blank());
+      // Refresh products via store refetch or reload
+      window.location.reload();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا در انتشار");
+    }
   };
 
   const secs = [["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"], ["price", "قیمت خرده"], ["series", "سری‌های عمده"], ["stock", "موجودی"], ["seo", "سئو و کانال‌ها"]];
@@ -170,7 +219,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                   <td className="tabular-nums">{fmtNum(p.series.length)}</td>
                   <td className="text-[12px] text-[var(--kv-muted)]">{fmtNum(p.images.length)} تصویر{p.video ? " · ویدیو" : ""}</td>
                   <td><button onClick={() => setCutFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)]"><Sparkles size={13} />{CUT_LABEL[p.cutout?.status ?? "none"]}</button></td>
-                  <td><Switch on={p.status === "published"} onToggle={() => { setStatus(p.id, p.status === "published" ? "draft" : "published"); flash(p.status === "published" ? `${p.name} از فروش خارج شد` : `${p.name} منتشر شد`); }} /></td>
+                  <td><Switch on={p.status === "published"} onToggle={async () => { if (!isDemo) { try { const { apiCall } = await import("../data/admin-api"); await apiCall(`/products/${p.id}/status`, { method: "PATCH", body: JSON.stringify({ status: p.status === "published" ? "draft" : "published" }) }); window.location.reload(); return; } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } setStatus(p.id, p.status === "published" ? "draft" : "published"); flash(p.status === "published" ? `${p.name} از فروش خارج شد (demo)` : `${p.name} منتشر شد (demo)`); }} /></td>
                 </tr>
               ))}
             </tbody>
@@ -212,7 +261,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                 <div className="flex flex-wrap items-end gap-2">
                   <Field label="نام رنگ"><Input value={newColor.name} onChange={(v) => setNewColor({ ...newColor, name: v })} placeholder="مثلاً قهوه‌ای کاراملی" /></Field>
                   <label className="flex flex-col gap-2 text-[13px] font-semibold text-[var(--kv-ink-2)]">کد رنگ<span className="flex items-center gap-2"><input type="color" value={newColor.hex} onChange={(e) => setNewColor({ ...newColor, hex: e.target.value })} className="h-11 w-14 cursor-pointer rounded-[10px] border border-[var(--kv-line)] bg-transparent" aria-label="انتخاب رنگ" /><span className="text-[12px] tabular-nums" dir="ltr">{newColor.hex.toUpperCase()}</span></span></label>
-                  <Btn variant="soft" disabled={!newColor.name.trim() || palette.some((c) => c.name === newColor.name.trim())} onClick={() => { const c = { id: `c-${Date.now()}`, name: newColor.name.trim(), hex: newColor.hex }; setD({ ...d, colors: [...d.colors, c] }); setNewColor({ name: "", hex: "#8A6A4F" }); }} icon={<Plus size={14} />}>افزودن</Btn>
+                  <Btn variant="soft" disabled={!newColor.name.trim() || palette.some((c) => c.name === newColor.name.trim())} onClick={() => { if (typeof window !== "undefined" && !new URLSearchParams(window.location.search).has("demo")) { flash("ایجاد رنگ در حالت عادی باید از API باشد"); return; } const c = { id: `c-${Date.now()}`, name: newColor.name.trim(), hex: newColor.hex }; setD({ ...d, colors: [...d.colors, c] }); setNewColor({ name: "", hex: "#8A6A4F" }); }} icon={<Plus size={14} />}>افزودن</Btn>
                 </div>
               </div>
               <Field label="سایزهای خرده"><div className="flex flex-wrap gap-2">{seriesSizesFor(d.category).map((s) => <button key={s} aria-pressed={d.sizes.includes(s)} onClick={() => setD({ ...d, sizes: d.sizes.includes(s) ? d.sizes.filter((x) => x !== s) : [...d.sizes, s] })} className={cn("min-h-10 min-w-[46px] rounded-[10px] border px-3 text-[12.5px] font-bold", d.sizes.includes(s) ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)]")}>{s}</button>)}</div></Field>
@@ -264,7 +313,7 @@ export function ProductStudio({ flash }: { flash: F }) {
       )}
 
       <Drawer open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""} wide>
-        {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={(c) => updateProduct(cutFor.id, { cutout: c })} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
+        {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={async (c) => { if (!isDemo) { try { const { apiCall } = await import("../data/admin-api"); await apiCall(`/products/${cutFor.id}`, { method: "PATCH", body: JSON.stringify({ cutout: c }) }); flash("تصویر استایل‌بیلدر ذخیره شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } updateProduct(cutFor.id, { cutout: c }); }} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
       </Drawer>
       <Drawer open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه" wide><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></Drawer>
     </div>

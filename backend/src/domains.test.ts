@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { canTransitionCampaign, isBlocked, restrictionBlocks, CAMPAIGN_STATUSES, RESTRICTION_SCOPES } from './console.js';
 
 // Shipping fee logic (server-side authoritative)
 function calcShipping(baseFeeRial: bigint, freeAboveRial: bigint | null, subtotalRial: bigint): bigint {
@@ -88,5 +89,50 @@ describe('membership / profile', () => {
     assert.equal(canRequest({active:true}), true);
     assert.equal(canRequest({active:false}), false);
     assert.equal(canRequest(null), false);
+  });
+});
+
+// Console domain: restrictions + SMS campaign lifecycle (pure rules, no DB)
+describe('user restrictions', () => {
+  it('scope blocks its own action', () => {
+    assert.equal(restrictionBlocks('purchase', 'purchase'), true);
+    assert.equal(restrictionBlocks('purchase', 'ticket'), false);
+  });
+  it('all scope blocks every action', () => {
+    for (const action of ['purchase', 'ticket', 'return', 'withdrawal'] as const) {
+      assert.equal(restrictionBlocks('all', action), true);
+    }
+  });
+  it('only active restrictions block', () => {
+    assert.equal(isBlocked([{ scope: 'purchase', status: 'active' }], 'purchase'), true);
+    assert.equal(isBlocked([{ scope: 'purchase', status: 'lifted' }], 'purchase'), false);
+  });
+  it('empty list never blocks', () => {
+    assert.equal(isBlocked([], 'purchase'), false);
+  });
+  it('scopes match the DB check constraint', () => {
+    assert.deepEqual([...RESTRICTION_SCOPES], ['purchase', 'ticket', 'return', 'withdrawal', 'all']);
+  });
+});
+
+describe('sms campaign lifecycle', () => {
+  it('draft can be scheduled or queued', () => {
+    assert.equal(canTransitionCampaign('draft', 'scheduled'), true);
+    assert.equal(canTransitionCampaign('draft', 'queued'), true);
+  });
+  it('queued can only be sent or failed', () => {
+    assert.equal(canTransitionCampaign('queued', 'sent'), true);
+    assert.equal(canTransitionCampaign('queued', 'failed'), true);
+    assert.equal(canTransitionCampaign('queued', 'draft'), false);
+  });
+  it('sent is terminal', () => {
+    for (const to of CAMPAIGN_STATUSES) assert.equal(canTransitionCampaign('sent', to), false);
+  });
+  it('failed can be retried', () => {
+    assert.equal(canTransitionCampaign('failed', 'queued'), true);
+    assert.equal(canTransitionCampaign('failed', 'sent'), false);
+  });
+  it('cannot skip from draft to sent directly', () => {
+    assert.equal(canTransitionCampaign('draft', 'sent'), false);
   });
 });

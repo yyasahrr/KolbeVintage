@@ -95,6 +95,19 @@ export const CUTOUT_SEED: Record<string, NonNullable<Product["cutout"]>> = {
 };
 
 const USE_DEMO_SEED = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+
+/* Demo-only legacy mutations. In the production runtime every one of these paths must go through the API,
+   so outside ?demo=1 we hard-fail instead of silently creating local business state. */
+const DEMO_ONLY_METHODS = [
+  "updateProduct", "updateProductSeries", "updateAccount", "requestVip", "saveStyle", "addTicket",
+  "setTicketStatus", "requestRetailReturn", "setRetailOrderStatus", "setReturnStatus",
+  "transitionSub", "paySub", "payParent", "upsertPlan", "removePlan", "setBuyer",
+] as const;
+
+/** Throws for demo-only store methods — never simulated silently in the production runtime. */
+export const demoOnlyGuard = (name: string): never => {
+  throw new Error(`${name} فقط در حالت ?demo=1 مجاز است؛ در اجرای واقعی از API سرور استفاده کنید.`);
+};
 // Explicit demo mode only: ?demo=1 shows seed data for offline/story development. Normal runtime starts empty and hydrates from PostgreSQL.
 const initial = (): State => USE_DEMO_SEED ? ({
   products: [...PRODUCTS.map((p) => ({ ...p, status: "published" as ProductStatus })), ...SEED_EXTRA].map((p) => ({ ...p, cutout: CUTOUT_SEED[p.id] ?? { status: "none" as const } })),
@@ -451,6 +464,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     upsertCms: (item) => setState((st) => ({ ...st, cms: st.cms.some((x) => x.id === item.id) ? st.cms.map((x) => (x.id === item.id ? item : x)) : [item, ...st.cms] })),
     reset: () => setState(initial()),
   };
+  if (!USE_DEMO_SEED) {
+    // Compiled runtime guard: demo-only mutations are replaced by explicit failures (no silent local state).
+    const guarded = value as unknown as Record<string, unknown>;
+    for (const name of DEMO_ONLY_METHODS) {
+      if (typeof guarded[name] === "function") guarded[name] = () => demoOnlyGuard(name);
+    }
+  }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

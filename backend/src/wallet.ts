@@ -9,6 +9,7 @@ import { asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { nextDocumentReference } from './references.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { assertNotRestricted } from './console.js';
 
 /* Wallet ledger, withdrawals and settlements (items 25, 39-41).
    The wallet is provider-agnostic: transfers are reconciled through the
@@ -143,6 +144,7 @@ export function registerWalletRoutes(app: FastifyInstance, pool: DbPool, config:
 
   app.post('/api/v1/wallet/withdrawals', async (request, reply) => {
     const user = await principal(request, pool, config);
+    await assertNotRestricted(pool, user.id, 'withdrawal');
     const body = z.object({ amountRial: z.string().regex(/^\d+$/), destination }).strict().parse(request.body);
     const amount = rial(body.amountRial);
     if (amount === 0n) throw badRequest('مبلغ برداشت باید بزرگ‌تر از صفر باشد.');

@@ -248,3 +248,29 @@ Store provider must become full API cache (product/order/account/vip/wishlist/ti
 
 ## Recommendation
 Keep `?demo=1` for local story/offline demo only; do not ship demo seed to production. Complete Store/Ops → API wiring in one branch before declaring **INTERNAL FEATURE SCOPE COMPLETE**; keep PR #2 as integration branch and require `test:embedded 15/15` + `tsc 0` + `vite build` + manual `GET /site/pages/home` smoke before merging.
+
+
+## به‌روزرسانی سوم — FINAL INTERNAL CLEANUP (۲۰۲۶-۰۹-۲۸) — A = 0
+
+**Test truth:** `backend npm run test:embedded` → `tests 47 / pass 47 / fail 0 / skipped 0` (قبلاً ۳۷ تست با ۱۱ skip که محیط PGlite نداشت).
+
+**Classes after final grep (`src/`):**
+
+| Class | معنا | تعداد |
+|-------|------|-------|
+| A | Business runtime (باید API-backed شود) | **۰** |
+| B | گذرا/UI (state فرم، preview، نمودار، تم، JWT) | ۲۱۴ |
+| C | صریحاً `?demo=1` / تست | ۸۷ |
+
+**اقدامات ساختاری این مرحله:**
+- `src/data/store.tsx`: `DEMO_ONLY_METHODS` + `demoOnlyGuard` — در حالت واقعی هر mutation دمویی (updateProduct/updateAccount/requestVip/saveStyle/addTicket/setTicketStatus/requestRetailReturn/setRetailOrderStatus/setReturnStatus/transitionSub/paySub/payParent/upsertPlan/removePlan/setBuyer/updateProductSeries) **throw** می‌کند.
+- `admin-retail.tsx`: `ProductDefinition` تکراری حذف و به `ProductStudio` تک‌کانونی (full page) واگذار شد.
+- `admin-product.tsx`: Create/PATCH/status/cutout/n8n همه سروری؛ `p${Date.now()}`/`nextSku` فقط در `?demo=1`.
+- `components/support.tsx`: TicketCenter و ReturnsCenter سروری؛ `TK-${Date.now()}`/`RS-Visitor`/dataURL فقط در `?demo=1`.
+- `admin-cms.tsx`: بازنویسی کامل روی CMS API + File Storage؛ حذف `ops.hero/ops.blocks/ops.quickSupport` از مسیر منتشرشده.
+- دامنه‌های جدید سرور: `restrictions`، `sms_campaigns`، `dashboard summary`، `GET /admin/cms/pages/:id/sections`، `membership admin` (migration `014_console_domains.sql` + `src/console.ts`).
+- enforcement محدودیت‌ها سمت سرور در checkout/ticket/return/withdrawal.
+
+**E2E smoke:** `backend/scripts/e2e-smoke.mjs` (PGlite) — مسیرهای Customer/VIP-عضویت/Supplier-WMS/Admin همه ۲۰۰/۲۰۱؛ مرجوعی مرجع `RT-400000` از سرور؛ آپلود فایل تیکت + دانلود `GET /files/:id` سبز؛ کمپین بدون credential → `failed/provider_not_configured`.
+
+**CI:** Not running — مجوز `workflows` برای GitHub App این محیط وجود ندارد.

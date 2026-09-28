@@ -6,6 +6,7 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
 import { badRequest, forbidden, notFound } from './errors.js';
+import { assertNotRestricted } from './console.js';
 
 const createTicket = z.object({
   subject: z.string().trim().min(3).max(240),
@@ -43,6 +44,7 @@ type TicketRow = { id: string; reference: string; owner_id: string; status: stri
 export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.post('/api/v1/tickets', async (request, reply) => {
     const user = await principal(request, pool, config);
+    await assertNotRestricted(pool, user.id, 'ticket');
     const body = createTicket.parse(request.body);
     const ticket = await transaction(pool, async (client) => {
       if (body.orderId) {

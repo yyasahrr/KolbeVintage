@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Ban, Check, Crown, Eye, Landmark, Pencil, Plus, ShieldAlert, Trash2, X } from "lucide-react";
 import { SUPPLIERS, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE, describeLimits, limitsOf, DEFAULT_LIMITS, type VipPlan, type PlanLimits } from "../data/platform";
 import { useOps, opsNow, NO_FLAGS, type Application, type FieldType, type FormField, type Restriction, type RestrictionFlags } from "../data/ops";
 import { AreaChart, BarList, Columns, DonutChart, Kpi } from "../components/charts";
-import { TicketCenter, ReturnsCenter } from "../components/support";
+import { ReturnsCenter } from "../components/support";
+import { TicketBoardPanel } from "../components/ticket-board-panel";
 import { useWallet } from "./supplier-wallet";
 import { Btn, Card, Checkbox, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
+import { apiCall } from "../data/admin-api";
 
 type F = (m: string) => void;
 const faDigits = (s: string) => s.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
@@ -139,24 +141,73 @@ function NumOrUnlimited({ label, value, onChange, suffix }: { label: string; val
 }
 
 export function PlansCenter({ flash }: { flash: F }) {
-  const { plans, buyers, upsertPlan, removePlan } = useStore();
+  const { plans: localPlans, buyers, upsertPlan, removePlan } = useStore();
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverPlans, setServerPlans] = useState<VipPlan[] | null>(null);
+  useEffect(() => {
+    if (isDemo) return;
+    apiCall<{ items: any[] }>("/plans")
+      .then((r) => setServerPlans(r.items.map((p: any): VipPlan => ({
+        id: p.id, name: p.title ?? p.name ?? "", yearly: Math.round(Number(p.annual_price_rial ?? 0) / 10),
+        creditLimit: Math.round(Number(p.limits?.maxOrderValueRial ?? 0) / 10),
+        features: p.features ?? [], active: Boolean(p.active),
+        limits: {
+          showPrices: p.limits?.showPrices !== false, freeShipping: Boolean(p.limits?.freeShipping ?? true),
+          prioritySupport: Boolean(p.limits?.prioritySupport), sources: p.limits?.sources === "kolbe" ? "kolbe" : "all",
+          maxOrdersPerMonth: p.limits?.maxOrdersPerMonth ?? null, maxOrderValue: Math.round(Number(p.limits?.maxOrderValueRial ?? 0) / 10),
+          maxSuppliersPerOrder: p.limits?.maxSuppliersPerOrder ?? null, discountPercent: Number(p.limits?.discountPercent ?? 0),
+          creditDays: p.limits?.creditDays ?? 0,
+        },
+      }))))
+      .catch((e) => flash(e instanceof Error ? e.message : "خطا در دریافت پلن‌ها از سرور"));
+  }, [isDemo, flash]);
+  const plans = serverPlans ?? localPlans;
   const [edit, setEdit] = useState<VipPlan | null>(null);
+  const savePlan = async (plan: VipPlan, isNew: boolean) => {
+    if (isDemo) {
+      if (isNew) upsertPlan({ ...plan, id: plan.id || `plan-${Date.now()}` });
+      else upsertPlan(plan);
+      return true;
+    }
+    const body = {
+      title: plan.name, description: "",
+      annualPriceRial: String(plan.yearly * 10),
+      limits: {
+        sources: plan.limits?.sources ?? "all", discountPercent: plan.limits?.discountPercent ?? 0,
+        maxOrdersPerMonth: plan.limits?.maxOrdersPerMonth ?? null, maxOrderValueRial: null, minOrderValueRial: null,
+        maxSuppliersPerOrder: plan.limits?.maxSuppliersPerOrder ?? null, maxQuantityPerLine: null,
+        prioritySupport: Boolean(plan.limits?.prioritySupport), installmentAccess: false,
+        showPrices: plan.limits?.showPrices !== false, freeShipping: plan.limits?.freeShipping !== false,
+      },
+      features: (plan.features ?? []).filter((f) => /^[a-z0-9_-]{2,40}$/.test(f)), permissions: [],
+    };
+    try {
+      if (isNew) await apiCall("/plans", { method: "POST", body: JSON.stringify({ ...body, code: `plan_${Date.now().toString(36)}` }) });
+      else await apiCall(`/plans/${plan.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      const refreshed = await apiCall<{ items: any[] }>("/plans");
+      setServerPlans((prev) => prev ? prev.map((x) => {
+        const hit = refreshed.items.find((i: any) => i.id === x.id);
+        return hit ? { ...x, name: hit.title ?? x.name, active: Boolean(hit.active), yearly: Math.round(Number(hit.annual_price_rial ?? 0) / 10) } : x;
+      }) : prev);
+      return true;
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره پلن"); return false; }
+  };
   const L = edit ? limitsOf(edit) : DEFAULT_LIMITS;
   const setL = (p: Partial<PlanLimits>) => edit && setEdit({ ...edit, limits: { ...limitsOf(edit), ...p } });
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-[70ch] text-[13px] leading-6 text-[var(--kv-muted)]">محدودیت‌های هر پلن در بازارچه عمده اجرا می‌شوند: نمایش قیمت، دسترسی به تأمین‌کنندگان، سقف سفارش ماهانه و مبلغ، تعداد تأمین‌کننده در سفارش، تخفیف خودکار و ارسال رایگان.</p>
-        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => setEdit({ id: `plan-${Date.now()}`, name: "", yearly: 0, creditLimit: 0, features: [], active: true, limits: { ...DEFAULT_LIMITS } })}>پلن جدید</Btn>
+        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => setEdit(isDemo ? { id: `plan-${Date.now()}`, name: "", yearly: 0, creditLimit: 0, features: [], active: true, limits: { ...DEFAULT_LIMITS } } : { id: "", name: "", yearly: 0, creditLimit: 0, features: [], active: true, limits: { ...DEFAULT_LIMITS } })}>پلن جدید</Btn>
       </div>
       <div className="grid gap-4 md:grid-cols-3">
         {plans.map((p) => (
           <Card key={p.id} className={cn("flex flex-col p-5", !p.active && "opacity-60")}>
-            <div className="flex items-center justify-between"><p className="flex items-center gap-2 text-[16px] font-extrabold"><Crown size={16} className="text-[var(--kv-accent)]" />{p.name}</p><Switch on={p.active} onToggle={() => { upsertPlan({ ...p, active: !p.active }); flash(`پلن ${p.name} ${p.active ? "غیرفعال" : "فعال"} شد`); }} /></div>
+            <div className="flex items-center justify-between"><p className="flex items-center gap-2 text-[16px] font-extrabold"><Crown size={16} className="text-[var(--kv-accent)]" />{p.name}</p><Switch on={p.active} onToggle={async () => { if (await savePlan({ ...p, active: !p.active }, false)) flash(`پلن ${p.name} ${p.active ? "غیرفعال" : "فعال"} شد`); }} /></div>
             <p className="mt-2 text-[18px] font-extrabold tabular-nums">{p.yearly === 0 ? "رایگان" : fmtMoney(p.yearly)}{p.yearly > 0 && <span className="text-[11px] font-medium text-[var(--kv-muted)]"> / سال</span>}</p>
-            <p className="text-xs text-[var(--kv-muted)]">{fmtNum(buyers.filter((b) => b.planId === p.id).length)} عضو</p>
+            <p className="text-xs text-[var(--kv-muted)]">{fmtNum(buyers.filter((b) => b.planId === p.id).length)} عضو{serverPlans ? " · سرور" : ""}</p>
             <ul className="mt-3 flex-1 space-y-1.5 text-[12.5px]">{describeLimits(p).map((f) => <li key={f} className="flex items-start gap-1.5"><Check size={13} className="mt-1 shrink-0 text-[var(--kv-success)]" />{f}</li>)}{p.features.map((f) => <li key={f} className="flex items-start gap-1.5 text-[var(--kv-muted)]"><Check size={13} className="mt-1 shrink-0" />{f}</li>)}</ul>
-            <div className="mt-4 flex gap-2"><Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setEdit({ ...p, limits: limitsOf(p) })}>ویرایش محدودیت‌ها</Btn><Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} disabled={buyers.some((b) => b.planId === p.id)} onClick={() => { removePlan(p.id); flash("پلن حذف شد"); }}>حذف</Btn></div>
+            <div className="mt-4 flex gap-2"><Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setEdit({ ...p, limits: limitsOf(p) })}>ویرایش محدودیت‌ها</Btn><Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} disabled={buyers.some((b) => b.planId === p.id)} onClick={async () => { if (isDemo) { removePlan(p.id); flash("پلن حذف شد (demo)"); return; } try { await apiCall(`/plans/${p.id}`, { method: "PATCH", body: JSON.stringify({ active: false }) }); setServerPlans((prev) => prev ? prev.map((x) => x.id === p.id ? { ...x, active: false } : x) : prev); flash("پلن غیرفعال شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>حذف</Btn></div>
           </Card>
         ))}
       </div>
@@ -188,7 +239,7 @@ export function PlansCenter({ flash }: { flash: F }) {
             <Field label="مزایای غیرسیستمی (اختیاری)" hint="هر خط یک مورد؛ فقط نمایشی است، مثل «کارشناس اختصاصی»"><Textarea rows={2} value={edit.features.join("\n")} onChange={(v) => setEdit({ ...edit, features: v.split("\n").map((x) => x.trim()).filter(Boolean) })} /></Field>
             <Checkbox checked={!!edit.recommended} onChange={(v) => setEdit({ ...edit, recommended: v })} label="نمایش به‌عنوان پیشنهاد کلبه" />
             <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 p-3"><p className="mb-1.5 text-[12px] font-bold">پیش‌نمایش برای خریدار</p><ul className="space-y-1 text-[12px]">{describeLimits({ ...edit }).map((f) => <li key={f}>• {f}</li>)}</ul></div>
-            <Btn variant="accent" className="w-full" disabled={!edit.name.trim()} onClick={() => { upsertPlan(edit); setEdit(null); flash(`پلن ${edit.name} ذخیره شد و محدودیت‌ها فوراً اعمال می‌شوند`); }}>ذخیره پلن</Btn>
+            <Btn variant="accent" className="w-full" disabled={!edit.name.trim()} onClick={async () => { const isNew = !edit.id; if (isDemo && isNew) { upsertPlan({ ...edit, id: `plan-${Date.now()}` }); setEdit(null); flash(`پلن ${edit.name} ذخیره شد (demo)`); return; } if (await savePlan(edit, isNew)) { setEdit(null); flash(`پلن ${edit.name} ذخیره شد و محدودیت‌ها فوراً اعمال می‌شوند`); } }}>ذخیره پلن</Btn>
           </div>
         )}
       </Drawer>
@@ -206,25 +257,58 @@ const FLAG_META: { k: keyof RestrictionFlags; label: string; for: ("supplier" | 
   { k: "noWithdraw", label: "توقف برداشت از کیف پول", for: ["supplier"] },
 ];
 
+const SCOPE_LABEL: Record<string, string> = { purchase: "خرید (خرده و عمده)", ticket: "ثبت تیکت", return: "درخواست مرجوعی", withdrawal: "برداشت از کیف پول", all: "همه عملیات (مسدود کامل)" };
+
 export function RestrictionsCenter({ flash }: { flash: F }) {
   const ops = useOps();
   const { accounts } = useStore();
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverRows, setServerRows] = useState<any[] | null>(null);
+  const [serverUsers, setServerUsers] = useState<{ id: string; name: string }[] | null>(null);
+  const load = () => {
+    if (isDemo) return;
+    apiCall<{ items: any[] }>("/admin/restrictions").then((r) => setServerRows(r.items)).catch(() => setServerRows([]));
+    apiCall<{ items: any[] }>("/admin/users").then((r) => setServerUsers((r.items ?? []).map((u: any) => ({ id: u.id, name: `${u.displayName ?? u.display_name ?? u.phone ?? u.id}` })))).catch(() => setServerUsers([]));
+  };
+  useEffect(load, [isDemo]);
   const suppliers = [...SUPPLIERS.map((s) => ({ id: s.id, name: s.name })), ...ops.extraSuppliers];
   const [type, setType] = useState<"supplier" | "customer">("supplier");
-  const subjects = type === "supplier" ? suppliers : accounts.map((a) => ({ id: a.id, name: `${a.name} · ${a.phone}` }));
+  const subjects = serverUsers && serverUsers.length
+    ? serverUsers
+    : type === "supplier" ? suppliers : accounts.map((a) => ({ id: a.id, name: `${a.name} · ${a.phone}` }));
   const [subject, setSubject] = useState("");
   const [flags, setFlags] = useState<RestrictionFlags>({ ...NO_FLAGS });
   const [reason, setReason] = useState("");
   const [until, setUntil] = useState("");
   const chosen = subjects.find((s) => s.id === subject) ?? subjects[0];
   const any = Object.values(flags).some(Boolean);
-  const add = () => {
+  const add = async () => {
     if (!chosen || !any || reason.trim().length < 4) return;
+    if (!isDemo) {
+      // Server scopes: block→all, noOrder/noWholesale→purchase, noReturn→return, noWithdraw→withdrawal, noPublish→(not a server scope)
+      const scopes: string[] = [];
+      if (flags.block) scopes.push("all");
+      if (flags.noOrder) scopes.push("purchase");
+      if (flags.noWholesale && !scopes.includes("purchase")) scopes.push("purchase");
+      if (flags.noReturn) scopes.push("return");
+      if (flags.noWithdraw) scopes.push("withdrawal");
+      if (flags.noPublish) flash("محدودیت انتشار محصول در دامنه سرور پشتیبانی نمی‌شود؛ سایر موارد اعمال شد.");
+      try {
+        for (const scope of scopes) {
+          await apiCall("/admin/restrictions", { method: "POST", body: JSON.stringify({ userId: chosen.id, scope, reason: reason.trim() }) });
+        }
+        load();
+        setFlags({ ...NO_FLAGS }); setReason(""); setUntil("");
+        flash(`محدودیت برای ${chosen.name} روی سرور اعمال شد`);
+      } catch (e) { flash(e instanceof Error ? e.message : "خطا در ثبت محدودیت"); }
+      return;
+    }
     const r: Restriction = { id: `RS-${Date.now().toString().slice(-5)}`, subjectType: type, subjectId: chosen.id, subjectName: chosen.name, flags, reason: reason.trim(), until: until || undefined, createdAt: opsNow() };
     ops.upsert("restrictions", r, true);
     setFlags({ ...NO_FLAGS }); setReason(""); setUntil("");
-    flash(`محدودیت برای ${chosen.name} اعمال شد`);
+    flash(`محدودیت برای ${chosen.name} اعمال شد (demo)`);
   };
+  const serverList = (serverRows ?? []).map((r) => ({ id: r.id, name: r.userName ?? r.userId, scope: r.scope, reason: r.reason, status: r.status, createdAt: String(r.createdAt ?? "").slice(0, 10) }));
   return (
     <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[400px_minmax(0,1fr)]">
       <Card className="h-fit p-5">
@@ -239,18 +323,24 @@ export function RestrictionsCenter({ flash }: { flash: F }) {
         </div>
       </Card>
       <Card className="overflow-hidden">
-        <p className="p-5 pb-3 text-[15px] font-extrabold">محدودیت‌های فعال</p>
+        <p className="p-5 pb-3 text-[15px] font-extrabold">محدودیت‌های فعال {!isDemo && <span className="text-[11px] font-medium text-[var(--kv-muted)]">(سرور · اجرا در بک‌اند)</span>}</p>
         <div className="kv-scroll overflow-x-auto">
           <table className="kv-table min-w-[720px]">
             <thead><tr><th>حساب</th><th>نوع</th><th>محدودیت‌ها</th><th>دلیل</th><th>انقضا</th><th></th></tr></thead>
             <tbody>
-              {ops.restrictions.map((r) => <tr key={r.id}>
+              {!isDemo && serverList.map((r) => <tr key={r.id}>
+                <td><b>{r.name}</b><p className="text-[11px] text-[var(--kv-muted)]">{r.createdAt}</p></td><td>کاربر</td>
+                <td><span className="rounded-full bg-[var(--kv-danger)]/10 px-2 py-0.5 text-[11px] font-semibold text-[var(--kv-danger)]">{SCOPE_LABEL[r.scope] ?? r.scope}</span></td>
+                <td className="max-w-[200px] text-[12px]">{r.reason}</td><td className="text-[var(--kv-muted)]">{r.status === "active" ? "فعال" : "رفع‌شده"}</td>
+                <td><Btn size="sm" variant="ghost" onClick={async () => { try { await apiCall(`/admin/restrictions/${r.id}`, { method: "PATCH", body: JSON.stringify({ status: "lifted" }) }); load(); flash(`محدودیت ${r.name} برداشته شد`); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>رفع</Btn></td>
+              </tr>)}
+              {isDemo && ops.restrictions.map((r) => <tr key={r.id}>
                 <td><b>{r.subjectName}</b><p className="text-[11px] text-[var(--kv-muted)]">{r.createdAt}</p></td><td>{r.subjectType === "supplier" ? "تأمین‌کننده" : "کاربر"}</td>
                 <td><div className="flex flex-wrap gap-1">{FLAG_META.filter((m) => r.flags[m.k]).map((m) => <span key={m.k} className="rounded-full bg-[var(--kv-danger)]/10 px-2 py-0.5 text-[11px] font-semibold text-[var(--kv-danger)]">{m.label}</span>)}</div></td>
                 <td className="max-w-[200px] text-[12px]">{r.reason}</td><td className="text-[var(--kv-muted)]">{r.until ?? "دستی"}</td>
-                <td><Btn size="sm" variant="ghost" onClick={() => { ops.remove("restrictions", r.id); flash(`محدودیت ${r.subjectName} برداشته شد`); }}>رفع</Btn></td>
+                <td><Btn size="sm" variant="ghost" onClick={() => { ops.remove("restrictions", r.id); flash(`محدودیت ${r.subjectName} برداشته شد (demo)`); }}>رفع</Btn></td>
               </tr>)}
-              {ops.restrictions.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-[var(--kv-muted)]">محدودیت فعالی وجود ندارد.</td></tr>}
+              {((isDemo && ops.restrictions.length === 0) || (!isDemo && serverList.filter((r) => r.status === "active").length === 0)) && <tr><td colSpan={6} className="py-8 text-center text-[var(--kv-muted)]">محدودیت فعالی وجود ندارد.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -265,28 +355,58 @@ const APP_STATUS: Record<Application["status"], string> = { new: "جدید", rev
 
 export function ApplicationsCenter({ flash }: { flash: F }) {
   const ops = useOps();
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverApps, setServerApps] = useState<any[] | null>(null);
+  const [serverFields, setServerFields] = useState<FormField[] | null>(null);
+  const load = () => {
+    if (isDemo) return;
+    apiCall<{ items: any[] }>("/admin/cooperation-requests").then((r) => setServerApps(r.items)).catch(() => setServerApps([]));
+    apiCall<{ items: any[] }>("/cooperation-form").then((r) => setServerFields((r.items ?? []).map((f: any, i: number) => ({ id: f.code ?? `f-${i}`, label: f.label, type: f.fieldType ?? f.field_type ?? "text", required: Boolean(f.required), options: f.options ?? [] })))).catch(() => setServerFields([]));
+  };
+  useEffect(load, [isDemo]);
   const [tab, setTab] = useState<"inbox" | "builder">("inbox");
-  const [sel, setSel] = useState<string | null>(ops.applications[0]?.id ?? null);
+  const applications: Application[] = !isDemo && serverApps
+    ? serverApps.map((a): Application => ({ id: a.id, name: a.brand_name ?? a.brandName ?? a.payload?.brand_name ?? "—", status: (a.status === "new" ? "new" : a.status === "reviewing" ? "reviewing" : a.status === "approved" ? "approved" : "rejected") as Application["status"], createdAt: String(a.created_at ?? "").slice(0, 10), values: a.payload ?? {}, note: a.review_note }))
+    : ops.applications;
+  const [sel, setSel] = useState<string | null>(applications[0]?.id ?? null);
   const [note, setNote] = useState("");
-  const form = ops.applicationForm;
-  const cur = ops.applications.find((a) => a.id === sel);
-  const setForm = (p: Partial<typeof form>) => ops.set("applicationForm", { ...form, ...p });
+  const form = serverFields ? { title: "فرم همکاری کلبه", intro: "", active: true, fields: serverFields } : ops.applicationForm;
+  const cur = applications.find((a) => a.id === sel);
+  const setForm = (p: Partial<typeof form>) => {
+    if (serverFields) { setServerFields(p.fields ?? serverFields); return; }
+    ops.set("applicationForm", { ...form, ...p } as any);
+  };
   const setField = (id: string, p: Partial<FormField>) => setForm({ fields: form.fields.map((f) => (f.id === id ? { ...f, ...p } : f)) });
   const move = (i: number, d: -1 | 1) => { const next = [...form.fields]; const j = i + d; if (j < 0 || j >= next.length) return; [next[i], next[j]] = [next[j], next[i]]; setForm({ fields: next }); };
-  const decide = (a: Application, status: Application["status"]) => {
+  const saveForm = async () => {
+    if (!serverFields) { flash("فرم ذخیره شد (demo)"); return; }
+    try {
+      await apiCall("/admin/cooperation-form", { method: "PUT", body: JSON.stringify({ fields: (serverFields ?? []).map((f, i) => ({ code: f.id, label: f.label, fieldType: f.type, required: !!f.required, options: f.options ?? [], active: true, position: i + 1 })) }) });
+      flash("فرم همکاری روی سرور ذخیره شد");
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره فرم"); }
+  };
+  const decide = async (a: Application, status: Application["status"]) => {
+    if (!isDemo && serverApps) {
+      try {
+        await apiCall(`/admin/cooperation-requests/${a.id}/review`, { method: "POST", body: JSON.stringify({ status, note: note.trim() || undefined }) });
+        load(); setNote("");
+        flash(status === "approved" ? `${a.name} تأیید شد و حساب تأمین‌کننده ساخته شد` : status === "rejected" ? `درخواست ${a.name} رد شد` : "در حال بررسی");
+      } catch (e) { flash(e instanceof Error ? e.message : "خطا در بررسی درخواست"); }
+      return;
+    }
     ops.upsert("applications", { ...a, status, note: note.trim() || a.note });
     if (status === "approved" && !ops.extraSuppliers.some((s) => s.id === `sx-${a.id}`)) ops.upsert("extraSuppliers", { id: `sx-${a.id}`, name: a.name, city: a.values["f-city"] ?? "—", since: new Date().toLocaleDateString("fa-IR") });
     setNote("");
-    flash(status === "approved" ? `${a.name} تأیید شد و به فهرست تأمین‌کنندگان اضافه شد` : status === "rejected" ? `درخواست ${a.name} رد شد` : "در حال بررسی");
+    flash(status === "approved" ? `${a.name} تأیید شد و به فهرست تأمین‌کنندگان اضافه شد (demo)` : status === "rejected" ? `درخواست ${a.name} رد شد (demo)` : "در حال بررسی (demo)");
   };
   return (
     <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
-      <Segmented<"inbox" | "builder"> options={[{ v: "inbox", label: `درخواست‌ها (${fmtNum(ops.applications.filter((a) => a.status === "new").length)} جدید)` }, { v: "builder", label: "طراحی فرم همکاری" }]} value={tab} onChange={setTab} />
+      <Segmented<"inbox" | "builder"> options={[{ v: "inbox", label: `درخواست‌ها (${fmtNum(applications.filter((a) => a.status === "new").length)} جدید)` }, { v: "builder", label: "طراحی فرم همکاری" }]} value={tab} onChange={setTab} />
       {tab === "inbox" ? (
         <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
           <div className="space-y-2">
-            {ops.applications.length === 0 && <Empty title="درخواستی نرسیده" desc="درخواست‌های فرم همکاری اینجا نمایش داده می‌شوند." />}
-            {ops.applications.map((a) => <button key={a.id} onClick={() => setSel(a.id)} className={cn("w-full rounded-[12px] border p-3 text-right", sel === a.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.05]" : "border-[var(--kv-line)] bg-[var(--kv-surface)]")}><div className="flex items-center justify-between gap-2"><b className="text-[13px]">{a.name}</b><Status value={APP_STATUS[a.status]} /></div><p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">{a.id} · {a.createdAt} · {a.values["f-city"] ?? ""}</p></button>)}
+            {applications.length === 0 && <Empty title="درخواستی نرسیده" desc="درخواست‌های فرم همکاری اینجا نمایش داده می‌شوند." />}
+            {applications.map((a) => <button key={a.id} onClick={() => setSel(a.id)} className={cn("w-full rounded-[12px] border p-3 text-right", sel === a.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.05]" : "border-[var(--kv-line)] bg-[var(--kv-surface)]")}><div className="flex items-center justify-between gap-2"><b className="text-[13px]">{a.name}</b><Status value={APP_STATUS[a.status]} /></div><p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">{a.id} · {a.createdAt} · {a.values["f-city"] ?? ""}</p></button>)}
           </div>
           <Card className="p-5">
             {!cur ? <Empty title="درخواستی انتخاب نشده" desc="یک درخواست را باز کنید." /> : (
@@ -328,7 +448,8 @@ export function ApplicationsCenter({ flash }: { flash: F }) {
                 </div>
               ))}
             </div>
-            <Btn variant="soft" size="sm" className="mt-3" icon={<Plus size={14} />} onClick={() => setForm({ fields: [...form.fields, { id: `f-${Date.now()}`, label: "فیلد جدید", type: "text", required: false }] })}>افزودن فیلد</Btn>
+            {serverFields && <Btn variant="accent" size="sm" className="mt-3 ml-2" onClick={saveForm} icon={<Check size={14} />}>ذخیره فرم روی سرور</Btn>}
+            <Btn variant="soft" size="sm" className="mt-3" icon={<Plus size={14} />} onClick={() => { if (!serverFields && !isDemo) { flash("افزودن فیلد باید از API فرم باشد"); return; } setForm({ fields: [...form.fields, { id: serverFields ? `field_${Date.now().toString(36)}` : `f-${Date.now()}`, label: "فیلد جدید", type: "text", required: false }] }); }}>افزودن فیلد</Btn>
           </Card>
           <Card className="h-fit p-5">
             <p className="text-[13px] font-bold text-[var(--kv-muted)]">پیش‌نمایش فرم در مرکز تأمین‌کنندگان</p>
@@ -349,7 +470,8 @@ export function SupportHub() {
   return (
     <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
       <Segmented<"tickets" | "returns"> options={[{ v: "tickets", label: "تیکت‌ها" }, { v: "returns", label: "مرجوعی‌ها" }]} value={tab} onChange={setTab} />
-      {tab === "tickets" ? <TicketCenter perspective="admin" /> : <ReturnsCenter onSync={(r) => {
+      {tab === "tickets" ? <TicketBoardPanel /> : <ReturnsCenter onSync={(r) => {
+        if (typeof window !== "undefined" && !new URLSearchParams(window.location.search).has("demo")) return; // server mode: returns are canonical on the server
         if (r.channel !== "retail") return;
         if (r.status === "approved" || r.status === "refunded") store.setReturnStatus(r.orderId, "تأیید شد");
         if (r.status === "rejected") store.setReturnStatus(r.orderId, "رد شد");

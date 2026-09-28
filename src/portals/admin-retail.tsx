@@ -1,11 +1,12 @@
 import { useState } from "react";
 import {
   Plus, Pencil, Trash2, RefreshCw, Key, Send, Download, Percent, MessageSquare, Megaphone,
-  Mail, Smartphone, BellRing, Search, Truck, Eye, Check, Image as ImageIcon, Globe,
+  Mail, Smartphone, BellRing, Search, Truck, Eye, Image as ImageIcon, Globe,
 } from "lucide-react";
-import { IMG, COLORS, fmtMoney, fmtNum, nextSku, type Product } from "../data/catalog";
+import { IMG, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE, type ShippingMethod, type CmsItem, type Customer } from "../data/platform";
+import { ProductStudio } from "./admin-product";
 import { useEffect } from "react";
 import { apiCall } from "../data/admin-api";
 import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
@@ -80,159 +81,10 @@ export function RetailOrders({ flash }: { flash: F }) {
   );
 }
 
-/* ================= Full product definition ================= */
+/* ================= Full product definition (canonical: ProductStudio) ================= */
 export function ProductDefinition({ flash }: { flash: F }) {
-  const { products, addProduct, setStatus } = useStore();
-  const [open, setOpen] = useState(false);
-  const [sec, setSec] = useState("base");
-  const [q, setQ] = useState("");
-  const [f, setF] = useState({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", retail: "", installment: "", compare: "", wholesale: "", moq: "2", fabric: "", care: "", stock: "", low: "20", seoTitle: "", slug: "", desc: "", retailOn: true, wholesaleOn: true, colors: ["orange", "black"], sizes: ["S", "M", "L", "XL"] });
-  const list = products.filter((p) => !q.trim() || p.name.includes(q.trim()) || p.sku.includes(q.trim()));
-  const cats = Array.from(new Set(products.map((p) => p.category)));
-  const canSave = !!f.name.trim() && f.colors.length > 0 && f.sizes.length > 0 && (f.retailOn || f.wholesaleOn)
-    && (!f.retailOn || Number(f.retail) > 0) && (!f.wholesaleOn || Number(f.wholesale) > 0);
-
-  const save = () => {
-    const price = f.retailOn ? Number(f.retail) : 0;
-    const whole = f.wholesaleOn ? Number(f.wholesale) : 0;
-    const p: Product = {
-      status: "published", id: `p${Date.now()}`, sku: f.sku || nextSku(products, KOLBE.id, f.category), brand: f.brand, name: f.name.trim(),
-      supplier: KOLBE.name, supplierId: KOLBE.id, category: f.category, retailPrice: price, installmentPrice: Number(f.installment || f.retail), wholesaleFrom: whole, rating: 0, reviews: 0,
-      colors: f.colors.map((c) => COLORS[c]).filter(Boolean), images: [IMG.trenchArch, IMG.trenchHero, IMG.trenchBack, IMG.trenchStreet],
-      series: [{ id: "full", name: "سری کامل", pieces: f.sizes.length * 2, composition: Object.fromEntries(f.sizes.map((s) => [s, 2])), moqSeries: Number(f.moq) || 1, pricePerSeries: whole, available: true }],
-      seriesCount: 1, moq: Number(f.moq) || 1, stock: Number(f.stock) || 0, fabric: f.fabric || "—", desc: f.desc || "توضیحات به‌زودی تکمیل می‌شود.",
-    };
-    addProduct(p);
-    setOpen(false);
-    flash(`«${p.name}» تعریف و در ${f.retailOn && f.wholesaleOn ? "فروشگاه و بازارچه عمده" : f.retailOn ? "فروشگاه" : "بازارچه عمده"} منتشر شد`);
-  };
-
-  const secs = [["base", "اطلاعات پایه"], ["price", "قیمت‌گذاری"], ["attr", "ویژگی‌ها"], ["variant", "واریانت‌ها"], ["stock", "موجودی"], ["media", "رسانه"], ["seo", "سئو"], ["channel", "کانال‌های فروش"]];
-  return (
-    <div className="animate-[fadeUp_0.35s_ease]">
-      <div className="mb-4 flex flex-wrap items-center gap-2.5">
-        <div className="min-w-[200px] flex-1"><SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول یا SKU…" /></div>
-        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
-      </div>
-      <div className="grid gap-5 xl:grid-cols-[1fr_300px]">
-        <Card className="overflow-hidden">
-          <div className="kv-scroll overflow-x-auto">
-            <table className="kv-table min-w-[820px]">
-              <thead><tr><th>محصول</th><th>SKU</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>موجودی</th><th>کانال‌ها</th><th>وضعیت</th></tr></thead>
-              <tbody>
-                {list.map((p) => (
-                  <tr key={p.id}>
-                    <td><span className="flex items-center gap-2.5"><img src={p.images[0]} alt="" className="h-10 w-9 rounded-lg object-cover" /><b className="whitespace-nowrap">{p.name}</b></span></td>
-                    <td className="tabular-nums text-[var(--kv-muted)]" dir="ltr">{p.sku}</td>
-                    <td>{p.supplierId === KOLBE.id ? <span className="rounded-full bg-[#1B2A4A] px-2 py-0.5 text-[10.5px] font-bold text-[#E8D9C3]">کلبه</span> : p.supplier}</td>
-                    <td className="tabular-nums font-bold">{fmtMoney(p.retailPrice)}</td>
-                    <td className="tabular-nums">{fmtMoney(p.wholesaleFrom)}</td>
-                    <td className="tabular-nums">{fmtNum(p.stock)}</td>
-                    <td><span className="flex gap-1">{p.supplierId === KOLBE.id && <span className="rounded-md bg-[var(--kv-surface-2)] px-1.5 py-0.5 text-[10.5px] font-bold">خرده</span>}<span className="rounded-md bg-[var(--kv-surface-2)] px-1.5 py-0.5 text-[10.5px] font-bold">عمده</span></span></td>
-                    <td><Switch on={p.status === "published"} onToggle={() => { setStatus(p.id, p.status === "published" ? "draft" : "published"); flash(p.status === "published" ? `${p.name} از فروش خارج شد` : `${p.name} منتشر شد`); }} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-        <div className="space-y-4">
-          <Card className="p-5">
-            <p className="text-sm font-bold">دسته‌بندی‌ها</p>
-            <div className="mt-3 space-y-1.5">
-              {cats.map((c) => <div key={c} className="flex items-center justify-between rounded-[10px] bg-[var(--kv-surface-2)]/60 px-3 py-2 text-[12.5px]"><span>{c}</span><b className="tabular-nums text-[var(--kv-muted)]">{fmtNum(products.filter((p) => p.category === c).length)}</b></div>)}
-            </div>
-            <Btn variant="ghost" size="sm" className="mt-2" onClick={() => flash("دسته جدید افزوده شد")}>+ دسته جدید</Btn>
-          </Card>
-          <Card className="p-5">
-            <p className="text-sm font-bold">ویژگی‌های سراسری</p>
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {["جنس پارچه", "رنگ", "سایز", "برش", "فصل", "کشور تولید", "نحوه شست‌وشو", "الگوی سایز"].map((a) => <span key={a} className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 text-[11.5px] font-semibold">{a}</span>)}
-            </div>
-          </Card>
-        </div>
-      </div>
-
-      <Drawer open={open} onClose={() => setOpen(false)} title="تعریف محصول جدید" wide>
-        <div className="grid gap-4 md:grid-cols-[170px_1fr]">
-          <div className="space-y-0.5">
-            {secs.map(([v, l], i) => (
-              <button key={v} onClick={() => setSec(v)} className={cn("flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-right text-[12.5px] font-semibold", sec === v ? "bg-[var(--kv-surface-2)]" : "text-[var(--kv-muted)]")}>
-                <span className={cn("flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold", sec === v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "bg-[var(--kv-surface-2)]")}>{(i + 1).toLocaleString("fa-IR")}</span>{l}
-              </button>
-            ))}
-          </div>
-          <div className="space-y-4">
-            {sec === "base" && <>
-              <Field label="نام محصول"><Input value={f.name} onChange={(v) => setF({ ...f, name: v })} placeholder="مثلاً کت پشمی دو‌دکمه" /></Field>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Field label="برند"><Input value={f.brand} onChange={(v) => setF({ ...f, brand: v })} /></Field>
-                <Field label="دسته‌بندی"><Select options={[...cats, "اکسسوری"]} value={f.category} onChange={(v) => setF({ ...f, category: v })} /></Field>
-                <Field label="SKU"><Input value={f.sku} onChange={(v) => setF({ ...f, sku: v })} placeholder="خودکار" /></Field>
-              </div>
-              <Field label="توضیحات"><Textarea value={f.desc} onChange={(v) => setF({ ...f, desc: v })} placeholder="توضیح کامل محصول برای صفحه فروشگاه" /></Field>
-            </>}
-            {sec === "price" && <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="قیمت خرده (تومان)"><Input value={f.retail} onChange={(v) => setF({ ...f, retail: v.replace(/\D/g, "") })} placeholder="9900000" /></Field>
-                <Field label="قیمت قبل از تخفیف" hint="اختیاری، برای نمایش خط‌خورده"><Input value={f.compare} onChange={(v) => setF({ ...f, compare: v.replace(/\D/g, "") })} /></Field>
-                <Field label="قیمت هر سری عمده"><Input value={f.wholesale} onChange={(v) => setF({ ...f, wholesale: v.replace(/\D/g, "") })} placeholder="خودکار ≈ ۱۰× خرده" /></Field>
-                <Field label="حداقل سفارش عمده (سری)"><Input value={f.moq} onChange={(v) => setF({ ...f, moq: v.replace(/\D/g, "") })} /></Field>
-              </div>
-              <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-4 py-3 text-[12.5px] text-[var(--kv-muted)]">مالیات بر ارزش افزوده ۱۰٪ به‌صورت خودکار در فاکتور اعمال می‌شود. قیمت‌های عمده فقط برای اعضای تأییدشده نمایش داده می‌شود.</div>
-            </>}
-            {sec === "attr" && <>
-              <Field label="جنس پارچه"><Input value={f.fabric} onChange={(v) => setF({ ...f, fabric: v })} placeholder="پشم ۷۰٪ · پلی‌استر ۳۰٪" /></Field>
-              <Field label="نحوه نگهداری"><Input value={f.care} onChange={(v) => setF({ ...f, care: v })} placeholder="خشک‌شویی · اتو با حرارت کم" /></Field>
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="برش"><Select options={["راسته", "اسلیم", "آزاد", "اورسایز"]} /></Field><Field label="فصل"><Select options={["چهارفصل", "پاییز و زمستان", "بهار و تابستان"]} /></Field></div>
-            </>}
-            {sec === "variant" && <>
-              <Field label="رنگ‌ها">
-                <div className="flex flex-wrap gap-2">
-                  {Object.values(COLORS).map((c) => (
-                    <button key={c.id} onClick={() => setF({ ...f, colors: f.colors.includes(c.id) ? f.colors.filter((x) => x !== c.id) : [...f.colors, c.id] })} className={cn("flex items-center gap-2 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold", f.colors.includes(c.id) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>
-                      <span className="h-4 w-4 rounded-full border border-black/15" style={{ background: c.hex }} />{c.name}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <Field label="سایزها">
-                <div className="flex flex-wrap gap-2">
-                  {["XS", "S", "M", "L", "XL", "2XL", "3XL"].map((s) => <button key={s} onClick={() => setF({ ...f, sizes: f.sizes.includes(s) ? f.sizes.filter((x) => x !== s) : [...f.sizes, s] })} className={cn("min-w-[46px] rounded-[10px] border px-3 py-2 text-[12.5px] font-bold", f.sizes.includes(s) ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)]")}>{s}</button>)}
-                </div>
-              </Field>
-              <p className="text-[12px] text-[var(--kv-muted)]">{fmtNum(f.colors.length * f.sizes.length)} واریانت ساخته می‌شود · سری کامل عمده: هر سایز ×۲ = {fmtNum(f.sizes.length * 2)} تکه</p>
-            </>}
-            {sec === "stock" && <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="انبار"><Select options={["انبار مرکزی — تهران", "انبار اصفهان"]} /></Field>
-              <Field label="موجودی اولیه (تکه)"><Input value={f.stock} onChange={(v) => setF({ ...f, stock: v.replace(/\D/g, "") })} /></Field>
-              <Field label="آستانه هشدار"><Input value={f.low} onChange={(v) => setF({ ...f, low: v.replace(/\D/g, "") })} /></Field>
-              <Field label="سیاست موجودی"><Select options={["توقف فروش در صفر", "پیش‌سفارش مجاز"]} /></Field>
-            </div>}
-            {sec === "media" && <div>
-              <div className="grid grid-cols-4 gap-2">{[IMG.trenchArch, IMG.trenchHero, IMG.trenchBack, IMG.trenchStreet].map((im, i) => <img key={i} src={im} alt="" className="aspect-square w-full rounded-[10px] object-cover" />)}</div>
-              <button onClick={() => flash("تصاویر انتخاب شد")} className="mt-3 flex w-full flex-col items-center gap-2 rounded-[14px] border border-dashed border-[var(--kv-line-strong)] py-8 text-[13px] font-semibold text-[var(--kv-muted)] hover:border-[var(--kv-accent)] hover:text-[var(--kv-accent)]"><ImageIcon size={20} />آپلود تصویر یا ویدیو<span className="text-xs font-normal">نسبت ۳:۴ توصیه می‌شود</span></button>
-            </div>}
-            {sec === "seo" && <>
-              <Field label="عنوان سئو"><Input value={f.seoTitle} onChange={(v) => setF({ ...f, seoTitle: v })} placeholder={f.name || "عنوان صفحه"} /></Field>
-              <Field label="نامک (slug)"><Input value={f.slug} onChange={(v) => setF({ ...f, slug: v })} placeholder="/product/…" /></Field>
-              <Field label="توضیح متا"><Textarea rows={2} placeholder="حداکثر ۱۶۰ کاراکتر" /></Field>
-            </>}
-            {sec === "channel" && <div className="space-y-2.5">
-              <label className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span><b className="text-[13px]">فروشگاه خرده kolbe.ir</b><span className="block text-xs text-[var(--kv-muted)]">نمایش با قیمت خرده به همه</span></span><Switch on={f.retailOn} onToggle={() => setF({ ...f, retailOn: !f.retailOn })} /></label>
-              <label className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span><b className="text-[13px]">بازارچه عمده — بخش کلبه وینتیج</b><span className="block text-xs text-[var(--kv-muted)]">قیمت سری فقط برای اعضای عمده</span></span><Switch on={f.wholesaleOn} onToggle={() => setF({ ...f, wholesaleOn: !f.wholesaleOn })} /></label>
-              <Checkbox checked onChange={() => {}} label="همگام‌سازی با سپیدار پس از انتشار" />
-            </div>}
-            <div className="flex flex-wrap gap-2 border-t border-[var(--kv-line)] pt-4">
-              <Btn variant="accent" size="sm" disabled={!canSave} onClick={save} icon={<Check size={14} />}>ذخیره و انتشار</Btn>
-              <Btn variant="soft" size="sm" onClick={() => { setOpen(false); flash("پیش‌نویس ذخیره شد"); }}>ذخیره پیش‌نویس</Btn>
-              {!canSave && <span className="self-center text-[11.5px] text-[var(--kv-muted)]">نام، رنگ، سایز و قیمت کانال‌های فعال الزامی‌اند</span>}
-            </div>
-          </div>
-        </div>
-      </Drawer>
-    </div>
-  );
+  // Canonical editor is ProductStudio (full page) — this wrapper prevents duplicate ProductDefinition drawer
+  return <ProductStudio flash={flash} />;
 }
 
 /* ================= Shipping ================= */
@@ -312,7 +164,7 @@ export function CrmAdmin({ flash }: { flash: F }) {
   const [serverCustomers, setServerCustomers] = useState<any[] | null>(null);
   const isDemoRetail = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   useEffect(()=>{ if(isDemoRetail) return; apiCall<{items:any[]}>("/admin/crm/contacts").then(r=> setServerCustomers(r.items??[])).catch(()=> setServerCustomers([])); },[isDemoRetail]);
-  const source: Customer[] = serverCustomers ? serverCustomers.map((c:any)=>({ id: c.id ?? c.phone ?? Math.random().toString(), name:c.name??c.display_name??"—", phone:c.phone??c.phone_number??"", segment:c.segment??"فعال", city:c.city??"—", orders:Number(c.orders_count??c.orders??0), spent:Number(c.ltv_rial??c.spent??0), last:c.last_order_at??c.last??"—" } as Customer)) : [];
+  const source: Customer[] = serverCustomers ? serverCustomers.map((c:any)=>({ id: String(c.id ?? c.phone ?? ""), name:c.name??c.display_name??"—", phone:c.phone??c.phone_number??"", segment:c.segment??"فعال", city:c.city??"—", orders:Number(c.orders_count??c.orders??0), spent:Number(c.ltv_rial??c.spent??0), last:c.last_order_at??c.last??"—" } as Customer)) : [];
   const list = (isDemoRetail ? [] : source).filter((c) => (seg === "همه" || c.segment === seg) && (!q.trim() || c.name.includes(q.trim()) || c.phone.includes(q.trim())));
   const crm = integrations.find((i) => i.kind === "CRM" && i.connected);
   return (

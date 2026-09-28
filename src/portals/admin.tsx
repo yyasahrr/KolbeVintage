@@ -25,7 +25,7 @@ import { FinanceLedgerPanel } from "../components/finance-ledger";
 import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
 import { PromoPanel } from "../components/promo-panel";
-import { CmsPanel } from "../components/cms-panel";
+import { CmsCenter } from "./admin-cms";
 import { IntegrationsPanel } from "../components/integrations-panel";
 import { NotificationsPanel } from "../components/notifications-panel";
 import { TicketBoardPanel } from "../components/ticket-board-panel";
@@ -120,6 +120,22 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const pendingBuyers = buyers.filter((b) => b.status === "در انتظار تأیید");
   const ops = useOps();
   const customerTickets = accounts.flatMap((account) => account.tickets.map((ticket) => ({ account, ticket })));
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  // Server-backed dashboard summary — canonical source for sidebar badges (item 12)
+  const [summary, setSummary] = useState<{ pendingProducts: number; activeOrders: number; pendingSupplierActions: number; pendingMemberships: number; openTickets: number; pendingReturns: number; pendingWithdrawals: number } | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  useEffect(() => {
+    if (isDemo) return;
+    let live = true;
+    apiCall<{ pendingProducts: number; activeOrders: number; pendingSupplierActions: number; pendingMemberships: number; openTickets: number; pendingReturns: number; pendingWithdrawals: number }>("/admin/dashboard/summary")
+      .then((r) => { if (live) setSummary(r); })
+      .catch((e) => { if (live) setSummaryError(e instanceof Error ? e.message : "خطا در دریافت خلاصه داشبورد"); });
+    return () => { live = false; };
+  }, [isDemo]);
+  const badge = (server: number | undefined, local: number): number | undefined => {
+    const value = server ?? local;
+    return value || undefined;
+  };
 
   const [tab, setTab] = useState("server-orders");
   const [drawer, setDrawer] = useState(false);
@@ -136,15 +152,15 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { g: "دادهٔ واقعی" },
     { v: "server-orders", label: "سفارش‌های سرور", icon: <ClipboardList size={17} /> },
     { g: "نمای کلی" },
-    { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: pending.length + kolbePending.length + pendingBuyers.length || undefined },
+    { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: badge(summary ? summary.pendingProducts + summary.pendingSupplierActions + summary.pendingMemberships : undefined, pending.length + kolbePending.length + pendingBuyers.length) },
     { g: "بازار عمده" },
-    { v: "worders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: activeSubs.length || undefined },
+    { v: "worders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: badge(summary?.activeOrders, activeSubs.length) },
     { v: "kolbe", label: "میز عملیات کلبه", icon: <Warehouse size={17} />, badge: kolbePending.length || undefined },
-    { v: "wproducts", label: "محصولات و بازبینی", icon: <Package size={17} />, badge: pending.length || undefined },
+    { v: "wproducts", label: "محصولات و بازبینی", icon: <Package size={17} />, badge: badge(summary?.pendingProducts, pending.length) },
     { v: "series", label: "قالب‌های سری کلبه", icon: <Layers size={17} /> },
     { v: "suppliers", label: "تأمین‌کنندگان", icon: <Store size={17} /> },
-    { v: "applications", label: "درخواست همکاری", icon: <FileSignature size={17} />, badge: ops.applications.filter((a) => a.status === "new").length || undefined },
-    { v: "buyers", label: "خریداران عمده", icon: <Users size={17} />, badge: pendingBuyers.length || undefined },
+    { v: "applications", label: "درخواست همکاری", icon: <FileSignature size={17} />, badge: badge(summary?.pendingSupplierActions, ops.applications.filter((a) => a.status === "new").length) },
+    { v: "buyers", label: "خریداران عمده", icon: <Users size={17} />, badge: badge(summary?.pendingMemberships, pendingBuyers.length) },
     { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
     { g: "خرده‌فروشی" },
     { v: "rorders", label: "سفارش‌های خرده", icon: <ShoppingBag size={17} /> },
@@ -156,11 +172,11 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
     { v: "sms", label: "پنل پیامک", icon: <MessageSquareText size={17} /> },
     { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
-    { v: "finance", label: "مالی و تسویه", icon: <Wallet size={17} />, badge: ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length || undefined },
+    { v: "finance", label: "مالی و تسویه", icon: <Wallet size={17} />, badge: badge(summary?.pendingWithdrawals, ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length) },
     { v: "finance-ledger", label: "دفتر کل (Ledger)", icon: <ScrollText size={17} /> },
     { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
     { g: "سیستم" },
-    { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: ops.tickets.filter((t) => t.status === "open").length + ops.returns.filter((r) => r.status === "requested").length || undefined },
+    { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status === "open").length + ops.returns.filter((r) => r.status === "requested").length) },
     { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
     { v: "restrictions", label: "محدودیت کاربران", icon: <ShieldAlert size={17} /> },
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
@@ -214,6 +230,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                 tab === n.v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
               {n.icon}{n.label}
               {n.badge && <span className="mr-auto rounded-full bg-[var(--kv-danger)] px-2 py-0.5 text-[10.5px] font-bold text-white tabular-nums">{fmtNum(n.badge)}</span>}
+              {summaryError && !isDemo && <p role="alert" className="px-2 py-1 text-[10.5px] leading-5 text-[var(--kv-muted)]">خلاصه سرور در دسترس نیست — اعداد محلی موقت است.</p>}
             </button>
           )
         )}
@@ -555,7 +572,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "shipping" && <ShippingAdmin flash={flash} />}
           {tab === "wms" && <AdminWmsPanel />}
           {tab === "crm" && <CrmPanel />}
-          {tab === "cms" && <CmsPanel />}
+          {tab === "cms" && <CmsCenter flash={flash} />}
           {tab === "notifs" && <NotificationsPanel />}
           {tab === "finance" && <FinanceCenter flash={flash} />}
           {tab === "finance-ledger" && <FinanceLedgerPanel />}
