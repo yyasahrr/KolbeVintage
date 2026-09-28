@@ -1,0 +1,16 @@
+import { badRequest } from './errors.js';
+
+export const MAX_RIAL = 9_000_000_000_000_000_000n;
+export function rial(value: string | number | bigint): bigint {
+  const raw = String(value);
+  if (!/^(0|[1-9]\d*)$/.test(raw)) throw badRequest('مبلغ باید عدد صحیح و نامنفی ریال باشد.');
+  const parsed = BigInt(raw);
+  if (parsed > MAX_RIAL) throw badRequest('مبلغ از سقف مجاز بیشتر است.');
+  return parsed;
+}
+export const asRial = (value: bigint | string | number) => rial(value).toString();
+export function addRial(values: bigint[]): bigint {
+  const sum = values.reduce((total, value) => total + value, 0n);
+  if (sum > MAX_RIAL) throw badRequest('مجموع مبلغ از سقف مجاز بیشتر است.');
+  return sum;
+}

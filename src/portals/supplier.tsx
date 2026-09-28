@@ -1,0 +1,675 @@
+import { useState } from "react";
+import {
+  LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Factory, Inbox,
+  Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, Upload, CircleDollarSign,
+  FlaskConical, Clock, Sun, Moon, LogOut, Send, Store,
+} from "lucide-react";
+import { IMG, COLORS, STATUS_LABEL, fmtMoney, fmtNum, nextSku, type SeriesDef } from "../data/catalog";
+import { useStore } from "../data/store";
+import { SUB_STATUS, isTerminal, type SubStatus } from "../data/platform";
+import { SubOrderDesk } from "../components/orders";
+import { AuthScreens } from "./studio";
+import { SeriesBuilder } from "./supplier-series";
+import { SeriesTemplateManager, SeriesTemplatePicker } from "./series-templates";
+import { SupplierWallet, SupplierBankForm, useWallet } from "./supplier-wallet";
+import { TicketCenter } from "../components/support";
+import { useOps, opsNow } from "../data/ops";
+import { Landmark, Headset, Layers, ShieldAlert, FileSignature, KeyRound } from "lucide-react";
+
+/* Login or apply: the application form is defined by Kolbe admins and submissions land in the admin console. */
+function SupplierEntry({ onLogin }: { onLogin: () => void }) {
+  const ops = useOps();
+  const form = ops.applicationForm;
+  const [mode, setMode] = useState<"login" | "apply">("login");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<string[]>([]);
+  const [sent, setSent] = useState<string | null>(null);
+  const submit = () => {
+    const e = form.fields.filter((f) => f.required && !(values[f.id] ?? "").trim()).map((f) => `«${f.label}» الزامی است.`);
+    form.fields.forEach((f) => {
+      const v = (values[f.id] ?? "").replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
+      if (v && f.type === "phone" && !/^09\d{9}$/.test(v)) e.push(`«${f.label}» باید شماره همراه ۱۱ رقمی باشد.`);
+      if (v && f.type === "email" && !/^\S+@\S+\.\S+$/.test(v)) e.push(`«${f.label}» ایمیل معتبر نیست.`);
+      if (v && f.type === "number" && !/^\d+$/.test(v)) e.push(`«${f.label}» باید عدد باشد.`);
+    });
+    setErrors(e);
+    if (e.length) return;
+    const id = `APP-${Date.now().toString().slice(-4)}`;
+    const nameField = form.fields.find((f) => f.type === "text");
+    ops.upsert("applications", { id, name: (nameField && values[nameField.id]) || "متقاضی جدید", values, status: "new", createdAt: opsNow() }, true);
+    setSent(id); setValues({});
+  };
+  return (
+    <div className="w-full">
+      <div className="mb-4 flex justify-center"><div className="inline-flex rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/70 p-1">
+        {([["login", "ورود تأمین‌کنندگان", <KeyRound key="k" size={14} />], ["apply", "درخواست همکاری", <FileSignature key="f" size={14} />]] as const).map(([v, l, i]) => <button key={v} onClick={() => setMode(v)} className={cn("flex min-h-10 items-center gap-1.5 rounded-full px-4 text-[13px] font-bold", mode === v ? "bg-[var(--kv-surface)] shadow-[var(--shadow-soft-sm)]" : "text-[var(--kv-muted)]")}>{i}{l}</button>)}
+      </div></div>
+      {mode === "login" ? <AuthScreens portal="supplier" onDone={onLogin} /> : !form.active ? (
+        <Card className="p-6 text-center"><p className="text-[15px] font-extrabold">پذیرش تأمین‌کننده موقتاً متوقف است</p><p className="mt-2 text-[13px] text-[var(--kv-muted)]">لطفاً بعداً دوباره سر بزنید یا با پشتیبانی کلبه تماس بگیرید.</p></Card>
+      ) : sent ? (
+        <Card className="p-6 text-center"><span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#E7F0E6] text-[#3E6B4A]"><Check size={22} /></span><p className="mt-3 text-[16px] font-extrabold">درخواست {sent} ثبت شد</p><p className="mt-2 text-[13px] leading-7 text-[var(--kv-muted)]">تیم کلبه درخواست را بررسی می‌کند و نتیجه به شماره همراه شما اطلاع داده می‌شود.</p><Btn variant="soft" size="sm" className="mt-4" onClick={() => setSent(null)}>ثبت درخواست دیگر</Btn></Card>
+      ) : (
+        <Card className="p-6">
+          <p className="text-[16px] font-extrabold">{form.title}</p><p className="mt-1.5 text-[13px] leading-7 text-[var(--kv-muted)]">{form.intro}</p>
+          <div className="mt-5 space-y-4">
+            {form.fields.map((f) => {
+              const label = `${f.label}${f.required ? " *" : ""}`;
+              const v = values[f.id] ?? "";
+              const set = (x: string) => setValues({ ...values, [f.id]: x });
+              if (f.type === "textarea") return <Field key={f.id} label={label} hint={f.hint}><textarea rows={3} value={v} onChange={(e) => set(e.target.value)} className="w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3 text-sm text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" /></Field>;
+              if (f.type === "select") return <Field key={f.id} label={label} hint={f.hint}><Select options={["انتخاب کنید", ...(f.options ?? [])]} value={v || "انتخاب کنید"} onChange={(x) => set(x === "انتخاب کنید" ? "" : x)} /></Field>;
+              if (f.type === "checkbox") return <label key={f.id} className="flex items-start gap-2 text-[13px] font-medium"><input type="checkbox" checked={v === "بله"} onChange={(e) => set(e.target.checked ? "بله" : "")} className="mt-1 h-4 w-4 accent-[#C1613B]" />{label}</label>;
+              if (f.type === "file") return <Field key={f.id} label={label} hint={f.hint ?? "PDF یا تصویر · حداکثر ۵ مگابایت"}><input type="file" accept="image/*,application/pdf" onChange={(e) => set(e.target.files?.[0]?.name ?? "")} className="block w-full text-[12.5px] file:ml-3 file:rounded-[9px] file:border-0 file:bg-[var(--kv-surface-2)] file:px-3 file:py-2 file:text-[12px] file:font-semibold" /></Field>;
+              return <Field key={f.id} label={label} hint={f.hint}><Input value={v} onChange={set} /></Field>;
+            })}
+          </div>
+          {errors.length > 0 && <ul role="alert" className="mt-4 space-y-1 rounded-[12px] bg-[var(--kv-danger)]/[0.06] p-3 text-[12px] text-[var(--kv-danger)]">{errors.map((x) => <li key={x}>• {x}</li>)}</ul>}
+          <Btn variant="accent" className="mt-5 w-full" onClick={submit} icon={<Send size={15} />}>ارسال درخواست</Btn>
+          <p className="mt-2 text-[11.5px] text-[var(--kv-muted)]">فایل‌ها در این نسخه آزمایشی بارگذاری نمی‌شوند و فقط نامشان ثبت می‌شود.</p>
+        </Card>
+      )}
+    </div>
+  );
+}
+import { Btn, Card, Status, SearchBox, Input, Field, Switch, Timeline, Select } from "../components/primitives";
+import { cn } from "../utils/cn";
+
+function Spark({ points, w = 220, h = 56 }: { points: number[]; w?: number; h?: number }) {
+  const max = Math.max(...points), min = Math.min(...points);
+  const path = points.map((v, i) => {
+    const x = (i / (points.length - 1)) * w;
+    const y = h - 6 - ((v - min) / (max - min || 1)) * (h - 12);
+    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return (
+    <svg width={w} height={h} className="w-full" viewBox={`0 0 ${w} ${h}`} fill="none">
+      <path d={`${path} L${w},${h} L0,${h} Z`} fill="var(--kv-accent)" opacity={0.12} />
+      <path d={path} stroke="var(--kv-accent)" strokeWidth={2.2} strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function Donut({ segs }: { segs: { v: number; c: string; l: string }[] }) {
+  const total = segs.reduce((s, x) => s + x.v, 0) || 1;
+  let acc = 0;
+  const R = 44, C = 2 * Math.PI * R;
+  return (
+    <div className="flex items-center gap-5">
+      <div className="relative">
+        <svg width={128} height={128} viewBox="0 0 120 120">
+          <circle cx={60} cy={60} r={R} fill="none" stroke="var(--kv-surface-2)" strokeWidth={15} />
+          {segs.map((s, i) => {
+            const frac = s.v / total; const dash = frac * C; const off = -acc * C; acc += frac;
+            return <circle key={i} cx={60} cy={60} r={R} fill="none" stroke={s.c} strokeWidth={15} strokeDasharray={`${dash} ${C - dash}`} strokeDashoffset={off} transform="rotate(-90 60 60)" />;
+          })}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <p className="text-lg font-extrabold tabular-nums">{fmtNum(segs.reduce((s, x) => s + x.v, 0))}</p>
+          <p className="text-[10.5px] text-[var(--kv-muted)]">زیرسفارش</p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {segs.map((s) => <p key={s.l} className="flex items-center gap-2 text-xs"><span className="h-2.5 w-2.5 rounded-full" style={{ background: s.c }} />{s.l} <b className="tabular-nums">{fmtNum(s.v)}</b></p>)}
+      </div>
+    </div>
+  );
+}
+
+/* ====== Standalone app: KOLBE Supplier Center ====== */
+export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; setDark: (v: boolean) => void; onExit: () => void }) {
+  const [authed, setAuthed] = useState(() => sessionStorage.getItem("kolbe-supplier") === "1");
+  if (!authed) {
+    return (
+      <div className="min-h-screen">
+        <header className="mx-auto flex h-[68px] w-full max-w-[1200px] items-center justify-between px-4 md:px-8">
+          <SupplierBrand />
+          <div className="flex items-center gap-2">
+            <button onClick={() => setDark(!dark)} className="kv-press flex h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)]" aria-label="تغییر تم">{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
+            <Btn variant="ghost" size="sm" onClick={onExit}>رفتن به kolbe.ir</Btn>
+          </div>
+        </header>
+        <div className="mx-auto grid w-full max-w-[1200px] items-center gap-10 px-4 pb-16 pt-6 md:px-8 lg:grid-cols-[1fr_440px]">
+          <div className="hidden lg:block">
+            <h1 className="kv-editorial-title text-[34px]">محصولاتت را به هزاران بوتیک و فروشگاه برسان</h1>
+            <p className="mt-4 max-w-[52ch] text-[15px] leading-8 text-[var(--kv-muted)]">
+              مرکز تأمین‌کنندگان کلبه جایی است که کاتالوگ عمده، سری‌ها و موجودی‌ات را مدیریت می‌کنی. هر محصولی که ثبت کنی، بعد از بازبینی کیفیت، در بازارچه عمده کلبه کنار محصولات خود کلبه به خریداران نمایش داده می‌شود.
+            </p>
+            <ol className="mt-7 space-y-4">
+              {[
+                ["ثبت محصول و سری‌ها", "عکس، ترکیب سایز هر سری، قیمت و حداقل سفارش"],
+                ["بازبینی کلبه", "تیم کیفیت ظرف یک روز کاری محصول را بررسی می‌کند"],
+                ["دریافت سفارش و تأیید تأمین", "خریدار سفارش می‌دهد؛ تو امکان تأمین را تأیید می‌کنی، بعد پرداخت و ارسال"],
+              ].map(([t, d], i) => (
+                <li key={t} className="flex gap-4">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--kv-surface-2)] text-sm font-extrabold tabular-nums">{(i + 1).toLocaleString("fa-IR")}</span>
+                  <div><p className="text-[14.5px] font-bold">{t}</p><p className="text-[13px] text-[var(--kv-muted)]">{d}</p></div>
+                </li>
+              ))}
+            </ol>
+          </div>
+          <SupplierEntry onLogin={() => { sessionStorage.setItem("kolbe-supplier", "1"); setAuthed(true); }} />
+        </div>
+      </div>
+    );
+  }
+  return <SupplierWorkspace dark={dark} setDark={setDark} onLogout={() => { sessionStorage.removeItem("kolbe-supplier"); setAuthed(false); }} />;
+}
+
+function SupplierBrand() {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-[var(--kv-accent)] text-[17px] font-bold text-white" style={{ fontFamily: "Marcellus, serif" }}>K</span>
+      <span className="leading-tight">
+        <span className="block text-[14px] font-bold" style={{ fontFamily: "Marcellus, serif", letterSpacing: "0.2em" }}>KOLBE</span>
+        <span className="block text-[11px] font-bold text-[var(--kv-muted)]">مرکز تأمین‌کنندگان</span>
+      </span>
+    </div>
+  );
+}
+
+const ME = { id: "s1", name: "نیلگون" };
+
+function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark: (v: boolean) => void; onLogout: () => void }) {
+  const { products, orders, setStatus, addProduct, updateProductSeries, transitionSub } = useStore();
+  const mine = products.filter((p) => p.supplierId === ME.id);
+  const mySubs = orders.flatMap((o) => o.subOrders.filter((s) => s.supplierId === ME.id).map((sub) => ({ parent: o, sub })));
+  const pendingSubs = mySubs.filter((i) => i.sub.status === "pending_supplier");
+  const openSubs = mySubs.filter((i) => !isTerminal(i.sub.status));
+  const revenue = mySubs.filter((i) => ["paid", "preparing", "shipped", "delivered"].includes(i.sub.status)).reduce((a, i) => a + i.sub.total, 0);
+
+  const [tab, setTab] = useState("dashboard");
+  const [drawer, setDrawer] = useState(false);
+  const [editorSec, setEditorSec] = useState("base");
+  const [form, setForm] = useState({ name: "", category: "پیراهن", desc: "", stock: "" });
+  const [draftSeries, setDraftSeries] = useState<SeriesDef[]>([]);
+  const [draftColorIds, setDraftColorIds] = useState<string[]>(["orange", "black", "cream"]);
+  const [seriesProductId, setSeriesProductId] = useState("p2");
+  const [workingSeries, setWorkingSeries] = useState<SeriesDef[]>(() => mine.find((p) => p.id === "p2")?.series ?? mine[0]?.series ?? []);
+  const seriesProduct = mine.find((p) => p.id === seriesProductId) ?? mine[0];
+  const chooseSeriesProduct = (id: string) => {
+    const product = mine.find((p) => p.id === id);
+    if (!product) return;
+    setSeriesProductId(id);
+    setWorkingSeries(product.series.map((s) => ({ ...s, composition: { ...s.composition }, colorIds: s.colorIds ? [...s.colorIds] : undefined })));
+    setTab("series");
+  };
+  const [invQ, setInvQ] = useState("");
+  const ops = useOps();
+  const wallet = useWallet(ME.id);
+  const restrict = ops.restrictionFor("supplier", ME.id);
+  const [toast, setToast] = useState<string | null>(null);
+  const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3000); };
+  const offeredDraft = draftSeries.filter((series) => series.available);
+  const canSubmitProduct = !!form.name.trim() && draftColorIds.length > 0 && offeredDraft.length > 0
+    && offeredDraft.every((series) => series.pieces > 0 && series.pricePerSeries > 0 && series.moqSeries > 0 && (series.colorIds?.length ?? draftColorIds.length) > 0)
+    && Number(form.stock) >= Math.min(...offeredDraft.map((series) => series.pieces * series.moqSeries));
+  const submitProduct = () => {
+    if (restrict.noPublish) { flash("انتشار محصول برای حساب شما محدود شده است."); return; }
+    if (!canSubmitProduct) { flash("ابتدا نام، موجودی کافی و دست‌کم یک سریِ قابل سفارش با قیمت و رنگ معتبر ثبت کنید."); return; }
+    const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries));
+    const moq = Math.min(...offeredDraft.map((series) => series.moqSeries));
+    addProduct({
+      status: "pending", id: `p${Date.now()}`, sku: nextSku(products, ME.id, form.category),
+      brand: "Nilgoon", name: form.name.trim(), supplier: ME.name, supplierId: ME.id, category: form.category,
+      retailPrice: 0, wholesaleFrom: price, rating: 0, reviews: 0,
+      colors: draftColorIds.map((id) => COLORS[id]).filter(Boolean),
+      images: [IMG.shirtsColor, IMG.shirtRack, IMG.greenShirt, IMG.whiteShirts],
+      series: draftSeries, seriesCount: draftSeries.length, moq,
+      stock: Number(form.stock), fabric: "—", desc: form.desc.trim() || "توضیحات این محصول در حال تکمیل است.",
+    });
+    setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
+    setDraftSeries([]);
+    setDraftColorIds(["orange", "black", "cream"]);
+    setTab("products");
+    setEditorSec("base");
+    flash("محصول با سری‌های تعریف‌شده برای بازبینی کلبه ارسال شد.");
+  };
+
+  const transition = (pid: string, sid: string, status: SubStatus, extra?: { note?: string; tracking?: string; eta?: string }) => {
+    transitionSub(pid, sid, status, ME.name, extra);
+    const msg: Record<SubStatus, string> = {
+      pending_supplier: "", approved: `${sid} تأیید شد؛ خریدار برای پرداخت مطلع شد`, rejected: `${sid} رد شد و به خریدار اطلاع داده شد`,
+      paid: "", preparing: `${sid} وارد آماده‌سازی شد`, ready_to_ship: `${sid} آماده ارسال شد`, in_transit: `${sid} به باربری تحویل داده شد`, shipped: `${sid} ارسال شد؛ کد رهگیری ثبت شد`, delivered: `${sid} تحویل ثبت شد`, cancelled: "",
+    };
+    if (msg[status]) flash(msg[status]);
+  };
+
+  type NavItem = { g: string } | { v: string; label: string; icon: React.ReactNode; badge?: number };
+  const nav: NavItem[] = [
+    { g: "کار" },
+    { v: "dashboard", label: "داشبورد", icon: <LayoutDashboard size={17} /> },
+    { v: "products", label: "محصولات", icon: <Package size={17} /> },
+    { v: "templates", label: "قالب‌های سری", icon: <Layers size={17} /> },
+    { v: "series", label: "سری‌بندی محصولات", icon: <Boxes size={17} /> },
+    { v: "rfq", label: "درخواست‌های تأیید", icon: <Inbox size={17} />, badge: pendingSubs.length || undefined },
+    { v: "orders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: mySubs.filter((i) => i.sub.status === "paid").length || undefined },
+    { g: "عملیات" },
+    { v: "inventory", label: "موجودی انبار", icon: <Boxes size={17} /> },
+    { v: "production", label: "تولید", icon: <Factory size={17} /> },
+    { v: "finance", label: "کیف پول و برداشت", icon: <Wallet size={17} /> },
+    { v: "bank", label: "اطلاعات مالی و بانکی", icon: <Landmark size={17} />, badge: ops.banks[ME.id]?.status === "verified" ? undefined : 1 },
+    { v: "support", label: "پشتیبانی", icon: <Headset size={17} />, badge: ops.tickets.filter((t) => t.ownerId === ME.id && t.status === "answered").length || undefined },
+    { g: "سیستم" },
+    { v: "settings", label: "تنظیمات", icon: <Settings size={17} /> },
+  ];
+
+  const titles: Record<string, [string, string]> = {
+    dashboard: ["نمای کلی", `شاخص‌های امروز فروشگاه ${ME.name}`],
+    products: ["محصولات من", "مدیریت کاتالوگ، موجودی و وضعیت انتشار در بازارچه عمده"],
+    editor: ["ویرایشگر محصول", "محصول جدید برای بازارچه عمده کلبه"],
+    series: ["سری‌بندی محصولات", "ترکیب سایز، رنگ، MOQ و قیمت هر سری را مستقل مدیریت کنید"],
+    rfq: ["درخواست‌های تأیید", "زیرسفارش‌های تازه که منتظر تأیید امکان تأمین هستند"],
+    orders: ["سفارش‌های عمده", "پرداخت، آماده‌سازی، ارسال و تحویل"],
+    inventory: ["موجودی انبار", "موجودی، رزرو و هشدار اتمام"],
+    production: ["تولید", "سفارش‌های تولید، نمونه و کنترل کیفیت"],
+    finance: ["کیف پول و برداشت", `موجودی پس از کسر کمیسیون ${fmtNum(ops.commissions[ME.id] ?? 8)}٪ کلبه`],
+    templates: ["قالب‌های سری", "ترکیب سایزها را یک‌بار تعریف کنید و در محصولات انتخاب کنید"],
+    bank: ["اطلاعات مالی و بانکی", "شبا، کارت و اطلاعات حقوقی برای تسویه"],
+    support: ["پشتیبانی", "تیکت‌های شما با تیم کلبه"],
+    settings: ["تنظیمات فروشگاه", "پروفایل، انبارها و اعلان‌ها"],
+  };
+  const [t, d] = titles[tab] ?? titles.dashboard;
+
+  const sidebar = (
+    <div className="flex h-full flex-col">
+      <div className="px-5 pb-4 pt-6"><SupplierBrand /></div>
+      <div className="mx-4 mb-2 flex items-center gap-3 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 p-3">
+        <span className="flex h-10 w-10 items-center justify-center rounded-[11px] bg-[#1B2A4A] text-sm font-bold text-[#E8D9C3]">ن</span>
+        <div><p className="text-[14px] font-extrabold">{ME.name}</p><p className="text-[11.5px] text-[var(--kv-muted)]">تأمین‌کننده تأییدشده · تهران</p></div>
+      </div>
+      <nav className="kv-scroll flex-1 space-y-0.5 overflow-y-auto px-3">
+        {nav.map((n, i) =>
+          "g" in n ? <p key={i} className="px-3 pb-1 pt-4 text-[11px] font-bold text-[var(--kv-faint)]">{n.g}</p> : (
+            <button key={n.v} onClick={() => { setTab(n.v); setDrawer(false); }}
+              className={cn("kv-press flex w-full items-center gap-2.5 rounded-[11px] px-3 py-2.5 text-[13.5px] font-semibold transition-all",
+                tab === n.v || (tab === "editor" && n.v === "products") ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
+              {n.icon}{n.label}
+              {n.badge && <span className="mr-auto rounded-full bg-[var(--kv-accent)] px-2 py-0.5 text-[10.5px] font-bold text-white tabular-nums">{fmtNum(n.badge)}</span>}
+            </button>
+          )
+        )}
+      </nav>
+      <div className="space-y-1 border-t border-[var(--kv-line)] p-3">
+        {sessionStorage.getItem("kolbe-preview") === "1" && <button onClick={() => { window.location.hash = "#/"; }} className="kv-press flex w-full items-center gap-2.5 rounded-[11px] px-3 py-2.5 text-[13px] font-semibold text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]"><Store size={17} />بازگشت به فروشگاه</button>}
+        <button onClick={() => setDark(!dark)} className="kv-press flex w-full items-center gap-2.5 rounded-[11px] px-3 py-2.5 text-[13.5px] font-semibold text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]">{dark ? <Sun size={17} /> : <Moon size={17} />}{dark ? "حالت روشن" : "حالت تیره"}</button>
+        <button onClick={onLogout} className="kv-press flex w-full items-center gap-2.5 rounded-[11px] px-3 py-2.5 text-[13.5px] font-semibold text-[var(--kv-danger)] hover:bg-[var(--kv-danger)]/[0.06]"><LogOut size={17} />خروج از حساب</button>
+      </div>
+    </div>
+  );
+
+  if (restrict.block) return (
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <Card className="max-w-[460px] p-7 text-center">
+        <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--kv-danger)]/10 text-[var(--kv-danger)]"><ShieldAlert size={24} /></span>
+        <p className="mt-4 text-[18px] font-extrabold">حساب تأمین‌کننده مسدود شده است</p>
+        <p className="mt-2 text-[13px] leading-7 text-[var(--kv-muted)]">دلیل: {restrict.reason ?? "به تشخیص کلبه"}. محصولات شما موقتاً در بازارچه نمایش داده نمی‌شوند. برای رفع مسدودی با پشتیبانی کلبه تماس بگیرید.</p>
+        <Btn variant="soft" className="mt-5" onClick={onLogout}>خروج</Btn>
+      </Card>
+    </div>
+  );
+
+  return (
+    <div className="mx-auto w-full max-w-[1560px] px-0 pb-16 md:px-5">
+      <div className="flex min-h-screen gap-5 pt-4">
+        <aside className="sticky top-4 hidden h-[calc(100vh-32px)] w-[264px] shrink-0 overflow-hidden rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm lg:block">{sidebar}</aside>
+        {drawer && (
+          <div className="fixed inset-0 z-[70] lg:hidden">
+            <div className="absolute inset-0 bg-black/45" onClick={() => setDrawer(false)} />
+            <aside className="absolute right-0 top-0 h-full w-[280px] bg-[var(--kv-surface)] animate-[drawerIn_0.3s_ease]">{sidebar}</aside>
+          </div>
+        )}
+
+        <div className="min-w-0 flex-1 px-4 md:px-2">
+          <div className="kv-glass sticky top-4 z-30 mb-5 flex items-center gap-3 rounded-[16px] px-4 py-3">
+            <button className="lg:hidden" onClick={() => setDrawer(true)} aria-label="منو"><Menu size={20} /></button>
+            <div className="min-w-0">
+              <h1 className="truncate text-[16px] font-extrabold">{t}</h1>
+              <p className="hidden truncate text-xs text-[var(--kv-muted)] sm:block">{d}</p>
+            </div>
+            <div className="mr-auto flex items-center gap-2">
+              <div className="hidden w-56 md:block"><SearchBox placeholder="جست‌وجوی محصول، سفارش…" /></div>
+              <button onClick={() => setTab("rfq")} className="kv-press relative flex h-10 w-10 items-center justify-center rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)]" aria-label="اعلان‌ها">
+                <Bell size={17} />{pendingSubs.length > 0 && <span className="absolute left-2 top-2 h-2 w-2 rounded-full bg-[var(--kv-danger)]" />}
+              </button>
+              <span className="flex h-10 w-10 items-center justify-center rounded-[11px] bg-[#1B2A4A] text-sm font-bold text-[#E8D9C3]">ن</span>
+            </div>
+          </div>
+
+          {tab === "dashboard" && (
+            <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                {[
+                  ["فروش عمده ثبت‌شده", fmtMoney(revenue), `${fmtNum(mySubs.length)} زیرسفارش`, <TrendingUp key="1" size={17} />],
+                  ["زیرسفارش باز", fmtNum(openSubs.length), `${fmtNum(pendingSubs.length)} نیازمند تأیید تو`, <ClipboardList key="2" size={17} />],
+                  ["محصول در بازارچه", fmtNum(mine.filter((p) => p.status === "published").length), `${fmtNum(mine.filter((p) => p.status === "pending").length)} در انتظار بازبینی کلبه`, <Boxes key="3" size={17} />],
+                  ["مانده قابل برداشت", fmtMoney(wallet.balance), `${fmtMoney(wallet.escrowNet)} در انتظار تحویل`, <Wallet key="4" size={17} />],
+                ].map(([l, v, s, icon]) => (
+                  <Card key={l as string} className="p-4">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-[var(--kv-surface-2)] text-[var(--kv-accent)]">{icon as React.ReactNode}</span>
+                    <p className="mt-2.5 text-[17px] font-extrabold tabular-nums">{v as string}</p>
+                    <p className="text-xs text-[var(--kv-muted)]">{l as string}</p>
+                    <p className="mt-1 text-[11.5px] font-bold text-[var(--kv-success)]">{s as string}</p>
+                  </Card>
+                ))}
+              </div>
+
+              <div className="grid gap-5 xl:grid-cols-[1.2fr_1fr]">
+                <Card className="p-5">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div><p className="text-[15px] font-extrabold">ارزش زیرسفارش‌ها</p><p className="text-xs text-[var(--kv-muted)]">بر پایه {fmtNum(Math.min(12, mySubs.length))} زیرسفارش اخیر؛ تاریخچه روزانه پس از ثبت تاریخ استاندارد فعال می‌شود</p></div>
+                  </div>
+                  {mySubs.length ? <Spark points={mySubs.slice(-12).map((item) => item.sub.total).reverse()} /> : <p className="py-8 text-center text-xs text-[var(--kv-muted)]">هنوز زیرسفارشی برای نمایش وجود ندارد.</p>}
+                </Card>
+                <Card className="p-5">
+                  <p className="text-[15px] font-extrabold">وضعیت زیرسفارش‌ها</p>
+                  <p className="mb-4 text-xs text-[var(--kv-muted)]">به‌روزرسانی لحظه‌ای از بازارچه عمده</p>
+                  <Donut segs={[
+                    { v: pendingSubs.length, c: "var(--kv-accent)", l: "در انتظار تأیید تو" },
+                    { v: mySubs.filter((i) => i.sub.status === "approved").length, c: "#2F5A9E", l: "منتظر پرداخت خریدار" },
+                    { v: mySubs.filter((i) => ["paid", "preparing"].includes(i.sub.status)).length, c: "#D6A94E", l: "آماده‌سازی" },
+                    { v: mySubs.filter((i) => i.sub.status === "shipped").length, c: "var(--kv-success)", l: "ارسال شده" },
+                    { v: mySubs.filter((i) => isTerminal(i.sub.status)).length, c: "var(--kv-surface-3)", l: "بسته‌شده" },
+                  ]} />
+                </Card>
+              </div>
+
+              <div className="grid gap-5 xl:grid-cols-2">
+                <Card className="p-0">
+                  <div className="flex items-center justify-between p-5 pb-3">
+                    <p className="text-[15px] font-extrabold">صف اقدام تو</p>
+                    <Btn variant="ghost" size="sm" onClick={() => setTab("rfq")}>همه</Btn>
+                  </div>
+                  <div className="space-y-2 px-5 pb-5">
+                    {mySubs.filter((i) => ["pending_supplier", "paid", "preparing"].includes(i.sub.status)).slice(0, 4).map(({ parent, sub }) => (
+                      <button key={sub.id} onClick={() => setTab(sub.status === "pending_supplier" ? "rfq" : "orders")} className="flex w-full items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
+                        <div><p className="text-[13px] font-bold tabular-nums">{sub.id}</p><p className="text-xs text-[var(--kv-muted)]">{parent.buyer} · {fmtMoney(sub.total)}</p></div>
+                        <Status value={SUB_STATUS[sub.status].label} />
+                      </button>
+                    ))}
+                    {mySubs.filter((i) => ["pending_supplier", "paid", "preparing"].includes(i.sub.status)).length === 0 && <p className="py-4 text-center text-[13px] text-[var(--kv-muted)]">اقدامی معوق نداری.</p>}
+                  </div>
+                </Card>
+                <Card className="p-5">
+                  <p className="text-[15px] font-extrabold">هشدارهای موجودی</p>
+                  <div className="mt-3 space-y-2.5">
+                    {[["پیراهن کلاسیک — کرمی / M", "فقط ۶ عدد مانده", 14], ["پیراهن آجری — L", "۹ عدد مانده", 28], ["شلوار راسته — شنی / XL", "۱۱ عدد مانده", 35]].map(([t2, d2, w]) => (
+                      <div key={t2 as string} className="rounded-[12px] border border-[#B98A2F]/25 bg-[#B98A2F]/[0.06] px-4 py-3">
+                        <div className="flex items-center justify-between text-[13px]"><b>{t2 as string}</b><span className="flex items-center gap-1 text-xs font-bold text-[#8A6420]"><AlertTriangle size={13} />{d2 as string}</span></div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--kv-surface-3)]"><div className="h-full rounded-full bg-[#B98A2F]" style={{ width: `${w}%` }} /></div>
+                      </div>
+                    ))}
+                    <Btn variant="soft" size="sm" className="w-full" onClick={() => setTab("inventory")}>مدیریت موجودی</Btn>
+                  </div>
+                </Card>
+              </div>
+            </div>
+          )}
+
+          {tab === "products" && (
+            <div className="animate-[fadeUp_0.35s_ease]">
+              <div className="mb-4 flex flex-wrap items-center gap-2.5">
+                <div className="min-w-[200px] flex-1"><SearchBox placeholder="جست‌وجوی محصول…" /></div>
+                <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setEditorSec("base"); setTab("editor"); }}>افزودن محصول جدید</Btn>
+              </div>
+              <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 px-4 py-3 text-[12.5px]">
+                <span className="font-bold">مسیر انتشار:</span>
+                <span className="text-[var(--kv-muted)]">ثبت محصول ← بازبینی کلبه (حداکثر یک روز کاری) ← نمایش در بازارچه عمده در بخش «سایر تأمین‌کنندگان»</span>
+                <span className="mr-auto tabular-nums text-[var(--kv-muted)]">{fmtNum(mine.filter((p) => p.status === "published").length)} منتشر · {fmtNum(mine.filter((p) => p.status === "pending").length)} در انتظار</span>
+              </div>
+              <Card className="overflow-hidden">
+                <div className="kv-scroll overflow-x-auto">
+                  <table className="kv-table min-w-[860px]">
+                    <thead><tr><th>محصول</th><th>کد</th><th>قیمت سری از</th><th>حداقل سفارش</th><th>موجودی</th><th>وضعیت در بازارچه</th><th>نمایش</th><th></th></tr></thead>
+                    <tbody>
+                      {mine.map((p) => {
+                        const st = p.status ?? "published";
+                        const live = st === "published";
+                        return (
+                          <tr key={p.id}>
+                            <td><span className="flex items-center gap-3"><img src={p.images[0]} alt="" className="h-11 w-10 rounded-lg object-cover" /><b>{p.name}</b></span></td>
+                            <td className="tabular-nums text-[var(--kv-muted)]" dir="ltr">{p.sku}</td>
+                            <td className="tabular-nums font-bold">{fmtMoney(p.wholesaleFrom)}</td>
+                            <td className="tabular-nums">{fmtNum(p.moq)} سری</td>
+                            <td className="tabular-nums">{fmtNum(p.stock)}</td>
+                            <td><Status value={st === "published" ? "فعال" : STATUS_LABEL[st]} /></td>
+                            <td>
+                              {st === "published" || st === "draft"
+                                ? <Switch on={live} onToggle={() => { setStatus(p.id, live ? "draft" : "published"); flash(live ? `${p.name} از بازارچه خارج شد` : `${p.name} دوباره در بازارچه نمایش داده می‌شود`); }} />
+                                : <span className="text-xs text-[var(--kv-faint)]">{st === "pending" ? "منتظر کلبه" : "—"}</span>}
+                            </td>
+                            <td><button onClick={() => chooseSeriesProduct(p.id)} className="text-[13px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت سری‌ها</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {tab === "series" && (
+            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[235px_minmax(0,1fr)]">
+              <div className="space-y-2">
+                <p className="mb-2 text-[13px] font-bold">محصولات شما</p>
+                {mine.map((p) => <button key={p.id} onClick={() => chooseSeriesProduct(p.id)} className={cn("flex w-full items-center gap-3 rounded-[12px] border p-2.5 text-right transition-colors", seriesProduct?.id === p.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)] bg-[var(--kv-surface)] hover:border-[var(--kv-line-strong)]")}><img src={p.images[0]} alt="" className="h-14 w-11 shrink-0 rounded-[8px] object-cover" /><span className="min-w-0"><b className="block truncate text-[12.5px]">{p.name}</b><span className="text-[11px] text-[var(--kv-muted)]">{fmtNum(p.series.length)} سری · {p.status === "published" ? "منتشر" : STATUS_LABEL[p.status ?? "pending"]}</span></span></button>)}
+              </div>
+              {seriesProduct && <Card className="h-fit p-5 md:p-6">
+                <div className="mb-5 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--kv-line)] pb-4"><div><p className="text-[16px] font-extrabold">{seriesProduct.name}</p><p className="mt-1 text-[12px] text-[var(--kv-muted)]">{seriesProduct.sku} · {fmtNum(seriesProduct.colors.length)} رنگ · موجودی کل {fmtNum(seriesProduct.stock)} تکه</p></div><Status value={seriesProduct.status === "published" ? "فعال" : STATUS_LABEL[seriesProduct.status ?? "pending"]} /></div>
+                {ops.seriesTemplates.some((t) => t.ownerId === ME.id) && <div className="mb-5 flex flex-wrap items-center gap-2 rounded-[12px] bg-[var(--kv-surface-2)]/50 p-3"><span className="text-[12.5px] font-bold">افزودن از قالب:</span>{ops.seriesTemplates.filter((t) => t.ownerId === ME.id).map((t) => <Btn key={t.id} size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => setWorkingSeries([...workingSeries, { id: `from-${t.id}-${Date.now()}`, name: workingSeries.some((s) => s.name === t.name) ? `${t.name} ۲` : t.name, composition: { ...t.composition }, pieces: Object.values(t.composition).reduce((a, b) => a + b, 0), moqSeries: t.defaultMoq, pricePerSeries: seriesProduct.wholesaleFrom, available: true, colorIds: seriesProduct.colors.map((c) => c.id) }])}>{t.name}</Btn>)}</div>}
+                <SeriesBuilder key={`${seriesProduct.id}-${workingSeries.length}`} value={workingSeries} onChange={setWorkingSeries} colors={seriesProduct.colors} />
+                {restrict.noPublish && <p className="mt-3 text-[12px] text-[var(--kv-danger)]">ویرایش محصول برای حساب شما محدود شده است: {restrict.reason}</p>}
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--kv-line)] pt-5"><p className="max-w-[48ch] text-[12px] leading-6 text-[var(--kv-muted)]">بعد از ذخیره تغییراتِ محصول منتشرشده، کلبه سری‌بندی تازه را بازبینی می‌کند. سفارش‌های ثبت‌شده قبلی با ترکیب و قیمت زمان خرید باقی می‌مانند.</p><Btn variant="accent" disabled={restrict.noPublish || !workingSeries.length || workingSeries.some((s) => !s.name.trim() || !s.pieces || s.pricePerSeries < 1 || s.moqSeries < 1)} onClick={() => { updateProductSeries(seriesProduct.id, workingSeries); flash("سری‌بندی ذخیره و برای بازبینی کلبه ارسال شد."); }}>ذخیره سری‌بندی محصول</Btn></div>
+              </Card>}
+            </div>
+          )}
+
+          {tab === "editor" && (
+            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[220px_1fr_300px]">
+              <Card className="h-fit p-2.5">
+                {[["base", "اطلاعات پایه"], ["media", "رسانه"], ["variant", "ویژگی‌ها و واریانت"], ["series", "سری‌ها و قیمت"], ["stock", "موجودی و فروش"], ["review", "بازبینی"]].map(([v, l], i) => (
+                  <button key={v} onClick={() => setEditorSec(v)} className={cn("flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold", editorSec === v ? "bg-[var(--kv-surface-2)]" : "text-[var(--kv-muted)] hover:text-[var(--kv-ink)]")}>
+                    <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold", editorSec === v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "bg-[var(--kv-surface-2)]")}>{(i + 1).toLocaleString("fa-IR")}</span>{l}
+                  </button>
+                ))}
+              </Card>
+
+              <Card className="h-fit p-6">
+                {editorSec === "base" && (
+                  <div className="space-y-4">
+                    <Field label="نام محصول"><Input placeholder="مثلاً پیراهن لینن یقه‌انگلیسی" value={form.name} onChange={(v) => setForm({ ...form, name: v })} /></Field>
+                    <Field label="دسته‌بندی"><Select options={["پیراهن", "شومیز", "کت و بلیزر", "مانتو و بارانی", "پالتو", "شلوار", "کفش", "اکسسوری", "بافت"]} value={form.category} onChange={(v) => { setForm({ ...form, category: v }); setDraftSeries([]); }} /></Field>
+                    <Field label="توضیح کوتاه" hint="در کارت محصول بازارچه عمده نمایش داده می‌شود"><Input placeholder="پیراهن لینن با دوخت تمیز…" value={form.desc} onChange={(v) => setForm({ ...form, desc: v })} /></Field>
+                    <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-4 py-3 text-[12.5px] leading-6 text-[var(--kv-muted)]">
+                      بعد از ارسال، محصول با وضعیت «در انتظار تأیید» برای تیم کیفیت کلبه فرستاده می‌شود و پس از تأیید، خودکار در بازارچه عمده نمایش داده می‌شود.
+                    </div>
+                    <Btn variant="accent" size="sm" onClick={() => setEditorSec("series")}>بعدی: تعریف سری‌ها</Btn>
+                  </div>
+                )}
+                {editorSec === "media" && (
+                  <div>
+                    <div className="grid grid-cols-4 gap-2.5">
+                      {[IMG.shirtsColor, IMG.shirtRack, IMG.greenShirt, IMG.whiteShirts].map((im, i) => (
+                        <div key={i} className="relative overflow-hidden rounded-[12px] border border-[var(--kv-line)]"><img src={im} alt="" className="aspect-square w-full object-cover" />{i === 0 && <span className="absolute bottom-1.5 right-1.5 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}</div>
+                      ))}
+                    </div>
+                    <button onClick={() => flash("تصاویر انتخاب شد")} className="mt-3 flex w-full flex-col items-center gap-2 rounded-[14px] border border-dashed border-[var(--kv-line-strong)] py-8 text-[13px] font-semibold text-[var(--kv-muted)] hover:border-[var(--kv-accent)] hover:text-[var(--kv-accent)]">
+                      <Upload size={20} />آپلود تصاویر جدید <span className="text-xs font-normal">JPG یا PNG تا ۵ مگابایت</span>
+                    </button>
+                  </div>
+                )}
+                {editorSec === "variant" && (
+                  <div className="space-y-4">
+                    <p className="text-[13px] font-bold">رنگ‌های قابل عرضه</p>
+                    <div className="flex flex-wrap gap-2">{Object.values(COLORS).map((color) => <button key={color.id} onClick={() => {
+                      if (draftColorIds.includes(color.id) && draftColorIds.length === 1) return;
+                      const next = draftColorIds.includes(color.id) ? draftColorIds.filter((id) => id !== color.id) : [...draftColorIds, color.id];
+                      setDraftColorIds(next);
+                      setDraftSeries(draftSeries.map((series) => ({ ...series, colorIds: series.colorIds?.filter((id) => next.includes(id)) })));
+                    }} className={cn("flex min-h-10 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold", draftColorIds.includes(color.id) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}><span className="h-4 w-4 rounded-full border border-black/15" style={{ background: color.hex }} />{color.name}</button>)}</div>
+                    <p className="text-[12px] leading-6 text-[var(--kv-muted)]">برای هر سری می‌توانید مشخص کنید از بین این رنگ‌ها کدام قابل سفارش است. ترکیب سایز در بخش سری‌ها تنظیم می‌شود.</p>
+                  </div>
+                )}
+                {editorSec === "series" && (
+                  <SeriesTemplatePicker ownerId={ME.id} category={form.category} value={draftSeries} onChange={setDraftSeries} colors={draftColorIds.map((id) => COLORS[id]).filter(Boolean)} onManage={() => setTab("templates")} />
+                )}
+                {editorSec === "stock" && (
+                  <div className="space-y-4">
+                    <Field label="موجودی اولیه (تکه)" hint="برای سفارش حداقلِ یک سری فعال باید کافی باشد."><Input value={form.stock} onChange={(v) => setForm({ ...form, stock: v.replace(/[^0-9]/g, "") })} placeholder="۲۴۰" /></Field>
+                    {offeredDraft.length > 0 && <p className="text-[12px] text-[var(--kv-muted)]">کمترین تعداد لازم برای حداقل سفارش: {fmtNum(Math.min(...offeredDraft.map((s) => s.pieces * s.moqSeries)))} تکه</p>}
+                  </div>
+                )}
+                {editorSec === "review" && (
+                  <div className="space-y-3 text-[13px]">
+                    {[["نام و دسته‌بندی", !!form.name.trim()], ["دست‌کم یک رنگ", draftColorIds.length > 0], ["سری قابل سفارش با قیمت و MOQ", offeredDraft.length > 0], ["موجودی کافی", offeredDraft.length > 0 && Number(form.stock) >= Math.min(...offeredDraft.map((s) => s.pieces * s.moqSeries))]].map(([t2, ok]) => (
+                      <p key={t2 as string} className="flex items-center gap-2"><span className={cn("flex h-6 w-6 items-center justify-center rounded-full", ok ? "bg-[#E7F0E6] text-[#3E6B4A]" : "bg-[#F6EBD3] text-[#8A6420]")}>{ok ? <Check size={13} /> : <AlertTriangle size={13} />}</span>{t2 as string}</p>
+                    ))}
+                    <p className="text-[12px] text-[var(--kv-muted)]">{fmtNum(draftSeries.length)} سری تعریف شده · قیمت پایه: {offeredDraft.length ? fmtMoney(Math.min(...offeredDraft.map((s) => s.pricePerSeries))) : "—"}</p>
+                    <Btn variant="accent" size="sm" disabled={!canSubmitProduct} icon={<Send size={15} />} onClick={submitProduct}>ارسال محصول و سری‌ها برای بازبینی کلبه</Btn>
+                  </div>
+                )}
+                <div className="mt-6 border-t border-[var(--kv-line)] pt-5">
+                  <Btn variant="ghost" size="sm" onClick={() => setTab("products")}>بازگشت به فهرست</Btn>
+                </div>
+              </Card>
+
+              <Card className="h-fit p-5">
+                <p className="text-sm font-bold">پیش‌نمایش کارت بازارچه</p>
+                <img src={IMG.shirtsColor} alt="" className="mt-3 aspect-[4/3] w-full rounded-[12px] object-cover" />
+                <p className="mt-3 text-[13.5px] font-bold">{form.name.trim() || "نام محصول"}</p>
+                <p className="text-xs text-[var(--kv-muted)]">تأمین‌کننده: {ME.name} · {form.category}</p>
+                <div className="mt-3 space-y-1.5 text-[12.5px]">
+                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">قیمت سری از</span><b className="tabular-nums">{offeredDraft.length ? fmtMoney(Math.min(...offeredDraft.map((s) => s.pricePerSeries))) : "—"}</b></div>
+                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">حداقل سفارش</span><b className="tabular-nums">{offeredDraft.length ? `${fmtNum(Math.min(...offeredDraft.map((s) => s.moqSeries)))} سری` : "—"}</b></div>
+                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تعداد سری</span><b className="tabular-nums">{fmtNum(draftSeries.length)}</b></div>
+                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">وضعیت</span><Status value="در انتظار تأیید" /></div>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {tab === "rfq" && (
+            <div className="animate-[fadeUp_0.35s_ease]">
+              <div className="mb-4 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 px-4 py-3 text-[12.5px] leading-6 text-[var(--kv-muted)]">
+                هر سفارش عمده اول به‌صورت درخواست به تو می‌رسد. اگر امکان تأمین داری تأیید کن تا خریدار پرداخت کند؛ بعد از پرداخت، آماده‌سازی و ارسال را از «سفارش‌های عمده» پیش ببر.
+              </div>
+              <SubOrderDesk items={pendingSubs} actor={ME.name} onTransition={transition} emptyTitle="درخواست تازه‌ای نیست" emptyDesc="وقتی خریدار عمده برای محصولات منتشرشده‌ات سفارش ثبت کند، اینجا نمایش داده می‌شود." />
+            </div>
+          )}
+
+          {tab === "orders" && (
+            <div className="animate-[fadeUp_0.35s_ease]">
+              <SubOrderDesk items={mySubs.filter((i) => i.sub.status !== "pending_supplier")} actor={ME.name} onTransition={transition} emptyTitle="سفارشی در جریان نیست" emptyDesc="سفارش‌های تأییدشده و مراحل پرداخت، آماده‌سازی و ارسال اینجا دنبال می‌شود." />
+            </div>
+          )}
+
+          {tab === "inventory" && (
+            <div className="animate-[fadeUp_0.35s_ease]">
+              <div className="mb-4 max-w-sm"><SearchBox value={invQ} onChange={setInvQ} placeholder="جست‌وجو در موجودی…" /></div>
+              <Card className="overflow-hidden">
+                <div className="kv-scroll overflow-x-auto">
+                  <table className="kv-table min-w-[820px]">
+                    <thead><tr><th>محصول</th><th>رنگ</th><th>سایز</th><th>موجودی</th><th>رزرو</th><th>قابل فروش</th><th>وضعیت</th></tr></thead>
+                    <tbody>
+                      {[
+                        ["پیراهن کلاسیک نیم‌آستین", "آجری", "M", 42, 8, 34, "فعال"],
+                        ["پیراهن کلاسیک نیم‌آستین", "مشکی", "L", 38, 12, 26, "فعال"],
+                        ["پیراهن کلاسیک نیم‌آستین", "کرمی", "M", 6, 2, 4, "موجودی محدود"],
+                        ["پیراهن چهارخانه مشکی", "مشکی", "L", 127, 30, 97, "فعال"],
+                        ["پیراهن چهارخانه مشکی", "سرمه‌ای", "XL", 64, 12, 52, "فعال"],
+                        ["شلوار پارچه‌ای راسته", "شنی", "XL", 11, 0, 11, "موجودی محدود"],
+                      ].filter((r) => !invQ.trim() || (r[0] as string).includes(invQ.trim())).map((r, i) => (
+                        <tr key={i}>
+                          <td><b>{r[0]}</b></td><td>{r[1]}</td><td className="font-bold">{r[2]}</td>
+                          <td className="tabular-nums">{fmtNum(r[3] as number)}</td><td className="tabular-nums">{fmtNum(r[4] as number)}</td>
+                          <td className="font-bold tabular-nums">{fmtNum(r[5] as number)}</td><td><Status value={r[6] as string} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {tab === "finance" && <div className="animate-[fadeUp_0.35s_ease]"><SupplierWallet supplierId={ME.id} supplierName={ME.name} noWithdraw={restrict.noWithdraw} onBank={() => setTab("bank")} /></div>}
+          {tab === "bank" && <div className="animate-[fadeUp_0.35s_ease]"><SupplierBankForm supplierId={ME.id} /></div>}
+          {tab === "templates" && <div className="animate-[fadeUp_0.35s_ease]"><SeriesTemplateManager ownerId={ME.id} ownerLabel={ME.name} readOnly={restrict.noPublish} /></div>}
+          {tab === "support" && <div className="animate-[fadeUp_0.35s_ease]"><TicketCenter perspective="owner" ownerId={ME.id} ownerName={ME.name} ownerType="supplier" /></div>}
+          {(restrict.noPublish || restrict.noWithdraw) && tab === "dashboard" && <div role="alert" className="mt-4 rounded-[14px] border border-[var(--kv-danger)]/30 bg-[var(--kv-danger)]/[0.06] p-4 text-[13px] leading-7"><b>محدودیت فعال روی حساب:</b> {[restrict.noPublish && "انتشار و ویرایش محصول", restrict.noWithdraw && "برداشت از کیف پول"].filter(Boolean).join("، ")} · {restrict.reason}</div>}
+          {tab === "finance-legacy" && (
+            <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
+              <div className="grid gap-3 sm:grid-cols-3">
+                {[["موجودی قابل برداشت", fmtMoney(86000000), <CircleDollarSign key="a" size={18} />], ["در انتظار تسویه", fmtMoney(100000000), <Clock key="b" size={18} />], ["بلوکه تضمین", fmtMoney(24000000), <Check key="c" size={18} />]].map(([l, v, icon]) => (
+                  <Card key={l as string} className="p-5"><span className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-[var(--kv-surface-2)] text-[var(--kv-accent)]">{icon as React.ReactNode}</span><p className="mt-3 text-lg font-extrabold tabular-nums">{v as string}</p><p className="text-[13px] text-[var(--kv-muted)]">{l as string}</p></Card>
+                ))}
+              </div>
+              <div className="grid gap-5 xl:grid-cols-2">
+                <Card className="p-5">
+                  <div className="mb-3 flex items-center justify-between"><p className="text-[15px] font-extrabold">تاریخچه تسویه</p><Btn variant="soft" size="sm" onClick={() => flash("درخواست برداشت ثبت شد")}>درخواست برداشت</Btn></div>
+                  {[["ST-1188", fmtMoney(42000000), "شنبه گذشته · موفق"], ["ST-1174", fmtMoney(38500000), "دو هفته پیش · موفق"], ["ST-1161", fmtMoney(51000000), "ماه گذشته · موفق"]].map(([id, v, d2]) => (
+                    <div key={id} className="mb-2 flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><div><p className="text-[13px] font-bold tabular-nums">{id}</p><p className="text-xs text-[var(--kv-muted)]">{d2}</p></div><b className="tabular-nums">{v}</b></div>
+                  ))}
+                </Card>
+                <Card className="p-5">
+                  <p className="mb-3 text-[15px] font-extrabold">زیرسفارش‌های پرداخت‌شده (در انتظار تسویه کلبه)</p>
+                  {mySubs.filter((i) => ["paid", "preparing", "shipped", "delivered"].includes(i.sub.status)).map(({ parent, sub }) => (
+                    <div key={sub.id} className="mb-2 flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><div><p className="text-[13px] font-bold tabular-nums">{sub.id}</p><p className="text-xs text-[var(--kv-muted)]">{parent.buyer} · کارمزد کلبه ۸٪</p></div><b className="tabular-nums">{fmtMoney(Math.round(sub.total * 0.92))}</b></div>
+                  ))}
+                </Card>
+              </div>
+            </div>
+          )}
+
+          {tab === "production" && (
+            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_340px]">
+              <Card className="overflow-hidden">
+                <div className="kv-scroll overflow-x-auto">
+                  <table className="kv-table min-w-[680px]">
+                    <thead><tr><th>سفارش تولید</th><th>محصول</th><th>تعداد</th><th>پیشرفت</th><th>وضعیت</th></tr></thead>
+                    <tbody>
+                      {[["PR-331", "پیراهن آجری — سری کامل", "۲۰۰ تکه", 72, "در حال بررسی"], ["PR-328", "پیراهن چهارخانه — مشکی", "۱۲۰ تکه", 100, "تحویل شد"], ["PR-325", "شلوار راسته — شنی", "۳۰۰ تکه", 35, "در حال آماده‌سازی"]].map((r) => (
+                        <tr key={r[0] as string}>
+                          <td className="font-bold tabular-nums">{r[0]}</td><td>{r[1]}</td><td className="tabular-nums">{r[2]}</td>
+                          <td><span className="flex items-center gap-2"><span className="h-1.5 w-28 overflow-hidden rounded-full bg-[var(--kv-surface-3)]"><span className="block h-full rounded-full bg-[var(--kv-accent)]" style={{ width: `${r[3]}%` }} /></span><b className="text-xs tabular-nums">{fmtNum(r[3] as number)}٪</b></span></td>
+                          <td><Status value={r[4] as string} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+              <Card className="h-fit p-5">
+                <p className="flex items-center gap-2 text-[15px] font-extrabold"><FlaskConical size={17} className="text-[var(--kv-accent)]" />کنترل کیفیت</p>
+                <div className="mt-3"><Timeline items={[
+                  { t: "نمونه تأیید شد", d: "پیراهن آجری — سایز M", time: "امروز", done: true },
+                  { t: "بازبینی خط دوخت", d: "۲ مورد اصلاح جزئی", time: "دیروز", done: true },
+                  { t: "تست شست‌وشو", d: "در انتظار آزمایشگاه", time: "فردا", done: false },
+                ]} /></div>
+              </Card>
+            </div>
+          )}
+
+          {tab === "settings" && (
+            <Card className="max-w-[640px] p-6 animate-[fadeUp_0.35s_ease]">
+              <div className="space-y-4">
+                <Field label="نام فروشگاه"><Input placeholder="نیلگون" /></Field>
+                <Field label="شهر و استان"><Input placeholder="تهران" /></Field>
+                <Field label="شماره تماس تجاری"><Input placeholder="۰۲۱-…" /></Field>
+                <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span className="text-[13px] font-bold">اعلان زیرسفارش جدید (پیامک)</span><Switch on onToggle={() => {}} /></div>
+                <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span className="text-[13px] font-bold">تأیید خودکار سفارش‌های زیر ۵ سری</span><Switch on={false} onToggle={() => {}} /></div>
+                <Btn variant="accent" size="sm" onClick={() => flash("تنظیمات ذخیره شد")}>ذخیره تنظیمات</Btn>
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {toast && (
+        <div className="fixed bottom-6 right-1/2 z-[90] translate-x-1/2 animate-[scaleIn_0.25s_ease]">
+          <div className="kv-glass flex items-center gap-2.5 rounded-[14px] px-5 py-3.5 text-[13.5px] font-bold"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--kv-success)] text-white"><Check size={15} /></span>{toast}</div>
+        </div>
+      )}
+    </div>
+  );
+}
