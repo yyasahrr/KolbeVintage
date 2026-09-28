@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Radar, Package, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check, X, Ban, Eye,
-  ShieldCheck, Sun, Moon, LogOut, Lock, Warehouse, Users, Crown, ShoppingBag, Tags, Truck, Contact,
+  ShieldCheck, Sun, Moon, LogOut, Warehouse, Users, Crown, ShoppingBag, Tags, Truck, Contact,
   LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2,
 } from "lucide-react";
 import { SUPPLIERS, STATUS_LABEL, fmtMoney, fmtNum } from "../data/catalog";
@@ -18,46 +18,88 @@ import { SeriesTemplateManager } from "./series-templates";
 import { useOps } from "../data/ops";
 import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent } from "lucide-react";
 import { cn } from "../utils/cn";
+import { AdminApiError, apiCall, refreshAdminToken, type ApiRequest } from "../data/admin-api";
+import { AdminServerOrders } from "./admin-server-orders";
 
 /* ====== Standalone app: KOLBE Admin Console (internal; never linked from the public site) ====== */
 export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("kolbe-admin") === "1");
-  const [step, setStep] = useState<"cred" | "otp">("cred");
-  if (!authed) {
+  const [token, setToken] = useState<string | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const saveToken = (value: string | null) => { tokenRef.current = value; setToken(value); };
+  useEffect(() => {
+    if (sessionStorage.getItem("kolbe-admin-auth") !== "1") { setChecking(false); return; }
+    let active = true;
+    refreshAdminToken().then(async ({ accessToken }) => {
+      const me = await apiCall<{ permissions: string[] }>("/auth/me", {}, accessToken);
+      if (active && me.permissions.includes("orders:read")) saveToken(accessToken);
+    }).catch(() => { sessionStorage.removeItem("kolbe-admin-auth"); }).finally(() => { if (active) setChecking(false); });
+    return () => { active = false; };
+  }, []);
+  const request = useCallback<ApiRequest>(async (path, init) => {
+    let current = tokenRef.current;
+    if (!current) throw new AdminApiError("نشست مدیریت منقضی شده است.", 401);
+    try { return await apiCall(path, init, current); }
+    catch (error) {
+      if (!(error instanceof AdminApiError) || error.status !== 401) throw error;
+      try {
+        current = (await refreshAdminToken()).accessToken;
+        tokenRef.current = current;
+        setToken(current);
+        return await apiCall(path, init, current);
+      } catch (retryError) {
+        tokenRef.current = null; setToken(null); sessionStorage.removeItem("kolbe-admin-auth");
+        throw retryError;
+      }
+    }
+  }, []);
+  const login = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setSubmitting(true); setAuthError(null);
+    try {
+      const result = await apiCall<{ accessToken: string }>("/auth/login", { method: "POST", body: JSON.stringify({ identity: email.trim(), password }) });
+      const me = await apiCall<{ permissions: string[] }>("/auth/me", {}, result.accessToken);
+      if (!me.permissions.includes("orders:read")) throw new Error("این حساب دسترسی مدیریت سفارش‌ها را ندارد.");
+      saveToken(result.accessToken); sessionStorage.setItem("kolbe-admin-auth", "1"); setPassword("");
+    } catch (error) { setAuthError(error instanceof Error ? error.message : "ورود ناموفق بود."); }
+    finally { setSubmitting(false); }
+  };
+  const logout = async () => {
+    await apiCall("/auth/logout", { method: "POST" }).catch(() => undefined);
+    saveToken(null); sessionStorage.removeItem("kolbe-admin-auth"); setPassword("");
+  };
+  if (checking) return <div role="status" className="flex min-h-screen items-center justify-center text-sm text-[var(--kv-muted)]">در حال بررسی نشست مدیریت…</div>;
+  if (!token) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--kv-bg)] px-4">
         <div className="w-full max-w-[400px]">
           <div className="text-center">
             <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#1B2A4A] text-white"><ShieldCheck size={22} /></span>
             <h1 className="mt-4 text-[22px] font-extrabold">کنسول مدیریت کلبه</h1>
-            <p className="mt-1.5 text-[13px] text-[var(--kv-muted)]">فقط برای کارکنان مجاز · همه ورودها ثبت می‌شوند</p>
+            <p className="mt-1.5 text-[13px] text-[var(--kv-muted)]">ورود با حساب ثبت‌شده در سرور</p>
           </div>
           <Card className="mt-6 p-6">
-            {step === "cred" ? (
-              <div className="space-y-4">
-                <Field label="ایمیل سازمانی"><Input placeholder="name@kolbe.ir" /></Field>
-                <Field label="گذرواژه"><Input placeholder="••••••••" icon={<Lock size={15} />} /></Field>
-                <Btn variant="dark" size="lg" className="w-full" onClick={() => setStep("otp")}>ادامه</Btn>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <Field label="کد احراز دومرحله‌ای" hint="کد ۶ رقمی اپ Authenticator"><Input placeholder="۰۰۰ ۰۰۰" /></Field>
-                <Btn variant="dark" size="lg" className="w-full" onClick={() => { sessionStorage.setItem("kolbe-admin", "1"); setAuthed(true); }}>ورود به کنسول</Btn>
-                <button onClick={() => setStep("cred")} className="w-full text-center text-[13px] font-semibold text-[var(--kv-muted)]">بازگشت</button>
-              </div>
-            )}
+            <form onSubmit={(event) => void login(event)} className="space-y-4">
+              <label className="block text-sm font-semibold">ایمیل یا شماره همراه<input type="text" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} className="mt-2 w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-bg)] px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-[var(--kv-accent)]" /></label>
+              <label className="block text-sm font-semibold">گذرواژه<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-bg)] px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-[var(--kv-accent)]" /></label>
+              {authError && <p role="alert" className="text-sm text-[var(--kv-danger)]">{authError}</p>}
+              <button type="submit" disabled={submitting} className="min-h-11 w-full rounded-lg bg-[var(--kv-action)] px-4 font-bold text-[var(--kv-bg)] focus-visible:outline-2 focus-visible:outline-[var(--kv-accent)] disabled:opacity-50">{submitting ? "در حال ورود…" : "ورود به کنسول"}</button>
+            </form>
           </Card>
           <button onClick={() => setDark(!dark)} className="mx-auto mt-5 flex items-center gap-1.5 text-xs font-semibold text-[var(--kv-muted)]">{dark ? <Sun size={13} /> : <Moon size={13} />}{dark ? "حالت روشن" : "حالت تیره"}</button>
         </div>
       </div>
     );
   }
-  return <AdminConsole dark={dark} setDark={setDark} onLogout={() => { sessionStorage.removeItem("kolbe-admin"); setAuthed(false); setStep("cred"); }} />;
+  return <AdminConsole dark={dark} setDark={setDark} request={request} onLogout={() => void logout()} />;
 }
 
 type NavItem = { g: string } | { v: string; label: string; icon: React.ReactNode; badge?: number };
 
-function AdminConsole({ dark, setDark, onLogout }: { dark: boolean; setDark: (v: boolean) => void; onLogout: () => void }) {
+function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; setDark: (v: boolean) => void; request: ApiRequest; onLogout: () => void }) {
   const store = useStore();
   const { products, orders, buyers, plans, accounts, setStatus, transitionSub, setBuyer, upsertPlan, removePlan, setTicketStatus } = store;
   const pending = products.filter((p) => p.status === "pending");
@@ -70,7 +112,7 @@ function AdminConsole({ dark, setDark, onLogout }: { dark: boolean; setDark: (v:
   const ops = useOps();
   const customerTickets = accounts.flatMap((account) => account.tickets.map((ticket) => ({ account, ticket })));
 
-  const [tab, setTab] = useState("tower");
+  const [tab, setTab] = useState("server-orders");
   const [drawer, setDrawer] = useState(false);
   const [side, setSide] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -82,6 +124,8 @@ function AdminConsole({ dark, setDark, onLogout }: { dark: boolean; setDark: (v:
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
   const nav: NavItem[] = [
+    { g: "دادهٔ واقعی" },
+    { v: "server-orders", label: "سفارش‌های سرور", icon: <ClipboardList size={17} /> },
     { g: "نمای کلی" },
     { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: pending.length + kolbePending.length + pendingBuyers.length || undefined },
     { g: "بازار عمده" },
@@ -110,6 +154,7 @@ function AdminConsole({ dark, setDark, onLogout }: { dark: boolean; setDark: (v:
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
   ];
   const titles: Record<string, [string, string]> = {
+    "server-orders": ["سفارش‌های واقعی", "خواندن و مدیریت سفارش‌های ثبت‌شده در PostgreSQL"],
     tower: ["برج کنترل عملیات", "همه صف‌ها بر اساس فوریت"],
     worders: ["سفارش‌های عمده در جریان", "سفارش مادر و زیرسفارش‌های هر تأمین‌کننده"],
     kolbe: ["میز عملیات کلبه", "تأیید، آماده‌سازی و ارسال زیرسفارش‌های محصولات خود کلبه"],
@@ -210,6 +255,9 @@ function AdminConsole({ dark, setDark, onLogout }: { dark: boolean; setDark: (v:
               <button onClick={() => setTab("tower")} className="kv-press relative flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)]" aria-label="اعلان‌ها"><Bell size={16} />{(pending.length + kolbePending.length) > 0 && <span className="absolute left-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--kv-danger)] px-1 text-[9px] font-bold text-white tabular-nums">{fmtNum(pending.length + kolbePending.length)}</span>}</button>
             </div>
           </div>
+
+          {tab !== "server-orders" && <div role="note" className="mb-4 rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-2 text-xs font-semibold text-[var(--kv-muted)]">پیش‌نمایش رابط: اطلاعات این بخش هنوز به سرور متصل نیست.</div>}
+          {tab === "server-orders" && <AdminServerOrders request={request} />}
 
           {/* ---------- Tower ---------- */}
           {tab === "tower" && (
