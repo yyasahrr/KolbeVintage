@@ -27,6 +27,7 @@ All routes have prefix `/api/v1` except `/health/live` and `/health/ready`.
 | Catalog | `GET /products`, `/wholesale/products`; `POST /products`, `PATCH /products/:id/status` |
 | Warehouse/stock | `POST /warehouses`, `/inventory/adjustments`; `GET /inventory` |
 | Orders | `POST /orders`, `/orders/:id/transitions`; `GET /orders`, `/orders/:id` |
+| Invoices | `POST /invoices`, `/invoices/:id/payments`, `/invoices/:id/cancel`, `/invoices/:id/revisions`; `GET /invoices`, `/invoices/:id` |
 | Plans/membership | `GET /plans`; `POST /plans`, `/memberships` |
 | Payments | `POST /payments/:id/checkout` and `GET /payments/callback` when Zibal is configured |
 | Support | `POST /tickets`, `/tickets/:id/messages`; `GET /tickets`, `/tickets/:id`; status management |

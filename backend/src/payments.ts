@@ -7,6 +7,7 @@ import { one, transaction, type DbPool } from './db.js';
 import { asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { issueInvoiceForOrder } from './invoices.js';
 
 const limitsSchema = z.object({
   sources: z.enum(['all', 'kolbe']).default('all'),
@@ -71,6 +72,7 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
       await client.query("INSERT INTO order_events(id,order_id,from_status,to_status,note) VALUES ($1,$2,'pending_payment','paid',$3)",
         [randomUUID(), intent.order_id, `پرداخت تأیید شد: ${payment.providerReference}`]);
       await outbox(client, 'order.paid', 'order', intent.order_id, { orderId: intent.order_id, paymentIntentId: intent.id });
+      await issueInvoiceForOrder(client, intent.order_id);
     }
     if (intent.membership_id) {
       const membership = await one<{ user_id: string; status: string }>(client,
