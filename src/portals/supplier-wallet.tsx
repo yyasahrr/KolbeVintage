@@ -5,7 +5,7 @@ import { useStore } from "../data/store";
 import { useOps, opsNow, bankFromIban, isValidCard, isValidIban, normalizeIban, type SupplierBank, type Withdrawal } from "../data/ops";
 import { AreaChart, DonutChart, Kpi } from "../components/charts";
 import { Btn, Card, Empty, Field, Input, Status } from "../components/primitives";
-import { apiCall } from "../data/admin-api";
+import { apiClient, walletApi } from "../data/api";
 
 export const MIN_WITHDRAW = 1000000;
 const WD_LABEL: Record<Withdrawal["status"], string> = { requested: "در انتظار", approved: "تأیید شد", paid: "پرداخت شد", rejected: "رد شد" };
@@ -49,9 +49,9 @@ export function SupplierWallet({ supplierId, supplierName, noWithdraw, onBank }:
   const [serverWithdrawals, setServerWithdrawals] = useState<{ id: string; reference: string; amount_rial: string; status: string; destination: unknown; requested_at: string }[]>([]);
   const loadServer = () => {
     if (isDemo) return;
-    apiCall<{ availableRial: string; pendingRial: string; totals: Record<string, string> }>("/wallet").then(setServer).catch(() => setServer(null));
-    apiCall<{ items: typeof serverEntries }>("/wallet/entries?limit=30").then((r) => setServerEntries(r.items)).catch(() => setServerEntries([]));
-    apiCall<{ items: typeof serverWithdrawals }>("/wallet/withdrawals").then((r) => setServerWithdrawals(r.items)).catch(() => setServerWithdrawals([]));
+    apiClient.get<{ availableRial: string; pendingRial: string; totals: Record<string, string> }>("/wallet").then(setServer).catch(() => setServer(null));
+    apiClient.get<{ items: typeof serverEntries }>("/wallet/entries?limit=30").then((r) => setServerEntries(r.items)).catch(() => setServerEntries([]));
+    apiClient.get<{ items: typeof serverWithdrawals }>("/wallet/withdrawals").then((r) => setServerWithdrawals(r.items)).catch(() => setServerWithdrawals([]));
   };
   useEffect(loadServer, [isDemo]);
   const serverBalanceToman = server ? Math.round(Number(server.availableRial) / 10) : null;
@@ -61,11 +61,11 @@ export function SupplierWallet({ supplierId, supplierName, noWithdraw, onBank }:
   const points = w.ledger.map((e) => (run += e.amount));
   const requestServer = async (a: number) => {
     try {
-      await apiCall("/wallet/withdrawals", {
-        method: "POST",
-        headers: { "Idempotency-Key": `wd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` },
-        body: JSON.stringify({ amountRial: String(a * 10), destination: { iban: bank?.iban ?? "" } }),
-      });
+      // Canonical wallet domain: payload + Idempotency-Key are handled by the client.
+      await walletApi.withdraw(
+        { amountRial: String(a * 10), destination: { bankName: bank?.bankName ?? "", iban: bank?.iban ?? "", holderName: bank?.holder ?? "" } },
+        `wd-${crypto.randomUUID().replace(/-/g, "")}`,
+      );
       loadServer();
       setAmount("");
       setMsg({ ok: true, text: "درخواست برداشت روی سرور ثبت شد و پس از تأیید مالی کلبه تسویه می‌شود." });

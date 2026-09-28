@@ -4,7 +4,7 @@ import { useStore } from "../data/store";
 import { BlockRenderer, HeroRenderer } from "../components/cms-render";
 import type { CmsBlock, HeroConfig } from "../data/ops";
 import { Btn, Card, Drawer, Empty, ErrorState, Field, Input, LoadingState, Segmented, Select, Switch, Textarea } from "../components/primitives";
-import { apiCall } from "../data/admin-api";
+import { cmsApi, filesApi, publicApi } from "../data/api";
 import { CmsPanel } from "../components/cms-panel";
 import { cn } from "../utils/cn";
 
@@ -41,10 +41,8 @@ const defaultHero = (): HeroConfig => ({
 async function uploadMedia(file: File, flash: F): Promise<string | null> {
   if (file.size > 10 * 1024 * 1024) { flash("حجم فایل باید کمتر از ۱۰ مگابایت باشد"); return null; }
   try {
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await apiCall<{ id: string; storageKey: string }>("/files", { method: "POST", body: fd } as RequestInit);
-    return res.id;
+    const uploaded = await filesApi.upload(file);   // multipart; browser sets the boundary
+    return uploaded.id;
   } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری فایل"); return null; }
 }
 
@@ -91,19 +89,19 @@ export function CmsCenter({ flash }: { flash: F }) {
   const loadPages = async () => {
     setError(null);
     try {
-      const res = await apiCall<{ items: Page[] }>("/admin/cms/pages");
+      const res = await cmsApi.pages() as { items: Page[] };
       setPages(res.items);
     } catch (e) { setError(e instanceof Error ? e.message : "خطا در دریافت صفحات"); }
   };
   const loadSections = async (pageId: string) => {
     try {
-      const res = await apiCall<{ items: Section[] }>(`/admin/cms/pages/${pageId}/sections`);
+      const res = await cmsApi.sections(pageId) as { items: Section[] };
       setSections(res.items);
     } catch { setSections([]); }
   };
   const loadWidget = async () => {
     try {
-      const res = await apiCall<{ widget: typeof widget }>("/site/support-widget");
+      const res = await publicApi.get<{ widget: typeof widget }>("/site/support-widget");
       setWidget(res.widget);
     } catch { /* keep empty draft */ }
   };
@@ -122,8 +120,8 @@ export function CmsCenter({ flash }: { flash: F }) {
     if (!homePage || !h) return;
     setBusy(true);
     try {
-      if (heroSection) await apiCall(`/admin/cms/sections/${heroSection.id}`, { method: "PATCH", body: JSON.stringify({ title: "هیرو صفحه اصلی", payload: h, visible: true }) });
-      else await apiCall(`/admin/cms/pages/${homePage.id}/sections`, { method: "POST", body: JSON.stringify({ componentCode: "hero", title: "هیرو صفحه اصلی", payload: h, visible: true }) });
+      if (heroSection) await cmsApi.updateSection(heroSection.id, { title: "هیرو صفحه اصلی", payload: h, visible: true });
+      else await cmsApi.createSection(homePage.id, { componentCode: "hero", title: "هیرو صفحه اصلی", payload: h, visible: true });
       await loadSections(homePage.id);
       flash("هیرو روی سرور منتشر شد");
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در انتشار هیرو"); }
@@ -134,26 +132,26 @@ export function CmsCenter({ flash }: { flash: F }) {
     if (!homePage) return;
     const meta = BLOCK_LIBRARY.find((b) => b.code === code)!;
     try {
-      await apiCall(`/admin/cms/pages/${homePage.id}/sections`, { method: "POST", body: JSON.stringify({ componentCode: code, title: meta.label, payload: meta.payload, visible: true }) });
+      await cmsApi.createSection(homePage.id, { componentCode: code, title: meta.label, payload: meta.payload, visible: true });
       await loadSections(homePage.id); setAdding(false);
       flash(`«${meta.label}» ساخته شد (شناسه از سرور)`);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ساخت بخش"); }
   };
   const saveBlock = async (s: Section) => {
     try {
-      await apiCall(`/admin/cms/sections/${s.id}`, { method: "PATCH", body: JSON.stringify({ title: s.title, payload: s.payload, visible: s.visible }) });
+      await cmsApi.updateSection(s.id, { title: s.title, payload: s.payload, visible: s.visible });
       await loadSections(homePage!.id); setEdit(null);
       flash(`«${s.title}» روی سرور ذخیره شد`);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره بخش"); }
   };
   const toggleBlock = async (s: Section) => {
     try {
-      await apiCall(`/admin/cms/sections/${s.id}`, { method: "PATCH", body: JSON.stringify({ visible: !s.visible }) });
+      await cmsApi.updateSection(s.id, { visible: !s.visible });
       await loadSections(homePage!.id);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا"); }
   };
   const removeBlock = async (s: Section) => {
-    try { await apiCall(`/admin/cms/sections/${s.id}`, { method: "DELETE" }); await loadSections(homePage!.id); flash("بخش حذف شد"); }
+    try { await cmsApi.deleteSection(s.id); await loadSections(homePage!.id); flash("بخش حذف شد"); }
     catch (e) { flash(e instanceof Error ? e.message : "خطا در حذف"); }
   };
   const moveBlock = async (i: number, d: -1 | 1) => {
@@ -163,14 +161,14 @@ export function CmsCenter({ flash }: { flash: F }) {
     [list[i], list[j]] = [list[j], list[i]];
     setSections([...(heroSection ? [heroSection] : []), ...list]);
     try {
-      await apiCall(`/admin/cms/pages/${homePage.id}/sections/reorder`, { method: "POST", body: JSON.stringify({ sectionIds: list.map((s) => s.id) }) });
+      await cmsApi.reorderSections(homePage.id, list.map((s) => s.id));
       await loadSections(homePage.id);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر ترتیب"); await loadSections(homePage.id); }
   };
   const saveWidget = async () => {
     if (!widget) return;
     try {
-      await apiCall("/admin/site-settings/support-widget", { method: "PUT", body: JSON.stringify(widget) });
+      await cmsApi.saveSupportWidget(widget);
       flash("دکمه پشتیبانی روی سرور ذخیره شد");
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره دکمه پشتیبانی"); }
   };

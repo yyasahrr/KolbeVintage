@@ -122,8 +122,27 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
 
   app.get('/api/v1/auth/me', async (request) => {
     const user = await principal(request, pool, config);
-    const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null }>(pool, 'SELECT id, display_name, email, phone, birthday FROM users WHERE id = $1', [user.id]);
-    return { id: user.id, displayName: row?.display_name ?? user.displayName, email: row?.email ?? null, phone: row?.phone ?? null, birthday: row?.birthday ?? null, roles: user.roles, permissions: user.permissions };
+    const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null; preferences: Record<string, boolean> | null }>(
+      pool, 'SELECT id, display_name, email, phone, birthday, preferences FROM users WHERE id = $1', [user.id]);
+    return { id: user.id, displayName: row?.display_name ?? user.displayName, email: row?.email ?? null, phone: row?.phone ?? null,
+      birthday: row?.birthday ?? null, preferences: row?.preferences ?? {}, roles: user.roles, permissions: user.permissions };
+  });
+
+  /** Notification preferences (allowlisted keys) — the account UI persists switches here. */
+  const PREFERENCE_KEYS = ['orderUpdates', 'offers', 'sms', 'email'] as const;
+  app.patch('/api/v1/auth/me/preferences', async (request) => {
+    const user = await principal(request, pool, config);
+    const body = z.record(z.string().max(40), z.boolean()).parse(request.body);
+    const entries = Object.entries(body).filter(([key]) => (PREFERENCE_KEYS as readonly string[]).includes(key));
+    if (!entries.length) throw badRequest('کلید تنظیمات اعلان معتبر نیست.');
+    const patch = Object.fromEntries(entries);
+    return transaction(pool, async (client) => {
+      const updated = await one<{ preferences: Record<string, boolean> }>(client,
+        'UPDATE users SET preferences = preferences || $2::jsonb, updated_at = now() WHERE id = $1 RETURNING preferences',
+        [user.id, JSON.stringify(patch)]);
+      await audit(client, user.id, 'user.preferences_updated', 'user', user.id, undefined, patch, request.ip);
+      return { preferences: updated?.preferences ?? patch };
+    });
   });
 
   app.patch('/api/v1/auth/me', async (request) => {

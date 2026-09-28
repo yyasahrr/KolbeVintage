@@ -1,10 +1,9 @@
 /* Shared marketplace store — now thin client cache over server API.
    Business source of truth is PostgreSQL via /api/v1 (Fastify). localStorage is kept
    only for ephemeral UI cache and offline fallback, never as authoritative store. */
-import { createContext, ReactNode, useContext, useEffect, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PRODUCTS, IMG, COLORS, nextSku, type Product, type ProductStatus } from "./catalog";
-import { apiCall } from "./admin-api";
-import { getAccessToken } from "./api";
+import { apiClient, isAuthenticated, publicApi } from "./api";
 import {
   SEED_ACCOUNTS, SEED_RETAIL_ORDERS, digitsOnly,
   type CustomerAccount, type CustomerAddress, type CustomerTicket, type RetailCartLine, type RetailOrder, type SavedStyle,
@@ -78,6 +77,8 @@ type Store = State & { loading: boolean; error: string | null; clearError: () =>
   setBuyer: (id: string, patch: Partial<Buyer>) => void;
   setNotif: (id: string, patch: Partial<NotifTemplate>) => void;
   upsertCms: (item: CmsItem) => void;
+  /** Re-hydrate the client cache from the server (single canonical refresh path). */
+  reload: () => Promise<void>;
   reset: () => void;
 };
 
@@ -99,7 +100,7 @@ const USE_DEMO_SEED = typeof window !== "undefined" && new URLSearchParams(windo
 /* Demo-only legacy mutations. In the production runtime every one of these paths must go through the API,
    so outside ?demo=1 we hard-fail instead of silently creating local business state. */
 const DEMO_ONLY_METHODS = [
-  "updateProduct", "updateProductSeries", "updateAccount", "requestVip", "saveStyle", "addTicket",
+  "addProduct", "updateProduct", "updateProductSeries", "updateAccount", "requestVip", "saveStyle", "addTicket",
   "setTicketStatus", "requestRetailReturn", "setRetailOrderStatus", "setReturnStatus",
   "transitionSub", "paySub", "payParent", "upsertPlan", "removePlan", "setBuyer",
 ] as const;
@@ -143,33 +144,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Hydrate cache from server when authenticated; no seed fallback in normal runtime
-  useEffect(() => {
+  // Hydrate cache from server when authenticated; no seed fallback in normal runtime.
+  // Also exposed as `reload()` so canonical editors refresh the cache after a server mutation.
+  const reloadRef = useRef({ cancelled: false });
+  const reload = useCallback(async () => {
     if (USE_DEMO_SEED) return;
-    const token = getAccessToken();
-    let cancelled = false;
-    (async () => {
-      setLoading(true); setError(null);
-      try {
-        // Public catalog (no auth) + authenticated orders/membership where token exists
-        const prodRes = await apiCall<{ items: Product[] }>("/products", {}).catch(() => ({ items: [] as Product[] }));
-        const [orderRes, planRes] = token ? await Promise.all([
-          apiCall<{ items: ParentOrder[] }>("/orders", {}, token).catch(() => ({ items: [] as ParentOrder[] })),
-          apiCall<{ items: VipPlan[] }>("/plans", {}, token).catch(() => ({ items: [] as VipPlan[] })),
-        ]) : [{ items: [] as ParentOrder[] }, { items: [] as VipPlan[] }];
-        if (!cancelled) setState((s) => ({
-          ...s,
-          products: (prodRes.items as Product[]).length ? (prodRes.items as Product[]) : s.products,
-          orders: (orderRes.items as ParentOrder[]).length ? (orderRes.items as ParentOrder[]) : s.orders,
-          retailOrders: ((orderRes.items as unknown as RetailOrder[]).filter((o: any) => o.order_type === 'retail' || o.channel === 'retail') as RetailOrder[]) ?? s.retailOrders,
-          plans: (planRes.items as VipPlan[]).length ? (planRes.items as VipPlan[]) : s.plans,
-        }));
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "خطا در بارگذاری داده‌ها");
-      } finally { if (!cancelled) setLoading(false); }
-    })();
-    return () => { cancelled = true; };
+    const ticket = reloadRef.current;
+    setLoading(true); setError(null);
+    try {
+      // Public catalog (no auth) + authenticated orders/plans (canonical client refreshes on 401)
+      const prodRes = await publicApi.get<{ items: Product[] }>("/products").catch(() => ({ items: [] as Product[] }));
+      const [orderRes, planRes] = await Promise.all([
+        apiClient.get<{ items: ParentOrder[] }>("/orders").catch(() => ({ items: [] as ParentOrder[] })),
+        apiClient.get<{ items: VipPlan[] }>("/plans").catch(() => ({ items: [] as VipPlan[] })),
+      ]);
+      if (ticket.cancelled) return;
+      setState((s) => ({
+        ...s,
+        products: (prodRes.items as Product[]).length ? (prodRes.items as Product[]) : s.products,
+        orders: (orderRes.items as ParentOrder[]).length ? (orderRes.items as ParentOrder[]) : s.orders,
+        retailOrders: ((orderRes.items as unknown as RetailOrder[]).filter((o: any) => o.order_type === 'retail' || o.channel === 'retail') as RetailOrder[]) ?? s.retailOrders,
+        plans: (planRes.items as VipPlan[]).length ? (planRes.items as VipPlan[]) : s.plans,
+      }));
+    } catch (e) {
+      if (!ticket.cancelled) setError(e instanceof Error ? e.message : "خطا در بارگذاری داده‌ها");
+    } finally { if (!ticket.cancelled) setLoading(false); }
   }, []);
+
+  useEffect(() => {
+    reloadRef.current = { cancelled: false };
+    void reload();
+    return () => { reloadRef.current.cancelled = true; };
+  }, [reload]);
 
   // Keep cross-tab sync only for non-sensitive UI prefs (cart transient). Business mutations go via API.
   useEffect(() => {
@@ -199,34 +205,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ...state, loading, error, clearError: () => setError(null),
     setStatus: (id, s) => {
       if (USE_DEMO_SEED) { setState((st) => ({ ...st, products: st.products.map((p) => (p.id === id ? { ...p, status: s } : p)) })); return; }
-      const token = getAccessToken();
-      apiCall(`/products/${id}/status`, { method: "PATCH", body: JSON.stringify({ status: s }) }, token ?? undefined)
+      apiClient.patch(`/products/${id}/status`, { status: s })
         .then(() => setState((st) => ({ ...st, products: st.products.map((p) => (p.id === id ? { ...p, status: s } : p)) })))
         .catch((e) => { console.error(e); setError(e instanceof Error ? e.message : "خطا در تغییر وضعیت"); throw e; });
     },
-    addProduct: (p) => {
-      if (USE_DEMO_SEED) {
-        setState((st) => {
-          const sku = p.sku.trim() && !st.products.some((item) => item.sku === p.sku.trim()) ? p.sku.trim() : nextSku(st.products, p.supplierId, p.category);
-          return { ...st, products: [{ ...p, sku }, ...st.products] };
-        });
-        return;
-      }
-      const token = getAccessToken();
-      // request → backend → cache: server generates SKU/id/variants authoritatively
-      apiCall<{ id: string; variants: { id: string; sku: string }[] }>("/products", {
-        method: "POST",
-        body: JSON.stringify({
-          brand: p.brand, name: p.name, category: p.category, description: p.desc ?? "",
-          cashPriceRial: String(p.retailPrice ?? 0), installmentPriceRial: p.installmentPrice ? String(p.installmentPrice) : undefined,
-          wholesalePriceRial: String(p.wholesaleFrom ?? 0),
-          variants: [{ size: undefined, color: ((p.colors?.[0] as any)?.name ?? (p.colors?.[0] as any)?.id ?? undefined), attributes: {} }],
-          metadata: { supplierId: p.supplierId, colors: p.colors, images: p.images },
-        }),
-      }, token ?? undefined)
-        .then((res) => setState((st) => ({ ...st, products: [{ ...p, id: res.id, sku: res.variants[0]?.sku ?? p.sku }, ...st.products] })))
-        .catch((e) => { setError(e instanceof Error ? e.message : "خطا در ایجاد محصول"); throw e; });
-    },
+    /* Product creation has ONE canonical writer: ProductStudio → buildProductCreatePayload → POST /products.
+       This local path exists only for ?demo=1 and throws in real runtime (see DEMO_ONLY_METHODS). */
+    addProduct: (p) => setState((st) => {
+      const sku = p.sku.trim() && !st.products.some((item) => item.sku === p.sku.trim()) ? p.sku.trim() : nextSku(st.products, p.supplierId, p.category);
+      return { ...st, products: [{ ...p, sku }, ...st.products] };
+    }),
     updateProduct: (id, patch) => setState((st) => ({ ...st, products: st.products.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
     updateProductSeries: (id, series) => setState((st) => {
       const clean = series.map((s) => ({ ...s, pieces: Object.values(s.composition).reduce((n, count) => n + count, 0) }));
@@ -324,8 +312,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return id;
       }
       // Production: request → backend authoritative pricing/shipping/stock → cache update
-      const token = getAccessToken();
-      if (!token) { setError("برای ثبت سفارش وارد شوید"); return null; }
+      if (!isAuthenticated()) { setError("برای ثبت سفارش وارد شوید"); return null; }
       // Map cart lines to variantIds — for now use product id as variant fallback; backend validates via product_variants
       // In real UI, cart should carry variantId; we resolve via products cache
       const items = cart.map((line) => {
@@ -337,21 +324,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       });
       const idempotencyKey = `retail-${accountId}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
       let createdReference: string | null = null;
-      apiCall<{ reference: string; id: string }>("/orders", {
-        method: "POST",
-        headers: { "Idempotency-Key": idempotencyKey },
-        body: JSON.stringify({
+      apiClient.post<{ reference: string; id: string }>("/orders", {
           orderType: "retail",
           paymentMode,
           items,
           shippingAddress: { recipient: (address as any).fullName ?? address.recipient ?? address.line, phone: address.phone, province: address.province ?? address.city, city: address.city, line: address.line, postalCode: address.postalCode },
           couponCode: discountNote?.trim() ? discountNote.trim() : undefined,
-        }),
-      }, token)
+        }, { headers: { "Idempotency-Key": idempotencyKey } })
         .then((res) => {
           createdReference = res.reference;
           // Refresh orders cache
-          return apiCall<{ items: RetailOrder[] }>("/orders", {}, token);
+          return apiClient.get<{ items: RetailOrder[] }>("/orders");
         })
         .then((list) => setState((st) => ({ ...st, retailOrders: list.items as RetailOrder[] })))
         .catch((e) => { setError(e instanceof Error ? e.message : "خطا در ثبت سفارش"); /* no cache update on error */ });
@@ -422,8 +405,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         });
         return id;
       }
-      const token = getAccessToken();
-      if (!token) { setError("برای ثبت سفارش عمده وارد شوید"); return "" as string; }
+      if (!isAuthenticated()) { setError("برای ثبت سفارش عمده وارد شوید"); return "" as string; }
       // Wholesale: backend validates membership limits, pricing, stock authoritatively. Client does not compute total.
       const items = state.wcart.filter((l) => l.accountId === accountId).map((l) => {
         const p = state.products.find((x) => x.id === l.productId);
@@ -435,17 +417,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       });
       if (!items.length) return "" as string;
       const key = `wholesale-${accountId}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-      apiCall<{ reference: string }>("/orders", {
-        method: "POST",
-        headers: { "Idempotency-Key": key },
-        body: JSON.stringify({
+      apiClient.post<{ reference: string }>("/orders", {
           orderType: "wholesale",
           paymentMode: "cash",
           items,
           shippingAddress: { recipient: buyer, phone: "09120000000", province: "تهران", city: "تهران", line: address, postalCode: "1234567890" },
-        }),
-      }, token)
-        .then(() => apiCall<{ items: ParentOrder[] }>("/orders", {}, token))
+        }, { headers: { "Idempotency-Key": key } })
+        .then(() => apiClient.get<{ items: ParentOrder[] }>("/orders"))
         .then((list) => setState((st) => ({ ...st, orders: list.items as ParentOrder[], wcart: st.wcart.filter((l) => l.accountId !== accountId) })))
         .catch((e) => setError(e instanceof Error ? e.message : "خطا در ثبت سفارش عمده"));
       return "" as string;
@@ -462,6 +440,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setBuyer: (id, patch) => setState((st) => ({ ...st, buyers: st.buyers.map((b) => (b.id === id ? { ...b, ...patch } : b)) })),
     setNotif: (id, patch) => setState((st) => ({ ...st, notifs: st.notifs.map((n) => (n.id === id ? { ...n, ...patch } : n)) })),
     upsertCms: (item) => setState((st) => ({ ...st, cms: st.cms.some((x) => x.id === item.id) ? st.cms.map((x) => (x.id === item.id ? item : x)) : [item, ...st.cms] })),
+    reload,
     reset: () => setState(initial()),
   };
   if (!USE_DEMO_SEED) {

@@ -16,7 +16,7 @@ import { TicketCenter } from "../components/support";
 import { SupplierStatsPanel } from "./supplier-stats-panel";
 import { SupplierOrdersPanel } from "../components/supplier-orders-panel";
 import { useOps } from "../data/ops";
-import { apiCall } from "../data/admin-api";
+import { apiClient, authApi, isAuthenticated, productsApi } from "../data/api";
 import { Landmark, Headset, Layers, ShieldAlert, FileSignature, KeyRound } from "lucide-react";
 
 /* Login or apply: the application form is defined by Kolbe admins and submissions land in the admin console. */
@@ -48,10 +48,7 @@ function SupplierEntry({ onLogin }: { onLogin: () => void }) {
       // Server-backed cooperation request: backend validates against active form fields, rate-limits, and audits
       const payload: Record<string,string> = {};
       for (const f of form.fields) payload[f.id] = values[f.id] ?? "";
-      const res = await apiCall<{ id: string; reference: string }>("/cooperation-requests", {
-        method: "POST",
-        body: JSON.stringify({ payload }),
-      });
+      const res = await apiClient.post<{ id: string; reference: string }>("/cooperation-requests", { payload });
       setSent(res.reference ?? res.id); setValues({});
     } catch (err) {
       setErrors([err instanceof Error ? err.message : "خطا در ارسال درخواست"]);
@@ -144,7 +141,7 @@ function Donut({ segs }: { segs: { v: number; c: string; l: string }[] }) {
 export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; setDark: (v: boolean) => void; onExit: () => void }) {
   const [authed, setAuthed] = useState<boolean | null>(null);
   // Real supplier auth: JWT + /auth/me must have role supplier (backend enforces). No hardcoded s1. Fallback to sessionStorage only for ?demo=1.
-  useEffect(()=>{ const demo = new URLSearchParams(window.location.search).has("demo"); if (demo && sessionStorage.getItem("kolbe-supplier")==="1") { setAuthed(true); return; } (async()=>{ try{ const token = localStorage.getItem("kolbe-access-token"); if(!token) { setAuthed(false); return; } const me = await apiCall<{ roles: string[] }>("/auth/me", {}, token); setAuthed(me.roles.includes("supplier") || me.roles.includes("admin")); } catch{ setAuthed(false); } })(); },[]);
+  useEffect(()=>{ const demo = new URLSearchParams(window.location.search).has("demo"); if (demo && sessionStorage.getItem("kolbe-supplier")==="1") { setAuthed(true); return; } (async()=>{ try{ if(!isAuthenticated()) { setAuthed(false); return; } const me = await authApi.me(); setAuthed(me.roles.includes("supplier") || me.roles.includes("admin")); } catch{ setAuthed(false); } })(); },[]);
   if (!authed) {
     return (
       <div className="min-h-screen">
@@ -174,7 +171,7 @@ export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; 
               ))}
             </ol>
           </div>
-          <SupplierEntry onLogin={async () => { try{ const token = localStorage.getItem("kolbe-access-token"); if(token){ const me = await apiCall<{ roles: string[] }>("/auth/me", {}, token); if(me.roles.includes("supplier")||me.roles.includes("admin")) setAuthed(true); else setAuthed(false); } else setAuthed(false); } catch{ setAuthed(false); } }} />
+          <SupplierEntry onLogin={async () => { try{ if(isAuthenticated()){ const me = await authApi.me(); if(me.roles.includes("supplier")||me.roles.includes("admin")) setAuthed(true); else setAuthed(false); } else setAuthed(false); } catch{ setAuthed(false); } }} />
         </div>
       </div>
     );
@@ -208,13 +205,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   // Real supplier identity: GET /supplier-profile (DB) → fallback s1 only in ?demo=1
   useEffect(()=>{ if(demo) return; let cancel=false; (async()=>{ setSupLoading(true); setSupError(null);
     try{
-      const token = localStorage.getItem("kolbe-access-token");
-      if(!token) return;
-      const prof = await apiCall<{ userId: string; displayName: string; businessName?: string; cooperationStatus?: string }>("/supplier-profile", {}, token).catch(()=>null);
+      if(!isAuthenticated()) return;
+      const prof = await apiClient.get<{ userId: string; displayName: string; businessName?: string; cooperationStatus?: string }>("/supplier-profile").catch(()=>null);
       if(cancel) return; if(prof) setProfile({ userId: (prof as any).userId ?? (prof as any).id ?? "", displayName: (prof as any).displayName ?? (prof as any).businessName ?? "تأمین‌کننده", businessName: (prof as any).businessName });
-      const prods = await apiCall<{ items: any[] }>("/products", {}, token).catch(()=>null);
+      const prods = await apiClient.get<{ items: unknown[] }>("/products").catch(()=>null);
       if(!cancel && prods) setSupplierProducts((prods as any).items ?? []);
-      const ords = await apiCall<{ items: any[] }>("/supplier/orders", {}, token).catch(()=>null);
+      const ords = await apiClient.get<{ items: unknown[] }>("/supplier/orders").catch(()=>null);
       if(!cancel && ords) setSupplierOrders((ords as any).items ?? []);
     } catch(e){ if(!cancel) setSupError(e instanceof Error? e.message : "خطا"); }
     finally{ if(!cancel) setSupLoading(false); }
@@ -268,13 +264,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
       // Direct setState via store not available here; use fallback via window dispatch
       // For demo we call local via supplier's previous addProduct path (kept for preview)
       try {
-        const token = localStorage.getItem("kolbe-access-token");
-        await apiCall("/products", { method: "POST", body: JSON.stringify({
+        await productsApi.create({
           brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim(),
           cashPriceRial: "0", wholesalePriceRial: String(price * 10),
           variants: [{ attributes: {} }],
           metadata: { supplierId: ME.id },
-        }) }, token ?? undefined);
+        });
       } catch {}
       setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
       setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
@@ -282,24 +277,21 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
       return;
     }
     try {
-      const token = localStorage.getItem("kolbe-access-token");
-      if (!token) { flash("برای ثبت محصول وارد شوید"); return; }
-      const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries)); void price;
-      // Request → backend authoritative SKU + product id + variants
-      const res = await apiCall<{ id: string; variants: { sku: string }[] }>("/products", {
-        method: "POST",
-        body: JSON.stringify({
-          brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim() || "توضیحات این محصول در حال تکمیل است.",
-          cashPriceRial: "0", wholesalePriceRial: String(price * 10),
-          variants: draftSeries.map((s)=> ({ size: Object.keys(s.composition)[0], color: draftColorIds[0], attributes: { series: s.name } })),
-          metadata: { colors: draftColorIds, stock: form.stock, series: draftSeries },
-        }) }, token);
+      if (!isAuthenticated()) { flash("برای ثبت محصول وارد شوید"); return; }
+      const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries));
+      // Request → backend authoritative SKU + product id + variants (server generates SKUs)
+      const created = await productsApi.create({
+        brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim() || "توضیحات این محصول در حال تکمیل است.",
+        cashPriceRial: "0", wholesalePriceRial: String(price * 10),
+        variants: draftSeries.map((s)=> ({ size: Object.keys(s.composition)[0], color: draftColorIds[0], attributes: { series: s.name } })),
+        metadata: { colors: draftColorIds, stock: form.stock, series: draftSeries },
+      });
       // Refresh supplier products cache
-      const refreshed = await apiCall<{ items: any[] }>("/products", {}, token).catch(()=>null);
+      const refreshed = await apiClient.get<{ items: unknown[] }>("/products").catch(()=>null);
       if (refreshed) setSupplierProducts((refreshed as any).items);
       setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
       setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
-      flash(`محصول ${res.variants?.[0]?.sku ?? res.id} برای بازبینی کلبه ارسال شد.`);
+      flash(`محصول ${created.variants?.[0]?.sku ?? created.id} برای بازبینی کلبه ارسال شد.`);
     } catch (e) {
       flash(e instanceof Error ? e.message : "خطا در ثبت محصول");
     }
@@ -319,11 +311,10 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
       return;
     }
     try {
-      const token = localStorage.getItem("kolbe-access-token");
-      if (!token) { flash("برای اقدام وارد شوید"); return; }
+      if (!isAuthenticated()) { flash("برای اقدام وارد شوید"); return; }
       // Supplier fulfillment is server-backed: POST /supplier/orders/:id/fulfillment
-      await apiCall(`/supplier/orders/${sid}/fulfillment`, { method: "POST", body: JSON.stringify({ status, note: extra?.note, trackingCode: extra?.tracking }) }, token);
-      const refreshed = await apiCall<{ items: any[] }>("/supplier/orders", {}, token).catch(()=>null);
+      await apiClient.post(`/supplier/orders/${sid}/fulfillment`, { status, note: extra?.note, trackingCode: extra?.tracking });
+      const refreshed = await apiClient.get<{ items: unknown[] }>("/supplier/orders").catch(()=>null);
       if (refreshed) setSupplierOrders((refreshed as any).items);
       const msg: Record<string, string> = { // supplier status map // fix any index
         pending_supplier: "", approved: `${sid} تأیید شد؛ خریدار برای پرداخت مطلع شد`, rejected: `${sid} رد شد و به خریدار اطلاع داده شد`,
@@ -537,7 +528,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                             <td><Status value={st === "published" ? "فعال" : (STATUS_LABEL as Record<string, any>)[st]} /></td>
                             <td>
                               {st === "published" || st === "draft"
-                                ? <Switch on={live} onToggle={() => { const tk = localStorage.getItem("kolbe-access-token"); const next = live ? "draft" : "published"; apiCall(`/products/${(p as any).id}/status`, { method: "PATCH", body: JSON.stringify({ status: next }) }, tk ?? undefined).then(()=>{ flash(live ? `${(p as any).name} از بازارچه خارج شد` : `${(p as any).name} دوباره در بازارچه نمایش داده می‌شود`); }).catch((e)=>flash(e instanceof Error ? e.message : "خطا")); }} />
+                                ? <Switch on={live} onToggle={() => { const next = live ? "draft" : "published"; productsApi.status((p as any).id, next).then(()=>{ flash(live ? `${(p as any).name} از بازارچه خارج شد` : `${(p as any).name} دوباره در بازارچه نمایش داده می‌شود`); }).catch((e)=>flash(e instanceof Error ? e.message : "خطا")); }} />
                                 : <span className="text-xs text-[var(--kv-faint)]">{st === "pending" ? "منتظر کلبه" : "—"}</span>}
                             </td>
                             <td><button onClick={() => setTab("templates")} className="text-[13px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت سری‌ها</button></td>

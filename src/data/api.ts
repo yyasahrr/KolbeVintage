@@ -1,71 +1,179 @@
 /**
- * Unified API client for Kolbe Vintage — single source of truth.
- * Business data (orders, products, inventory, wallet, etc.) comes from PostgreSQL via Fastify.
- * LocalStorage is only for theme/UI prefs, not business state.
+ * Unified API client for Kolbe Vintage — the ONLY component-facing API layer.
+ *
+ * Components must never call `src/data/admin-api.ts` directly. Everything
+ * authenticated goes through `authFetch` here, which:
+ *   1. attaches the access token automatically,
+ *   2. on 401 performs exactly ONE refresh + retry,
+ *   3. stores the refreshed token,
+ *   4. clears session state and notifies subscribers when refresh fails.
+ *
+ * Public endpoints (login/register/catalog/public CMS) use `publicApi`.
+ * Business data comes from PostgreSQL via Fastify; localStorage stores only the
+ * access token and UI prefs.
  */
-import { apiCall, refreshAdminToken, AdminApiError } from "./admin-api";
+import {
+  apiCall, refreshAdminToken, AdminApiError, getApiBaseUrl, setApiBaseUrl,
+  type ApiRequest,
+} from "./admin-api";
+import type {
+  TicketCreate, TicketReply, TicketUpdate, Ticket, TicketBoard,
+} from "./contracts";
 
-export { AdminApiError };
+export { AdminApiError, getApiBaseUrl, setApiBaseUrl };
+export type { ApiRequest };
 
-// Keep token in memory; also handle refresh via httpOnly cookie.
+/* ------------------------------ session ------------------------------ */
+
 let accessToken: string | null = (() => {
   try { return localStorage.getItem("kolbe-access-token"); } catch { return null; }
 })();
-export const setAccessToken = (t: string | null) => {
-  accessToken = t;
+
+export const setAccessToken = (token: string | null) => {
+  accessToken = token;
   try {
-    if (t) localStorage.setItem("kolbe-access-token", t);
+    if (token) localStorage.setItem("kolbe-access-token", token);
     else localStorage.removeItem("kolbe-access-token");
-  } catch { /* ignore */ }
+  } catch { /* storage unavailable (Node smoke / private mode) */ }
 };
 export const getAccessToken = () => accessToken;
+/** Session presence check for UI gating — components must not read the token itself. */
+export const isAuthenticated = () => accessToken !== null;
 
-async function authFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const call = (token?: string) => apiCall<T>(path, init, token);
-  try {
-    return await call(accessToken ?? undefined);
-  } catch (e) {
-    if (e instanceof AdminApiError && e.status === 401 && accessToken) {
-      try {
-        const refreshed = await refreshAdminToken();
-        setAccessToken(refreshed.accessToken);
-        return await call(refreshed.accessToken);
-      } catch { setAccessToken(null); throw e; }
-    }
-    throw e;
+type AuthExpiredHandler = () => void;
+const authExpiredHandlers = new Set<AuthExpiredHandler>();
+
+/** Subscribe to refresh failure (hard logout). Returns an unsubscribe function. */
+export function onAuthExpired(handler: AuthExpiredHandler) {
+  authExpiredHandlers.add(handler);
+  return () => { authExpiredHandlers.delete(handler); };
+}
+
+function expireSession() {
+  setAccessToken(null);
+  for (const handler of [...authExpiredHandlers]) {
+    try { handler(); } catch { /* subscriber errors must not break the client */ }
   }
 }
 
-// Auth
+let refreshPromise: Promise<{ accessToken: string }> | null = null;
+function refreshOnce() {
+  if (!refreshPromise) {
+    refreshPromise = refreshAdminToken().finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+}
+
+/** Authenticated transport with single-refresh retry. */
+export async function authFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const initial = getAccessToken();
+  try {
+    return await apiCall<T>(path, init, initial ?? undefined);
+  } catch (error) {
+    if (!(error instanceof AdminApiError) || error.status !== 401) throw error;
+    if (!initial) { expireSession(); throw error; }
+    try {
+      const refreshed = await refreshOnce();
+      setAccessToken(refreshed.accessToken);
+      return await apiCall<T>(path, init, refreshed.accessToken);
+    } catch {
+      expireSession();
+      throw error;
+    }
+  }
+}
+
+/* --------------------------- generic client --------------------------- */
+
+const withBody = (init: RequestInit, body: unknown): RequestInit =>
+  body === undefined ? init : { ...init, body: JSON.stringify(body) };
+
+export const apiClient = {
+  request: authFetch,
+  get: <T>(path: string, init?: RequestInit) => authFetch<T>(path, { ...init, method: "GET" }),
+  post: <T>(path: string, body?: unknown, init?: RequestInit) => authFetch<T>(path, withBody({ ...init, method: "POST" }, body)),
+  patch: <T>(path: string, body?: unknown, init?: RequestInit) => authFetch<T>(path, withBody({ ...init, method: "PATCH" }, body)),
+  put: <T>(path: string, body?: unknown, init?: RequestInit) => authFetch<T>(path, withBody({ ...init, method: "PUT" }, body)),
+  del: <T>(path: string, init?: RequestInit) => authFetch<T>(path, { ...init, method: "DELETE" }),
+  /** Multipart upload — no manual Content-Type (browser sets the boundary). */
+  upload: <T>(path: string, form: FormData, init?: RequestInit) => authFetch<T>(path, { ...init, method: "POST", body: form }),
+};
+
+/** Public, unauthenticated endpoints only (login/register/catalog/public site). */
+export const publicApi = {
+  get: <T>(path: string, init?: RequestInit) => apiCall<T>(path, { ...init, method: "GET" }),
+  post: <T>(path: string, body?: unknown, init?: RequestInit) => apiCall<T>(path, withBody({ ...init, method: "POST" }, body)),
+};
+
+/* ------------------------------- auth ------------------------------- */
+
 export const authApi = {
   register: (payload: { email?: string; phone?: string; password: string; displayName: string }) =>
-    apiCall<{ id: string }>("/auth/register", { method: "POST", body: JSON.stringify(payload) }),
+    publicApi.post<{ id: string }>("/auth/register", payload),
   login: async (payload: { identity: string; password: string }) => {
-    const res = await apiCall<{ accessToken: string }>("/auth/login", { method: "POST", body: JSON.stringify(payload) });
+    const res = await publicApi.post<{ accessToken: string }>("/auth/login", payload);
     setAccessToken(res.accessToken);
     return res;
   },
-  refresh: refreshAdminToken,
-  me: () => authFetch<{ id: string; displayName: string; roles: string[]; permissions: string[] }>("/auth/me"),
+  refresh: refreshOnce,
+  me: () => authFetch<{ id: string; displayName: string; roles: string[]; permissions: string[]; preferences?: Record<string, boolean> }>("/auth/me"),
+  updateProfile: (payload: { displayName?: string; email?: string | null; birthday?: string | null }) =>
+    authFetch<unknown>("/auth/me", { method: "PATCH", body: JSON.stringify(payload) }),
+  updatePreference: (key: string, value: boolean) =>
+    authFetch<{ preferences: Record<string, boolean> }>("/auth/me/preferences", { method: "PATCH", body: JSON.stringify({ [key]: value }) }),
   logout: async () => {
-    await apiCall("/auth/logout", { method: "POST" });
+    await publicApi.post("/auth/logout").catch(() => undefined);
     setAccessToken(null);
   },
 };
 
-// Catalog
+/* ------------------------------ catalog ------------------------------ */
+
+export type CatalogItem = {
+  id: string; brand: string; name: string; category: string; description: string;
+  cashPriceRial: string; installmentPriceRial: string | null; metadata: Record<string, unknown>;
+  variants: { id: string; sku: string; size: string | null; color: string | null }[]; createdAt: string;
+};
+
 export const catalogApi = {
   list: (params?: { category?: string; limit?: number; before?: string }) => {
     const q = new URLSearchParams();
     if (params?.category) q.set("category", params.category);
     if (params?.limit) q.set("limit", String(params.limit));
     if (params?.before) q.set("before", params.before);
-    return apiCall<{ items: unknown[] }>(`/products?${q.toString()}`);
+    return publicApi.get<{ items: CatalogItem[] }>(`/products?${q.toString()}`);
   },
-  create: (payload: unknown, token?: string) => apiCall<{ id: string; variants: { id: string; sku: string }[] }>("/products", { method: "POST", body: JSON.stringify(payload) }, token),
+  create: (payload: unknown) => authFetch<{ id: string; status: string; variants: { id: string; sku: string }[] }>(
+    "/products", { method: "POST", body: JSON.stringify(payload) }),
 };
 
-// Inventory WMS
+/** Product editor (ProductStudio) contract. */
+export const productsApi = {
+  create: (payload: unknown) => apiClient.post<{ id: string; status: string; variants: { id: string; sku: string }[] }>("/products", payload),
+  update: (id: string, payload: unknown) => apiClient.patch<{ id: string; updated: string[] }>(`/products/${id}`, payload),
+  status: (id: string, status: "published" | "draft" | "rejected" | "archived") =>
+    apiClient.patch<{ id: string; status: string }>(`/products/${id}/status`, { status }),
+  /** Cutout/style-builder state has no dedicated column yet → metadata bucket. */
+  cutout: async (id: string, metadata: Record<string, unknown>, cutout: unknown) =>
+    apiClient.patch<{ id: string }>(`/products/${id}`, { metadata: { ...metadata, cutout } }),
+};
+
+/* -------------------------------- files -------------------------------- */
+
+export type FileUploadResult = { id: string; storageKey: string; originalName: string; mime: string; size: number; sha256: string };
+
+export const filesApi = {
+  /** POST /files as multipart — the canonical way to persist any product/CMS/ticket media. */
+  upload: (file: File | Blob, fileName?: string) => {
+    const form = new FormData();
+    form.append("file", file, fileName ?? (file instanceof File ? file.name : "upload.bin"));
+    return apiClient.upload<FileUploadResult>("/files", form);
+  },
+  downloadPath: (fileId: string) => `/api/v1/files/${fileId}`,
+};
+
+/* ------------------------------ inventory ------------------------------ */
+
 export const inventoryApi = {
   warehouses: () => authFetch<{ items: { id: string; code: string; name: string; owner_id: string | null }[] }>("/warehouses"),
   warehouseDetail: (id: string) => authFetch<{ id: string; code: string; name: string; locations: unknown[]; balances: unknown[] }>(`/warehouses/${id}`),
@@ -74,7 +182,7 @@ export const inventoryApi = {
   createLocation: (warehouseId: string, payload: { code: string; name: string }) => authFetch<unknown>(`/warehouses/${warehouseId}/locations`, { method: "POST", body: JSON.stringify(payload) }),
   balances: (params?: Record<string, string | number>) => {
     const q = new URLSearchParams();
-    if (params) for (const [k,v] of Object.entries(params)) q.set(k, String(v));
+    if (params) for (const [k, v] of Object.entries(params)) q.set(k, String(v));
     return authFetch<{ items: unknown[] }>(`/inventory?${q.toString()}`);
   },
   lowStock: (threshold = 10) => authFetch<{ items: unknown[] }>(`/inventory/low-stock?threshold=${threshold}`),
@@ -93,16 +201,19 @@ export const inventoryApi = {
   transfers: () => authFetch<{ items: unknown[] }>("/inventory/transfers"),
 };
 
-// Orders
+/* -------------------------------- orders -------------------------------- */
+
+export type OrderSummary = { id: string; reference: string; status: string; total_rial: string; order_type: string; created_at: string };
+
 export const ordersApi = {
-  list: (params?: Record<string,string>) => {
+  list: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
-    return authFetch<{ items: unknown[] }>(`/orders?${q.toString()}`);
+    return authFetch<{ items: OrderSummary[] }>(`/orders?${q.toString()}`);
   },
   get: (id: string) => authFetch<unknown>(`/orders/${id}`),
   create: (payload: unknown, key: string) => authFetch<unknown>("/orders", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
   transition: (id: string, payload: { status: string; note?: string }) => authFetch<unknown>(`/orders/${id}/transitions`, { method: "POST", body: JSON.stringify(payload) }),
-  supplierList: (params?: Record<string,string>) => {
+  supplierList: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/supplier/orders?${q.toString()}`);
   },
@@ -111,9 +222,27 @@ export const ordersApi = {
     authFetch<unknown>(`/supplier/orders/${id}/fulfillment`, { method: "POST", body: JSON.stringify(payload) }),
 };
 
-// Invoices
+/* -------------------------------- returns -------------------------------- */
+
+export const returnsApi = {
+  list: () => authFetch<{ items: Record<string, unknown>[] }>("/returns"),
+  create: (payload: { orderId: string; reason: string; resolution: "refund" | "exchange" | "credit" }) =>
+    authFetch<{ id: string; reference: string }>("/returns", { method: "POST", body: JSON.stringify(payload) }),
+};
+
+/* ------------------------------- membership ------------------------------- */
+
+export const membershipApi = {
+  request: (payload: { planId: string; businessName: string; city: string; tradeCode: string }) =>
+    authFetch<unknown>("/memberships", { method: "POST", body: JSON.stringify(payload) }),
+  current: () => authFetch<unknown>("/membership/current"),
+  wholesaleProducts: (limit = 30) => authFetch<{ items: unknown[] }>(`/wholesale/products?limit=${limit}`),
+};
+
+/* -------------------------------- invoices -------------------------------- */
+
 export const invoicesApi = {
-  list: (params?: Record<string,string>) => {
+  list: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/invoices?${q.toString()}`);
   },
@@ -121,20 +250,21 @@ export const invoicesApi = {
   create: (payload: unknown) => authFetch<unknown>("/invoices", { method: "POST", body: JSON.stringify(payload) }),
   pay: (id: string, payload: { amountRial: string; method?: string; traceCode?: string; note?: string }) =>
     authFetch<unknown>(`/invoices/${id}/payments`, { method: "POST", body: JSON.stringify(payload) }),
-  pdfUrl: (id: string) => `${(import.meta.env.VITE_API_BASE_URL ?? window.location.origin).replace(/\/$/,"")}/api/v1/invoices/${id}/pdf`,
+  pdfUrl: (id: string) => `${getApiBaseUrl()}/api/v1/invoices/${id}/pdf`,
 };
 
-// Wallet / Withdrawals / Settlements
+/* --------------------------- wallet / settlements --------------------------- */
+
 export const walletApi = {
   get: () => authFetch<unknown>("/wallet"),
-  entries: (params?: Record<string,string>) => {
+  entries: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/wallet/entries?${q.toString()}`);
   },
   withdraw: (payload: { amountRial: string; destination: { bankName: string; iban: string; holderName: string } }, key: string) =>
     authFetch<unknown>("/wallet/withdrawals", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
   withdrawals: () => authFetch<{ items: unknown[] }>("/wallet/withdrawals"),
-  adminWithdrawals: (params?: Record<string,string>) => {
+  adminWithdrawals: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/admin/withdrawals?${q.toString()}`);
   },
@@ -144,12 +274,14 @@ export const walletApi = {
   settle: (id: string, payload?: unknown) => authFetch<unknown>(`/settlements/${id}/settle`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
 };
 
-// Supplier stats
+/* ------------------------------- supplier ------------------------------- */
+
 export const supplierApi = {
-  stats: (period: string = "30d") => authFetch<unknown>(`/supplier/stats?period=${period}`),
+  stats: (period = "30d") => authFetch<unknown>(`/supplier/stats?period=${period}`),
 };
 
-// Wishlist
+/* ------------------------------- wishlist ------------------------------- */
+
 export const wishlistApi = {
   collections: () => authFetch<{ items: unknown[] }>("/wishlist/collections"),
   createCollection: (title: string) => authFetch<unknown>("/wishlist/collections", { method: "POST", body: JSON.stringify({ title }) }),
@@ -157,11 +289,13 @@ export const wishlistApi = {
   addItem: (collectionId: string, payload: { productId: string; variantId?: string | null }) =>
     authFetch<unknown>(`/wishlist/collections/${collectionId}/items`, { method: "POST", body: JSON.stringify(payload) }),
   removeItem: (itemId: string) => authFetch<unknown>(`/wishlist/items/${itemId}`, { method: "DELETE" }),
+  collectionItems: (collectionId: string) => authFetch<{ items: unknown[] }>(`/wishlist/collections/${collectionId}/items`),
   alerts: () => authFetch<{ items: unknown[] }>("/wishlist/alerts"),
   addAlert: (payload: { productId: string; kind: string }) => authFetch<unknown>("/wishlist/alerts", { method: "POST", body: JSON.stringify(payload) }),
 };
 
-// Addresses
+/* ------------------------------- addresses ------------------------------- */
+
 export const addressesApi = {
   list: () => authFetch<{ items: unknown[] }>("/addresses"),
   create: (payload: unknown) => authFetch<unknown>("/addresses", { method: "POST", body: JSON.stringify(payload) }),
@@ -169,81 +303,178 @@ export const addressesApi = {
   remove: (id: string) => authFetch<unknown>(`/addresses/${id}`, { method: "DELETE" }),
 };
 
-// Journal / Finance
+/* -------------------------------- finance -------------------------------- */
+
 export const financeApi = {
-  journal: (params?: Record<string,string>) => {
+  journal: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/admin/journal?${q.toString()}`);
   },
   accounts: () => authFetch<{ items: unknown[] }>("/admin/journal/accounts"),
   stats: () => authFetch<unknown>("/admin/journal/stats"),
-  auditLogs: (params?: Record<string,string>) => {
+  auditLogs: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/admin/audit-logs?${q.toString()}`);
   },
 };
 
-// CRM
+/* ---------------------------------- CRM ---------------------------------- */
+
 export const crmApi = {
-  contacts: (params?: Record<string,string>) => {
+  contacts: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/admin/crm/contacts?${q.toString()}`);
   },
   contact: (id: string) => authFetch<unknown>(`/admin/crm/contacts/${id}`),
   activities: (contactId: string) => authFetch<{ items: unknown[] }>(`/admin/crm/contacts/${contactId}/activities`),
+  addActivity: (contactId: string, payload: { type: string; title: string; body: string }) =>
+    authFetch<unknown>(`/admin/crm/contacts/${contactId}/activities`, { method: "POST", body: JSON.stringify(payload) }),
   automations: () => authFetch<{ items: unknown[] }>("/admin/crm/automations"),
   runAutomation: (id: string) => authFetch<unknown>(`/admin/crm/automations/${id}/run`, { method: "POST" }),
 };
 
-// CMS / Palettes
+/* ---------------------------------- CMS ---------------------------------- */
+
 export const cmsApi = {
   pages: () => authFetch<{ items: unknown[] }>("/admin/cms/pages"),
+  createPage: (payload: { code: string; title: string; path: string; description: string; seo: Record<string, unknown>; active: boolean }) =>
+    authFetch<unknown>("/admin/cms/pages", { method: "POST", body: JSON.stringify(payload) }),
+  sections: (pageId: string) => authFetch<{ items: unknown[] }>(`/admin/cms/pages/${pageId}/sections`),
+  createSection: (pageId: string, payload: unknown) =>
+    authFetch<unknown>(`/admin/cms/pages/${pageId}/sections`, { method: "POST", body: JSON.stringify(payload) }),
+  updateSection: (sectionId: string, payload: unknown) =>
+    authFetch<unknown>(`/admin/cms/sections/${sectionId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteSection: (sectionId: string) => authFetch<unknown>(`/admin/cms/sections/${sectionId}`, { method: "DELETE" }),
+  reorderSections: (pageId: string, sectionIds: string[]) =>
+    authFetch<unknown>(`/admin/cms/pages/${pageId}/sections/reorder`, { method: "POST", body: JSON.stringify({ sectionIds }) }),
+  components: () => authFetch<{ items: unknown[] }>("/admin/cms/components"),
   palettes: () => authFetch<{ items: unknown[] }>("/admin/cms/palettes"),
-  activePalette: () => apiCall<{ palette: unknown | null }>("/site/active-palette"),
-  sitePage: (code: string) => apiCall<unknown>(`/site/pages/${code}`),
+  createPalette: (payload: { code: string; name: string; colors: unknown }) =>
+    authFetch<unknown>("/admin/cms/palettes", { method: "POST", body: JSON.stringify(payload) }),
+  activatePalette: (paletteId: string, payload: { mode: string; startsAt: string; festivalId?: string }) =>
+    authFetch<unknown>(`/admin/cms/palettes/${paletteId}/activations`, { method: "POST", body: JSON.stringify(payload) }),
+  supportWidget: () => authFetch<{ widget: unknown }>("/admin/site-settings/support-widget"),
+  saveSupportWidget: (widget: unknown) => authFetch<unknown>("/admin/site-settings/support-widget", { method: "PUT", body: JSON.stringify(widget) }),
+  /* public site rendering (no token) */
+  activePalette: () => publicApi.get<{ palette: unknown | null }>("/site/active-palette"),
+  sitePage: (code: string) => publicApi.get<unknown>(`/site/pages/${code}`),
 };
 
-// Notifications
+/* ----------------------------- notifications ----------------------------- */
+
 export const notificationsApi = {
-  list: (params?: Record<string,string>) => {
+  list: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/notifications?${q.toString()}`);
   },
   unreadCount: () => authFetch<{ count: number }>("/notifications/unread-count"),
   read: (id: string) => authFetch<unknown>(`/notifications/${id}/read`, { method: "POST" }),
   readAll: () => authFetch<unknown>("/notifications/read-all", { method: "POST" }),
+  routes: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/notification-routes"),
+  updateRoute: (id: string, payload: unknown) => authFetch<unknown>(`/admin/notification-routes/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
 };
 
-// Tickets
+/* -------------------------------- tickets -------------------------------- */
+
 export const ticketsApi = {
-  list: (params?: Record<string,string>) => {
+  list: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/tickets?${q.toString()}`);
   },
   board: () => authFetch<{ columns: Record<string, unknown[]> }>("/tickets/board"),
   get: (id: string) => authFetch<unknown>(`/tickets/${id}`),
-  create: (payload: unknown) => authFetch<unknown>("/tickets", { method: "POST", body: JSON.stringify(payload) }),
-  reply: (id: string, payload: { message: string; internal?: boolean }) =>
-    authFetch<unknown>(`/tickets/${id}/messages`, { method: "POST", body: JSON.stringify(payload) }),
-  attach: (id: string, payload: unknown) => authFetch<unknown>(`/tickets/${id}/attachments`, { method: "POST", body: JSON.stringify(payload) }),
+  /** Payload built by `buildTicketCreatePayload` — subject/category/priority/orderId/message. */
+  create: (payload: TicketCreate) => authFetch<{ id: string; reference: string; status: string; priority: string }>(
+    "/tickets", { method: "POST", body: JSON.stringify(payload) }),
+  reply: (id: string, payload: TicketReply) => authFetch<{ id: string; status: string }>(
+    `/tickets/${id}/messages`, { method: "POST", body: JSON.stringify(payload) }),
+  update: (id: string, payload: TicketUpdate) => authFetch<{ id: string; status: string }>(
+    `/tickets/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  /** Multipart attachment (FormData) — never JSON. */
+  attach: (id: string, file: File | Blob, fileName?: string, title?: string) => {
+    const form = new FormData();
+    form.append("file", file, fileName ?? (file instanceof File ? file.name : "attachment.bin"));
+    if (title) form.append("title", title);
+    return apiClient.upload<unknown>(`/tickets/${id}/attachments`, form);
+  },
+  /** Adapter-friendly read of one ticket (callers map with `normalizeTicket`). */
+  detail: async (id: string): Promise<Ticket> => {
+    const raw = await authFetch<unknown>(`/tickets/${id}`);
+    const { normalizeTicket } = await import("./contracts");
+    const ticket = normalizeTicket(raw);
+    if (!ticket) throw new AdminApiError("تیکت یافت نشد.", 404);
+    return ticket;
+  },
+  /** Admin Kanban: consumes `columns` from the server. */
+  boardMap: async (): Promise<TicketBoard> => {
+    const raw = await authFetch<unknown>("/tickets/board");
+    const { adaptTicketBoard } = await import("./contracts");
+    return adaptTicketBoard(raw);
+  },
 };
 
-// Coupons / Festivals
+/* --------------------------- coupons / festivals --------------------------- */
+
 export const promoApi = {
-  coupons: (params?: Record<string,string>) => {
+  coupons: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/admin/coupons?${q.toString()}`);
   },
-  festivals: () => authFetch<{ items: unknown[] }>("/admin/festivals"),
   createCoupon: (payload: unknown) => authFetch<unknown>("/admin/coupons", { method: "POST", body: JSON.stringify(payload) }),
+  deleteCoupon: (id: string) => authFetch<unknown>(`/admin/coupons/${id}`, { method: "DELETE" }),
+  festivals: () => authFetch<{ items: unknown[] }>("/admin/festivals"),
   createFestival: (payload: unknown) => authFetch<unknown>("/admin/festivals", { method: "POST", body: JSON.stringify(payload) }),
   validate: (payload: { code: string; orderType?: string; items: { productId: string; category: string; totalRial: string }[] }) =>
     authFetch<{ valid: boolean; discountRial: string; message?: string }>("/coupons/validate", { method: "POST", body: JSON.stringify(payload) }),
 };
 
-// Integrations
+/* ------------------------------ integrations ------------------------------ */
+
 export const integrationsApi = {
-  list: () => authFetch<{ items: unknown[] }>("/admin/integrations"),
+  list: () => authFetch<{ items: { id: string; code: string; title: string; enabled: boolean; config: Record<string, unknown> }[] }>("/admin/integrations"),
+  create: (payload: unknown) => authFetch<unknown>("/admin/integrations", { method: "POST", body: JSON.stringify(payload) }),
+  update: (id: string, payload: unknown) => authFetch<unknown>(`/admin/integrations/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   test: (id: string) => authFetch<unknown>(`/admin/integrations/${id}/test`, { method: "POST" }),
   logs: (id: string) => authFetch<{ items: unknown[] }>(`/admin/integrations/${id}/logs`),
+};
+
+/* -------------------------------- shipping -------------------------------- */
+
+export const shippingApi = {
+  /** Public checkout methods (no token). */
+  list: () => publicApi.get<{ items: Record<string, unknown>[] }>("/shipping-methods"),
+  adminList: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/shipping-methods"),
+  create: (payload: unknown) => authFetch<unknown>("/admin/shipping-methods", { method: "POST", body: JSON.stringify(payload) }),
+  update: (id: string, payload: unknown) => authFetch<unknown>(`/admin/shipping-methods/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  remove: (id: string) => authFetch<unknown>(`/admin/shipping-methods/${id}`, { method: "DELETE" }),
+};
+
+/* --------------------------- console admin surface --------------------------- */
+
+export const adminApi = {
+  summary: () => authFetch<Record<string, number>>("/admin/dashboard/summary"),
+  supportAgents: () => authFetch<{ items: { id: string; displayName: string; roles: string[] }[] }>("/admin/support-agents"),
+  memberships: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return authFetch<{ items: Record<string, unknown>[] }>(`/admin/memberships?${q.toString()}`);
+  },
+  updateMembership: (id: string, payload: unknown) => authFetch<unknown>(`/admin/memberships/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  restrictions: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/restrictions"),
+  createRestriction: (payload: { userId: string; scope: string; reason: string }) =>
+    authFetch<unknown>("/admin/restrictions", { method: "POST", body: JSON.stringify(payload) }),
+  updateRestriction: (id: string, payload: unknown) => authFetch<unknown>(`/admin/restrictions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  smsCampaigns: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/sms-campaigns"),
+  createSmsCampaign: (payload: unknown) => authFetch<unknown>("/admin/sms-campaigns", { method: "POST", body: JSON.stringify(payload) }),
+  updateSmsCampaign: (id: string, payload: unknown) => authFetch<unknown>(`/admin/sms-campaigns/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  sendSmsCampaign: (id: string) => authFetch<{ status: string; reason?: string; recipients?: number }>(`/admin/sms-campaigns/${id}/send`, { method: "POST" }),
+  users: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/users"),
+  cooperationRequests: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/cooperation-requests"),
+  reviewCooperationRequest: (id: string, payload: { status: string; note?: string }) =>
+    authFetch<unknown>(`/admin/cooperation-requests/${id}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  cooperationForm: () => publicApi.get<{ items: Record<string, unknown>[] }>("/cooperation-form"),
+  saveCooperationForm: (fields: unknown[]) =>
+    authFetch<unknown>("/admin/cooperation-form", { method: "PUT", body: JSON.stringify({ fields }) }),
+  plans: () => authFetch<{ items: Record<string, unknown>[] }>("/plans"),
+  createPlan: (payload: unknown) => authFetch<unknown>("/plans", { method: "POST", body: JSON.stringify(payload) }),
+  updatePlan: (id: string, payload: unknown) => authFetch<unknown>(`/plans/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
 };

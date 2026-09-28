@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Card, Btn, LoadingState, ErrorState, Empty, Field, Input, Select } from "../components/primitives";
 import { integrationsApi } from "../data/api";
-import { apiCall } from "../data/admin-api";
 
 export function IntegrationsPanel() {
   const [items, setItems] = useState<unknown[]|null>(null);
@@ -15,9 +14,9 @@ export function IntegrationsPanel() {
   useEffect(()=>{ void load(); },[]);
   const create = async () => {
     try {
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
+
       let cfg:Record<string,unknown> = {}; try{ cfg = JSON.parse(form.config); }catch{ cfg={}; }
-      await apiCall("/admin/integrations", { method:"POST", body: JSON.stringify({ code:form.code, title:form.title, category:form.category, provider:form.provider, environment:form.environment, enabled:form.enabled, config:cfg, secret:form.secret }) }, token);
+      await integrationsApi.create({ code:form.code, title:form.title, category:form.category, provider:form.provider, environment:form.environment, enabled:form.enabled, config:cfg, secret:form.secret });
       await load();
     } catch(e){ setError(e instanceof Error?e.message:"خطا"); }
   };

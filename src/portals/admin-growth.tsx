@@ -4,7 +4,7 @@ import { SUPPLIERS, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
 import { useOps, opsNow, smsParts, type Coupon, type Festival, type Lead, type LeadStage } from "../data/ops";
 import { useEffect } from "react";
-import { apiCall } from "../data/admin-api";
+import { adminApi, crmApi, integrationsApi } from "../data/api";
 import { BarList, Kpi } from "../components/charts";
 import { Btn, Card, Checkbox, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -19,7 +19,7 @@ function useCustomers() {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   useEffect(() => {
     if (isDemo) return;
-    apiCall<{ items: any[] }>("/admin/crm/contacts").then((res:any)=> setServerContacts(res.items ?? [])).catch(()=> setServerContacts([]));
+    crmApi.contacts().then((res) => setServerContacts(res.items ?? [])).catch(()=> setServerContacts([]));
   }, [isDemo]);
   return useMemo(() => {
     const fromAccounts = accounts.map((a) => {
@@ -53,8 +53,8 @@ export function SmsCenter({ flash }: { flash: F }) {
   const [smsConfig, setSmsConfig] = useState<{ id: string; enabled: boolean; code: string } | null>(null);
   const loadCampaigns = () => {
     if (isDemo) return;
-    apiCall<{ items: any[] }>("/admin/sms-campaigns").then((r) => setCampaigns(r.items)).catch(() => setCampaigns([]));
-    apiCall<{ items: any[] }>("/admin/integrations").then((r) => {
+    adminApi.smsCampaigns().then((r) => setCampaigns(r.items)).catch(() => setCampaigns([]));
+    integrationsApi.list().then((r) => {
       const hit = (r.items ?? []).find((i: any) => ["sms", "melipayamak"].includes(i.code));
       setSmsConfig(hit ? { id: hit.id, enabled: Boolean(hit.enabled), code: hit.code } : null);
     }).catch(() => setSmsConfig(null));
@@ -63,8 +63,8 @@ export function SmsCenter({ flash }: { flash: F }) {
   const serverSend = async () => {
     if (!name.trim() || text.trim().length < 5 || recipients < 1) return;
     try {
-      const created = await apiCall<{ id: string; status: string }>("/admin/sms-campaigns", { method: "POST", body: JSON.stringify({ title: name.trim(), message: body, audience: AUDIENCE_MAP[audience] ?? "all", scheduledAt: schedule ? new Date(schedule).toISOString() : null, activate: true }) });
-      const sent = await apiCall<{ status: string; reason?: string; recipients?: number }>(`/admin/sms-campaigns/${created.id}/send`, { method: "POST" });
+      const created = await adminApi.createSmsCampaign({ title: name.trim(), message: body, audience: AUDIENCE_MAP[audience] ?? "all", scheduledAt: schedule ? new Date(schedule).toISOString() : null, activate: true }) as { id: string; status: string };
+      const sent = await adminApi.sendSmsCampaign(created.id);
       loadCampaigns();
       flash(sent.status === "sent" ? `پیامک برای ${fmtNum(sent.recipients ?? recipients)} نفر ارسال شد` : `کمپین در وضعیت ${sent.status} ثبت شد${sent.reason === "provider_not_configured" ? " — سرویس‌دهنده پیامک پیکربندی نشده است" : ""}`);
       setName(""); setText("{name} عزیز، "); setSchedule("");
@@ -165,7 +165,7 @@ export function SmsCenter({ flash }: { flash: F }) {
             <td>{c.audience}</td><td className="tabular-nums">{fmtNum(c.recipients)}</td>
             <td><Status value={CAMPAIGN_STATUS_LABEL[c.status] ?? c.status} />{c.failureReason === "provider_not_configured" && <p className="text-[11px] text-[var(--kv-danger)]">سرویس‌دهنده پیکربندی نشده</p>}</td>
             <td className="text-[var(--kv-muted)]">{c.provider ?? "—"}</td><td className="text-[var(--kv-muted)]">{String(c.createdAt ?? "").slice(0, 16).replace("T", " ")}</td>
-            <td>{c.status !== "sent" && <Btn size="sm" variant="ghost" onClick={async () => { try { await apiCall(`/admin/sms-campaigns/${c.id}`, { method: "PATCH", body: JSON.stringify({ status: "queued" }) }); loadCampaigns(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>صف ارسال</Btn>}</td>
+            <td>{c.status !== "sent" && <Btn size="sm" variant="ghost" onClick={async () => { try { await adminApi.updateSmsCampaign(c.id, { status: "queued" }); loadCampaigns(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>صف ارسال</Btn>}</td>
           </tr>)}
           {isDemo && ops.smsCampaigns.map((c) => <tr key={c.id}><td><b>{c.name}</b><p className="max-w-[260px] truncate text-[11px] text-[var(--kv-muted)]">{c.message}</p></td><td>{c.audience}</td><td className="tabular-nums">{fmtNum(c.recipients)}</td><td><Status value={c.status === "sent" ? "ارسال شد" : c.status === "scheduled" ? "در انتظار" : "پیش‌نویس"} /></td><td>—</td><td className="text-[var(--kv-muted)]">{c.at}</td><td></td></tr>)}
           {!isDemo && (campaigns ?? []).length === 0 && <tr><td colSpan={7} className="py-8 text-center text-[var(--kv-muted)]">کمپینی ثبت نشده است.</td></tr>}

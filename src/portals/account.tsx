@@ -15,8 +15,7 @@ import { WishlistPanel } from "../components/wishlist-panel";
 import { CustomerAddressesPanel } from "../components/customer-addresses";
 import { CustomerOrdersPanel } from "../components/customer-orders-panel";
 import { cn } from "../utils/cn";
-import { addressesApi, wishlistApi, ordersApi } from "../data/api";
-import { apiCall } from "../data/admin-api";
+import { addressesApi, authApi, membershipApi, ordersApi, returnsApi, wishlistApi } from "../data/api";
 
 export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile";
 
@@ -43,6 +42,7 @@ export default function AccountExperience({
   const ops = useOps();
   const restrict = ops.restrictionFor("customer", account.id);
   const [profile, setProfile] = useState({ name: account.name, email: account.email, birthday: account.birthday });
+  const [serverPrefs, setServerPrefs] = useState<Record<string, boolean> | null>(null);
   const [editingAddress, setEditingAddress] = useState<CustomerAddress | null>(null);
   const [addressError, setAddressError] = useState("");
   const [returnOrder, setReturnOrder] = useState<string | null>(null);
@@ -67,14 +67,16 @@ export default function AccountExperience({
     (async () => {
       setLoading(true); setError(null);
       try {
-        const [addrs, wish, orders, rets] = await Promise.all([
+        const [me, addrs, wish, orders, rets] = await Promise.all([
+          authApi.me().catch(() => null),
           addressesApi.list().catch(() => ({ items: [] })),
           // wishlist: collect all item productIds across collections
           wishlistApi.collections().catch(() => ({ items: [] })),
           ordersApi.list().catch(() => ({ items: [] })),
-          apiCall<{ items: any[] }>("/returns", {}).catch(() => ({ items: [] })),
+          returnsApi.list().catch(() => ({ items: [] })),
         ]);
         if (cancelled) return;
+        if (me?.preferences) setServerPrefs(me.preferences);
         if ((addrs as any).items) setServerAddresses((addrs as any).items.map((a: any) => ({
           id: a.id, title: a.title, recipient: a.recipient, phone: a.phone, province: a.province, city: a.city, line: a.line, postalCode: a.postal_code ?? a.postalCode, isDefault: a.is_default ?? a.isDefault
         })));
@@ -85,7 +87,7 @@ export default function AccountExperience({
           let ids: string[] = [];
           for (const c of cols) {
             try {
-              const colItems = await apiCall<{ items: any[] }>(`/wishlist/collections/${c.id}/items`).catch(()=>null);
+              const colItems = await wishlistApi.collectionItems(c.id).catch(()=>null);
               if (colItems) ids.push(...(colItems as any).items.map((it:any)=> it.product_id ?? it.productId));
             } catch {}
           }
@@ -101,6 +103,15 @@ export default function AccountExperience({
     return () => { cancelled = true; };
   }, [isDemo, account.id]);
 
+  const prefs: Record<string, boolean> = { ...account.preferences, ...(serverPrefs ?? {}) };
+  const togglePreference = async (key: string) => {
+    const next = !prefs[key];
+    if (isDemo) { store.updateAccount(account.id, { preferences: { ...account.preferences, [key]: next } }); return; }
+    const previous = serverPrefs;
+    setServerPrefs({ ...prefs, [key]: next });
+    try { const res = await authApi.updatePreference(key, next); setServerPrefs(res.preferences); }
+    catch (e) { setServerPrefs(previous); setError(e instanceof Error ? e.message : "خطا در ذخیره تنظیمات اعلان"); }
+  };
   const effectiveAddresses = serverAddresses ?? account.addresses;
   const effectiveWishlist = serverWishlistIds ?? account.wishlist;
   const effectiveRetailOrders = serverOrders ? serverOrders.filter((o:any)=> o.order_type === 'retail' || o.orderType === 'retail') : store.retailOrders.filter((order) => order.accountId === account.id);
@@ -182,7 +193,7 @@ export default function AccountExperience({
       return;
     }
     try {
-      await apiCall("/memberships", { method: "POST", body: JSON.stringify({ planId: selectedPlan.id, businessName: business.name.trim(), city: business.city.trim(), tradeCode: business.tradeCode.trim() }) });
+      await membershipApi.request({ planId: selectedPlan.id, businessName: business.name.trim(), city: business.city.trim(), tradeCode: business.tradeCode.trim() });
       flash("درخواست عضویت عمده ثبت شد و منتظر بررسی کلبه است.");
     } catch (e) {
       flash(e instanceof Error ? e.message : "خطا در ثبت درخواست");
@@ -199,7 +210,7 @@ export default function AccountExperience({
       // Find collection containing product
       const cols = await wishlistApi.collections() as any;
       for (const c of cols.items) {
-        const items = await apiCall<{ items: any[] }>(`/wishlist/collections/${c.id}/items`).catch(()=>null);
+        const items = await wishlistApi.collectionItems(c.id).catch(()=>null);
         const it = (items as any)?.items?.find((x:any)=> (x.product_id ?? x.productId) === productId);
         if (it) { await wishlistApi.removeItem(it.id); break; }
       }
@@ -207,7 +218,7 @@ export default function AccountExperience({
       const refreshedCols = await wishlistApi.collections() as any;
       let ids: string[] = [];
       for (const c of refreshedCols.items) {
-        const itms = await apiCall<{ items: any[] }>(`/wishlist/collections/${c.id}/items`).catch(()=>null);
+        const itms = await wishlistApi.collectionItems(c.id).catch(()=>null);
         if (itms) ids.push(...(itms as any).items.map((x:any)=> x.product_id ?? x.productId));
       }
       setServerWishlistIds(ids);
@@ -262,7 +273,7 @@ export default function AccountExperience({
       return;
     }
     try {
-      await apiCall("/auth/me", { method: "PATCH", body: JSON.stringify({ displayName: profile.name.trim(), email: profile.email.trim() || null, birthday: profile.birthday.trim() || null }) });
+      await authApi.updateProfile({ displayName: profile.name.trim(), email: profile.email.trim() || null, birthday: profile.birthday.trim() || null });
       flash("اطلاعات حساب ذخیره شد.");
     } catch (e) {
       // Fallback to store if API not yet available
@@ -391,7 +402,7 @@ export default function AccountExperience({
                 ["offers", "خبر کالکشن‌ها", "تازه‌رسیده‌ها و پیشنهادهای کلبه"],
                 ["sms", "دریافت پیامک", "ارسال اعلان‌ها به شماره ثبت‌شده"],
                 ["email", "دریافت ایمیل", "ارسال به نشانی ایمیل حساب شما"],
-              ] as const).map(([key, label, desc]) => <div key={key} className="flex items-center justify-between gap-4 py-4"><div><p className="text-[13.5px] font-bold">{label}</p><p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">{desc}</p></div><Switch on={account.preferences[key]} onToggle={() => { if(isDemo) store.updateAccount(account.id, { preferences: { ...account.preferences, [key]: !account.preferences[key] } }); else apiCall("/auth/me/preferences", { method: "PATCH", body: JSON.stringify({ [key]: !account.preferences[key] }) }).catch(()=>{}); }} /></div>)}</div>
+              ] as const).map(([key, label, desc]) => <div key={key} className="flex items-center justify-between gap-4 py-4"><div><p className="text-[13.5px] font-bold">{label}</p><p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">{desc}</p></div><Switch on={prefs[key] ?? false} onToggle={() => { void togglePreference(key); }} /></div>)}</div>
               <p className="mt-4 text-xs leading-6 text-[var(--kv-muted)]">این تنظیمات در حساب شما ذخیره می‌شوند.</p>
             </section>
           )}
@@ -424,9 +435,9 @@ export default function AccountExperience({
             return;
           }
           try {
-            const res = await apiCall<{ id: string; reference: string }>("/returns", { method: "POST", body: JSON.stringify({ orderId: returnOrder, reason: returnReason.trim(), resolution: "refund" }) });
+            const res = await returnsApi.create({ orderId: returnOrder, reason: returnReason.trim(), resolution: "refund" });
             setReturnOrder(null); flash(`درخواست مرجوعی ${res.reference} ثبت شد.`);
-            const refreshed = await apiCall<{ items: any[] }>("/returns", {});
+            const refreshed = await returnsApi.list();
             setServerReturns((refreshed as any).items);
           } catch (e) {
             flash(e instanceof Error ? e.message : "خطا در ثبت مرجوعی");

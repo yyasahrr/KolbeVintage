@@ -12,8 +12,9 @@
     "migrate": "tsx src/migrate.ts",
     "bootstrap:admin": "tsx src/bootstrap-admin.ts",
     "worker": "tsx src/worker.ts",
-    "test": "node --import tsx --test --test-concurrency=1 src/core.test.ts src/invoices.test.ts src/wallet.test.ts src/suppliers.test.ts src/plans.test.ts src/promo.test.ts src/integrations.test.ts src/cms.test.ts src/access.test.ts src/inventory.test.ts src/domains.test.ts",
-    "test:embedded": "node scripts/run-embedded-tests.mjs"
+    "test": "node --import tsx --test --test-concurrency=1 src/core.test.ts src/invoices.test.ts src/wallet.test.ts src/suppliers.test.ts src/plans.test.ts src/promo.test.ts src/integrations.test.ts src/cms.test.ts src/access.test.ts src/inventory.test.ts src/domains.test.ts src/contracts.test.ts",
+    "test:embedded": "node scripts/run-embedded-tests.mjs",
+    "test:contract": "tsx scripts/frontend-contract-smoke.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.0",

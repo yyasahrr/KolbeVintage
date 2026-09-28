@@ -8,7 +8,7 @@ import { useStore } from "../data/store";
 import { KOLBE, type ShippingMethod, type CmsItem, type Customer } from "../data/platform";
 import { ProductStudio } from "./admin-product";
 import { useEffect } from "react";
-import { apiCall } from "../data/admin-api";
+import { crmApi, shippingApi } from "../data/api";
 import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
 import { cn } from "../utils/cn";
 
@@ -92,10 +92,10 @@ export function ShippingAdmin({ flash }: { flash: F }) {
   const storeShip = useStore() as any;
   const [serverShipping, setServerShipping] = useState<any[] | null>(null);
   const isDemoShip = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
-  useEffect(()=>{ if(isDemoShip) return; apiCall<{items:any[]}>("/shipping-methods").then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemoShip]);
+  useEffect(()=>{ if(isDemoShip) return; shippingApi.adminList().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemoShip]);
   const shipping = serverShipping ?? storeShip.shipping;
-  const upsertShipping = async (m: any)=> { if(isDemoShip) return storeShip.upsertShipping(m); await apiCall("/admin/shipping-methods",{method: m.id && serverShipping?.some((x:any)=>x.id===m.id) ? "PATCH":"POST", body: JSON.stringify(m)}); const r= await apiCall<{items:any[]}>("/shipping-methods"); setServerShipping(r.items??[]); };
-  const removeShipping = async (id:string)=> { if(isDemoShip) return storeShip.removeShipping(id); await apiCall(`/admin/shipping-methods/${id}`,{method:"DELETE"}); const r= await apiCall<{items:any[]}>("/shipping-methods"); setServerShipping(r.items??[]); };
+  const upsertShipping = async (m: any)=> { if(isDemoShip) return storeShip.upsertShipping(m); const exists = Boolean(m.id && serverShipping?.some((x:any)=>x.id===m.id)); if (exists) await shippingApi.update(m.id, m); else await shippingApi.create(m); const r = await shippingApi.adminList(); setServerShipping(r.items??[]); };
+  const removeShipping = async (id:string)=> { if(isDemoShip) return storeShip.removeShipping(id); await shippingApi.remove(id); const r = await shippingApi.adminList(); setServerShipping(r.items??[]); };
   const [edit, setEdit] = useState<ShippingMethod | null>(null);
   const blank: ShippingMethod = { id: "", name: "", carrier: "", scope: "خرده", price: 0, freeAbove: null, eta: "", zones: "سراسر کشور", active: true };
   return (
@@ -163,7 +163,7 @@ export function CrmAdmin({ flash }: { flash: F }) {
   const segs = ["همه", "وفادار", "پرخرج", "جدید", "در خطر ریزش"];
   const [serverCustomers, setServerCustomers] = useState<any[] | null>(null);
   const isDemoRetail = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
-  useEffect(()=>{ if(isDemoRetail) return; apiCall<{items:any[]}>("/admin/crm/contacts").then(r=> setServerCustomers(r.items??[])).catch(()=> setServerCustomers([])); },[isDemoRetail]);
+  useEffect(()=>{ if(isDemoRetail) return; crmApi.contacts().then(r=> setServerCustomers(r.items??[])).catch(()=> setServerCustomers([])); },[isDemoRetail]);
   const source: Customer[] = serverCustomers ? serverCustomers.map((c:any)=>({ id: String(c.id ?? c.phone ?? ""), name:c.name??c.display_name??"—", phone:c.phone??c.phone_number??"", segment:c.segment??"فعال", city:c.city??"—", orders:Number(c.orders_count??c.orders??0), spent:Number(c.ltv_rial??c.spent??0), last:c.last_order_at??c.last??"—" } as Customer)) : [];
   const list = (isDemoRetail ? [] : source).filter((c) => (seg === "همه" || c.segment === seg) && (!q.trim() || c.name.includes(q.trim()) || c.phone.includes(q.trim())));
   const crm = integrations.find((i) => i.kind === "CRM" && i.connected);

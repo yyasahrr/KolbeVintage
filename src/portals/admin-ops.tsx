@@ -10,7 +10,7 @@ import { TicketBoardPanel } from "../components/ticket-board-panel";
 import { useWallet } from "./supplier-wallet";
 import { Btn, Card, Checkbox, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
-import { apiCall } from "../data/admin-api";
+import { adminApi } from "../data/api";
 
 type F = (m: string) => void;
 const faDigits = (s: string) => s.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
@@ -146,7 +146,7 @@ export function PlansCenter({ flash }: { flash: F }) {
   const [serverPlans, setServerPlans] = useState<VipPlan[] | null>(null);
   useEffect(() => {
     if (isDemo) return;
-    apiCall<{ items: any[] }>("/plans")
+    adminApi.plans()
       .then((r) => setServerPlans(r.items.map((p: any): VipPlan => ({
         id: p.id, name: p.title ?? p.name ?? "", yearly: Math.round(Number(p.annual_price_rial ?? 0) / 10),
         creditLimit: Math.round(Number(p.limits?.maxOrderValueRial ?? 0) / 10),
@@ -182,11 +182,11 @@ export function PlansCenter({ flash }: { flash: F }) {
       features: (plan.features ?? []).filter((f) => /^[a-z0-9_-]{2,40}$/.test(f)), permissions: [],
     };
     try {
-      if (isNew) await apiCall("/plans", { method: "POST", body: JSON.stringify({ ...body, code: `plan_${Date.now().toString(36)}` }) });
-      else await apiCall(`/plans/${plan.id}`, { method: "PATCH", body: JSON.stringify(body) });
-      const refreshed = await apiCall<{ items: any[] }>("/plans");
+      if (isNew) await adminApi.createPlan({ ...body, code: `plan_${Date.now().toString(36)}` });
+      else await adminApi.updatePlan(plan.id, body);
+      const refreshed = await adminApi.plans();
       setServerPlans((prev) => prev ? prev.map((x) => {
-        const hit = refreshed.items.find((i: any) => i.id === x.id);
+        const hit = refreshed.items.find((i) => i.id === x.id) as { title?: string; active?: boolean; annual_price_rial?: string } | undefined;
         return hit ? { ...x, name: hit.title ?? x.name, active: Boolean(hit.active), yearly: Math.round(Number(hit.annual_price_rial ?? 0) / 10) } : x;
       }) : prev);
       return true;
@@ -207,7 +207,7 @@ export function PlansCenter({ flash }: { flash: F }) {
             <p className="mt-2 text-[18px] font-extrabold tabular-nums">{p.yearly === 0 ? "رایگان" : fmtMoney(p.yearly)}{p.yearly > 0 && <span className="text-[11px] font-medium text-[var(--kv-muted)]"> / سال</span>}</p>
             <p className="text-xs text-[var(--kv-muted)]">{fmtNum(buyers.filter((b) => b.planId === p.id).length)} عضو{serverPlans ? " · سرور" : ""}</p>
             <ul className="mt-3 flex-1 space-y-1.5 text-[12.5px]">{describeLimits(p).map((f) => <li key={f} className="flex items-start gap-1.5"><Check size={13} className="mt-1 shrink-0 text-[var(--kv-success)]" />{f}</li>)}{p.features.map((f) => <li key={f} className="flex items-start gap-1.5 text-[var(--kv-muted)]"><Check size={13} className="mt-1 shrink-0" />{f}</li>)}</ul>
-            <div className="mt-4 flex gap-2"><Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setEdit({ ...p, limits: limitsOf(p) })}>ویرایش محدودیت‌ها</Btn><Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} disabled={buyers.some((b) => b.planId === p.id)} onClick={async () => { if (isDemo) { removePlan(p.id); flash("پلن حذف شد (demo)"); return; } try { await apiCall(`/plans/${p.id}`, { method: "PATCH", body: JSON.stringify({ active: false }) }); setServerPlans((prev) => prev ? prev.map((x) => x.id === p.id ? { ...x, active: false } : x) : prev); flash("پلن غیرفعال شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>حذف</Btn></div>
+            <div className="mt-4 flex gap-2"><Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setEdit({ ...p, limits: limitsOf(p) })}>ویرایش محدودیت‌ها</Btn><Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} disabled={buyers.some((b) => b.planId === p.id)} onClick={async () => { if (isDemo) { removePlan(p.id); flash("پلن حذف شد (demo)"); return; } try { await adminApi.updatePlan(p.id, { active: false }); setServerPlans((prev) => prev ? prev.map((x) => x.id === p.id ? { ...x, active: false } : x) : prev); flash("پلن غیرفعال شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>حذف</Btn></div>
           </Card>
         ))}
       </div>
@@ -267,8 +267,8 @@ export function RestrictionsCenter({ flash }: { flash: F }) {
   const [serverUsers, setServerUsers] = useState<{ id: string; name: string }[] | null>(null);
   const load = () => {
     if (isDemo) return;
-    apiCall<{ items: any[] }>("/admin/restrictions").then((r) => setServerRows(r.items)).catch(() => setServerRows([]));
-    apiCall<{ items: any[] }>("/admin/users").then((r) => setServerUsers((r.items ?? []).map((u: any) => ({ id: u.id, name: `${u.displayName ?? u.display_name ?? u.phone ?? u.id}` })))).catch(() => setServerUsers([]));
+    adminApi.restrictions().then((r) => setServerRows(r.items)).catch(() => setServerRows([]));
+    adminApi.users().then((r) => setServerUsers((r.items ?? []).map((u: any) => ({ id: String(u.id), name: `${u.displayName ?? u.display_name ?? u.phone ?? u.id}` })))).catch(() => setServerUsers([]));
   };
   useEffect(load, [isDemo]);
   const suppliers = [...SUPPLIERS.map((s) => ({ id: s.id, name: s.name })), ...ops.extraSuppliers];
@@ -295,7 +295,7 @@ export function RestrictionsCenter({ flash }: { flash: F }) {
       if (flags.noPublish) flash("محدودیت انتشار محصول در دامنه سرور پشتیبانی نمی‌شود؛ سایر موارد اعمال شد.");
       try {
         for (const scope of scopes) {
-          await apiCall("/admin/restrictions", { method: "POST", body: JSON.stringify({ userId: chosen.id, scope, reason: reason.trim() }) });
+          await adminApi.createRestriction({ userId: chosen.id, scope, reason: reason.trim() });
         }
         load();
         setFlags({ ...NO_FLAGS }); setReason(""); setUntil("");
@@ -332,7 +332,7 @@ export function RestrictionsCenter({ flash }: { flash: F }) {
                 <td><b>{r.name}</b><p className="text-[11px] text-[var(--kv-muted)]">{r.createdAt}</p></td><td>کاربر</td>
                 <td><span className="rounded-full bg-[var(--kv-danger)]/10 px-2 py-0.5 text-[11px] font-semibold text-[var(--kv-danger)]">{SCOPE_LABEL[r.scope] ?? r.scope}</span></td>
                 <td className="max-w-[200px] text-[12px]">{r.reason}</td><td className="text-[var(--kv-muted)]">{r.status === "active" ? "فعال" : "رفع‌شده"}</td>
-                <td><Btn size="sm" variant="ghost" onClick={async () => { try { await apiCall(`/admin/restrictions/${r.id}`, { method: "PATCH", body: JSON.stringify({ status: "lifted" }) }); load(); flash(`محدودیت ${r.name} برداشته شد`); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>رفع</Btn></td>
+                <td><Btn size="sm" variant="ghost" onClick={async () => { try { await adminApi.updateRestriction(String(r.id), { status: "lifted" }); load(); flash(`محدودیت ${r.name} برداشته شد`); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>رفع</Btn></td>
               </tr>)}
               {isDemo && ops.restrictions.map((r) => <tr key={r.id}>
                 <td><b>{r.subjectName}</b><p className="text-[11px] text-[var(--kv-muted)]">{r.createdAt}</p></td><td>{r.subjectType === "supplier" ? "تأمین‌کننده" : "کاربر"}</td>
@@ -360,8 +360,8 @@ export function ApplicationsCenter({ flash }: { flash: F }) {
   const [serverFields, setServerFields] = useState<FormField[] | null>(null);
   const load = () => {
     if (isDemo) return;
-    apiCall<{ items: any[] }>("/admin/cooperation-requests").then((r) => setServerApps(r.items)).catch(() => setServerApps([]));
-    apiCall<{ items: any[] }>("/cooperation-form").then((r) => setServerFields((r.items ?? []).map((f: any, i: number) => ({ id: f.code ?? `f-${i}`, label: f.label, type: f.fieldType ?? f.field_type ?? "text", required: Boolean(f.required), options: f.options ?? [] })))).catch(() => setServerFields([]));
+    adminApi.cooperationRequests().then((r) => setServerApps(r.items)).catch(() => setServerApps([]));
+    adminApi.cooperationForm().then((r) => setServerFields((r.items ?? []).map((f: any, i: number) => ({ id: f.code ?? `f-${i}`, label: f.label, type: f.fieldType ?? f.field_type ?? "text", required: Boolean(f.required), options: f.options ?? [] })))).catch(() => setServerFields([]));
   };
   useEffect(load, [isDemo]);
   const [tab, setTab] = useState<"inbox" | "builder">("inbox");
@@ -381,14 +381,14 @@ export function ApplicationsCenter({ flash }: { flash: F }) {
   const saveForm = async () => {
     if (!serverFields) { flash("فرم ذخیره شد (demo)"); return; }
     try {
-      await apiCall("/admin/cooperation-form", { method: "PUT", body: JSON.stringify({ fields: (serverFields ?? []).map((f, i) => ({ code: f.id, label: f.label, fieldType: f.type, required: !!f.required, options: f.options ?? [], active: true, position: i + 1 })) }) });
+      await adminApi.saveCooperationForm((serverFields ?? []).map((f, i) => ({ code: f.id, label: f.label, fieldType: f.type, required: !!f.required, options: f.options ?? [], active: true, position: i + 1 })));
       flash("فرم همکاری روی سرور ذخیره شد");
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره فرم"); }
   };
   const decide = async (a: Application, status: Application["status"]) => {
     if (!isDemo && serverApps) {
       try {
-        await apiCall(`/admin/cooperation-requests/${a.id}/review`, { method: "POST", body: JSON.stringify({ status, note: note.trim() || undefined }) });
+        await adminApi.reviewCooperationRequest(String(a.id), { status, note: note.trim() || undefined });
         load(); setNote("");
         flash(status === "approved" ? `${a.name} تأیید شد و حساب تأمین‌کننده ساخته شد` : status === "rejected" ? `درخواست ${a.name} رد شد` : "در حال بررسی");
       } catch (e) { flash(e instanceof Error ? e.message : "خطا در بررسی درخواست"); }

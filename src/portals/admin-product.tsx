@@ -5,6 +5,10 @@ import { useStore } from "../data/store";
 import { KOLBE } from "../data/platform";
 import { useOps } from "../data/ops";
 import { fileToUrl, removeBackground, sendToN8n } from "../components/media";
+import { filesApi, integrationsApi, productsApi } from "../data/api";
+import {
+  buildProductCreatePayload, productVariantSkus, readProductCreateResponse,
+} from "../data/contracts";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
 import { Btn, Card, Drawer, Field, Input, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -22,17 +26,15 @@ export function CutoutUploader({ productId, value, onChange, candidates, flash }
   const loadIntegration = async () => {
     if (isDemo) return;
     try {
-      const { apiCall } = await import("../data/admin-api");
-      const res = await apiCall<{ items: { id: string; code: string; enabled: boolean; config: Record<string, unknown> }[] }>("/admin/integrations");
+      const res = await integrationsApi.list();
       const hit = (res.items ?? []).find((i) => i.code === "n8n");
       if (hit) setIntegration({ id: hit.id, enabled: Boolean(hit.enabled), webhookUrl: String((hit.config ?? {}).webhookUrl ?? ""), config: hit.config ?? {} });
     } catch { /* integration center not reachable — keep local demo values */ }
   };
   useEffect(() => { void loadIntegration(); }, [isDemo]);
   const updateIntegration = async (patch: { enabled?: boolean; config?: Record<string, unknown> }) => {
-    const { apiCall } = await import("../data/admin-api");
     if (!integration) throw new Error("یکپارچه‌سازی n8n یافت نشد");
-    await apiCall(`/admin/integrations/${integration.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    await integrationsApi.update(integration.id, patch);
     await loadIntegration();
   };
   const ref = useRef<HTMLInputElement>(null);
@@ -123,16 +125,19 @@ export function CutoutImg({ src, alt, className }: { src: string; alt: string; c
 }
 
 /* ============ Product definition (Kolbe) ============ */
+/** Product media = server file reference (persisted) + local preview URL (display only). */
+type DraftImage = { fileId: string | null; url: string };
 type Draft = {
   name: string; brand: string; category: string; sku: string; desc: string; fabric: string; care: string;
   retail: string; installment: string; compare: string; stock: string; seoTitle: string; slug: string; retailOn: boolean; wholesaleOn: boolean;
-  colors: Colorway[]; sizes: string[]; images: string[]; video: string; series: SeriesDef[]; cutout: Cutout;
+  colors: Colorway[]; sizes: string[]; images: DraftImage[]; video: string; videoFileId: string | null; series: SeriesDef[]; cutout: Cutout;
 };
-const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", stock: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", series: [], cutout: { status: "none" } });
+const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", stock: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" } });
 
 export function ProductStudio({ flash }: { flash: F }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
-  const { products, addProduct, setStatus, updateProduct } = useStore();
+  const { products, addProduct, setStatus, updateProduct, reload } = useStore();
+  const [mediaBusy, setMediaBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [sec, setSec] = useState("base");
   const [q, setQ] = useState("");
@@ -152,6 +157,24 @@ export function ProductStudio({ flash }: { flash: F }) {
     d.wholesaleOn && !seriesComplete(d.series) && "سری‌های عمده (قیمت، حداقل و رنگ)", !d.images.length && "دست‌کم یک تصویر",
   ].filter(Boolean) as string[];
 
+  /** Uploads a product image; the persisted value is the server file id, the preview stays local. */
+  const uploadImage = async (file: File): Promise<DraftImage> => {
+    if (isDemo) return { fileId: null, url: (await fileToUrl(file)).url };
+    const uploaded = await filesApi.upload(file);
+    return { fileId: uploaded.id, url: URL.createObjectURL(file) };
+  };
+  const uploadVideo = async (file: File) => {
+    if (file.size > 50 * 1024 * 1024) { flash("حجم ویدیو باید کمتر از ۵۰ مگابایت باشد"); return; }
+    if (isDemo) { setD((prev) => ({ ...prev, video: URL.createObjectURL(file) })); flash("ویدیو فقط در حالت demo محلی است"); return; }
+    try {
+      setMediaBusy(true);
+      const uploaded = await filesApi.upload(file);
+      setD((prev) => ({ ...prev, video: URL.createObjectURL(file), videoFileId: uploaded.id }));
+      flash("ویدیوی محصول روی سرور ذخیره شد");
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری ویدیو"); }
+    finally { setMediaBusy(false); }
+  };
+
   const save = async () => {
     if (issues.length) return;
     if (isDemo) {
@@ -161,7 +184,7 @@ export function ProductStudio({ flash }: { flash: F }) {
         supplier: KOLBE.name, supplierId: KOLBE.id, category: d.category, retailPrice: d.retailOn ? Number(d.retail) : 0,
         installmentPrice: d.retailOn ? Number(d.installment || d.retail) : 0,
         wholesaleFrom: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.pricePerSeries)) : 0, rating: 0, reviews: 0,
-        colors: d.colors, images: d.images, video: d.video || undefined, cutout: d.cutout,
+        colors: d.colors, images: d.images.map((image) => image.url), video: d.video || undefined, cutout: d.cutout,
         series: d.wholesaleOn ? d.series : [], seriesCount: d.wholesaleOn ? d.series.length : 0,
         moq: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.moqSeries)) : 1,
         stock: Number(d.stock) || 0, fabric: d.fabric || "—", desc: d.desc || "توضیحات این محصول در حال تکمیل است.",
@@ -171,26 +194,27 @@ export function ProductStudio({ flash }: { flash: F }) {
       return;
     }
     try {
-      const body: any = {
-        name: d.name.trim(),
-        brand: d.brand, category: d.category,
-        sku: d.sku.trim() || undefined,
-        desc: d.desc, fabric: d.fabric, care: d.care,
-        retailPriceRial: d.retailOn ? String(Number(d.retail)*10) : "0",
-        installmentPriceRial: d.retailOn ? String(Number(d.installment || d.retail)*10) : "0",
-        compareAtRial: d.compare ? String(Number(d.compare)*10) : undefined,
-        stock: Number(d.stock) || 0,
-        colors: d.colors, images: d.images, video: d.video || undefined, cutout: d.cutout,
-        series: d.wholesaleOn ? d.series : [],
-        retailOn: d.retailOn, wholesaleOn: d.wholesaleOn,
-        seoTitle: d.seoTitle, slug: d.slug,
-      };
-      const { apiCall } = await import("../data/admin-api");
-      const res = await apiCall<{ id: string; sku: string }>("/products", { method: "POST", body: JSON.stringify(body) });
-      flash(`«${d.name}» منتشر شد — ${res.sku ?? res.id}`);
+      // ONE canonical product-create contract: prices in rial, real colors×sizes variants (server SKUs),
+      // extra schema-less fields in `metadata`.
+      const payload = buildProductCreatePayload({
+        name: d.name, brand: d.brand, category: d.category, description: d.desc,
+        editorialSku: d.sku, retailOn: d.retailOn, wholesaleOn: d.wholesaleOn,
+        cashToman: d.retail, installmentToman: d.installment, compareToman: d.compare,
+        colors: d.colors.map((color) => ({ name: color.name })), sizes: d.sizes,
+        images: d.images, videoFileId: d.videoFileId,
+        fabric: d.fabric, care: d.care, seoTitle: d.seoTitle, slug: d.slug,
+        cutout: d.cutout,
+        series: d.series.map((series) => ({
+          name: series.name, pieces: series.pieces, moqSeries: series.moqSeries,
+          pricePerSeries: series.pricePerSeries, available: series.available, colorIds: series.colorIds,
+        })),
+        stock: d.stock,
+      });
+      const res = readProductCreateResponse(await productsApi.create(payload));
+      const skus = productVariantSkus(res);
+      flash(`«${d.name}» ثبت شد — ${skus.length.toLocaleString("fa-IR")} واریانت (SKU سرور): ${skus.slice(0, 3).join(" · ")}${skus.length > 3 ? " …" : ""}`);
       setOpen(false); setD(blank());
-      // Refresh products via store refetch or reload
-      window.location.reload();
+      await reload();
     } catch (e) {
       flash(e instanceof Error ? e.message : "خطا در انتشار");
     }
@@ -219,7 +243,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                   <td className="tabular-nums">{fmtNum(p.series.length)}</td>
                   <td className="text-[12px] text-[var(--kv-muted)]">{fmtNum(p.images.length)} تصویر{p.video ? " · ویدیو" : ""}</td>
                   <td><button onClick={() => setCutFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)]"><Sparkles size={13} />{CUT_LABEL[p.cutout?.status ?? "none"]}</button></td>
-                  <td><Switch on={p.status === "published"} onToggle={async () => { if (!isDemo) { try { const { apiCall } = await import("../data/admin-api"); await apiCall(`/products/${p.id}/status`, { method: "PATCH", body: JSON.stringify({ status: p.status === "published" ? "draft" : "published" }) }); window.location.reload(); return; } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } setStatus(p.id, p.status === "published" ? "draft" : "published"); flash(p.status === "published" ? `${p.name} از فروش خارج شد (demo)` : `${p.name} منتشر شد (demo)`); }} /></td>
+                  <td><Switch on={p.status === "published"} onToggle={async () => { const next = p.status === "published" ? "draft" : "published"; if (!isDemo) { try { await productsApi.status(p.id, next); await reload(); flash(next === "published" ? `${p.name} منتشر شد` : `${p.name} از فروش خارج شد`); return; } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت"); return; } } setStatus(p.id, next); flash(p.status === "published" ? `${p.name} از فروش خارج شد (demo)` : `${p.name} منتشر شد (demo)`); }} /></td>
                 </tr>
               ))}
             </tbody>
@@ -270,23 +294,26 @@ export function ProductStudio({ flash }: { flash: F }) {
               <div>
                 <div className="mb-2 flex items-center justify-between"><p className="text-[13px] font-semibold">تصاویر فروشگاه ({fmtNum(d.images.length)})</p><span className="text-[11.5px] text-[var(--kv-muted)]">اولین تصویر، کاور است · نسبت ۳:۴</span></div>
                 <div className="grid grid-cols-4 gap-2">
-                  {d.images.map((im, i) => <div key={i} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><img src={im} alt="" className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
-                  <input ref={imgRef} type="file" accept="image/*" multiple className="sr-only" onChange={async (e) => { const files = Array.from(e.target.files ?? []).slice(0, 8); const urls = await Promise.all(files.map((f) => fileToUrl(f))); setD((p) => ({ ...p, images: [...p.images, ...urls.map((u) => u.url)] })); if (urls.some((u) => !u.persistent)) flash("تصاویر بزرگ فقط برای همین نشست نگه داشته می‌شوند"); }} />
+                  {d.images.map((im, i) => <div key={`${im.fileId ?? im.url}-${i}`} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><img src={im.url} alt="" className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<span className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-bold text-white" dir="ltr">{im.fileId ? "server" : "demo"}</span><button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
+                  <input ref={imgRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" onChange={async (e) => { const files = Array.from(e.target.files ?? []).slice(0, 8); if (!files.length) return; setMediaBusy(true); try { const uploaded: DraftImage[] = []; for (const file of files) uploaded.push(await uploadImage(file)); setD((prev) => ({ ...prev, images: [...prev.images, ...uploaded] })); if (!isDemo) flash(`${uploaded.length.toLocaleString("fa-IR")} تصویر روی سرور ذخیره شد`); } catch (err) { flash(err instanceof Error ? err.message : "خطا در بارگذاری تصویر"); } finally { setMediaBusy(false); } }} />
                   <button onClick={() => imgRef.current?.click()} className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-[10px] border-2 border-dashed border-[var(--kv-line-strong)] text-[11.5px] font-semibold text-[var(--kv-muted)] hover:border-[var(--kv-accent)]"><ImageIcon size={18} />افزودن تصویر</button>
                 </div>
-                <div className="mt-2 flex gap-1.5 overflow-x-auto kv-no-scrollbar">{[IMG.trenchArch, IMG.trenchHero, IMG.blazerDuo, IMG.shirtRack, IMG.redCoat].map((src) => <button key={src} onClick={() => setD({ ...d, images: [...d.images, src] })} className="h-12 w-10 shrink-0 overflow-hidden rounded-[7px] opacity-70 hover:opacity-100" aria-label="افزودن تصویر نمونه"><img src={src} alt="" className="h-full w-full object-cover" /></button>)}<span className="self-center text-[11px] text-[var(--kv-muted)]">تصاویر نمونه</span></div>
+                {isDemo
+                  ? <div className="mt-2 flex gap-1.5 overflow-x-auto kv-no-scrollbar">{[IMG.trenchArch, IMG.trenchHero, IMG.blazerDuo, IMG.shirtRack, IMG.redCoat].map((src) => <button key={src} onClick={() => setD({ ...d, images: [...d.images, { fileId: null, url: src }] })} className="h-12 w-10 shrink-0 overflow-hidden rounded-[7px] opacity-70 hover:opacity-100" aria-label="افزودن تصویر نمونه"><img src={src} alt="" className="h-full w-full object-cover" /></button>)}<span className="self-center text-[11px] text-[var(--kv-muted)]">تصاویر نمونه (demo)</span></div>
+                  : <p className="mt-2 text-[11.5px] text-[var(--kv-muted)]">هر تصویر ابتدا با <code dir="ltr">POST /files</code> روی سرور ذخیره می‌شود و شناسه فایل در <code dir="ltr">metadata.images</code> قرار می‌گیرد؛ پیش‌نمایش محلی فقط برای نمایش است.</p>}
+                {mediaBusy && <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">در حال بارگذاری روی سرور…</p>}
               </div>
               <div>
                 <p className="mb-2 text-[13px] font-semibold">ویدیوی محصول (اختیاری)</p>
                 {d.video ? <div className="relative overflow-hidden rounded-[12px] border border-[var(--kv-line)]"><video src={d.video} controls muted className="max-h-64 w-full bg-black" /><button onClick={() => setD({ ...d, video: "" })} className="absolute left-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white" aria-label="حذف ویدیو"><Trash2 size={14} /></button></div>
                   : <div className="flex flex-wrap gap-2">
-                    <input ref={vidRef} type="file" accept="video/mp4,video/webm" className="sr-only" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; if (file.size > 50 * 1024 * 1024) { flash("حجم ویدیو باید کمتر از ۵۰ مگابایت باشد"); return; } const r = await fileToUrl(file, 0); setD({ ...d, video: r.url }); flash("ویدیو برای این نشست بارگذاری شد؛ در نسخه نهایی روی فضای ذخیره‌سازی آپلود می‌شود"); }} />
+                    <input ref={vidRef} type="file" accept="video/mp4" className="sr-only" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; await uploadVideo(file); }} />
                     <Btn variant="soft" icon={<Film size={15} />} onClick={() => vidRef.current?.click()}>بارگذاری ویدیو</Btn>
                     <Input className="min-w-[240px] flex-1" value="" onChange={(v) => v.startsWith("http") && setD({ ...d, video: v })} placeholder="یا نشانی ویدیو (https://…mp4)" />
                   </div>}
               </div>
             </>}
-            {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images} flash={flash} />}
+            {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images.map((image) => image.url)} flash={flash} />}
             {sec === "price" && <>
               <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span><b className="text-[13px]">فروش خرده در kolbe.ir</b><span className="block text-[11.5px] text-[var(--kv-muted)]">قیمت تک‌عدد برای همه مشتریان</span></span><Switch on={d.retailOn} onToggle={() => setD({ ...d, retailOn: !d.retailOn })} /></div>
               {d.retailOn && <div className="grid gap-3 sm:grid-cols-2"><Field label="قیمت نقدی (تومان)"><Input value={d.retail} onChange={(v) => setD({ ...d, retail: v.replace(/\D/g, "") })} /></Field><Field label="قیمت مخصوص چهارقسطه (تومان)" hint="هر قسط از این مبلغ محاسبه می‌شود؛ خالی یعنی برابر قیمت نقدی"><Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} /></Field><Field label="قیمت قبل از تخفیف" hint="اختیاری"><Input value={d.compare} onChange={(v) => setD({ ...d, compare: v.replace(/\D/g, "") })} /></Field></div>}
@@ -313,7 +340,7 @@ export function ProductStudio({ flash }: { flash: F }) {
       )}
 
       <Drawer open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""} wide>
-        {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={async (c) => { if (!isDemo) { try { const { apiCall } = await import("../data/admin-api"); await apiCall(`/products/${cutFor.id}`, { method: "PATCH", body: JSON.stringify({ cutout: c }) }); flash("تصویر استایل‌بیلدر ذخیره شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } updateProduct(cutFor.id, { cutout: c }); }} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
+        {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={async (c) => { if (!isDemo) { try { const existing = ((products.find((x) => x.id === cutFor.id) as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {}); await productsApi.update(cutFor.id, { metadata: { ...existing, cutout: c } }); flash("تصویر استایل‌بیلدر ذخیره شد"); await reload(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } updateProduct(cutFor.id, { cutout: c }); }} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
       </Drawer>
       <Drawer open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه" wide><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></Drawer>
     </div>

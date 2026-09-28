@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Card, Btn, LoadingState, ErrorState, Empty } from "../components/primitives";
 import { notificationsApi } from "../data/api";
-import { apiCall } from "../data/admin-api";
 
 export function NotificationsPanel() {
   const [items, setItems] = useState<unknown[]|null>(null);
@@ -10,10 +9,10 @@ export function NotificationsPanel() {
   const load = async () => {
     setError(null);
     try {
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
+
       const [n, r] = await Promise.all([
         notificationsApi.list() as Promise<{items:unknown[]}>,
-        apiCall<{items:unknown[]}>("/admin/notification-routes", {}, token).catch(()=>({items:[]} as {items:unknown[]})),
+        notificationsApi.routes().catch(()=>({items:[] as Record<string,unknown>[]})),
       ]);
       setItems(n.items); setRoutes(r.items);
     } catch(e){ setError(e instanceof Error?e.message:"خطا"); }

@@ -2,8 +2,8 @@
    localStorage is retained only for non-sensitive UI prefs; authoritative operations state lives in PostgreSQL. */
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
 import { IMG } from "./catalog";
-import { apiCall } from "./admin-api";
-import { getAccessToken } from "./api";
+import { apiClient } from "./api";
+import { TICKET_STATUSES, TICKET_STATUS_LABEL, TICKET_PRIORITY_LABEL, type TicketStatus, type TicketPriority } from "./contracts";
 
 /* ---------------- CMS ---------------- */
 export type HeroTemplate = "split" | "fullbleed" | "video" | "carousel" | "minimal" | "mosaic";
@@ -66,16 +66,17 @@ export const NO_FLAGS: RestrictionFlags = { block: false, noOrder: false, noWhol
 export type TicketMessage = { from: "user" | "agent"; name: string; text: string; at: string };
 export type TicketAttachment = { name: string; dataUrl: string; size: number };
 export type TicketEvent = { at: string; by: string; action: string };
+export type { TicketStatus, TicketPriority };
 export type Ticket = {
   id: string; ownerType: "customer" | "supplier"; ownerId: string; ownerName: string; subject: string; category: string;
-  priority: "low" | "normal" | "high"; status: "open" | "reviewing" | "answered" | "waiting" | "escalated" | "resolved" | "closed";
+  priority: TicketPriority; status: TicketStatus;
   orderRef?: string; createdAt: string; messages: TicketMessage[]; department?: string; assignee?: string;
   slaDueAt?: string; attachments?: TicketAttachment[]; events?: TicketEvent[];
 };
-export const TICKET_STATUS: Record<Ticket["status"], string> = {
-  open: "جدید", reviewing: "در حال بررسی", answered: "پاسخ داده شد", waiting: "در انتظار پاسخ کاربر",
-  escalated: "ارجاع شده", resolved: "حل شده", closed: "بسته شد",
-};
+/** Single source of truth for statuses (backend enum) and their UI labels. */
+export const TICKET_STATUSES_LIST = TICKET_STATUSES;
+export const TICKET_STATUS = TICKET_STATUS_LABEL;
+export const TICKET_PRIORITY = TICKET_PRIORITY_LABEL;
 export type ReturnReq = {
   id: string; channel: "retail" | "wholesale"; orderId: string; ownerId: string; ownerName: string; items: string; reason: string;
   resolution: "refund" | "exchange" | "credit"; status: "requested" | "approved" | "received" | "refunded" | "rejected"; amount: number; createdAt: string; events: { t: string; at: string }[];
@@ -188,7 +189,7 @@ const seed = (): OpsState => USE_DEMO_SEED_OPS ? ({
       { from: "user", name: "سارا محمدی", text: "سلام، سفارشم کی ارسال می‌شود؟", at: "امروز ۱۱:۲۰" },
       { from: "agent", name: "پشتیبانی کلبه", text: "سلام سارا جان، سفارش در حال بسته‌بندی است و تا عصر امروز تحویل پست می‌شود.", at: "امروز ۱۱:۴۲" },
     ] },
-    { id: "TK-5097", ownerType: "supplier", ownerId: "s1", ownerName: "نیلگون", subject: "تأخیر در تسویه هفته گذشته", category: "مالی و تسویه", priority: "high", status: "open", createdAt: "دیروز", messages: [
+    { id: "TK-5097", ownerType: "supplier", ownerId: "s1", ownerName: "نیلگون", subject: "تأخیر در تسویه هفته گذشته", category: "مالی و تسویه", priority: "high", status: "new", createdAt: "دیروز", messages: [
       { from: "user", name: "نیلگون", text: "تسویه شنبه گذشته هنوز به حساب ما نرسیده است.", at: "دیروز ۱۶:۰۵" },
     ] },
   ],
@@ -269,18 +270,16 @@ export function OpsProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (USE_DEMO_SEED_OPS) return;
-    const token = getAccessToken();
-    if (!token) return;
     let cancelled = false;
     (async () => {
       setLoading(true); setError(null);
       try {
         const [cmsPages, coupons, festivals, tickets, crmContacts] = await Promise.all([
-          apiCall<{ items: unknown[] }>("/admin/cms/pages", {}, token).catch(() => null),
-          apiCall<{ items: Coupon[] }>("/admin/coupons", {}, token).catch(() => null),
-          apiCall<{ items: Festival[] }>("/admin/festivals", {}, token).catch(() => null),
-          apiCall<{ items: Ticket[] }>("/tickets", {}, token).catch(() => null),
-          apiCall<{ items: Lead[] }>("/admin/crm/contacts", {}, token).catch(() => null),
+          apiClient.get<{ items: unknown[] }>("/admin/cms/pages").catch(() => null),
+          apiClient.get<{ items: Coupon[] }>("/admin/coupons").catch(() => null),
+          apiClient.get<{ items: Festival[] }>("/admin/festivals").catch(() => null),
+          apiClient.get<{ items: unknown[] }>("/tickets").catch(() => null),
+          apiClient.get<{ items: Lead[] }>("/admin/crm/contacts").catch(() => null),
         ]);
         if (cancelled) return;
         setState((s) => ({
@@ -308,7 +307,6 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     set: (key, v) => {
       if (USE_DEMO_SEED_OPS) { setState((s) => ({ ...s, [key]: v })); return; }
       // Map known keys to backend; otherwise treat as transient local (not business authoritative)
-      const token = getAccessToken();
       const map: Record<string,string> = {
         hero: "/admin/cms/pages", blocks: "/admin/cms/pages",
         quickSupport: "/admin/site-settings/support-widget",
@@ -320,7 +318,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         return;
       }
       const body = key === "quickSupport" ? v : { hero: key === "hero" ? v : undefined, blocks: key === "blocks" ? v : undefined };
-      apiCall(path, { method: key === "quickSupport" ? "PUT" : "PATCH", body: JSON.stringify(body) }, token ?? undefined)
+      apiClient.request(path, { method: key === "quickSupport" ? "PUT" : "PATCH", body: JSON.stringify(body) })
         .then(() => setState((s) => ({ ...s, [key]: v })))
         .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
     },
@@ -335,7 +333,6 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         });
         return;
       }
-      const token = getAccessToken();
       const it = item as unknown as { id: string };
       const list = state[key] as unknown as { id: string }[];
       const exists = list.some((x) => x.id === it.id);
@@ -359,7 +356,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
       }
       const path = exists ? ep.update(it.id) : ep.create;
       const method = exists ? "PATCH" : "POST";
-      apiCall(path, { method, body: JSON.stringify(item) }, token ?? undefined)
+      apiClient.request(path, { method, body: JSON.stringify(item) })
         .then((res: any) => {
           const returnedId = res?.id ?? it.id;
           setState((s) => {
@@ -372,7 +369,6 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     },
     remove: (key, id) => {
       if (USE_DEMO_SEED_OPS) { setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })); return; }
-      const token = getAccessToken();
       const delMap: Record<string,string> = {
         coupons: `/admin/coupons/${id}/deactivate`,
         festivals: `/admin/festivals/${id}`,
@@ -384,7 +380,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) }));
         return;
       }
-      apiCall(path, { method: key === "coupons" ? "POST" : "DELETE" }, token ?? undefined)
+      apiClient.request(path, { method: key === "coupons" ? "POST" : "DELETE" })
         .then(() => setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })))
         .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
     },

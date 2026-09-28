@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Card, Btn, LoadingState, ErrorState, Empty, Field, Input, Select, Textarea } from "../components/primitives";
 import { cmsApi } from "../data/api";
-import { apiCall } from "../data/admin-api";
 
 export function CmsPanel() {
   const [pages, setPages] = useState<unknown[]|null>(null);
@@ -14,11 +13,11 @@ export function CmsPanel() {
   const load = async () => {
     setError(null);
     try {
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
+
       const [p, pal, comp] = await Promise.all([
         cmsApi.pages() as Promise<{items:unknown[]}>,
         cmsApi.palettes() as Promise<{items:unknown[]}>,
-        apiCall<{items:unknown[]}>("/admin/cms/components", {}, token),
+        cmsApi.components(),
       ]);
       setPages(p.items); setPalettes(pal.items); setComponents(comp.items);
     } catch(e){ setError(e instanceof Error?e.message:"خطا"); }
@@ -26,29 +25,29 @@ export function CmsPanel() {
   useEffect(()=>{ void load(); },[]);
   const createPage = async () => {
     try {
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
-      await apiCall("/admin/cms/pages", { method:"POST", body: JSON.stringify({ code:newPage.code, title:newPage.title, path:newPage.path, description:newPage.description, seo:{}, active:true }) }, token);
+
+      await cmsApi.createPage({ code:newPage.code, title:newPage.title, path:newPage.path, description:newPage.description, seo:{}, active:true });
       await load();
     } catch(e){ setError(e instanceof Error?e.message:"خطا"); }
   };
   const addSection = async (pageId:string, componentCode:string) => {
     try {
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
-      await apiCall(`/admin/cms/pages/${pageId}/sections`, { method:"POST", body: JSON.stringify({ componentCode, title: componentCode, payload:{ text:"نمونه" }, visible:true }) }, token);
+
+      await cmsApi.createSection(pageId, { componentCode, title: componentCode, payload:{ text:"نمونه" }, visible:true });
       await load();
     } catch(e){ setError(e instanceof Error?e.message:"خطا"); }
   };
   const createPalette = async () => {
     try {
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
-      await apiCall("/admin/cms/palettes", { method:"POST", body: JSON.stringify({ code:newPalette.code, name:newPalette.name, colors:newPalette.colors }) }, token);
+
+      await cmsApi.createPalette({ code:newPalette.code, name:newPalette.name, colors:newPalette.colors });
       await load();
     } catch(e){ setError(e instanceof Error?e.message:"خطا"); }
   };
   const activatePalette = async (paletteId:string, mode:"manual"|"scheduled"|"festival") => {
     try {
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
-      await apiCall(`/admin/cms/palettes/${paletteId}/activations`, { method:"POST", body: JSON.stringify({ mode, startsAt: new Date().toISOString(), festivalId: mode==="festival" ? undefined : undefined }) }, token);
+
+      await cmsApi.activatePalette(paletteId, { mode, startsAt: new Date().toISOString() });
       await load();
     } catch(e){ setError(e instanceof Error?e.message:"خطا"); }
   };

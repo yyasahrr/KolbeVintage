@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Radar, Package, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check, X, Ban, Eye,
   ShieldCheck, Sun, Moon, LogOut, Warehouse, Users, Crown, ShoppingBag, Tags, Truck, Contact,
@@ -18,7 +18,7 @@ import { SeriesTemplateManager } from "./series-templates";
 import { useOps } from "../data/ops";
 import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent, Boxes, FileText, ScrollText } from "lucide-react";
 import { cn } from "../utils/cn";
-import { AdminApiError, apiCall, refreshAdminToken, type ApiRequest } from "../data/admin-api";
+import { AdminApiError, apiClient, isAuthenticated, onAuthExpired, type ApiRequest } from "../data/api";
 import { AdminServerOrders } from "./admin-server-orders";
 import { AdminWmsPanel } from "./admin-wms-panel";
 import { FinanceLedgerPanel } from "../components/finance-ledger";
@@ -26,62 +26,54 @@ import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
 import { PromoPanel } from "../components/promo-panel";
 import { CmsCenter } from "./admin-cms";
+import { authApi } from "../data/api";
 import { IntegrationsPanel } from "../components/integrations-panel";
 import { NotificationsPanel } from "../components/notifications-panel";
 import { TicketBoardPanel } from "../components/ticket-board-panel";
 
 /* ====== Standalone app: KOLBE Admin Console (internal; never linked from the public site) ====== */
 export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
-  const [token, setToken] = useState<string | null>(null);
-  const tokenRef = useRef<string | null>(null);
+  const [signedIn, setSignedIn] = useState(false);
   const [checking, setChecking] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const saveToken = (value: string | null) => { tokenRef.current = value; setToken(value); };
   useEffect(() => {
     if (sessionStorage.getItem("kolbe-admin-auth") !== "1") { setChecking(false); return; }
     let active = true;
-    refreshAdminToken().then(async ({ accessToken }) => {
-      const me = await apiCall<{ permissions: string[] }>("/auth/me", {}, accessToken);
-      if (active && me.permissions.includes("orders:read")) saveToken(accessToken);
+    // The shared client owns the token, refresh and retry; the console only gates on permissions.
+    apiClient.get<{ permissions: string[] }>("/auth/me").then((me) => {
+      if (active && isAuthenticated() && me.permissions.includes("orders:read")) setSignedIn(true);
     }).catch(() => { sessionStorage.removeItem("kolbe-admin-auth"); }).finally(() => { if (active) setChecking(false); });
     return () => { active = false; };
   }, []);
-  const request = useCallback<ApiRequest>(async (path, init) => {
-    let current = tokenRef.current;
-    if (!current) throw new AdminApiError("نشست مدیریت منقضی شده است.", 401);
-    try { return await apiCall(path, init, current); }
-    catch (error) {
-      if (!(error instanceof AdminApiError) || error.status !== 401) throw error;
-      try {
-        current = (await refreshAdminToken()).accessToken;
-        tokenRef.current = current;
-        setToken(current);
-        return await apiCall(path, init, current);
-      } catch (retryError) {
-        tokenRef.current = null; setToken(null); sessionStorage.removeItem("kolbe-admin-auth");
-        throw retryError;
-      }
-    }
-  }, []);
+  // Console requests go through the shared authenticated client (one place for token + single refresh + retry).
+  useEffect(() => onAuthExpired(() => { setSignedIn(false); sessionStorage.removeItem("kolbe-admin-auth"); }), []);
+  const request = useCallback(<T,>(path: string, init?: RequestInit) => {
+    if (!isAuthenticated()) return Promise.reject(new AdminApiError("نشست مدیریت منقضی شده است.", 401));
+    return apiClient.request<T>(path, init).catch((error: unknown) => {
+        if (error instanceof AdminApiError && error.status === 401) { sessionStorage.removeItem("kolbe-admin-auth"); }
+        throw error;
+      });
+  }, []) as ApiRequest;
+
   const login = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setSubmitting(true); setAuthError(null);
     try {
-      const result = await apiCall<{ accessToken: string }>("/auth/login", { method: "POST", body: JSON.stringify({ identity: email.trim(), password }) });
-      const me = await apiCall<{ permissions: string[] }>("/auth/me", {}, result.accessToken);
+      await authApi.login({ identity: email.trim(), password });
+      const me = await apiClient.get<{ permissions: string[] }>("/auth/me");
       if (!me.permissions.includes("orders:read")) throw new Error("این حساب دسترسی مدیریت سفارش‌ها را ندارد.");
-      saveToken(result.accessToken); sessionStorage.setItem("kolbe-admin-auth", "1"); setPassword("");
+      setSignedIn(true); sessionStorage.setItem("kolbe-admin-auth", "1"); setPassword("");
     } catch (error) { setAuthError(error instanceof Error ? error.message : "ورود ناموفق بود."); }
     finally { setSubmitting(false); }
   };
   const logout = async () => {
-    await apiCall("/auth/logout", { method: "POST" }).catch(() => undefined);
-    saveToken(null); sessionStorage.removeItem("kolbe-admin-auth"); setPassword("");
+    await authApi.logout().catch(() => undefined);
+    setSignedIn(false); sessionStorage.removeItem("kolbe-admin-auth"); setPassword("");
   };
   if (checking) return <div role="status" className="flex min-h-screen items-center justify-center text-sm text-[var(--kv-muted)]">در حال بررسی نشست مدیریت…</div>;
-  if (!token) {
+  if (!signedIn) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--kv-bg)] px-4">
         <div className="w-full max-w-[400px]">
@@ -127,7 +119,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   useEffect(() => {
     if (isDemo) return;
     let live = true;
-    apiCall<{ pendingProducts: number; activeOrders: number; pendingSupplierActions: number; pendingMemberships: number; openTickets: number; pendingReturns: number; pendingWithdrawals: number }>("/admin/dashboard/summary")
+    apiClient.get<{ pendingProducts: number; activeOrders: number; pendingSupplierActions: number; pendingMemberships: number; openTickets: number; pendingReturns: number; pendingWithdrawals: number }>("/admin/dashboard/summary")
       .then((r) => { if (live) setSummary(r); })
       .catch((e) => { if (live) setSummaryError(e instanceof Error ? e.message : "خطا در دریافت خلاصه داشبورد"); });
     return () => { live = false; };
@@ -176,7 +168,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "finance-ledger", label: "دفتر کل (Ledger)", icon: <ScrollText size={17} /> },
     { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
     { g: "سیستم" },
-    { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status === "open").length + ops.returns.filter((r) => r.status === "requested").length) },
+    { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
     { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
     { v: "restrictions", label: "محدودیت کاربران", icon: <ShieldAlert size={17} /> },
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },

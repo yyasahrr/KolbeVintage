@@ -10,7 +10,7 @@ import { useStore } from "../data/store";
 import { promoApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
-import { apiCall } from "../data/admin-api";
+import { cmsApi, ordersApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
@@ -271,12 +271,12 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [cmsError, setCmsError] = useState<string | null>(null);
   useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; let cancelled=false; (async()=>{ setCmsLoading(true); setCmsError(null);
     try{
-      const page = await apiCall<{ blocks?: any[]; hero?: any; palette?: any }>("/site/pages/home");
+      const page = await cmsApi.sitePage("home") as { blocks?: any[]; hero?: any; palette?: any };
       if(cancelled) return;
       if(page && (page as any).blocks) setCmsBlocks((page as any).blocks);
       if(page && (page as any).hero) setCmsHero((page as any).hero);
       if(page && (page as any).palette) setCmsPalette((page as any).palette);
-      const pal = await apiCall("/site/active-palette").catch(()=>null);
+      const pal = await cmsApi.activePalette().catch(()=>null);
       if(!cancelled && pal) setCmsPalette(pal);
     } catch(e){ if(!cancelled) setCmsError(e instanceof Error ? e.message : "خطا در بارگذاری محتوا"); }
     finally{ if(!cancelled) setCmsLoading(false); }
@@ -315,7 +315,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const [serverShipping, setServerShipping] = useState<any[] | null>(null);
-  useEffect(()=>{ if(isDemo) return; import("../data/admin-api").then(m=> m.apiCall<{items:any[]}>("/shipping-methods").then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([]))); },[isDemo]);
+  useEffect(()=>{ if(isDemo) return; shippingApi.list().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemo]);
   const { shipping } = store;
   const sourceShipping = serverShipping ? serverShipping.map((s:any)=> ({ id:s.id, name:s.name, carrier:s.type ?? s.carrier ?? "", scope: s.type==='pickup'?"خرده":"خرده", price: Number(s.baseFeeRial ?? s.base_fee_rial ?? 0), freeAbove: s.freeAboveRial ? Number(s.freeAboveRial) : (s.free_above_rial? Number(s.free_above_rial): null), eta: s.estimatedMinDays ? `${s.estimatedMinDays}-${s.estimatedMaxDays} روز` : "", zones: s.zones ?? "سراسر کشور", active: s.active })) : shipping.filter((s) => s.active && s.scope !== "عمده");
   const retailShipping = sourceShipping;
@@ -390,18 +390,11 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     }
     // Server checkout: only authoritative fields — variantId/quantity/paymentMode/shippingMethodId/couponCode/shippingAddress
     try {
-      const items = await Promise.all(cart.map(async (l)=> {
-        const prod = retailProducts.find((pp)=> pp.id===l.id);
-        // Try to resolve variantId from backend catalog: fetch product details if needed
-        // For now, use l.id as variantId if backend has product variant with same id, else fallback to first variant of product
-        let variantId = l.id;
-        try {
-          const res = await import("../data/admin-api").then(m=> m.apiCall<{ variants: any[] }>(`/catalog/products/${l.id}`));
-          if ((res as any).variants?.length) variantId = (res as any).variants[0].id;
-        } catch {}
-        void prod;
-        return { variantId, quantity: l.qty };
-      }));
+      // Variant ids come from the hydrated catalog cache (GET /products returns variants per product).
+      const items = cart.map((l) => {
+        const product = retailProducts.find((pp) => pp.id === l.id) as (typeof retailProducts[number] & { variants?: { id: string }[] }) | undefined;
+        return { variantId: product?.variants?.[0]?.id ?? l.id, quantity: l.qty };
+      });
       const body: any = {
         orderType: "retail",
         paymentMode,
@@ -411,7 +404,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       };
       if (validCoupon) body.couponCode = validCoupon.code;
       else if (couponCode) body.couponCode = couponCode;
-      const res = await import("../data/admin-api").then(m=> m.apiCall<{ id: string; reference: string }>("/orders", { method: "POST", body: JSON.stringify(body) }));
+      const res = await ordersApi.create(body, `retail-${crypto.randomUUID().replace(/-/g, "")}`) as { id: string; reference: string };
       if (!res.reference && !(res as any).id) throw new Error("خطا در ثبت سفارش");
       setPlacedOrderId(res.reference ?? (res as any).id);
       setCheckStep(0);

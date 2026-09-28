@@ -32,9 +32,7 @@ export function CrmPanel() {
     if(!selected || !note.trim()) return;
     try {
       const id = (selected as {id:string}).id;
-      const { apiCall } = await import("../data/admin-api");
-      const token = localStorage.getItem("kolbe-access-token") ?? undefined;
-      await apiCall(`/admin/crm/contacts/${id}/activities`, { method:"POST", body: JSON.stringify({ type:"note", title: note.slice(0,60), body: note }) }, token);
+      await crmApi.addActivity(id, { type: "note", title: note.slice(0, 60), body: note });
       setNote(""); const acts = await crmApi.activities(id) as {items:unknown[]}; setActivities(acts.items);
     } catch(e){ setError(e instanceof Error? e.message:"خطا"); }
   };

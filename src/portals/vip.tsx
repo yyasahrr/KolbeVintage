@@ -7,7 +7,7 @@ import { IMG, fmtMoney, fmtNum, type Product, type SeriesDef } from "../data/cat
 import { useStore } from "../data/store";
 import { KOLBE, BUYER_ADDRESS, limitsOf, describeLimits, type VipPlan } from "../data/platform";
 import { useOps } from "../data/ops";
-import { apiCall } from "../data/admin-api";
+import { apiClient, membershipApi } from "../data/api";
 import { ParentOrderCard, SupplierChip } from "../components/orders";
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Swatch, Stepper, Empty, Input, Segmented, Field } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -224,7 +224,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const store = useStore();
   const { products, orders, plans, shipping, buyers } = store;
   const wcart = store.wcart.filter((line) => line.accountId === accountId);
-  void apiCall; void useEffect; // used above
+  void useEffect; // used above
   const ops = useOps();
   // Wholesale catalog is server-backed: GET /wholesale/products requires active membership (limits). Public sees store cache; VIP sees server auth price.
   const [wholesaleServer, setWholesaleServer] = useState<Product[] | null>(null);
@@ -256,12 +256,10 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   // Server state for membership/plans: authoritative pricing/limits/credit
   useEffect(()=>{ if(role!=="vip") return; let cancel=false; (async()=>{ setVipLoading(true); setVipError(null);
     try{
-      const token = localStorage.getItem("kolbe-access-token");
-      if(!token) return;
       const [wh, pl, mem] = await Promise.all([
-        apiCall<{ items: any[] }>("/wholesale/products", {}, token).catch(()=>null),
-        apiCall<{ items: VipPlan[] }>("/plans", {}, token).catch(()=>null),
-        apiCall("/membership/current", {}, token).catch(()=>null),
+        membershipApi.wholesaleProducts().catch(()=>null),
+        apiClient.get<{ items: VipPlan[] }>("/plans").catch(()=>null),
+        membershipApi.current().catch(()=>null),
       ]);
       if(cancel) return;
       if(wh && (wh as any).items) {

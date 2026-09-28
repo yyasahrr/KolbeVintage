@@ -41,6 +41,20 @@ const statusBody = z.object({
 });
 type TicketRow = { id: string; reference: string; owner_id: string; status: string; priority: string; subject: string; category: string; sla_due_at: Date | null };
 
+/** One canonical attachment shape for every ticket endpoint (matches src/data/contracts.ts). */
+type AttachmentRow = { id: string; ticket_id: string; title: string; file_id: string | null; file_meta: Record<string, unknown> | null; created_at: Date };
+function serializeAttachment(row: AttachmentRow) {
+  const meta = row.file_meta ?? {};
+  const fileId = row.file_id ?? (typeof meta.fileId === 'string' ? meta.fileId : null);
+  return {
+    id: row.id, ticketId: row.ticket_id, fileId, title: row.title,
+    mime: typeof meta.mime === 'string' ? meta.mime : 'application/octet-stream',
+    size: typeof meta.size === 'number' ? meta.size : 0,
+    createdAt: row.created_at,
+    url: fileId ? `/api/v1/files/${fileId}` : (typeof meta.url === 'string' ? meta.url : null),
+  };
+}
+
 export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.post('/api/v1/tickets', async (request, reply) => {
     const user = await principal(request, pool, config);
@@ -91,12 +105,14 @@ export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config:
     }).parse(request.query);
     const manager = user.permissions.includes('tickets:manage');
     const rows = await pool.query<TicketRow>(
-      `SELECT id,reference,owner_id,status,priority,subject,category,sla_due_at,department,assignee_id,updated_at
-       FROM tickets WHERE ($1::boolean OR owner_id = $2) AND ($3::text IS NULL OR status = $3)
-         AND ($4::text IS NULL OR priority = $4) AND ($5::text IS NULL OR category = $5)
-         AND ($6::uuid IS NULL OR assignee_id = $6)
-         AND ($7::text IS NULL OR reference ILIKE '%' || $7 || '%' OR subject ILIKE '%' || $7 || '%')
-       ORDER BY created_at DESC LIMIT $8`,
+      `SELECT t.id,t.reference,t.owner_id,t.status,t.priority,t.subject,t.category,t.sla_due_at,t.department,t.assignee_id,t.updated_at,
+              u.display_name AS owner_name
+       FROM tickets t LEFT JOIN users u ON u.id = t.owner_id
+       WHERE ($1::boolean OR t.owner_id = $2) AND ($3::text IS NULL OR t.status = $3)
+         AND ($4::text IS NULL OR t.priority = $4) AND ($5::text IS NULL OR t.category = $5)
+         AND ($6::uuid IS NULL OR t.assignee_id = $6)
+         AND ($7::text IS NULL OR t.reference ILIKE '%' || $7 || '%' OR t.subject ILIKE '%' || $7 || '%')
+       ORDER BY t.created_at DESC LIMIT $8`,
       [manager, user.id, query.status ?? null, query.priority ?? null, query.category ?? null,
         query.assigneeId ?? null, query.search ?? null, query.limit]);
     return { items: rows.rows };
@@ -107,8 +123,10 @@ export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config:
     const user = await principal(request, pool, config);
     const manager = user.permissions.includes('tickets:manage');
     const rows = await pool.query<TicketRow & { updated_at: Date }>(
-      `SELECT id,reference,owner_id,status,priority,subject,category,sla_due_at,department,assignee_id,updated_at
-       FROM tickets WHERE ($1::boolean OR owner_id = $2) ORDER BY updated_at DESC LIMIT 300`, [manager, user.id]);
+      `SELECT t.id,t.reference,t.owner_id,t.status,t.priority,t.subject,t.category,t.sla_due_at,t.department,t.assignee_id,t.updated_at,
+              u.display_name AS owner_name
+       FROM tickets t LEFT JOIN users u ON u.id = t.owner_id
+       WHERE ($1::boolean OR t.owner_id = $2) ORDER BY t.updated_at DESC LIMIT 300`, [manager, user.id]);
     const columns: Record<string, typeof rows.rows> = {
       new: [], reviewing: [], waiting_user: [], answered: [], escalated: [], resolved: [], closed: [],
     };
@@ -116,18 +134,30 @@ export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config:
     return { columns };
   });
 
+  /** Assignable support/admin accounts — the only valid source of `assigneeId` for PATCH /tickets/:id. */
+  app.get('/api/v1/admin/support-agents', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'tickets:manage');
+    const rows = await pool.query<{ id: string; display_name: string; roles: string[] }>(
+      `SELECT u.id, u.display_name, array_agg(ur.role_code ORDER BY ur.role_code) AS roles
+       FROM users u JOIN user_roles ur ON ur.user_id = u.id
+       WHERE ur.role_code IN ('support','admin') AND u.status = 'active'
+       GROUP BY u.id, u.display_name ORDER BY u.display_name`);
+    return { items: rows.rows.map((row) => ({ id: row.id, displayName: row.display_name, roles: row.roles })) };
+  });
+
   app.get('/api/v1/tickets/:id', async (request) => {
     const user = await principal(request, pool, config);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const ticket = await one<TicketRow>(pool, 'SELECT * FROM tickets WHERE id = $1', [id]);
+    const ticket = await one<TicketRow>(pool,
+      'SELECT t.*, u.display_name AS owner_name FROM tickets t LEFT JOIN users u ON u.id = t.owner_id WHERE t.id = $1', [id]);
     if (!ticket || (ticket.owner_id !== user.id && !user.permissions.includes('tickets:manage'))) throw notFound();
     const manager = user.permissions.includes('tickets:manage');
     const messages = await pool.query(
       `SELECT m.id,m.sender_id,m.body,m.internal,m.created_at FROM ticket_messages m
        WHERE m.ticket_id = $1 AND ($2::boolean OR NOT m.internal) ORDER BY m.created_at,m.id`, [id, manager]);
-    const attachments = await pool.query(
-      'SELECT id,message_id,title,file_meta,created_at FROM ticket_attachments WHERE ticket_id = $1 ORDER BY created_at', [id]);
-    return { ...ticket, messages: messages.rows, attachments: attachments.rows };
+    const attachments = await pool.query<AttachmentRow>(
+      'SELECT id,ticket_id,title,file_id,file_meta,created_at FROM ticket_attachments WHERE ticket_id = $1 ORDER BY created_at', [id]);
+    return { ...ticket, messages: messages.rows, attachments: attachments.rows.map(serializeAttachment) };
   });
 
   app.post('/api/v1/tickets/:id/attachments', async (request, reply) => {
@@ -177,10 +207,13 @@ export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config:
       const manager = user.permissions.includes('tickets:manage');
       if (ticket.owner_id !== user.id && !manager) throw notFound();
       const attachmentId = randomUUID();
+      const createdAt = new Date();
       await client.query('INSERT INTO ticket_attachments(id,ticket_id,message_id,title,file_meta,file_id,uploaded_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
         [attachmentId, id, messageId, title, JSON.stringify(fileMeta), fileId, user.id]);
       await audit(client, user.id, 'ticket.attachment_added', 'ticket', id, undefined, { title, fileId }, request.ip);
-      return reply.code(201).send({ id: attachmentId, ticketId: id, title, fileId, fileMeta });
+      return reply.code(201).send(serializeAttachment({
+        id: attachmentId, ticket_id: id, title, file_id: fileId, file_meta: fileMeta as Record<string, unknown>, created_at: createdAt,
+      }));
     });
   });
 

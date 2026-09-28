@@ -5,22 +5,36 @@
    memberships, restrictions, campaigns, CMS, WMS, tickets, returns, wallet, finance, audit),
    cooperation requests and plans. Run with: node scripts/e2e-smoke.mjs */
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
-const port = 55440;
+const freePort = async (start) => {
+  for (let port = start; port < start + 50; port += 1) {
+    const ok = await new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.once('error', () => resolve(false));
+      probe.once('listening', () => probe.close(() => resolve(true)));
+      probe.listen(port, '127.0.0.1');
+    });
+    if (ok) return port;
+  }
+  throw new Error(`no free port near ${start}`);
+};
+const port = await freePort(55440);
+const apiPort = await freePort(5099);
 const db = await PGlite.create();
 const server = new PGLiteSocketServer({ db, port, host: '127.0.0.1', maxConnections: 20 });
 await server.start();
-const env = { ...process.env, REDIS_URL: undefined, NODE_ENV: 'development', DATABASE_URL: `postgres://127.0.0.1:${port}/pglite`, TEST_DATABASE_URL: `postgres://127.0.0.1:${port}/pglite`, JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters', PUBLIC_ORIGIN: 'http://127.0.0.1:5173', PG_POOL_MAX: '2', PORT: '5099', REDIS_URL: undefined };
+const env = { ...process.env, REDIS_URL: undefined, NODE_ENV: 'development', DATABASE_URL: `postgres://127.0.0.1:${port}/pglite`, TEST_DATABASE_URL: `postgres://127.0.0.1:${port}/pglite`, JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters', PUBLIC_ORIGIN: 'http://127.0.0.1:5173', PG_POOL_MAX: '2', PORT: String(apiPort), REDIS_URL: undefined };
 const migrate = spawn('npm', ['run', '--silent', 'migrate'], { env, stdio: 'inherit' });
 await new Promise((r) => migrate.on('exit', r));
 const bootEnv = { ...env, BOOTSTRAP_ADMIN_EMAIL: 'admin@kolbe.ir', BOOTSTRAP_ADMIN_PASSWORD: 'ChangeMe-Admin-123456' };
 const boot = spawn('npx', ['tsx', 'src/bootstrap-admin.ts'], { env: bootEnv, stdio: 'inherit' });
 await new Promise((r) => boot.on('exit', r));
-const app = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+const app = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 let log = ''; app.stdout.on('data', d => log += d); app.stderr.on('data', d => log += d);
 await new Promise((r) => setTimeout(r, 3500));
-const base = 'http://127.0.0.1:5099/api/v1';
+const base = `http://127.0.0.1:${apiPort}/api/v1`;
 const j = async (path, init = {}) => { const hasBody = typeof init.body === 'string'; const res = await fetch(base + path, { ...init, headers: { ...(hasBody ? { 'content-type': 'application/json' } : {}), ...(init.headers || {}) } }); const body = await res.text(); let json = null; try { json = JSON.parse(body); } catch {} return { status: res.status, json }; };
 const out = {};
 out.health = (await j('/health/live')).status;
@@ -113,5 +127,5 @@ out.adminApproveReturn = rApprove.status;
 out.wmsAdjust = wms.status;
 
 console.log(JSON.stringify(out, null, 1));
-app.kill('SIGKILL'); await server.stop(); await db.close();
+if (app.pid) { try { process.kill(-app.pid, 'SIGKILL'); } catch { /* already gone */ } } await server.stop(); await db.close();
 process.exit(0);
