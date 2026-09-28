@@ -15,6 +15,7 @@ const env = {
   TEST_DATABASE_URL: `postgres://127.0.0.1:${port}/pglite`,
   JWT_SECRET: process.env.JWT_SECRET ?? 'test-secret-that-is-at-least-thirty-two-characters',
   PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN ?? 'http://127.0.0.1:5173',
+  PG_POOL_MAX: '2',
 };
 
 function run(command, args) {

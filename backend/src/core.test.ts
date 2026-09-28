@@ -68,7 +68,7 @@ test('MeliPayamak SMS uses the official form endpoint', async () => {
 test('checkout reserves stock once, payment is idempotent, and shipment consumes stock', { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const config: Config = {
     NODE_ENV: 'test', PORT: 4001, DATABASE_URL: process.env.TEST_DATABASE_URL!, REDIS_URL: undefined,
-    JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters', PUBLIC_ORIGIN: 'http://127.0.0.1:5173',
+    JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters', PG_POOL_MAX: 1, PUBLIC_ORIGIN: 'http://127.0.0.1:5173',
     PAYMENT_WEBHOOK_SECRET: undefined, COOKIE_SECURE: 'false',
   };
   const app = await buildApp(config);

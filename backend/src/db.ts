@@ -6,7 +6,7 @@ export type DbClient = Pick<PoolClient, 'query'>;
 export function createPool(config: Config) {
   const pool = new pg.Pool({
     connectionString: config.DATABASE_URL,
-    max: 20,
+    max: config.PG_POOL_MAX,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
     application_name: 'kolbe-api',
