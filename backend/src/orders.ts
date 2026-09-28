@@ -21,6 +21,7 @@ const checkout = z.object({
     line: z.string().trim().min(10).max(500), postalCode: z.string().regex(/^\d{10}$/),
   }),
   couponCode: z.string().trim().max(40).optional(),
+  shippingMethodId: z.uuid().optional(),
 });
 const orderStatus = z.enum(['pending_payment', 'paid', 'processing', 'preparing', 'ready_to_ship', 'in_transit', 'shipped', 'delivered', 'cancelled', 'returned']);
 type OrderStatus = z.infer<typeof orderStatus>;
@@ -112,11 +113,25 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       if (body.couponCode && promo.source === 'none') throw badRequest(promo.note ?? 'کد تخفیف معتبر نیست.');
       let discount = planDiscount + promo.discountRial;
       if (discount > subtotal) discount = subtotal;
-      const total = subtotal - discount;
+      // Shipping: server-side authoritative — never trust client fee
+      let shippingRial = 0n;
+      let shippingMethodId: string | null = null;
+      if (body.shippingMethodId) {
+        const method = await one<{ id: string; active: boolean; base_fee_rial: string; free_above_rial: string | null }>(client,
+          'SELECT id, active, base_fee_rial, free_above_rial FROM shipping_methods WHERE id = $1', [body.shippingMethodId]);
+        if (!method) throw notFound();
+        if (!method.active) throw badRequest('روش ارسال انتخاب‌شده غیرفعال است.');
+        shippingMethodId = method.id;
+        const base = rial(method.base_fee_rial);
+        const freeAbove = method.free_above_rial ? rial(method.free_above_rial) : null;
+        if (freeAbove !== null && subtotal >= freeAbove) shippingRial = 0n;
+        else shippingRial = base;
+      }
+      const total = subtotal - discount + shippingRial;
       await client.query(
-        `INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,subtotal_rial,discount_rial,total_rial,shipping_address)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [orderId, reference, user.id, body.orderType, body.paymentMode, subtotal.toString(), discount.toString(), total.toString(), JSON.stringify(body.shippingAddress)]);
+        `INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,subtotal_rial,discount_rial,shipping_rial,shipping_method_id,total_rial,shipping_address)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [orderId, reference, user.id, body.orderType, body.paymentMode, subtotal.toString(), discount.toString(), shippingRial.toString(), shippingMethodId, total.toString(), JSON.stringify(body.shippingAddress)]);
       for (const line of lines) {
         await client.query(
           `INSERT INTO order_lines(id,order_id,product_id,variant_id,supplier_id,product_name,sku,quantity,unit_price_rial,line_total_rial)
@@ -156,7 +171,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       if (promo.couponId && promo.discountRial > 0n) {
         await recordRedemption(client, promo.couponId, user.id, orderId, promo.discountRial);
       }
-      const response = { id: orderId, reference, status: 'pending_payment', subtotalRial: asRial(subtotal), discountRial: asRial(discount), totalRial: asRial(total), paymentIntentId,
+      const response = { id: orderId, reference, status: 'pending_payment', subtotalRial: asRial(subtotal), discountRial: asRial(discount), shippingRial: asRial(shippingRial), shippingMethodId, totalRial: asRial(total), paymentIntentId,
         paymentAvailable: availableProviders.has(provider) };
       await completeIdempotency(client, user.id, 'order.create', key, response);
       return response;

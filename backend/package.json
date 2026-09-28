@@ -12,12 +12,13 @@
     "migrate": "tsx src/migrate.ts",
     "bootstrap:admin": "tsx src/bootstrap-admin.ts",
     "worker": "tsx src/worker.ts",
-    "test": "node --import tsx --test --test-concurrency=1 src/core.test.ts src/invoices.test.ts src/wallet.test.ts src/suppliers.test.ts src/plans.test.ts src/promo.test.ts src/integrations.test.ts src/cms.test.ts src/access.test.ts src/inventory.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 src/core.test.ts src/invoices.test.ts src/wallet.test.ts src/suppliers.test.ts src/plans.test.ts src/promo.test.ts src/integrations.test.ts src/cms.test.ts src/access.test.ts src/inventory.test.ts src/domains.test.ts",
     "test:embedded": "node scripts/run-embedded-tests.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.0",
     "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^10.1.2",
     "@fastify/rate-limit": "^10.0.0",
     "argon2": "^0.44.0",
     "bullmq": "^5.0.0",

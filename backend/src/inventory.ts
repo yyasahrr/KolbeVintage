@@ -372,7 +372,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     return { items: rows.rows };
   });
 
-  // Returns: inspection -> sellable/damaged
+  // Returns: inspection -> sellable/damaged (with RT- reference, buyer_id, history via audit)
   app.post('/api/v1/returns', async (request, reply) => {
     const user = await principal(request, pool, config);
     const body = z.object({
@@ -386,10 +386,12 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     const line = body.orderLineId ? await one<{ id: string; line_total_rial: string }>(pool, 'SELECT id, line_total_rial FROM order_lines WHERE id = $1 AND order_id = $2', [body.orderLineId, body.orderId]) : null;
     const amount = line ? line.line_total_rial : '0';
     const id = randomUUID();
-    await pool.query(`INSERT INTO return_requests(id,order_id,order_line_id,requester_id,reason,resolution,amount_rial) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [id, body.orderId, body.orderLineId ?? null, user.id, body.reason, body.resolution, amount]);
-    await transaction(pool, (client) => audit(client, user.id, 'return.requested', 'return', id, undefined, body, request.ip));
-    return reply.code(201).send({ id, status: 'requested', amountRial: amount });
+    const seq = await one<{ number: string }>(pool, "SELECT nextval('return_reference_seq')::text AS number");
+    const reference = `RT-${seq!.number}`;
+    await pool.query(`INSERT INTO return_requests(id,reference,order_id,order_line_id,requester_id,buyer_id,reason,resolution,amount_rial) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, reference, body.orderId, body.orderLineId ?? null, user.id, order.buyer_id, body.reason, body.resolution, amount]);
+    await transaction(pool, (client) => audit(client, user.id, 'return.requested', 'return', id, undefined, { reference, ...body }, request.ip));
+    return reply.code(201).send({ id, reference, status: 'requested', amountRial: amount });
   });
 
   app.post('/api/v1/returns/:id/inspect', async (request) => {
@@ -426,8 +428,49 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
   app.get('/api/v1/returns', async (request) => {
     const user = await principal(request, pool, config);
-    const privileged = user.permissions.includes('returns:manage');
+    const privileged = user.permissions.includes('returns:manage') || user.permissions.includes('returns:read');
     const rows = await pool.query(`SELECT * FROM return_requests WHERE ($1::boolean OR requester_id = $2) ORDER BY created_at DESC LIMIT 100`, [privileged, user.id]);
     return { items: rows.rows };
+  });
+
+  app.get('/api/v1/returns/:id', async (request) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const row = await one(pool, 'SELECT * FROM return_requests WHERE id = $1', [id]);
+    if (!row) throw notFound();
+    const privileged = user.permissions.includes('returns:manage') || user.permissions.includes('returns:read');
+    if ((row as any).requester_id !== user.id && (row as any).buyer_id !== user.id && !privileged) throw forbidden();
+    const history = await pool.query(`SELECT action, actor_id, created_at, details FROM audit_logs WHERE entity_type = 'return' AND entity_id = $1 ORDER BY created_at`, [id]);
+    return { ...row, history: history.rows };
+  });
+
+  app.get('/api/v1/admin/returns', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'returns:manage');
+    const rows = await pool.query(`SELECT r.*, o.reference as order_reference, u.display_name as requester_name FROM return_requests r LEFT JOIN orders o ON o.id = r.order_id LEFT JOIN users u ON u.id = r.requester_id ORDER BY r.created_at DESC LIMIT 100`);
+    return { items: rows.rows };
+  });
+
+  app.patch('/api/v1/admin/returns/:id', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'returns:manage');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({ status: z.enum(['approved','received','refunded','rejected']), note: z.string().max(1000).optional() }).parse(request.body);
+    return transaction(pool, async (client) => {
+      const ret = await one<any>(client, 'SELECT * FROM return_requests WHERE id = $1 FOR UPDATE', [id]);
+      if (!ret) throw notFound();
+      const allowed: Record<string, string[]> = {
+        requested: ['approved','rejected'],
+        approved: ['received','rejected'],
+        received: ['refunded','rejected'],
+        refunded: [], rejected: []
+      };
+      if (!allowed[ret.status]?.includes(body.status)) throw badRequest('تغییر وضعیت مجاز نیست.');
+      await client.query(`UPDATE return_requests SET status = $2, updated_at = now() WHERE id = $1`, [id, body.status]);
+      await audit(client, user.id, 'return.status_changed', 'return', id, { status: ret.status }, { status: body.status, note: body.note }, request.ip);
+      // If refunded, we would trigger finance ledger/payment refund — for now, mark as provider_pending if not configured
+      // No fake paid — just status change
+      return { id, reference: ret.reference, status: body.status };
+    });
   });
 }

@@ -4,10 +4,12 @@ import {
   MapPin, ArrowLeft, LogOut, Package, ChevronDown, Store, ShieldCheck,
 } from "lucide-react";
 import RetailExperience, { type CartLine, type RetailView } from "./portals/retail";
-import VipExperience from "./portals/vip";
-import SupplierApp from "./portals/supplier";
-import AdminApp from "./portals/admin";
-import StudioExperience, { AuthScreens } from "./portals/studio";
+import { AuthScreens } from "./portals/studio";
+import { lazy, Suspense } from "react";
+const VipExperience = lazy(() => import("./portals/vip"));
+const StudioExperience = lazy(() => import("./portals/studio"));
+const SupplierApp = lazy(() => import("./portals/supplier"));
+const AdminApp = lazy(() => import("./portals/admin"));
 import { Btn, Drawer, Modal } from "./components/primitives";
 import { fmtMoney, fmtNum } from "./data/catalog";
 import { digitsOnly } from "./data/customer";
@@ -53,8 +55,8 @@ export default function App() {
     <StoreProvider>
       <OpsProvider>
         {isDemo && <div className="sticky top-0 z-[100] w-full bg-amber-100 py-1.5 text-center text-xs font-bold text-amber-900">DEMO MODE — داده‌ها نمایشی هستند (?demo=1)</div>}
-        {site === "supplier" && <SupplierApp dark={dark} setDark={setDark} onExit={() => { window.location.hash = "#/"; }} />}
-        {site === "admin" && <AdminApp dark={dark} setDark={setDark} />}
+        {site === "supplier" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><SupplierApp dark={dark} setDark={setDark} onExit={() => { window.location.hash = "#/"; }} /></Suspense>}
+        {site === "admin" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><AdminApp dark={dark} setDark={setDark} /></Suspense>}
         {site === "public" && <Storefront dark={dark} setDark={setDark} />}
       </OpsProvider>
     </StoreProvider>
@@ -283,7 +285,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           />
         )}
         {section === "vip" && (
-          <VipExperience
+          <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><VipExperience
             role={role} buyer={role === "vip" ? (buyer?.name ?? "مهمان") : "مهمان"}
             accountId={account?.id}
             selectedId={selectedId} setSelectedId={setSelectedId}
@@ -292,9 +294,9 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               if (account) go("retail", "account");
               else openAuth({ section: "retail", view: "account" });
             }}
-          />
+          /></Suspense>
         )}
-        {section === "studio" && <StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} onLogin={() => openAuth({ section: "studio", view })} />}
+        {section === "studio" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} onLogin={() => openAuth({ section: "studio", view })} /></Suspense>}
         {section === "auth" && (
           <AuthScreens portal="retail" onDone={async (phone) => {
             // Real backend auth: try register then login. For demo, password is fixed dev value; in production SMS OTP is verified server-side.

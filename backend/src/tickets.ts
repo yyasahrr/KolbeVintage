@@ -5,7 +5,7 @@ import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
-import { forbidden, notFound } from './errors.js';
+import { badRequest, forbidden, notFound } from './errors.js';
 
 const createTicket = z.object({
   subject: z.string().trim().min(3).max(240),
@@ -131,21 +131,54 @@ export function registerTicketRoutes(app: FastifyInstance, pool: DbPool, config:
   app.post('/api/v1/tickets/:id/attachments', async (request, reply) => {
     const user = await principal(request, pool, config);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = z.object({
-      title: z.string().trim().min(2).max(200),
-      fileMeta: fileMetaBody.default({}),
-      messageId: z.uuid().optional(),
-    }).strict().parse(request.body);
+    // Support both JSON (fileMeta) and multipart file upload (real file)
+    let title = 'attachment';
+    let fileMeta: any = {};
+    let messageId: string | null = null;
+    let fileId: string | null = null;
+    const contentType = request.headers['content-type'] ?? '';
+    if (contentType.includes('multipart/form-data')) {
+      // @ts-ignore — multipart
+      const data = await (request as any).file();
+      if (!data) throw badRequest('فایل ارسال نشده است.');
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of data.file) { size += chunk.length; if (size > 10 * 1024 * 1024) throw badRequest('حجم فایل بیش از 10 مگابایت است.'); chunks.push(chunk); }
+      const buffer = Buffer.concat(chunks);
+      const mime = data.mimetype ?? 'application/octet-stream';
+      const originalName = data.filename ?? 'file';
+      // Validate MIME/size via storage
+      const { putFile } = await import('./storage.js');
+      const { storageKey, sha256 } = await putFile(buffer, originalName, mime);
+      const fid = randomUUID();
+      await pool.query(`INSERT INTO files(id, owner_id, storage_key, original_name, mime_type, size_bytes, sha256, visibility) VALUES ($1,$2,$3,$4,$5,$6,$7,'private')`, [fid, user.id, storageKey, originalName, mime, buffer.length, sha256]);
+      fileId = fid;
+      fileMeta = { url: `/api/v1/files/${fid}`, mime, size: buffer.length, sha256, originalName };
+      // Also parse title from fields if present
+      title = (data.fields?.title?.value as string) ?? originalName;
+      messageId = (data.fields?.messageId?.value as string) ?? null;
+    } else {
+      const body = z.object({
+        title: z.string().trim().min(2).max(200),
+        fileMeta: fileMetaBody.default({}),
+        messageId: z.uuid().optional(),
+      }).strict().parse(request.body);
+      title = body.title;
+      fileMeta = body.fileMeta;
+      messageId = body.messageId ?? null;
+      // If fileMeta contains fileId, link it
+      if (fileMeta.fileId) fileId = fileMeta.fileId;
+    }
     return transaction(pool, async (client) => {
       const ticket = await one<TicketRow>(client, 'SELECT * FROM tickets WHERE id = $1 FOR UPDATE', [id]);
       if (!ticket) throw notFound();
       const manager = user.permissions.includes('tickets:manage');
       if (ticket.owner_id !== user.id && !manager) throw notFound();
       const attachmentId = randomUUID();
-      await client.query('INSERT INTO ticket_attachments(id,ticket_id,message_id,title,file_meta,uploaded_by) VALUES ($1,$2,$3,$4,$5,$6)',
-        [attachmentId, id, body.messageId ?? null, body.title, JSON.stringify(body.fileMeta), user.id]);
-      await audit(client, user.id, 'ticket.attachment_added', 'ticket', id, undefined, { title: body.title }, request.ip);
-      return reply.code(201).send({ id: attachmentId, ticketId: id, title: body.title });
+      await client.query('INSERT INTO ticket_attachments(id,ticket_id,message_id,title,file_meta,file_id,uploaded_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [attachmentId, id, messageId, title, JSON.stringify(fileMeta), fileId, user.id]);
+      await audit(client, user.id, 'ticket.attachment_added', 'ticket', id, undefined, { title, fileId }, request.ip);
+      return reply.code(201).send({ id: attachmentId, ticketId: id, title, fileId, fileMeta });
     });
   });
 

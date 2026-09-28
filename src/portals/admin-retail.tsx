@@ -5,7 +5,9 @@ import {
 } from "lucide-react";
 import { IMG, COLORS, fmtMoney, fmtNum, nextSku, type Product } from "../data/catalog";
 import { useStore } from "../data/store";
-import { KOLBE, SEED_CUSTOMERS, type ShippingMethod, type CmsItem, type Customer } from "../data/platform";
+import { KOLBE, type ShippingMethod, type CmsItem, type Customer } from "../data/platform";
+import { useEffect } from "react";
+import { apiCall } from "../data/admin-api";
 import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
 import { cn } from "../utils/cn";
 
@@ -235,7 +237,13 @@ export function ProductDefinition({ flash }: { flash: F }) {
 
 /* ================= Shipping ================= */
 export function ShippingAdmin({ flash }: { flash: F }) {
-  const { shipping, upsertShipping, removeShipping } = useStore();
+  const storeShip = useStore() as any;
+  const [serverShipping, setServerShipping] = useState<any[] | null>(null);
+  const isDemoShip = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  useEffect(()=>{ if(isDemoShip) return; apiCall<{items:any[]}>("/shipping-methods").then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemoShip]);
+  const shipping = serverShipping ?? storeShip.shipping;
+  const upsertShipping = async (m: any)=> { if(isDemoShip) return storeShip.upsertShipping(m); await apiCall("/admin/shipping-methods",{method: m.id && serverShipping?.some((x:any)=>x.id===m.id) ? "PATCH":"POST", body: JSON.stringify(m)}); const r= await apiCall<{items:any[]}>("/shipping-methods"); setServerShipping(r.items??[]); };
+  const removeShipping = async (id:string)=> { if(isDemoShip) return storeShip.removeShipping(id); await apiCall(`/admin/shipping-methods/${id}`,{method:"DELETE"}); const r= await apiCall<{items:any[]}>("/shipping-methods"); setServerShipping(r.items??[]); };
   const [edit, setEdit] = useState<ShippingMethod | null>(null);
   const blank: ShippingMethod = { id: "", name: "", carrier: "", scope: "خرده", price: 0, freeAbove: null, eta: "", zones: "سراسر کشور", active: true };
   return (
@@ -250,7 +258,7 @@ export function ShippingAdmin({ flash }: { flash: F }) {
             <table className="kv-table min-w-[760px]">
               <thead><tr><th>روش</th><th>حامل</th><th>کانال</th><th>هزینه</th><th>رایگان از</th><th>زمان</th><th>پوشش</th><th>فعال</th><th></th></tr></thead>
               <tbody>
-                {shipping.map((m) => (
+                {shipping.map((m: any) => (
                   <tr key={m.id}>
                     <td><b>{m.name}</b></td><td>{m.carrier}</td><td><span className="rounded-full bg-[var(--kv-surface-2)] px-2.5 py-1 text-[11px] font-bold">{m.scope}</span></td>
                     <td className="tabular-nums">{m.price === 0 ? "پس‌کرایه" : fmtMoney(m.price)}</td><td className="tabular-nums">{m.freeAbove ? fmtMoney(m.freeAbove) : "—"}</td>
@@ -301,12 +309,16 @@ export function CrmAdmin({ flash }: { flash: F }) {
   const [sel, setSel] = useState<Customer | null>(null);
   const [note, setNote] = useState("");
   const segs = ["همه", "وفادار", "پرخرج", "جدید", "در خطر ریزش"];
-  const list = SEED_CUSTOMERS.filter((c) => (seg === "همه" || c.segment === seg) && (!q.trim() || c.name.includes(q.trim()) || c.phone.includes(q.trim())));
+  const [serverCustomers, setServerCustomers] = useState<any[] | null>(null);
+  const isDemoRetail = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  useEffect(()=>{ if(isDemoRetail) return; apiCall<{items:any[]}>("/admin/crm/contacts").then(r=> setServerCustomers(r.items??[])).catch(()=> setServerCustomers([])); },[isDemoRetail]);
+  const source: Customer[] = serverCustomers ? serverCustomers.map((c:any)=>({ id: c.id ?? c.phone ?? Math.random().toString(), name:c.name??c.display_name??"—", phone:c.phone??c.phone_number??"", segment:c.segment??"فعال", city:c.city??"—", orders:Number(c.orders_count??c.orders??0), spent:Number(c.ltv_rial??c.spent??0), last:c.last_order_at??c.last??"—" } as Customer)) : [];
+  const list = (isDemoRetail ? [] : source).filter((c) => (seg === "همه" || c.segment === seg) && (!q.trim() || c.name.includes(q.trim()) || c.phone.includes(q.trim())));
   const crm = integrations.find((i) => i.kind === "CRM" && i.connected);
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-        {segs.slice(1).map((s) => { const n = SEED_CUSTOMERS.filter((c) => c.segment === s).length; return (
+        {segs.slice(1).map((s) => { const n = (serverCustomers ? serverCustomers.filter((c:any)=> (c.segment??"فعال")===s).length : 0); return (
           <button key={s} onClick={() => setSeg(seg === s ? "همه" : s)} className={cn("rounded-[14px] border p-4 text-right transition-all", seg === s ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.05]" : "border-[var(--kv-line)] bg-[var(--kv-surface)]")}>
             <p className="text-xl font-extrabold tabular-nums">{fmtNum(n)}</p><div className="mt-1"><Status value={s} /></div>
           </button>

@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { Check, MessageSquare, Phone, Plug, Plus, Send, Tag, Ticket as TicketIcon, Trash2, Users, CalendarClock, Megaphone } from "lucide-react";
 import { SUPPLIERS, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
-import { SEED_CUSTOMERS } from "../data/platform";
 import { useOps, opsNow, smsParts, type Coupon, type Festival, type Lead, type LeadStage } from "../data/ops";
+import { useEffect } from "react";
+import { apiCall } from "../data/admin-api";
 import { BarList, Kpi } from "../components/charts";
 import { Btn, Card, Checkbox, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -11,19 +12,27 @@ import { cn } from "../utils/cn";
 type F = (m: string) => void;
 const faDigits = (s: string) => s.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
 
-/* Unified customer view: CRM seed + real storefront accounts with their actual orders */
+/* Unified customer view: CRM server + real storefront accounts — SEED removed, server is source of truth */
 function useCustomers() {
   const { accounts, retailOrders } = useStore();
+  const [serverContacts, setServerContacts] = useState<any[] | null>(null);
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  useEffect(() => {
+    if (isDemo) return;
+    apiCall<{ items: any[] }>("/admin/crm/contacts").then((res:any)=> setServerContacts(res.items ?? [])).catch(()=> setServerContacts([]));
+  }, [isDemo]);
   return useMemo(() => {
     const fromAccounts = accounts.map((a) => {
       const orders = retailOrders.filter((o) => o.accountId === a.id);
       const spent = orders.reduce((s, o) => s + o.total, 0);
       return { id: a.id, name: a.name, phone: a.phone, city: a.addresses[0]?.city ?? "—", orders: orders.length, spent, last: orders[0]?.createdAt ?? "—", source: "حساب سایت" };
     });
+    const crmContacts = (serverContacts ?? []).map((c:any)=> ({ id: c.id, name: c.name ?? c.display_name, phone: c.phone ?? c.phone_number ?? "", city: c.city ?? "—", orders: Number(c.orders_count ?? 0), spent: Number(c.ltv_rial ?? c.spent ?? 0), last: c.last_order_at ?? "—", source: "CRM" }));
     const known = new Set(fromAccounts.map((c) => c.phone));
-    const seeded = SEED_CUSTOMERS.filter((c) => !known.has(faDigits(c.phone).replace(/\s/g, ""))).map((c) => ({ ...c, source: "CRM" }));
-    return [...fromAccounts, ...seeded].map((c) => ({ ...c, segment: c.orders >= 7 ? "وفادار" : c.spent >= 30000000 ? "پرخرج" : c.orders <= 1 ? "جدید" : "فعال" }));
-  }, [accounts, retailOrders]);
+    const filtered = crmContacts.filter((c) => !known.has(faDigits(c.phone).replace(/\s/g, "")));
+    const merged = isDemo ? [...fromAccounts] : [...fromAccounts, ...filtered];
+    return merged.map((c) => ({ ...c, segment: c.orders >= 7 ? "وفادار" : c.spent >= 30000000 ? "پرخرج" : c.orders <= 1 ? "جدید" : "فعال" }));
+  }, [accounts, retailOrders, serverContacts, isDemo]);
 }
 
 /* ================= SMS ================= */

@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { one, transaction, type DbPool } from './db.js';
-import { conflict, forbidden, unauthorized } from './errors.js';
+import { badRequest, conflict, forbidden, unauthorized } from './errors.js';
 
 const registration = z.object({
   email: z.email().max(254).optional(),
@@ -119,5 +119,42 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
     return reply.code(204).send();
   });
 
-  app.get('/api/v1/auth/me', async (request) => principal(request, pool, config));
+  app.get('/api/v1/auth/me', async (request) => {
+    const user = await principal(request, pool, config);
+    const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null }>(pool, 'SELECT id, display_name, email, phone, birthday FROM users WHERE id = $1', [user.id]);
+    return { id: user.id, displayName: row?.display_name ?? user.displayName, email: row?.email ?? null, phone: row?.phone ?? null, birthday: row?.birthday ?? null, roles: user.roles, permissions: user.permissions };
+  });
+
+  app.patch('/api/v1/auth/me', async (request) => {
+    const user = await principal(request, pool, config);
+    const body = z.object({
+      displayName: z.string().trim().min(2).max(120).optional(),
+      email: z.string().email().max(254).optional().nullable(),
+      birthday: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/).optional().nullable(),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const before = await one(client, 'SELECT display_name, email, birthday FROM users WHERE id = $1', [user.id]);
+      if (!before) throw unauthorized();
+      const updates: string[] = [];
+      const vals: unknown[] = [user.id];
+      if (body.displayName !== undefined) { vals.push(body.displayName.trim()); updates.push(`display_name = $${vals.length}`); }
+      if (body.email !== undefined) { vals.push(body.email ? body.email.toLowerCase() : null); updates.push(`email = $${vals.length}`); }
+      if (body.birthday !== undefined) {
+        let dbDate: string | null = null;
+        if (body.birthday) {
+          const [y,m,d] = body.birthday.split('/').map(Number);
+          dbDate = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        }
+        vals.push(dbDate);
+        updates.push(`birthday = $${vals.length}::date`);
+      }
+      if (!updates.length) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+      await client.query(`UPDATE users SET ${updates.join(', ')}, updated_at = now() WHERE id = $1`, vals);
+      const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null }>(client, 'SELECT id, display_name, email, phone, birthday FROM users WHERE id = $1', [user.id]);
+      if (!row) throw unauthorized();
+      await client.query(`INSERT INTO audit_logs(id, actor_id, action, entity_type, entity_id, before_state, after_state) VALUES ($1,$2,'profile.updated','user',$3,$4,$5)`,
+        [randomUUID(), user.id, user.id, JSON.stringify(before), JSON.stringify(row)]);
+      return { id: user.id, displayName: row.display_name, email: row.email, phone: row.phone, birthday: row.birthday ? new Date(row.birthday).toLocaleDateString('fa-IR') : null };
+    });
+  });
 }

@@ -313,8 +313,12 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return s + (product?.installmentPrice ?? product?.retailPrice ?? 0) * l.qty;
   }, 0);
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverShipping, setServerShipping] = useState<any[] | null>(null);
+  useEffect(()=>{ if(isDemo) return; import("../data/admin-api").then(m=> m.apiCall<{items:any[]}>("/shipping-methods").then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([]))); },[isDemo]);
   const { shipping } = store;
-  const retailShipping = shipping.filter((s) => s.active && s.scope !== "عمده");
+  const sourceShipping = serverShipping ? serverShipping.map((s:any)=> ({ id:s.id, name:s.name, carrier:s.type ?? s.carrier ?? "", scope: s.type==='pickup'?"خرده":"خرده", price: Number(s.baseFeeRial ?? s.base_fee_rial ?? 0), freeAbove: s.freeAboveRial ? Number(s.freeAboveRial) : (s.free_above_rial? Number(s.free_above_rial): null), eta: s.estimatedMinDays ? `${s.estimatedMinDays}-${s.estimatedMaxDays} روز` : "", zones: s.zones ?? "سراسر کشور", active: s.active })) : shipping.filter((s) => s.active && s.scope !== "عمده");
+  const retailShipping = sourceShipping;
   const [shipId, setShipId] = useState("");
   const ship = retailShipping.find((s) => s.id === shipId) ?? retailShipping[0];
   const today = new Date().toISOString().slice(0, 10);
@@ -352,7 +356,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const savedAddress = account?.addresses.find((a) => a.id === checkoutAddressId)
     ?? (checkoutAddressId === "new" ? undefined : account?.addresses.find((a) => a.isDefault) ?? account?.addresses[0]);
   const deliveryAddress = savedAddress ?? checkoutAddress;
-  const finishCheckout = () => {
+  const finishCheckout = async () => {
     setCheckoutError("");
     if (checkStep === 0) {
       if (requireLogin && !requireLogin()) return;
@@ -372,15 +376,48 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     if (!account || !ship) { setCheckoutError("برای ثبت سفارش وارد حساب شوید و روش ارسال را انتخاب کنید."); return; }
     if (custRestrict?.block || custRestrict?.noOrder) { setCheckoutError(`ثبت سفارش برای حساب شما محدود شده است${custRestrict.reason ? `: ${custRestrict.reason}` : ""}. از پشتیبانی پیگیری کنید.`); return; }
     const normalized = { ...deliveryAddress, id: deliveryAddress.id || `addr-${Date.now()}`, phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
-    // NOTE: In production, address.id and persistence are server-backed (PUT /auth/me). Client-generated id is transient and replaced by server on sync.
-    const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
-    const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
-    if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
-    if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
-    if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
-    setPlacedOrderId(orderId);
-    setCheckStep(0);
-    setView("success");
+    if (isDemo) {
+      const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
+      const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
+      if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
+      if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
+      if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
+      setPlacedOrderId(orderId);
+      setCheckStep(0);
+      setView("success");
+      return;
+    }
+    // Server checkout: only authoritative fields — variantId/quantity/paymentMode/shippingMethodId/couponCode/shippingAddress
+    try {
+      const items = await Promise.all(cart.map(async (l)=> {
+        const prod = retailProducts.find((pp)=> pp.id===l.id);
+        // Try to resolve variantId from backend catalog: fetch product details if needed
+        // For now, use l.id as variantId if backend has product variant with same id, else fallback to first variant of product
+        let variantId = l.id;
+        try {
+          const res = await import("../data/admin-api").then(m=> m.apiCall<{ variants: any[] }>(`/catalog/products/${l.id}`));
+          if ((res as any).variants?.length) variantId = (res as any).variants[0].id;
+        } catch {}
+        void prod;
+        return { variantId, quantity: l.qty };
+      }));
+      const body: any = {
+        orderType: "retail",
+        paymentMode,
+        items,
+        shippingAddress: { recipient: normalized.recipient, phone: normalized.phone, province: normalized.province, city: normalized.city, line: normalized.line, postalCode: normalized.postalCode },
+        shippingMethodId: ship?.id,
+      };
+      if (validCoupon) body.couponCode = validCoupon.code;
+      else if (couponCode) body.couponCode = couponCode;
+      const res = await import("../data/admin-api").then(m=> m.apiCall<{ id: string; reference: string }>("/orders", { method: "POST", body: JSON.stringify(body) }));
+      if (!res.reference && !(res as any).id) throw new Error("خطا در ثبت سفارش");
+      setPlacedOrderId(res.reference ?? (res as any).id);
+      setCheckStep(0);
+      setView("success");
+    } catch (e) {
+      setCheckoutError(e instanceof Error ? e.message : "خطا در ثبت سفارش");
+    }
   };
 
   /* ----- PDP overlay ----- */
