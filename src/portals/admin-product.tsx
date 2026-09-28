@@ -150,6 +150,7 @@ export function ProductStudio({ flash }: { flash: F }) {
   const secs = [["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"], ["price", "قیمت خرده"], ["series", "سری‌های عمده"], ["stock", "موجودی"], ["seo", "سئو و کانال‌ها"]];
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
+      {!open && (<>
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <div className="min-w-[200px] flex-1"><SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول یا SKU…" /></div>
         <Btn variant="soft" size="sm" onClick={() => setManage(true)}>قالب‌های سری کلبه</Btn>
@@ -176,8 +177,16 @@ export function ProductStudio({ flash }: { flash: F }) {
           </table>
         </div>
       </Card>
+      </>)}
 
-      <Drawer open={open} onClose={() => setOpen(false)} title="تعریف محصول جدید" wide>
+      {open && (
+      <div>
+        <div className="mb-4 flex flex-wrap items-center gap-2.5">
+          <Btn variant="soft" size="sm" onClick={() => setOpen(false)} icon={<X size={14} />}>بازگشت به فهرست</Btn>
+          <h2 className="text-[17px] font-extrabold">تعریف محصول جدید</h2>
+          <span className="text-[11.5px] text-[var(--kv-muted)]">تمام بخش‌های محصول را در همین صفحه تکمیل کنید و در پایان ذخیره و انتشار بزنید.</span>
+        </div>
+        <Card className="p-4 md:p-6">
         <div className="grid gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
           <nav className="space-y-0.5" aria-label="بخش‌های تعریف محصول">{secs.map(([v, l], i) => (
             <button key={v} onClick={() => setSec(v)} aria-current={sec === v ? "step" : undefined} className={cn("flex min-h-10 w-full items-center gap-2 rounded-[10px] px-3 py-2 text-right text-[12.5px] font-semibold", sec === v ? "bg-[var(--kv-surface-2)]" : "text-[var(--kv-muted)]")}>
@@ -250,7 +259,9 @@ export function ProductStudio({ flash }: { flash: F }) {
             </div>
           </div>
         </div>
-      </Drawer>
+        </Card>
+      </div>
+      )}
 
       <Drawer open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""} wide>
         {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={(c) => updateProduct(cutFor.id, { cutout: c })} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
