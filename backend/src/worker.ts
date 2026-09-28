@@ -38,12 +38,28 @@ async function deliver(eventId: string) {
       if (product) { recipient = product.supplier_id; title = 'محصول'; body = 'وضعیت محصول به‌روز شد.'; }
     }
     if (recipient) {
+      const route = await one<{ roles: string[]; priority: string; channels: string[]; active: boolean }>(client,
+        'SELECT roles, priority, channels, active FROM notification_routes WHERE event_type = $1', [event.event_type]);
+      const priority = route?.priority ?? (event.event_type.includes('failed') ? 'high' : 'normal');
       await client.query(
         `INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (user_id,event_id) DO NOTHING`,
-        [randomUUID(), recipient, event.id, title, body, event.event_type.includes('failed') ? 'high' : 'normal']);
+        [randomUUID(), recipient, event.id, title, body, priority]);
+      // Role-based routing (item 24): the right teams see the event too.
+      if (route?.active && route.roles.length) {
+        const watchers = await client.query<{ id: string }>(
+          `SELECT DISTINCT u.id FROM users u JOIN user_roles r ON r.user_id = u.id
+           WHERE r.role_code = ANY($1) AND u.status = 'active' AND u.id <> $2`, [route.roles, recipient]);
+        for (const watcher of watchers.rows) {
+          await client.query(
+            `INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (user_id,event_id) DO NOTHING`,
+            [randomUUID(), watcher.id, event.id, title, body, priority]);
+        }
+      }
       const user = await one<{ phone: string | null }>(client, 'SELECT phone FROM users WHERE id = $1', [recipient]);
-      if (user?.phone && /^09\d{9}$/.test(user.phone)) {
+      const smsAllowed = !route || route.channels.includes('sms');
+      if (smsAllowed && user?.phone && /^09\d{9}$/.test(user.phone)) {
         await client.query(
           `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message)
            VALUES ($1,$2,$3,$4,$5) ON CONFLICT (event_id) DO NOTHING`,
