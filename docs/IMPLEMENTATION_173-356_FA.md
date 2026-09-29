@@ -105,3 +105,14 @@ LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۲
 - مایگریشن‌ها فقط ساختار و داده مرجع (مجوزها، رجیستری کامپوننت، پریست، قالب کارت، تاکسونومی) دارند؛ پایگاه‌داده تازه CMS خالی دارد.
 - صفحات About / Vibe / VIP Lead و نوار اعلان (غیرفعال) فقط با بوت‌استرپ ادمین ساخته می‌شوند؛ تأمین‌کنندگان اقساط (اسنپ‌پی/دیجی‌پی) غیرفعال ثبت می‌شوند تا ادمین با قرارداد واقعی فعالشان کند.
 - گزارش هم‌پوشانی دامنه‌ها: `docs/parallel/agent-c-overlap-report.md`.
+
+## بستن شکاف‌های نهایی (Agent C — gap closure)
+
+| شکاف | پیاده‌سازی | راستی‌آزمایی |
+|---|---|---|
+| CTA هدر | `headerSchema` فیلدهای `ctaEnabled` و `ctaVariant` (solid/outline/ghost) را کنار `ctaLabel`/`ctaTarget` می‌پذیرد؛ ویرایشگر «هدر و فوتر» در CMS Studio (`[data-header-cta-editor]`) با پیش‌نمایش زنده؛ هدر دسکتاپ و منوی موبایل با همان رندرکننده‌ی مشترک `HeaderCta` (`[data-header-cta]`). | `experience.test.ts` (ذخیره + variant نامعتبر → 400)، smoke |
+| سبد ذخیره‌شده | هوک `src/data/saved-cart.ts` روی `GET/PUT /api/v1/profile/saved-cart`؛ برای کاربر واردشده منبع حقیقت سرور است (بدون سبد سایه در localStorage)، سبد مهمان فقط در حافظه و یک‌بار هنگام ورود ادغام می‌شود؛ پاک‌کردن = `PUT []`؛ حالت‌های loading/error/empty و «تلاش دوباره» در کشوی سبد. | تست بازیابی/پاک‌کردن در `experience.test.ts`، smoke |
+| دسترس‌پذیری | `src/components/focus-trap.ts` (`useDialogFocus`): تله‌ی فوکوس، Escape فقط برای بالاترین دیالوگ، بازگرداندن فوکوس، قفل اسکرول؛ روی `Drawer`، `Modal`، `Lightbox` جدید، منوی موبایل فروشگاه و سایدبار موبایل پنل ادمین/تأمین‌کننده با `role="dialog"` و `aria-modal`. | smoke (Tab/Shift+Tab، Escape، بازگشت فوکوس) |
+| تاکسونومی فرم تأمین‌کننده | دسته از `GET /api/v1/site/categories` (همان نامی که `products.category` با آن تطبیق می‌شود)، وایب از `GET /api/v1/site/vibes` (slug)، جنسیت و فصل از enumهای `catalog.ts`؛ ارسال در همان `POST /api/v1/products`. هیچ جدول/مسیر تازه‌ای ساخته نشد؛ فهرست دسته‌ی قبلی فقط وقتی API خالی/در دسترس نباشد به‌عنوان جایگزین نمایش داده می‌شود. | smoke |
+
+`browser-experience-smoke.mjs` اکنون ۲۹ بررسی دارد و ورود را در صورت 429 (محدودیت ۱۰ ورود در دقیقه) با تأخیر تکرار می‌کند.

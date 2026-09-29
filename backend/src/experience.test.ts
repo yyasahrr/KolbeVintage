@@ -409,6 +409,13 @@ test('CMS studio, style intelligence and unified profile work end to end', { ski
     const header = { ...layout.json().header, logoText: '<script>x</script>' };
     assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/admin/cms/layout/global_header', headers: admin.headers, payload: header })).statusCode, 400);
     assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/admin/cms/layout/global_header', headers: customer.headers, payload: layout.json().header })).statusCode, 403);
+    /* Header CTA is a real, validated config shared by preview and storefront */
+    const ctaHeader = { ...layout.json().header, ctaEnabled: true, ctaLabel: 'بازارچه عمده', ctaTarget: 'vip', ctaVariant: 'outline' };
+    const ctaPut = await app.inject({ method: 'PUT', url: '/api/v1/admin/cms/layout/global_header', headers: admin.headers, payload: ctaHeader });
+    assert.equal(ctaPut.statusCode, 200, ctaPut.body);
+    const ctaLayout = (await app.inject({ method: 'GET', url: '/api/v1/site/layout' })).json().header;
+    assert.equal(ctaLayout.ctaEnabled, true); assert.equal(ctaLayout.ctaVariant, 'outline'); assert.equal(ctaLayout.ctaTarget, 'vip');
+    assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/admin/cms/layout/global_header', headers: admin.headers, payload: { ...ctaHeader, ctaVariant: 'neon' } })).statusCode, 400);
 
     /* ---- Asset usage guard ---- */
     const asset = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/assets', headers: admin.headers,
@@ -649,6 +656,11 @@ test('Round 3: presets, installments, recommendations, saved cart, review photos
     assert.equal(saved.statusCode, 200, saved.body);
     assert.equal(saved.json().items[0].available, 3); assert.equal(saved.json().items[0].product.priceRial, '60000000');
     assert.equal((await pool.query('SELECT items FROM saved_carts WHERE user_id = $1', [customer.id])).rows[0].items[0].priceRial, undefined, 'no copied price');
+    const restored = await app.inject({ method: 'GET', url: '/api/v1/profile/saved-cart', headers: customer.headers });
+    assert.equal(restored.json().items[0].quantity, 2, 'restore returns the saved lines');
+    assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/profile/saved-cart', headers: customer.headers, payload: { items: [] } })).json().items.length, 0, 'clear');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/profile/saved-cart', headers: customer.headers })).json().items.length, 0);
+    await app.inject({ method: 'PUT', url: '/api/v1/profile/saved-cart', headers: customer.headers, payload: { items: [{ productId, variantId, quantity: 2 }] } });
     assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/profile/saved-cart', headers: customer.headers, payload: { items: [{ productId, variantId: randomUUID(), quantity: 1 }] } })).statusCode, 400);
 
     /* Review photos: only own images, moderated, then processed by the media pipeline */

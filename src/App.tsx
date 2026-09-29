@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ShoppingBag, Heart, Moon, Sun, User, Crown, Menu, X, Trash2, Camera, Send, Phone,
-  MapPin, ArrowLeft, LogOut, Package, ChevronDown, Store, ShieldCheck,
+  MapPin, ArrowLeft, LogOut, Package, ChevronDown, Store, ShieldCheck, Loader2,
 } from "lucide-react";
 import RetailExperience, { type CartLine, type RetailView } from "./portals/retail";
 import { AuthScreens } from "./portals/studio";
@@ -17,7 +17,9 @@ import { StoreProvider, useStore } from "./data/store";
 import { authApi } from "./data/api";
 import { OpsProvider, useOps } from "./data/ops";
 import { AnnouncementBar, type NavTarget } from "./components/cms-render";
-import { ServerAnnouncementBar, ServerFooter, useSiteExperience, useThemeTokens } from "./components/site-chrome";
+import { HeaderCta, ServerAnnouncementBar, ServerFooter, useSiteExperience, useThemeTokens } from "./components/site-chrome";
+import { useSavedCart } from "./data/saved-cart";
+import { useDialogFocus } from "./components/focus-trap";
 import { CmsPageView } from "./components/cms-blocks";
 import { siteApi } from "./data/experience-api";
 import { ToastProvider, useToast } from "./components/toast";
@@ -99,12 +101,25 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const [returnTo, setReturnTo] = useState<{ section: Section; view: RetailView } | null>(null);
   const [guestCart, setGuestCart] = useState<CartLine[]>([]);
   const [guestWishlist, setGuestWishlist] = useState<string[]>([]);
-  const cart = account?.cart ?? guestCart;
+  // Signed in → the canonical server saved cart (GET/PUT /profile/saved-cart); guest → in-memory only (no localStorage shadow).
+  const savedCart = useSavedCart<CartLine>(authUser?.id ?? null, products as unknown as { id: string; variants?: { id: string; size: string | null; color: string | null }[] }[]);
+  const cart = authUser ? savedCart.lines : guestCart;
   const wishlist = account?.wishlist ?? guestWishlist;
-  const setCart = (lines: CartLine[]) => account ? updateAccount(account.id, { cart: lines }) : setGuestCart(lines);
+  const setCart = (lines: CartLine[]) => authUser ? savedCart.save(lines) : setGuestCart(lines);
+  const guestCartRef = useRef(guestCart);
+  guestCartRef.current = guestCart;
+  const loadSavedCart = savedCart.load;
+  useEffect(() => {
+    if (!authUser?.id) return;
+    // Restore the server cart for this user and merge whatever the guest collected before signing in (once).
+    const guestLines = guestCartRef.current;
+    setGuestCart([]);
+    void loadSavedCart(guestLines);
+  }, [authUser?.id, loadSavedCart]);
   const [accountTab, setAccountTab] = useState<AccountTab>("overview");
   const [cartOpen, setCartOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const mobileNavRef = useDialogFocus<HTMLElement>(mobileNav, () => setMobileNav(false));
   const [menuOpen, setMenuOpen] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -230,7 +245,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
       <header className={cn("sticky top-0 z-50", headerTone === "dark" && "dark")} onKeyDown={(e) => { if (e.key === "Escape") setMegaOpen(false); }}>
         <div className={cn("kv-glass !rounded-none !border-x-0 !border-t-0", headerTone === "campaign" && "!bg-[var(--kv-accent)]/10")}>
           <div className="mx-auto flex h-[68px] w-full max-w-[1480px] items-center gap-3 px-4 md:px-8">
-            <button className="lg:hidden" onClick={() => setMobileNav(true)} aria-label="منو"><Menu size={21} /></button>
+            <button className="lg:hidden" onClick={() => setMobileNav(true)} aria-label="منو" aria-haspopup="dialog" aria-expanded={mobileNav}><Menu size={21} /></button>
             <button onClick={() => go("retail", "home")} className="flex items-center gap-3 text-right" aria-label="کلبه وینتج — خانه">
               <span className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#1B2A4A] text-[17px] font-bold text-[#E8D9C3] dark:bg-[#E8D9C3] dark:text-[#0E1527]" style={{ fontFamily: "Marcellus, serif" }}>K</span>
               <span className="leading-tight">
@@ -281,6 +296,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
                 <Heart size={18} />
                 {wishlist.length > 0 && <span className="absolute left-1 top-1 h-2 w-2 rounded-full bg-[var(--kv-accent)]" />}
               </button>}
+              <HeaderCta header={header} onNav={siteNav} className="ml-1 hidden md:inline-flex" />
               <button onClick={() => setCartOpen(true)} className="kv-press relative flex h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)]" aria-label={`سبد خرید، ${fmtNum(cartCount)} کالا`}>
                 <ShoppingBag size={18} />
                 {cartCount > 0 && <span key={toast.cartPulse} className="kv-badge-bump absolute -left-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--kv-accent)] px-1 text-[10.5px] font-bold text-white tabular-nums">{fmtNum(cartCount)}</span>}
@@ -325,11 +341,11 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
       {/* mobile nav */}
       {mobileNav && (
         <div className="fixed inset-0 z-[80] lg:hidden">
-          <div className="absolute inset-0 bg-black/45 animate-[fadeIn_0.2s_ease]" onClick={() => setMobileNav(false)} />
-          <aside className="absolute right-0 top-0 flex h-full w-[300px] flex-col bg-[var(--kv-surface)] p-5 animate-[drawerIn_0.3s_ease]">
+          <div className="absolute inset-0 bg-black/45 animate-[fadeIn_0.2s_ease]" onClick={() => setMobileNav(false)} aria-hidden="true" />
+          <aside ref={mobileNavRef} role="dialog" aria-modal="true" aria-label="منوی اصلی" className="absolute right-0 top-0 flex h-full w-[300px] flex-col overflow-y-auto bg-[var(--kv-surface)] p-5 animate-[drawerIn_0.3s_ease]">
             <div className="mb-5 flex items-center justify-between">
               <p className="kv-latin text-[13px] font-bold">KOLBE VINTAGE</p>
-              <button onClick={() => setMobileNav(false)} aria-label="بستن"><X size={20} /></button>
+              <button data-autofocus onClick={() => setMobileNav(false)} aria-label="بستن منو" className="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]"><X size={20} /></button>
             </div>
             <nav className="space-y-1">
               {links.map((l) => (
@@ -340,6 +356,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               {header?.mobileNav?.items.map((item) => <button key={item.label + item.target} onClick={() => { setMobileNav(false); siteNav(item.target); }} className="flex w-full rounded-[12px] px-4 py-3 text-right text-[14.5px] font-bold hover:bg-[var(--kv-surface-2)]">{item.label}</button>)}
               <button onClick={() => go("retail", "wishlist")} className="flex w-full rounded-[12px] px-4 py-3 text-right text-[14.5px] font-bold hover:bg-[var(--kv-surface-2)]">علاقه‌مندی‌ها</button>
             </nav>
+            <HeaderCta header={header} onNav={(t) => { setMobileNav(false); siteNav(t); }} className="mt-3 w-full" />
             {header?.mobileNav?.showCategories && navTaxonomy?.categories.length ? (
               <details className="mt-4 rounded-[12px] border border-[var(--kv-line)]" data-mobile-categories open>
                 <summary className="cursor-pointer px-4 py-3 text-[13px] font-extrabold">دسته‌بندی‌ها</summary>
@@ -370,7 +387,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             cart={cart} setCart={setCart}
             wishlist={wishlist} toggleWish={toggleWish}
             view={view} setView={setView}
-            account={account} buyer={buyer ?? undefined} accountTab={accountTab} setAccountTab={setAccountTab}
+            account={account ? { ...account, cart } : account} buyer={buyer ?? undefined} accountTab={accountTab} setAccountTab={setAccountTab}
             onWholesale={() => go("vip")}
             shopCategory={shopCategory}
             onLogout={logout}
@@ -431,11 +448,8 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             } catch {
               // Fallback: keep guest but show error (no silent local account)
             }
-            if (guestCart.length || guestWishlist.length) {
-              // Guest cart will be synced to server cart via API after login (not local store)
-              setGuestCart([]);
-              setGuestWishlist([]);
-            }
+            // The guest cart is merged into the server saved cart by the authUser effect above.
+            if (guestWishlist.length) setGuestWishlist([]);
             setSection(returnTo?.section ?? "retail");
             setView(returnTo?.view ?? "account");
             setSelectedId(null);
@@ -534,7 +548,25 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
       {section !== "auth" && <FloatingSupport onTicket={() => { setAccountTab("support"); if (account) go("retail", "account"); else openAuth({ section: "retail", view: "account" }); }} />}
       {/* ======= CART DRAWER ======= */}
       <Drawer open={cartOpen} onClose={() => setCartOpen(false)} title={`سبد خرید (${fmtNum(cartCount)})`}>
-        {cart.length === 0 ? (
+        {authUser && (savedCart.status === "error" || savedCart.notice || savedCart.status === "saving") && (
+          <div data-saved-cart-status={savedCart.status} role={savedCart.status === "error" ? "alert" : "status"} aria-live="polite"
+            className={cn("mb-3 rounded-[12px] px-3 py-2.5 text-[12.5px]", savedCart.status === "error" ? "bg-[var(--kv-danger)]/10 text-[var(--kv-danger)]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>
+            {savedCart.status === "error" ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>ذخیره سبد در حساب انجام نشد: {savedCart.error}</span>
+                <span className="flex gap-2">
+                  <button onClick={() => void savedCart.retry()} className="font-bold underline">تلاش دوباره</button>
+                  <button onClick={() => void savedCart.load()} className="font-bold underline">بازیابی نسخه ذخیره‌شده</button>
+                </span>
+              </div>
+            ) : savedCart.status === "saving" ? "در حال ذخیره در حساب شما…" : savedCart.notice}
+          </div>
+        )}
+        {authUser && savedCart.status === "loading" ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-[var(--kv-muted)]" role="status" data-saved-cart-status="loading">
+            <Loader2 size={22} className="animate-spin" />در حال بازیابی سبد ذخیره‌شده…
+          </div>
+        ) : cart.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--kv-surface-2)]"><ShoppingBag size={22} className="text-[var(--kv-muted)]" /></span>
             <p className="mt-4 text-[15px] font-bold">سبد خرید خالی است</p>
@@ -566,6 +598,10 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               <div className="flex justify-between text-sm"><span className="text-[var(--kv-muted)]">جمع سبد</span><b className="tabular-nums">{fmtMoney(cartTotal)}</b></div>
               <Btn variant="accent" className="mt-3 w-full" onClick={() => { setCartOpen(false); go("retail", "checkout"); }}>تکمیل خرید</Btn>
               <button onClick={() => setCartOpen(false)} className="mt-2.5 w-full text-center text-[13px] font-semibold text-[var(--kv-muted)]">ادامه خرید</button>
+              <div className="mt-3 flex items-center justify-between text-[11.5px] text-[var(--kv-muted)]">
+                <span data-saved-cart-sync>{authUser ? (savedCart.status === "ready" ? "در حساب شما ذخیره شد" : "همگام با حساب شما") : "برای ذخیره سبد وارد شوید"}</span>
+                <button onClick={() => { if (authUser) void savedCart.clear(); else setGuestCart([]); }} className="font-semibold hover:text-[var(--kv-danger)]">پاک کردن سبد</button>
+              </div>
             </div>
           </div>
         )}

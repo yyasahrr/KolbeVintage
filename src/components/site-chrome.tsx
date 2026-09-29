@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Crown, Mail, MapPin, Phone, ShieldCheck, Sparkles, Truck, X } from "lucide-react";
-import { siteApi, type Announcement, type FooterConfig, type SiteLayout, type SiteTheme } from "../data/experience-api";
+import { siteApi, type Announcement, type FooterConfig, type HeaderConfig, type SiteLayout, type SiteTheme } from "../data/experience-api";
 import { cn } from "../utils/cn";
 
 /* Server-driven site chrome. Business logic stays in code; composition/theme/content come from CMS (Req 280). */
@@ -99,6 +99,26 @@ function BindingChip({ binding: b, onNav }: { binding: NonNullable<Announcement[
 }
 
 /** Announcement bar with static / marquee / ticker / slider / rotating modes (Req 327-332). */
+/** Header CTA (Req 277) — one renderer for the storefront header, the mobile drawer and the CMS Layout preview. */
+const CTA_VARIANT: Record<NonNullable<HeaderConfig["ctaVariant"]>, string> = {
+  solid: "bg-[var(--kv-accent)] text-white hover:brightness-110",
+  outline: "border border-[var(--kv-accent)] text-[var(--kv-accent)] hover:bg-[var(--kv-accent)]/10",
+  ghost: "text-[var(--kv-accent)] hover:bg-[var(--kv-surface-2)]",
+};
+export function headerCtaVisible(header: Pick<HeaderConfig, "ctaEnabled" | "ctaLabel"> | null | undefined): boolean {
+  return Boolean(header?.ctaEnabled && header.ctaLabel?.trim());
+}
+export function HeaderCta({ header, onNav, className }: { header: Pick<HeaderConfig, "ctaEnabled" | "ctaLabel" | "ctaTarget" | "ctaVariant"> | null | undefined; onNav: SiteNavigate; className?: string }) {
+  if (!header || !headerCtaVisible(header)) return null;
+  const variant = header.ctaVariant ?? "solid";
+  return (
+    <button type="button" data-header-cta={variant} onClick={() => onNav(header.ctaTarget || "shop")}
+      className={cn("kv-press inline-flex h-10 items-center justify-center rounded-[11px] px-4 text-[13px] font-bold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--kv-accent)]", CTA_VARIANT[variant] ?? CTA_VARIANT.solid, className)}>
+      {header.ctaLabel.trim()}
+    </button>
+  );
+}
+
 export function ServerAnnouncementBar({ announcements, onNav }: { announcements: Announcement[]; onNav: SiteNavigate }) {
   const active = useMemo(() => announcements.find((a) => typeof window === "undefined" || sessionStorage.getItem(`kv-ann-${a.id}`) !== "1") ?? null, [announcements]);
   const [hidden, setHidden] = useState(false);

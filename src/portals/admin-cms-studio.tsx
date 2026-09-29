@@ -9,11 +9,11 @@ import { filesApi } from "../data/api";
 import { useStore } from "../data/store";
 import { formatPersianDateTime } from "../data/persian-date";
 import { CategoryCard, Composable, CommerceCard, type ComposableNode } from "../components/cms-blocks";
-import { ServerAnnouncementBar } from "../components/site-chrome";
+import { HeaderCta, ServerAnnouncementBar } from "../components/site-chrome";
 import { PreviewFrame } from "../components/cms-preview-frame";
 import { invalidateCardTemplates, type CardPreviewState, type CardTemplate } from "../components/commerce-card";
 import { PersianDatePicker } from "../components/persian-date-picker";
-import { Btn, Card, Drawer, Empty, ErrorState, Field, Input, LoadingState, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
+import { Btn, Card, Drawer, Empty, ErrorState, Field, Input, Lightbox, LoadingState, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
 import { SeoDomainPanel, SeoLinkButton } from "./admin-seo";
 import { InstallmentsPanel } from "./admin-installments";
@@ -660,6 +660,21 @@ function LayoutPanel({ flash }: { flash: F }) {
         <p className="text-[11.5px] text-[var(--kv-muted)]">فقط کامپوننت‌ها و لینک‌های ثبت‌شده مجازند؛ HTML یا JS دلخواه پذیرفته نمی‌شود.</p>
         <div className="grid gap-2 sm:grid-cols-3"><Field label="Preset"><Select options={["default", "minimal", "transparent", "campaign", "dark"]} value={header.variant} onChange={(v) => setHeader({ ...header, variant: v as HeaderConfig["variant"] })} /></Field><Field label="لوگو"><Input value={header.logoText} onChange={(logoText) => setHeader({ ...header, logoText })} /></Field><Field label="زیرعنوان لوگو"><Input value={header.logoSubtext} onChange={(logoSubtext) => setHeader({ ...header, logoSubtext })} /></Field></div>
         <div className="flex flex-wrap gap-3">{bool("showSearch", "جست‌وجو")}{bool("showWishlist", "علاقه‌مندی")}{bool("showCart", "سبد")}{bool("showAccount", "حساب")}{bool("showThemeToggle", "حالت تیره")}</div>
+        <fieldset className="space-y-2 rounded-[12px] border border-[var(--kv-line)] p-3" data-header-cta-editor>
+          <legend className="px-1 text-[12.5px] font-bold">دکمه CTA هدر</legend>
+          <label className="flex items-center gap-2 text-[12.5px]"><Switch on={Boolean(header.ctaEnabled)} onToggle={() => setHeader({ ...header, ctaEnabled: !header.ctaEnabled })} />نمایش دکمه CTA</label>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Field label="متن دکمه"><Input value={header.ctaLabel ?? ""} placeholder="مثلاً بازارچه عمده" onChange={(ctaLabel) => setHeader({ ...header, ctaLabel })} /></Field>
+            <Field label="مقصد (shop، vip، page:about، category:slug)"><Input value={header.ctaTarget ?? ""} onChange={(ctaTarget) => setHeader({ ...header, ctaTarget })} /></Field>
+            <Field label="نوع ظاهر"><Select options={["solid", "outline", "ghost"]} value={header.ctaVariant ?? "solid"} onChange={(v) => setHeader({ ...header, ctaVariant: v as NonNullable<HeaderConfig["ctaVariant"]> })} /></Field>
+          </div>
+          <div className="flex min-h-12 items-center gap-2 rounded-[10px] bg-[var(--kv-surface-2)] px-3" aria-label="پیش‌نمایش دکمه CTA هدر">
+            <span className="text-[11.5px] text-[var(--kv-muted)]">پیش‌نمایش:</span>
+            {header.ctaEnabled && header.ctaLabel?.trim()
+              ? <HeaderCta header={header} onNav={() => undefined} />
+              : <span className="text-[11.5px] text-[var(--kv-muted)]">{header.ctaEnabled ? "متن دکمه را وارد کنید." : "دکمه CTA غیرفعال است."}</span>}
+          </div>
+        </fieldset>
         <p className="pt-2 text-[12.5px] font-bold">منوها</p>
         {header.menus.map((m, i) => (
           <div key={m.id} className="flex flex-wrap items-center gap-2">
@@ -675,7 +690,7 @@ function LayoutPanel({ flash }: { flash: F }) {
         <label className="flex items-center gap-2 pt-2 text-[12.5px]"><Switch on={header.showAnnouncement !== false} onToggle={() => setHeader({ ...header, showAnnouncement: header.showAnnouncement === false })} />نمایش نوار اعلان بالای هدر</label>
         <MobileNavEditor value={header.mobileNav ?? { showCategories: true, showVibes: true, items: [] }} onChange={(mobileNav) => setHeader({ ...header, mobileNav })} />
         <MegaMenuEditor columns={header.megaMenu} menus={header.menus} onChange={(megaMenu) => setHeader({ ...header, megaMenu })} />
-        <Btn variant="accent" size="sm" onClick={() => { const bad = badTargets([...header.menus.map((m) => m.target), ...(header.mobileNav?.items ?? []).map((i) => i.target), ...header.megaMenu.flatMap((c) => c.items.map((i) => i.target ?? "shop"))]); if (bad) { flash(`مقصد «${bad}» مجاز نیست.`); return; } void save("global_header", header); }}>ذخیره هدر</Btn>
+        <Btn variant="accent" size="sm" onClick={() => { const bad = badTargets([...(header.ctaEnabled ? [header.ctaTarget ?? ""] : []), ...header.menus.map((m) => m.target), ...(header.mobileNav?.items ?? []).map((i) => i.target), ...header.megaMenu.flatMap((c) => c.items.map((i) => i.target ?? "shop"))]); if (bad) { flash(`مقصد «${bad}» مجاز نیست.`); return; } void save("global_header", header); }}>ذخیره هدر</Btn>
       </Card>
       <Card className="space-y-3 p-4">
         <p className="text-[14px] font-extrabold">فوتر</p>
@@ -883,7 +898,9 @@ function ReviewThumbs({ id, count }: { id: string; count: number }) {
     <div className="mt-2 flex gap-2" data-testid="review-thumbs">
       {items === null ? Array.from({ length: count }, (_, i) => <span key={i} className="h-16 w-16 animate-pulse rounded-[10px] bg-[var(--kv-surface-2)]" />)
         : items.map((p) => <button key={p.fileId} onClick={() => setBig(p.dataUrl)} className="h-16 w-16 overflow-hidden rounded-[10px] border border-[var(--kv-line)]" aria-label="بزرگ‌نمایی عکس"><img src={p.dataUrl} alt="عکس ارسالی مشتری" className="h-full w-full object-cover" /></button>)}
-      {big && <div role="dialog" aria-modal="true" aria-label="عکس مشتری" className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 p-4" onClick={() => setBig(null)}><img src={big} alt="" className="max-h-[80vh] rounded-[12px]" /></div>}
+      <Lightbox open={Boolean(big)} onClose={() => setBig(null)} label="عکس مشتری" z="z-[90]">
+        {big && <img src={big} alt="عکس ارسالی مشتری" className="max-h-[80vh] rounded-[12px]" />}
+      </Lightbox>
     </div>
   );
 }

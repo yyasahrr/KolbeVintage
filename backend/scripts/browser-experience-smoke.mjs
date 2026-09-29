@@ -1,6 +1,7 @@
 /* Browser verification for the experience layer (Req 173-356):
    CMS-composed storefront, announcement bar, quick-buy feedback, CMS About page, Style Builder
-   intelligence, customer dashboard (desktop + mobile), security page and the admin CMS Studio.
+   intelligence, customer dashboard (desktop + mobile), security page, the admin CMS Studio, and the gap-closure checks
+   (header CTA, saved cart ↔ backend, dialog focus trap, supplier taxonomy fields).
    Runs against an existing stack: local-stack.mjs → seed:local → scripts/browser-smoke-fixtures.mjs → vite on :5173.
    Screenshots → /tmp/kv-shots. */
 import { mkdirSync } from 'node:fs';
@@ -14,8 +15,13 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function token(identity, password) {
-  const res = await fetch(`${BASE}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identity, password }) });
-  return (await res.json()).accessToken;
+  // The login route is rate limited (10/min per IP); seed + fixtures right before the smoke can exhaust it.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const res = await fetch(`${BASE}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identity, password }) });
+    if (res.status !== 429) return (await res.json()).accessToken;
+    await new Promise((r) => setTimeout(r, 10000));
+  }
+  throw new Error(`login rate limited for ${identity}`);
 }
 
 const browser = await puppeteer.launch({ executablePath: '/tmp/chromium', headless: 'shell', args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] });
@@ -26,12 +32,26 @@ page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resourc
 await page.setViewport({ width: 1440, height: 1000 });
 const shot = (name, full = false) => page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: full });
 const text = () => page.evaluate(() => document.body.innerText);
+const api = async (tk, method, path, body) => {
+  const res = await fetch(`${BASE}/api/v1${path}`, { method, headers: { authorization: `Bearer ${tk}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  return { status: res.status, json: await res.json().catch(() => null) };
+};
+const dialogState = () => page.evaluate(() => {
+  const d = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].pop();
+  const a = document.activeElement;
+  return { open: !!d, inside: !!d && d.contains(a), named: !!d && !!(d.getAttribute('aria-label') || d.getAttribute('aria-labelledby')), overflow: document.body.style.overflow, active: a?.getAttribute('aria-label') ?? a?.textContent?.trim().slice(0, 30) ?? '' };
+});
+const openCart = () => page.evaluate(() => { const b = [...document.querySelectorAll('button[aria-label^="سبد خرید"]')].find((x) => x.offsetParent); b?.focus(); b?.click(); return !!b; });
 const clickText = async (selector, label) => page.evaluate((sel, l) => {
   const el = [...document.querySelectorAll(sel)].find((n) => n.textContent?.trim().includes(l));
   if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; } return false;
 }, selector, label);
 
 try {
+  /* ---------- Header CTA config (gap closure): enable via the canonical layout API ---------- */
+  const adminEarly = await token('admin@kolbe.ir', 'ChangeMe-Admin-123456');
+  const headerCfg = (await (await fetch(`${BASE}/api/v1/site/layout`)).json()).header;
+  const ctaPut = await api(adminEarly, 'PUT', '/admin/cms/layout/global_header', { ...headerCfg, ctaEnabled: true, ctaLabel: 'بازارچه عمده', ctaTarget: 'vip', ctaVariant: 'outline' });
   /* ---------- Storefront (guest) ---------- */
   await page.goto(BASE, { waitUntil: 'networkidle2' });
   await page.waitForSelector('[data-component]', { timeout: 20000 });
@@ -40,6 +60,8 @@ try {
   check('Server announcement bar renders', !!(await page.$('[aria-label="اعلان‌های فروشگاه"]')));
   check('Header menus come from CMS (About link present)', (await text()).includes('درباره ما'));
   check('Server footer renders trust badges', (await text()).includes('ضمانت اصالت ۱۰۰٪'));
+  const ctaInfo = await page.$eval('header [data-header-cta]', (el) => ({ v: el.getAttribute('data-header-cta'), t: el.textContent?.trim() })).catch(() => null);
+  check('Header CTA renders the CMS config (label + variant)', ctaPut.status === 200 && ctaInfo?.v === 'outline' && ctaInfo?.t === 'بازارچه عمده', JSON.stringify(ctaInfo));
   await shot('01-home');
   await shot('01-home-full', true);
   /* Req 234: hero is never lazy; product cards are lazy with responsive srcset */
@@ -57,6 +79,20 @@ try {
   check('Quick-buy shows success toast + check state', added && /به سبد خرید اضافه شد/.test(toastText), toastText.slice(0, 60));
   const badge = await page.$eval('button[aria-label^="سبد خرید"]', (el) => el.getAttribute('aria-label')).catch(() => '');
   check('Cart badge count updates', /۱/.test(badge ?? ''), badge);
+
+  /* ---------- Dialog accessibility (gap closure): cart drawer ---------- */
+  await openCart();
+  await sleep(500);
+  const opened = await dialogState();
+  let trapped = true;
+  for (let i = 0; i < 25; i += 1) { await page.keyboard.press('Tab'); if (!(await dialogState()).inside) { trapped = false; break; } }
+  for (let i = 0; i < 6; i += 1) { await page.keyboard.down('Shift'); await page.keyboard.press('Tab'); await page.keyboard.up('Shift'); if (!(await dialogState()).inside) { trapped = false; break; } }
+  await shot('02b-cart-drawer');
+  await page.keyboard.press('Escape');
+  await sleep(400);
+  const closed = await dialogState();
+  check('Cart drawer: role=dialog + aria-modal + name, focus moved inside, scroll locked', opened.open && opened.named && opened.inside && opened.overflow === 'hidden', JSON.stringify(opened));
+  check('Cart drawer: Tab/Shift+Tab trapped; Escape closes and restores focus to the opener', trapped && !closed.open && /^سبد خرید/.test(closed.active) && closed.overflow !== 'hidden', JSON.stringify(closed));
   await shot('02-quick-buy');
 
   await clickText('nav[aria-label="ناوبری اصلی"] button', 'درباره ما');
@@ -106,6 +142,30 @@ try {
   await page.evaluate((tk) => localStorage.setItem('kolbe-access-token', tk), customer);
   await page.goto(BASE, { waitUntil: 'networkidle2' });
   await sleep(800);
+
+  /* ---------- Saved cart ↔ canonical backend (gap closure) ---------- */
+  await api(customer, 'PUT', '/profile/saved-cart', { items: [] });
+  await page.goto(BASE, { waitUntil: 'networkidle2' });
+  await sleep(800);
+  await clickText('button', 'افزودن به سبد');
+  await sleep(1500);
+  const afterAdd = await api(customer, 'GET', '/profile/saved-cart');
+  await page.goto(BASE, { waitUntil: 'networkidle2' });
+  await sleep(1200);
+  const restoredBadge = await page.$eval('button[aria-label^="سبد خرید"]', (el) => el.getAttribute('aria-label')).catch(() => '');
+  await openCart();
+  await sleep(600);
+  const syncLabel = await page.$eval('[data-saved-cart-sync]', (el) => el.textContent?.trim()).catch(() => '');
+  const localShadow = await page.evaluate(() => Object.keys(localStorage).filter((k) => /cart/i.test(k)));
+  check('Saved cart: add → persisted server-side, reload → restored from backend (no local shadow)', afterAdd.json?.items?.length >= 1 && /۱/.test(restoredBadge ?? '') && !!syncLabel && localShadow.length === 0, JSON.stringify({ n: afterAdd.json?.items?.length, restoredBadge, syncLabel, localShadow }));
+  await shot('05b-saved-cart');
+  await clickText('button', 'پاک کردن سبد');
+  await sleep(1500);
+  const afterClear = await api(customer, 'GET', '/profile/saved-cart');
+  const emptyShown = (await text()).includes('سبد خرید خالی است');
+  check('Saved cart: clear → PUT [] on the server + empty state', afterClear.json?.items?.length === 0 && emptyShown, `${afterClear.json?.items?.length}`);
+  await page.keyboard.press('Escape');
+  await sleep(300);
   await page.evaluate(() => { const b = [...document.querySelectorAll('header button[aria-expanded]')].find((x) => !x.getAttribute('aria-haspopup')); b?.click(); });
   await sleep(300);
   await clickText('button', 'پنل حساب من');
@@ -189,6 +249,41 @@ try {
   const after = await page.$$eval('li[data-section-id]', (els) => els.map((e) => e.getAttribute('data-section-id')));
   check('Sections reorder by drag & drop and persist to the draft (Req 177)', before.length >= 2 && after[0] === before[1] && after[1] === before[0], `${before.length} sections`);
   await shot('16-admin-dnd', true);
+
+  /* ---------- Header CTA editor in CMS Studio (gap closure) ---------- */
+  await page.goto(`${BASE}/#/admin`, { waitUntil: 'networkidle2' });
+  await sleep(1200);
+  await clickText('button', 'محتوا (CMS)');
+  await sleep(1200);
+  await clickText('button[aria-pressed]', 'هدر و فوتر');
+  await page.waitForSelector('[data-header-cta-editor]', { timeout: 15000 }).catch(() => undefined);
+  const editor = await page.$eval('[data-header-cta-editor]', (el) => ({ inputs: el.querySelectorAll('input').length, selects: el.querySelectorAll('select, [role="listbox"], button[aria-haspopup]').length, preview: el.querySelector('[data-header-cta]')?.getAttribute('data-header-cta') ?? null, label: el.querySelector('[data-header-cta]')?.textContent?.trim() ?? '' })).catch(() => null);
+  check('CMS header builder: CTA label/target/enabled/variant inputs with live preview of the same config', !!editor && editor.inputs >= 2 && editor.preview === 'outline' && editor.label === 'بازارچه عمده', JSON.stringify(editor));
+  await shot('17-admin-header-cta', true);
+
+  /* ---------- Supplier product form taxonomy (gap closure) ---------- */
+  const supplier = await token('seed.supplier@kolbe.ir', 'Seed-Supplier-123456');
+  const canonicalCats = (await (await fetch(`${BASE}/api/v1/site/categories`)).json()).items.map((c) => c.name);
+  const canonicalVibes = (await (await fetch(`${BASE}/api/v1/site/vibes`)).json()).items.map((v) => v.name);
+  await page.evaluate((tk) => localStorage.setItem('kolbe-access-token', tk), supplier);
+  await page.goto(`${BASE}/#/supplier`, { waitUntil: 'networkidle2' });
+  await page.reload({ waitUntil: 'networkidle2' }); // hash-only navigation keeps the previous in-memory session
+  await sleep(1500);
+  await page.evaluate(() => { [...document.querySelectorAll('button')].find((n) => n.textContent?.trim() === 'محصولات')?.click(); });
+  await sleep(800);
+  await clickText('button', 'افزودن محصول جدید');
+  await page.waitForSelector('[data-supplier-taxonomy]', { timeout: 15000 }).catch(() => undefined);
+  const tax = await page.evaluate(() => {
+    const box = document.querySelector('[data-supplier-taxonomy]');
+    const catSelect = [...document.querySelectorAll('label')].find((n) => n.textContent?.startsWith('دسته‌بندی'))?.querySelector('select');
+    return { box: !!box, cats: catSelect ? [...catSelect.options].map((o) => o.textContent) : [], buttons: box ? [...box.querySelectorAll('button[aria-pressed]')].map((b) => b.textContent?.trim()) : [], text: box?.textContent ?? '' };
+  });
+  if (tax.box) await page.evaluate(() => { [...document.querySelectorAll('[data-supplier-taxonomy] button[aria-pressed]')].slice(-1)[0]?.click(); });
+  await sleep(200);
+  const pressed = await page.$$eval('[data-supplier-taxonomy] button[aria-pressed="true"]', (els) => els.length).catch(() => 0);
+  check('Supplier product form: canonical category + vibe + gender + season fields', tax.box && canonicalCats.length > 0 && canonicalCats.every((c) => tax.cats.includes(c)) && canonicalVibes.length > 0 && canonicalVibes.every((v) => tax.buttons.includes(v)) && tax.text.includes('جنسیت') && tax.buttons.includes('بهار') && pressed === 1,
+    JSON.stringify({ cats: tax.cats.length, canonicalCats: canonicalCats.length, vibes: canonicalVibes.length, buttons: tax.buttons.length, pressed }));
+  await shot('18-supplier-taxonomy', true);
 } catch (error) {
   check('smoke crashed', false, error instanceof Error ? error.message : String(error));
   await shot('zz-crash').catch(() => undefined);

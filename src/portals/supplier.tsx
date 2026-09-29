@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { SupplierProfileSettings } from "./supplier-profile-settings";
 import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
-import { productTypesApi, type ProductType } from "../data/experience-api";
+import { productTypesApi, siteApi, type ProductType } from "../data/experience-api";
 import {
   LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Factory, Inbox,
   Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, Upload, CircleDollarSign,
@@ -98,6 +98,7 @@ function SupplierEntry({ onLogin }: { onLogin: () => void }) {
 }
 import { Btn, Card, Status, SearchBox, Input, Field, Switch, Timeline, Select } from "../components/primitives";
 import { cn } from "../utils/cn";
+import { useDialogFocus } from "../components/focus-trap";
 
 function Spark({ points, w = 220, h = 56 }: { points: number[]; w?: number; h?: number }) {
   const max = Math.max(...points), min = Math.min(...points);
@@ -141,6 +142,14 @@ function Donut({ segs }: { segs: { v: number; c: string; l: string }[] }) {
 }
 
 /* ====== Standalone app: KOLBE Supplier Center ====== */
+
+/* Supplier product form — canonical product enums (backend catalog.ts) and a last-resort category list used only when
+   the catalogue taxonomy endpoint is empty/unreachable. */
+const GENDERS: [("men" | "women" | "unisex" | "kids"), string][] = [["unisex", "یونیسکس"], ["men", "مردانه"], ["women", "زنانه"], ["kids", "بچگانه"]];
+const SEASONS: [string, string][] = [["spring", "بهار"], ["summer", "تابستان"], ["autumn", "پاییز"], ["winter", "زمستان"], ["all-season", "چهارفصل"]];
+const FALLBACK_CATEGORIES = ["پیراهن", "شومیز", "کت و بلیزر", "مانتو و بارانی", "پالتو", "شلوار", "کفش", "اکسسوری", "بافت"];
+const emptySupplierForm = () => ({ name: "", category: "پیراهن", desc: "", stock: "", gender: "unisex" as "men" | "women" | "unisex" | "kids", seasons: [] as string[], vibes: [] as string[] });
+
 export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; setDark: (v: boolean) => void; onExit: () => void }) {
   const [authed, setAuthed] = useState<boolean | null>(null);
   // Real supplier auth: JWT + /auth/me must have role supplier (backend enforces). No hardcoded s1. Fallback to sessionStorage only for ?demo=1.
@@ -236,9 +245,23 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
 // pending/open/revenue already defined above via API-aware effective orders
 
   const [tab, setTab] = useState("dashboard");
-  const [drawer, setDrawer] = useState(false);
+  const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
   const [editorSec, setEditorSec] = useState("base");
-  const [form, setForm] = useState({ name: "", category: "پیراهن", desc: "", stock: "" });
+  const [form, setForm] = useState(emptySupplierForm);
+  // Canonical taxonomy (Req 325-326): categories/vibes come from the shared catalogue taxonomy endpoints; gender and
+  // seasons are the backend product enums. Nothing is duplicated here — the payload carries the canonical values.
+  const [taxonomy, setTaxonomy] = useState<{ status: "loading" | "ready" | "error"; categories: string[]; vibes: { slug: string; name: string }[] }>({ status: "loading", categories: [], vibes: [] });
+  const loadTaxonomy = () => {
+    setTaxonomy((t) => ({ ...t, status: "loading" }));
+    Promise.all([siteApi.categories(), siteApi.vibes()])
+      .then(([c, v]) => setTaxonomy({ status: "ready", categories: c.items.filter((x) => x.active !== false).map((x) => x.name), vibes: v.items.map((x) => ({ slug: x.slug, name: x.name })) }))
+      .catch(() => setTaxonomy((t) => ({ ...t, status: "error" })));
+  };
+  useEffect(loadTaxonomy, []);
+  const categoryOptions = taxonomy.categories.length ? taxonomy.categories : FALLBACK_CATEGORIES;
+  useEffect(() => {
+    if (taxonomy.categories.length && !taxonomy.categories.includes(form.category)) setForm((f) => ({ ...f, category: taxonomy.categories[0]! }));
+  }, [taxonomy.categories, form.category]);
   const [draftSeries, setDraftSeries] = useState<SeriesDef[]>([]);
   const [draftColorIds, setDraftColorIds] = useState<string[]>(["orange", "black", "cream"]);
   const [invQ, setInvQ] = useState("");
@@ -277,11 +300,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
         await productsApi.create({
           brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim(),
           cashPriceRial: "0", wholesalePriceRial: String(price * 10),
+          gender: form.gender, seasons: form.seasons, vibes: form.vibes,
           variants: [{ attributes: {} }],
           metadata: { supplierId: ME.id },
         });
       } catch {}
-      setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
+      setForm(emptySupplierForm());
       setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
       flash("محصول با سری‌های تعریف‌شده برای بازبینی کلبه ارسال شد. (demo)");
       return;
@@ -296,11 +320,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
         variants: draftSeries.map((s)=> ({ size: Object.keys(s.composition)[0], color: draftColorIds[0], attributes: { series: s.name } })),
         metadata: { colors: draftColorIds, stock: form.stock, series: draftSeries },
         ...(typeCode ? { productTypeCode: typeCode, specifications: specs } : {}),
+        gender: form.gender, seasons: form.seasons, vibes: form.vibes,
       });
       // Refresh supplier products cache
       const refreshed = await apiClient.get<{ items: unknown[] }>("/products").catch(()=>null);
       if (refreshed) setSupplierProducts((refreshed as any).items);
-      setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
+      setForm(emptySupplierForm());
       setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
       flash(`محصول ${created.variants?.[0]?.sku ?? created.id} برای بازبینی کلبه ارسال شد.`);
     } catch (e) {
@@ -416,8 +441,8 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
         <aside className="sticky top-4 hidden h-[calc(100vh-32px)] w-[264px] shrink-0 overflow-hidden rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm lg:block">{sidebar}</aside>
         {drawer && (
           <div className="fixed inset-0 z-[70] lg:hidden">
-            <div className="absolute inset-0 bg-black/45" onClick={() => setDrawer(false)} />
-            <aside className="absolute right-0 top-0 h-full w-[280px] bg-[var(--kv-surface)] animate-[drawerIn_0.3s_ease]">{sidebar}</aside>
+            <div className="absolute inset-0 bg-black/45" onClick={() => setDrawer(false)} aria-hidden="true" />
+            <aside ref={drawerRef} role="dialog" aria-modal="true" aria-label="منوی پنل" className="absolute right-0 top-0 h-full overflow-y-auto w-[280px] bg-[var(--kv-surface)] animate-[drawerIn_0.3s_ease]">{sidebar}</aside>
           </div>
         )}
 
@@ -567,7 +592,20 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                 {editorSec === "base" && (
                   <div className="space-y-4">
                     <Field label="نام محصول"><Input placeholder="مثلاً پیراهن لینن یقه‌انگلیسی" value={form.name} onChange={(v) => setForm({ ...form, name: v })} /></Field>
-                    <Field label="دسته‌بندی"><Select options={["پیراهن", "شومیز", "کت و بلیزر", "مانتو و بارانی", "پالتو", "شلوار", "کفش", "اکسسوری", "بافت"]} value={form.category} onChange={(v) => { setForm({ ...form, category: v }); setDraftSeries([]); }} /></Field>
+                    <Field label="دسته‌بندی" hint={taxonomy.status === "loading" ? "در حال دریافت دسته‌بندی‌های کاتالوگ…" : taxonomy.categories.length ? "از دسته‌بندی‌های کاتالوگ کلبه" : undefined}><Select options={categoryOptions} value={form.category} onChange={(v) => { setForm({ ...form, category: v }); setDraftSeries([]); }} /></Field>
+                    {taxonomy.status === "error" && <p role="alert" className="text-[11.5px] text-[var(--kv-danger)]">دسته‌بندی‌ها و وایب‌های کاتالوگ دریافت نشد. <button type="button" onClick={loadTaxonomy} className="font-bold underline">تلاش دوباره</button></p>}
+                    <div className="grid gap-3 sm:grid-cols-2" data-supplier-taxonomy>
+                      <Field label="جنسیت / مخاطب"><Select options={GENDERS.map(([, l]) => l)} value={GENDERS.find(([v]) => v === form.gender)?.[1] ?? "یونیسکس"} onChange={(l) => setForm({ ...form, gender: GENDERS.find(([, x]) => x === l)?.[0] ?? "unisex" })} /></Field>
+                      <fieldset><legend className="mb-1.5 text-[12.5px] font-semibold">فصل‌ها (چندانتخابی)</legend><div className="flex flex-wrap gap-1.5">{SEASONS.map(([v, l]) => (
+                        <button key={v} type="button" aria-pressed={form.seasons.includes(v)} onClick={() => setForm({ ...form, seasons: form.seasons.includes(v) ? form.seasons.filter((x) => x !== v) : [...form.seasons, v] })}
+                          className={cn("rounded-full border px-3 py-1.5 text-[12px] font-semibold", form.seasons.includes(v) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]" : "border-[var(--kv-line)] text-[var(--kv-muted)]")}>{l}</button>))}</div></fieldset>
+                      <fieldset className="sm:col-span-2"><legend className="mb-1.5 text-[12.5px] font-semibold">وایب‌ها</legend>
+                        {taxonomy.vibes.length ? <div className="flex flex-wrap gap-1.5">{taxonomy.vibes.map((v) => (
+                          <button key={v.slug} type="button" aria-pressed={form.vibes.includes(v.slug)} onClick={() => setForm({ ...form, vibes: form.vibes.includes(v.slug) ? form.vibes.filter((x) => x !== v.slug) : form.vibes.length >= 8 ? form.vibes : [...form.vibes, v.slug] })}
+                            className={cn("rounded-full border px-3 py-1.5 text-[12px] font-semibold", form.vibes.includes(v.slug) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]" : "border-[var(--kv-line)] text-[var(--kv-muted)]")}>{v.name}</button>))}</div>
+                          : <p className="text-[11.5px] text-[var(--kv-muted)]">{taxonomy.status === "loading" ? "در حال دریافت…" : "هنوز وایبی در کاتالوگ تعریف نشده است."}</p>}
+                      </fieldset>
+                    </div>
                     {productTypes.length > 0 && <Field label="نوع محصول" hint="فرم مشخصات از قالب همین نوع ساخته می‌شود"><Select options={["انتخاب کنید", ...productTypes.map((t) => t.name)]} value={selectedType?.name ?? "انتخاب کنید"} onChange={(l) => { setTypeCode(productTypes.find((t) => t.name === l)?.code ?? ""); setSpecs({}); }} /></Field>}
                     {selectedType && <AdaptiveSpecForm type={selectedType} values={specs} onChange={setSpecs} />}
                     {selectedType && missingRequiredSpecs(selectedType, specs).length > 0 && <p className="text-[11.5px] text-[var(--kv-muted)]">فیلدهای الزامی: {missingRequiredSpecs(selectedType, specs).join("، ")}</p>}

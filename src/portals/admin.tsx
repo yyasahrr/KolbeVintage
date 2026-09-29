@@ -34,6 +34,7 @@ import { ServerConnectionState } from "../components/server-connection";
 import { ModuleBoundary, moduleBoundary } from "../components/boundary";
 import { NotificationsPanel } from "../components/notifications-panel";
 import { TicketBoardPanel } from "../components/ticket-board-panel";
+import { useDialogFocus } from "../components/focus-trap";
 
 /* ====== Standalone app: KOLBE Admin Console (internal; never linked from the public site) ====== */
 export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
@@ -150,7 +151,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   };
 
   const [tab, setTab] = useState("server-orders");
-  const [drawer, setDrawer] = useState(false);
+  const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
   const [side, setSide] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [oq, setOq] = useState("");
@@ -285,8 +286,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
         <aside className="sticky top-4 hidden h-[calc(100vh-32px)] w-[250px] shrink-0 overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm lg:block">{sidebar}</aside>
         {drawer && (
           <div className="fixed inset-0 z-[70] lg:hidden">
-            <div className="absolute inset-0 bg-black/45" onClick={() => setDrawer(false)} />
-            <aside className="absolute right-0 top-0 h-full w-[270px] bg-[var(--kv-surface)]">{sidebar}</aside>
+            <div className="absolute inset-0 bg-black/45" onClick={() => setDrawer(false)} aria-hidden="true" />
+            <aside ref={drawerRef} role="dialog" aria-modal="true" aria-label="منوی پنل" className="absolute right-0 top-0 h-full overflow-y-auto w-[270px] bg-[var(--kv-surface)]">{sidebar}</aside>
           </div>
         )}
 

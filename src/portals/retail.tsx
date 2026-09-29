@@ -449,6 +449,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       const res = await ordersApi.create(body, `retail-${crypto.randomUUID().replace(/-/g, "")}`) as { id: string; reference: string };
       if (!res.reference && !(res as any).id) throw new Error("خطا در ثبت سفارش");
       setPlacedOrderId(res.reference ?? (res as any).id);
+      setCart([]); // order placed → empty the cart (signed in: PUT /profile/saved-cart with no items)
       setCheckStep(0);
       setView("success");
     } catch (e) {

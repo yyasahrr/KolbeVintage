@@ -45,6 +45,7 @@ export type MegaMenuColumn = { id: string; title: string; menuId?: string; items
 export type HeaderConfig = {
   variant: "default" | "minimal" | "transparent" | "campaign" | "dark"; logoText: string; logoSubtext: string;
   showSearch: boolean; showWishlist: boolean; showCart: boolean; showAccount: boolean; showThemeToggle: boolean; ctaLabel: string; ctaTarget: string;
+  ctaEnabled?: boolean; ctaVariant?: "solid" | "outline" | "ghost";
   menus: { id: string; label: string; target: string; order: number; active: boolean; vip?: boolean; hasMegaMenu?: boolean }[];
   megaMenu: MegaMenuColumn[];
   showAnnouncement?: boolean;

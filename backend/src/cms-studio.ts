@@ -124,7 +124,9 @@ const headerSchema = z.object({
   variant: z.enum(['default', 'minimal', 'transparent', 'campaign', 'dark']),
   logoText: safeString(40), logoSubtext: safeString(40),
   showSearch: z.boolean(), showWishlist: z.boolean(), showCart: z.boolean(), showAccount: z.boolean(), showThemeToggle: z.boolean().default(true),
+  // Header CTA (Req 277): label + registered target + on/off + visual variant; rendered by the shared storefront HeaderCta.
   ctaLabel: safeString(40).default(''), ctaTarget: navTarget.default('vip'),
+  ctaEnabled: z.boolean().default(false), ctaVariant: z.enum(['solid', 'outline', 'ghost']).default('solid'),
   menus: z.array(z.object({ id: z.string().regex(/^[a-z0-9_-]{2,40}$/), label: safeString(40), target: navTarget, order: z.number().int().min(0).max(100),
     active: z.boolean(), vip: z.boolean().optional(), hasMegaMenu: z.boolean().optional() }).strict()).max(12),
   // Req 278: per-menu mega columns with media + collection / vibe / campaign promos — registered fields only.

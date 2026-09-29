@@ -1,6 +1,7 @@
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useId } from "react";
 import { Check, ChevronLeft, Minus, Plus, Search, X } from "lucide-react";
 import { cn } from "../utils/cn";
+import { useDialogFocus } from "./focus-trap";
 
 /* ---------- Button ---------- */
 export function Btn({
@@ -215,20 +216,16 @@ export function Skeleton({ className }: { className?: string }) {
 
 /* ---------- Overlays ---------- */
 export function Drawer({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
+  const ref = useDialogFocus<HTMLElement>(open, onClose);
+  const titleId = useId();
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[70]">
-      <div className="absolute inset-0 bg-[#0E1527]/45 backdrop-blur-[2px] animate-[fadeIn_0.25s_ease]" onClick={onClose} />
-      <aside role="dialog" aria-modal="true" aria-label={title} className={cn("absolute left-0 top-0 flex h-full flex-col bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[drawerIn_0.3s_cubic-bezier(0.22,1,0.36,1)]", wide ? "w-full max-w-[560px]" : "w-full max-w-[420px]")}>
+      <div className="absolute inset-0 bg-[#0E1527]/45 backdrop-blur-[2px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <aside ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} className={cn("absolute left-0 top-0 flex h-full flex-col bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[drawerIn_0.3s_cubic-bezier(0.22,1,0.36,1)]", wide ? "w-full max-w-[560px]" : "w-full max-w-[420px]")}>
         <div className="flex items-center justify-between border-b border-[var(--kv-line)] px-6 py-4">
-          <h3 className="text-[16px] font-bold">{title}</h3>
-          <button autoFocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+          <h3 id={titleId} className="text-[16px] font-bold">{title}</h3>
+          <button data-autofocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
         </div>
         <div className="kv-scroll flex-1 overflow-y-auto p-6">{children}</div>
       </aside>
@@ -237,20 +234,29 @@ export function Drawer({ open, onClose, title, children, wide }: { open: boolean
 }
 
 export function Modal({ open, onClose, children, max = "max-w-[560px]", title = "پنجره" }: { open: boolean; onClose: () => void; children: ReactNode; max?: string; title?: string }) {
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-[#0E1527]/50 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label={title} className={cn("relative w-full rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-7 shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)]", max)}>
-        <button autoFocus onClick={onClose} className="kv-press absolute left-5 top-5 flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+      <div className="absolute inset-0 bg-[#0E1527]/50 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <div ref={ref} role="dialog" aria-modal="true" aria-label={title} className={cn("relative w-full rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-7 shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)]", max)}>
+        <button data-autofocus onClick={onClose} className="kv-press absolute left-5 top-5 flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
         {children}
       </div>
+    </div>
+  );
+}
+
+/** Full-screen media viewer with the same dialog focus rules (trap, Escape, restore); arrow keys via onKey. */
+export function Lightbox({ open, onClose, label, children, onKey, caption, z = "z-[80]" }: { open: boolean; onClose: () => void; label: string; children: ReactNode;
+  onKey?: (event: KeyboardEvent) => void; caption?: ReactNode; z?: string }) {
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose, { onKey });
+  if (!open) return null;
+  return (
+    <div ref={ref} role="dialog" aria-modal="true" aria-label={label} className={cn("fixed inset-0 flex items-center justify-center bg-black/85 p-4", z)} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="contents">{children}</div>
+      <button data-autofocus onClick={onClose} aria-label="بستن" className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white focus-visible:outline-2 focus-visible:outline-white"><X size={20} /></button>
+      {caption && <p className="absolute bottom-4 text-[12px] text-white/80" aria-live="polite">{caption}</p>}
     </div>
   );
 }

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, BadgeCheck, Camera, Check, CreditCard, Loader2, Quote, Sparkles, Star, X } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Camera, Check, ChevronLeft, ChevronRight, CreditCard, Loader2, Quote, Sparkles, Star } from "lucide-react";
 import { mediaSrc, rialToToman, siteApi, type CommerceProduct, type PageSection, type SitePage } from "../data/experience-api";
 import { fmtMoney } from "../data/catalog";
 import { CmsHero, HeroVideo } from "./cms-hero";
 import { CommerceCard } from "./commerce-card";
 import { ResponsiveImg } from "./responsive-img";
 import { applySeo, resetSeo } from "./seo-head";
-import { Btn, Empty, ErrorState, LoadingState } from "./primitives";
+import { Btn, Empty, ErrorState, Lightbox, LoadingState } from "./primitives";
 import { useToast } from "./toast";
 import { cn } from "../utils/cn";
 
@@ -312,11 +312,7 @@ function FeaturedProduct({ product: x, p, onOpen, onQuickAdd, pageCode }: { prod
 function Gallery({ title, images, layout, columns, eager }: { title: string; images: string[]; layout: string; columns: number; eager: boolean }) {
   const [open, setOpen] = useState<number | null>(null);
   const srcs = images.map((m) => mediaSrc(m) ?? PLACEHOLDER);
-  useEffect(() => {
-    if (open === null) return;
-    const on = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(null); if (e.key === "ArrowLeft") setOpen((i) => (i === null ? i : (i + 1) % srcs.length)); if (e.key === "ArrowRight") setOpen((i) => (i === null ? i : (i - 1 + srcs.length) % srcs.length)); };
-    window.addEventListener("keydown", on); return () => window.removeEventListener("keydown", on);
-  }, [open, srcs.length]);
+  const step = (delta: number) => setOpen((i) => (i === null ? i : (i + delta + srcs.length) % srcs.length));
   if (!srcs.length) return <p className="text-[13px] text-[var(--kv-muted)]">تصویری برای گالری انتخاب نشده است.</p>;
   const item = (src: string, i: number, cls: string) => <button key={i} onClick={() => setOpen(i)} className={cn("kv-img group overflow-hidden rounded-[16px] bg-[var(--kv-surface-2)]", cls)} aria-label={`نمایش تصویر ${fa(i + 1)}`}><ResponsiveImg src={src} alt="" priority={eager && i === 0} sizes="(min-width: 768px) 33vw, 50vw" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" /></button>;
   return (
@@ -325,13 +321,15 @@ function Gallery({ title, images, layout, columns, eager }: { title: string; ima
       {layout === "carousel" ? <div className="kv-no-scrollbar -mx-1 flex snap-x gap-3 overflow-x-auto px-1 pb-2">{srcs.map((src, i) => item(src, i, "aspect-[4/5] w-[70%] shrink-0 snap-start md:w-[32%]"))}</div>
         : layout === "masonry" ? <div className="gap-3 [column-fill:_balance]" style={{ columnCount: Math.min(columns, 4) }}>{srcs.map((src, i) => <div key={i} className="mb-3 break-inside-avoid">{item(src, i, cn("block w-full", i % 3 === 0 ? "aspect-[3/4]" : i % 3 === 1 ? "aspect-square" : "aspect-[4/5]"))}</div>)}</div>
         : <div className="kv-cms-grid" style={{ "--kv-cols-d": String(Math.min(columns, 4)), "--kv-cols-t": String(Math.min(columns, 3)) } as React.CSSProperties}>{srcs.map((src, i) => item(src, i, "aspect-square"))}</div>}
-      {open !== null && (
-        <div role="dialog" aria-modal="true" aria-label="نمایش تصویر" className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4" onClick={() => setOpen(null)}>
-          <img src={srcs[open]} alt="" className="max-h-[88vh] max-w-full rounded-[12px] object-contain" onClick={(e) => e.stopPropagation()} />
-          <button autoFocus onClick={() => setOpen(null)} aria-label="بستن" className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white"><X size={20} /></button>
-          <p className="absolute bottom-4 text-[12px] text-white/80">{fa(open + 1)} از {fa(srcs.length)}</p>
-        </div>
-      )}
+      <Lightbox open={open !== null} onClose={() => setOpen(null)} label="نمایش تصویر"
+        onKey={(e) => { if (e.key === "ArrowLeft") { e.preventDefault(); step(1); } if (e.key === "ArrowRight") { e.preventDefault(); step(-1); } }}
+        caption={open !== null ? `${fa(open + 1)} از ${fa(srcs.length)}` : null}>
+        {open !== null && <img src={srcs[open]} alt={`تصویر ${fa(open + 1)} از ${fa(srcs.length)}`} className="max-h-[88vh] max-w-full rounded-[12px] object-contain" />}
+        {srcs.length > 1 && <>
+          <button onClick={() => step(-1)} aria-label="تصویر قبلی" className="absolute right-4 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white focus-visible:outline-2 focus-visible:outline-white"><ChevronRight size={20} /></button>
+          <button onClick={() => step(1)} aria-label="تصویر بعدی" className="absolute left-4 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white focus-visible:outline-2 focus-visible:outline-white"><ChevronLeft size={20} /></button>
+        </>}
+      </Lightbox>
     </section>
   );
 }
@@ -408,7 +406,9 @@ function ReviewsBlock({ p, section, heading }: { p: Record<string, unknown>; sec
       {display === "customer_photos" && (photoGrid ?? <p className="text-[13px] text-[var(--kv-muted)]">هنوز عکس تأییدشده‌ای از مشتریان نداریم.</p>)}
       {display === "product_rating" && <>{summary}{list}</>}
       {display === "reviews" && <>{p.showSummary && summary}{list}</>}
-      {lightbox && <div role="dialog" aria-modal="true" aria-label="عکس مشتری" className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4" onClick={() => setLightbox(null)}><img src={mediaSrc(lightbox)} alt="" className="max-h-[88vh] max-w-full rounded-[12px]" /><button autoFocus onClick={() => setLightbox(null)} aria-label="بستن" className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white"><X size={20} /></button></div>}
+      <Lightbox open={Boolean(lightbox)} onClose={() => setLightbox(null)} label="عکس مشتری">
+        {lightbox && <img src={mediaSrc(lightbox)} alt="عکس ارسالی مشتری" className="max-h-[88vh] max-w-full rounded-[12px]" />}
+      </Lightbox>
     </section>
   );
 }
