@@ -7,6 +7,7 @@ import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
+import { processAvatar } from './images.js';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from './errors.js';
 import { putFile } from './storage.js';
 import { snapshotSupplierVersion } from './suppliers.js';
@@ -314,19 +315,25 @@ export function registerProfileRoutes(app: FastifyInstance, pool: DbPool, config
     const user = await principal(request, pool, config);
     const upload = await readUpload(request);
     const sniffed = validateAvatar(upload.buffer, upload.mime);
-    const ext = sniffed.mime === 'image/png' ? '.png' : sniffed.mime === 'image/webp' ? '.webp' : '.jpg';
-    const stored = await putFile(upload.buffer, `avatar${ext}`, sniffed.mime);
+    // Req 334: Upload → Validation → Resize (server) → Storage → Profile. Metadata (EXIF/GPS) is stripped.
+    let processed: Awaited<ReturnType<typeof processAvatar>>;
+    try { processed = await processAvatar(upload.buffer); } catch { throw badRequest('تصویر قابل پردازش نیست؛ فایل دیگری انتخاب کنید.'); }
+    const finalMime = processed.processed ? processed.mime : sniffed.mime;
+    const finalBuffer = processed.processed ? processed.buffer : upload.buffer;
+    const finalSize = processed.processed ? { width: processed.width, height: processed.height } : { width: sniffed.width, height: sniffed.height };
+    const ext = finalMime === 'image/png' ? '.png' : finalMime === 'image/webp' ? '.webp' : '.jpg';
+    const stored = await putFile(finalBuffer, `avatar${ext}`, finalMime);
     const fileId = randomUUID();
     const url = `/api/v1/media/${fileId}`;
     await transaction(pool, async (client) => {
       await client.query(`INSERT INTO files(id,owner_id,storage_key,original_name,mime_type,size_bytes,sha256,visibility) VALUES ($1,$2,$3,$4,$5,$6,$7,'public')`,
-        [fileId, user.id, stored.storageKey, `avatar${ext}`, sniffed.mime, upload.buffer.length, stored.sha256]);
+        [fileId, user.id, stored.storageKey, `avatar${ext}`, finalMime, finalBuffer.length, stored.sha256]);
       const before = await one(client, 'SELECT avatar_url FROM users WHERE id = $1', [user.id]);
       await client.query('UPDATE users SET avatar_file_id = $2, avatar_url = $3, updated_at = now() WHERE id = $1', [user.id, fileId, url]);
       if (user.roles.includes('supplier')) await client.query('UPDATE supplier_profiles SET avatar_url = $2 WHERE user_id = $1', [user.id, url]);
-      await audit(client, user.id, 'profile.avatar_updated', 'user', user.id, before, { avatarUrl: url, width: sniffed.width, height: sniffed.height }, request.ip);
+      await audit(client, user.id, 'profile.avatar_updated', 'user', user.id, before, { avatarUrl: url, ...finalSize, resized: processed.processed }, request.ip);
     });
-    return reply.code(201).send({ avatarUrl: url, width: sniffed.width, height: sniffed.height });
+    return reply.code(201).send({ avatarUrl: url, ...finalSize, mime: finalMime, resized: processed.processed });
   });
 
   app.delete('/api/v1/profile/avatar', async (request) => {

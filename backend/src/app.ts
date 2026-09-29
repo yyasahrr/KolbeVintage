@@ -35,6 +35,7 @@ import { registerConsoleRoutes } from './console.js';
 import { registerCmsStudioRoutes } from './cms-studio.js';
 import { registerStyleRoutes } from './style.js';
 import { registerProfileRoutes } from './profile.js';
+import { registerSeoRoutes } from './seo.js';
 
 export async function buildApp(config: Config, paymentAdapters: Record<string, PaymentProviderAdapter> = {}) {
   const app = Fastify({ logger: config.NODE_ENV === 'test' ? false : { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie'] },
@@ -95,6 +96,7 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   registerCmsStudioRoutes(app, pool, config);
   registerStyleRoutes(app, pool, config);
   registerProfileRoutes(app, pool, config);
+  registerSeoRoutes(app, pool, config);
   app.addHook('onClose', async () => {
     if (redis) redis.disconnect();
     await pool.end();

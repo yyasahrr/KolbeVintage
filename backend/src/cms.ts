@@ -6,6 +6,7 @@ import { principal, requirePermission } from './auth.js';
 import type { PoolClient } from 'pg';
 import { one, transaction, type DbPool } from './db.js';
 import { audit } from './operations.js';
+import { legacySeoToWrite, upsertSeoEntry } from './seo.js';
 import { badRequest, notFound } from './errors.js';
 
 /* CMS (items 18-22): component registry, page builder with drag-drop ordering,
@@ -255,8 +256,11 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
     const body = pageBody.parse(request.body);
     const id = randomUUID();
     await transaction(pool, async (client) => {
-      await client.query('INSERT INTO cms_pages(id,code,title,path,description,seo,active) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [id, body.code, body.title, body.path, body.description, JSON.stringify(body.seo), body.active]);
+      await client.query(`INSERT INTO cms_pages(id,code,title,path,description,seo,active) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6)`,
+        [id, body.code, body.title, body.path, body.description, body.active]);
+      // Req 235: SEO lives in the SEO Domain, never in cms_pages.
+      const seo = legacySeoToWrite(body.seo);
+      if (seo) await upsertSeoEntry(client, 'page', body.code, seo, user.id, config.PUBLIC_ORIGIN, request.ip);
       await audit(client, user.id, 'cms.page_created', 'cms_page', id, undefined, body, request.ip);
     });
     return reply.code(201).send({ id, ...body });
@@ -271,9 +275,11 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
       if (!before) throw notFound();
       await client.query(
         `UPDATE cms_pages SET title = COALESCE($2, title), path = COALESCE($3, path),
-           description = COALESCE($4, description), seo = COALESCE($5, seo), active = COALESCE($6, active), updated_at = now()
+           description = COALESCE($4, description), active = COALESCE($5, active), updated_at = now()
          WHERE id = $1`,
-        [id, body.title ?? null, body.path ?? null, body.description ?? null, body.seo ? JSON.stringify(body.seo) : null, body.active ?? null]);
+        [id, body.title ?? null, body.path ?? null, body.description ?? null, body.active ?? null]);
+      const seo = legacySeoToWrite(body.seo);
+      if (seo) await upsertSeoEntry(client, 'page', String(before.code), seo, user.id, config.PUBLIC_ORIGIN, request.ip);
       await audit(client, user.id, 'cms.page_updated', 'cms_page', id, before, body, request.ip);
       return one(client, 'SELECT * FROM cms_pages WHERE id = $1', [id]);
     });

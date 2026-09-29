@@ -7,7 +7,9 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
-import { getFile } from './storage.js';
+import { getFile, putFile } from './storage.js';
+import { isResizable, renderVariant, snapWidth } from './images.js';
+import { legacySeoToWrite, renameSeoKey, resolveSeo, loadEntry, loadSubject, upsertSeoEntry } from './seo.js';
 import { ensureContact } from './crm.js';
 import {
   attachCardTemplates, commerceProductsByIds, queryCommerceProducts, type CollectionRules,
@@ -279,7 +281,7 @@ async function snapshotPage(client: PoolClient, pageId: string, actorId: string,
 }
 
 /** Public read model: last published snapshot (fallback: live sections for legacy pages never published). */
-export async function loadPublicPage(pool: DbPool, code: string) {
+export async function loadPublicPage(pool: DbPool, code: string, origin = 'https://kolbe.ir') {
   const page = await one<Record<string, unknown> & { id: string; status: string; active: boolean; scheduled_start_at: string | null; scheduled_end_at: string | null }>(pool,
     'SELECT * FROM cms_pages WHERE code = $1', [code]);
   if (!page || !pageIsLive(page)) return null;
@@ -287,7 +289,10 @@ export async function loadPublicPage(pool: DbPool, code: string) {
     `SELECT sections_snapshot, version FROM cms_page_versions WHERE page_id = $1 AND status IN ('published','scheduled')
      ORDER BY version DESC LIMIT 1`, [page.id]);
   const sections = snapshot ? snapshot.sections_snapshot.filter((s) => s.visible) : await workingSections(pool, page.id, true);
-  return { ...page, publishedVersion: snapshot?.version ?? null, sections: await enrichSections(pool, sections) };
+  // Req 235: head tags come from the SEO Domain, not from the CMS row.
+  const subject = await loadSubject(pool, 'page', code);
+  const seo = subject ? resolveSeo(subject, await loadEntry(pool, 'page', code), origin) : null;
+  return { ...page, seo, publishedVersion: snapshot?.version ?? null, sections: await enrichSections(pool, sections) };
 }
 
 /* ============================ Routes ============================ */
@@ -300,6 +305,8 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   /* ---------- Public media (Req 312): only files referenced by public entities are served ---------- */
   app.get('/api/v1/media/:fileId', async (request, reply) => {
     const { fileId } = z.object({ fileId: z.uuid() }).parse(request.params);
+    // Req 234: responsive variants (?w=640&fmt=webp), snapped to fixed breakpoints and cached per file.
+    const { w, fmt } = z.object({ w: z.coerce.number().int().min(16).max(4000).optional(), fmt: z.enum(['webp', 'jpeg', 'png']).optional() }).parse(request.query);
     const file = await one<{ storage_key: string; mime_type: string; size_bytes: number }>(pool,
       `SELECT f.storage_key, f.mime_type, f.size_bytes FROM files f WHERE f.id = $1 AND (
          f.visibility = 'public'
@@ -309,6 +316,25 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
          OR EXISTS (SELECT 1 FROM cms_sections s WHERE s.payload::text LIKE '%' || $1::text || '%')
          OR EXISTS (SELECT 1 FROM users u WHERE u.avatar_file_id = f.id))`, [fileId]);
     if (!file) throw notFound();
+    if ((w || fmt) && isResizable(file.mime_type)) {
+      const width = snapWidth(w ?? 1600);
+      const format = fmt ?? (file.mime_type === 'image/png' ? 'png' : file.mime_type === 'image/webp' ? 'webp' : 'jpeg');
+      const cached = await one<{ storage_key: string }>(pool, 'SELECT storage_key FROM media_variants WHERE file_id = $1 AND width = $2 AND format = $3', [fileId, width, format]);
+      if (cached) {
+        const data = await getFile(cached.storage_key).catch(() => null);
+        if (data) return reply.header('Content-Type', `image/${format}`).header('Cache-Control', 'public, max-age=31536000, immutable')
+          .header('X-Content-Type-Options', 'nosniff').header('X-Media-Variant', `${width}w`).send(data);
+      }
+      const variant = await renderVariant(await getFile(file.storage_key), width, format).catch(() => null);
+      if (variant) {
+        const stored = await putFile(variant.buffer, `variant-${width}.${format === 'jpeg' ? 'jpg' : format}`, variant.mime).catch(() => null);
+        if (stored) await pool.query(`INSERT INTO media_variants(file_id, width, format, storage_key, size_bytes) VALUES ($1,$2,$3,$4,$5)
+          ON CONFLICT (file_id, width, format) DO UPDATE SET storage_key = EXCLUDED.storage_key, size_bytes = EXCLUDED.size_bytes`,
+          [fileId, width, format, stored.storageKey, variant.buffer.length]).catch(() => undefined);
+        return reply.header('Content-Type', variant.mime).header('Cache-Control', 'public, max-age=31536000, immutable')
+          .header('X-Content-Type-Options', 'nosniff').header('X-Media-Variant', `${width}w`).send(variant.buffer);
+      }
+    }
     const buffer = await getFile(file.storage_key);
     return reply.header('Content-Type', file.mime_type).header('Cache-Control', 'public, max-age=86400, immutable')
       .header('X-Content-Type-Options', 'nosniff').send(buffer);
@@ -317,7 +343,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   /* ---------- Public site surface ---------- */
   app.get('/api/v1/site/pages/:code', async (request) => {
     const { code } = z.object({ code: z.string().trim().max(40) }).parse(request.params);
-    const page = await loadPublicPage(pool, code);
+    const page = await loadPublicPage(pool, code, config.PUBLIC_ORIGIN);
     if (!page) throw notFound();
     return page;
   });
@@ -365,7 +391,9 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     const products = collection.mode === 'manual'
       ? await commerceProductsByIds(pool, collection.product_ids)
       : await queryCommerceProducts(pool, collection.query_rules);
-    return { ...collection, products: await attachCardTemplates(pool, products) };
+    const subject = await loadSubject(pool, 'collection', code);
+    const seo = subject ? resolveSeo(subject, await loadEntry(pool, 'collection', code), config.PUBLIC_ORIGIN) : null;
+    return { ...collection, seo, products: await attachCardTemplates(pool, products) };
   });
 
   app.get('/api/v1/site/categories', async () => ({ items: (await pool.query('SELECT * FROM cms_categories WHERE active ORDER BY position, name')).rows }));
@@ -486,8 +514,10 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     const id = randomUUID();
     await transaction(pool, async (client) => {
       await client.query(`INSERT INTO cms_pages(id,code,title,path,description,seo,active,page_type,status,campaign_id)
-        VALUES ($1,$2,$3,$4,$5,$6,true,$7,'draft',$8)`,
-        [id, body.code, body.title, body.path, body.description, JSON.stringify(body.seo), body.pageType, body.campaignId ?? null]);
+        VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,true,$6,'draft',$7)`,
+        [id, body.code, body.title, body.path, body.description, body.pageType, body.campaignId ?? null]);
+      const seo = legacySeoToWrite(body.seo);
+      if (seo) await upsertSeoEntry(client, 'page', body.code, seo, user.id, config.PUBLIC_ORIGIN, request.ip);
       const templates: Record<string, { code: string; title: string; payload: Record<string, unknown> }[]> = {
         blank: [],
         about: [
@@ -775,11 +805,13 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       await transaction(pool, async (client) => {
         if (table === 'cms_categories') {
           await client.query(`INSERT INTO cms_categories(id,name,slug,description,image_url,cover_url,icon,card_template,seo,position,parent_id,active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-            [id, body.name, body.slug, body.description, body.imageUrl ?? null, body.coverUrl ?? null, body.icon ?? null, body.cardTemplate, JSON.stringify(body.seo), body.position, body.parentId ?? null, body.active]);
+            [id, body.name, body.slug, body.description, body.imageUrl ?? null, body.coverUrl ?? null, body.icon ?? null, body.cardTemplate, '{}', body.position, body.parentId ?? null, body.active]);
         } else {
           await client.query(`INSERT INTO cms_vibes(id,name,slug,description,cover_url,palette,seo,active,position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-            [id, body.name, body.slug, body.description, body.coverUrl ?? null, JSON.stringify(body.palette ?? {}), JSON.stringify(body.seo), body.active, body.position]);
+            [id, body.name, body.slug, body.description, body.coverUrl ?? null, JSON.stringify(body.palette ?? {}), '{}', body.active, body.position]);
         }
+        const seo = legacySeoToWrite(body.seo as Record<string, unknown>);
+        if (seo) await upsertSeoEntry(client, label, body.slug, seo, user.id, config.PUBLIC_ORIGIN, request.ip);
         await audit(client, user.id, `cms.${label}_created`, `cms_${label}`, id, undefined, body, request.ip);
       });
       return reply.code(201).send({ id, slug: body.slug });
@@ -788,7 +820,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       const user = await actor(request, 'cms:edit');
       const { id } = z.object({ id: z.uuid() }).parse(request.params);
       const body = base.partial().parse(request.body) as Record<string, unknown>;
-      const columns: Record<string, string> = { name: 'name', slug: 'slug', description: 'description', coverUrl: 'cover_url', position: 'position', active: 'active', seo: 'seo',
+      const columns: Record<string, string> = { name: 'name', slug: 'slug', description: 'description', coverUrl: 'cover_url', position: 'position', active: 'active',
         imageUrl: 'image_url', icon: 'icon', cardTemplate: 'card_template', parentId: 'parent_id', palette: 'palette' };
       return transaction(pool, async (client) => {
         const before = await one(client, `SELECT * FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
@@ -799,8 +831,12 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
           values.push(typeof value === 'object' && value !== null ? JSON.stringify(value) : value);
           sets.push(`${columns[key]} = $${values.length}`);
         }
-        if (!sets.length) throw badRequest('تغییری برای ذخیره وجود ندارد.');
-        await client.query(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = $1`, values);
+        const seo = legacySeoToWrite(body.seo as Record<string, unknown> | undefined);
+        if (!sets.length && !seo) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+        if (sets.length) await client.query(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = $1`, values);
+        const slug = String(body.slug ?? before.slug);
+        await renameSeoKey(client, label, String(before.slug), slug);
+        if (seo) await upsertSeoEntry(client, label, slug, seo, user.id, config.PUBLIC_ORIGIN, request.ip);
         await audit(client, user.id, `cms.${label}_updated`, `cms_${label}`, id, before, body, request.ip);
         return one(client, `SELECT * FROM ${table} WHERE id = $1`, [id]);
       });

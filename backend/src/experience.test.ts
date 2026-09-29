@@ -12,6 +12,9 @@ import { buildCollectionQuery, resolveCardTemplate, type CardRule } from './comm
 import { colorPairScore, deriveFeatures, scoreOutfit, SCORE_VERSION, type MatrixRow, type ScoredItem } from './style.js';
 import { loyaltyTier, sniffImage, supplierDiff, validateAvatar, validateSpecifications, type SpecField } from './profile.js';
 import { deviceLabel } from './auth.js';
+import { jsonLdString, legacySeoToWrite, resolveSeo, validateSeoInput, type SeoSubject } from './seo.js';
+import { processAvatar, renderVariant, snapWidth } from './images.js';
+import sharp from 'sharp';
 
 /* ============================ Pure rules (always run) ============================ */
 
@@ -184,6 +187,53 @@ describe('Profile & product-type rules (Req 325-341)', () => {
   });
 });
 
+
+describe('SEO Domain (Req 235) and media processing (Req 234, 334)', () => {
+  const origin = 'https://kolbe.ir';
+  const vibe: SeoSubject = { type: 'vibe', key: 'old-money', name: 'Old Money', description: 'پالت کرم و سرمه‌ای', path: '/vibe/old-money', image: '/api/v1/media/abc', active: true };
+  test('derives a complete head from the business entity when no SEO entry exists', () => {
+    const r = resolveSeo(vibe, null, origin);
+    assert.equal(r.title, 'Old Money | کلبه وینتج'); assert.equal(r.canonical, 'https://kolbe.ir/vibe/old-money');
+    assert.equal(r.robots, 'index,follow'); assert.equal(r.og.image, 'https://kolbe.ir/api/v1/media/abc'); assert.equal(r.source, 'derived');
+    assert.equal(r.jsonLd[0]!['@type'], 'CollectionPage'); assert.equal(r.jsonLd[1]!['@type'], 'BreadcrumbList');
+  });
+  test('SEO entry overrides title, canonical, robots and schema; inactive entities are never indexed', () => {
+    const r = resolveSeo(vibe, { title: 'استایل اولد مانی', canonical_path: '/vibe/old-money-2', robots_index: true, robots_follow: false, schema_extra: { keywords: 'old money', '@context': 'x' }, version: 3 }, origin);
+    assert.equal(r.title, 'استایل اولد مانی | کلبه وینتج'); assert.equal(r.canonical, 'https://kolbe.ir/vibe/old-money-2');
+    assert.equal(r.robots, 'index,nofollow'); assert.equal(r.jsonLd[0]!.keywords, 'old money'); assert.equal(r.jsonLd[0]!['@context'], 'https://schema.org');
+    assert.equal(resolveSeo({ ...vibe, active: false }, { robots_index: true }, origin).robots, 'noindex,follow');
+  });
+  test('product schema carries offer, availability and rating from commerce data', () => {
+    const r = resolveSeo({ type: 'product', key: 'p1', name: 'پالتو پشمی', description: '', path: '/product/p1', image: null, active: true,
+      product: { priceRial: '48000000', available: 0, brand: 'Kolbe', category: 'پالتو', rating: 4.66, reviewCount: 3 } }, null, origin);
+    const product = r.jsonLd[0] as Record<string, any>;
+    assert.equal(product['@type'], 'Product'); assert.equal(product.offers.price, '48000000'); assert.equal(product.offers.availability, 'https://schema.org/OutOfStock');
+    assert.equal(product.aggregateRating.ratingValue, 4.7); assert.equal(r.og.type, 'product');
+  });
+  test('validation rejects unsafe values and warns about weak snippets', () => {
+    assert.ok(validateSeoInput({ title: '<script>x</script>' }, origin).errors.length);
+    assert.ok(validateSeoInput({ canonical_path: 'javascript:alert(1)' }, origin).errors.length);
+    assert.ok(validateSeoInput({ og_image: 'http://evil.test/x.png' }, origin).errors.length);
+    assert.ok(validateSeoInput({ schema_extra: { a: '</script><script>' } }, origin).errors.length);
+    assert.ok(validateSeoInput({ schema_type: 'Recipe' }, origin).errors.length);
+    const ok = validateSeoInput({ title: 'کت و پالتوی زمستانی کلبه', description: 'مجموعه کت و پالتوهای پشمی و کشمیر کلبه با ارسال رایگان و خرید چهارقسطه بدون بهره.' }, origin);
+    assert.deepEqual(ok.errors, []); assert.deepEqual(ok.warnings, []);
+    assert.ok(validateSeoInput({ title: 'کوتاه' }, origin).warnings.some((w) => w.includes('کوتاه')));
+    assert.equal(jsonLdString({ a: '</script>' }).includes('</script>'), false);
+    assert.deepEqual(legacySeoToWrite({ title: ' T ', index: false, junk: 1 }), { title: 'T', robotsIndex: false });
+    assert.equal(legacySeoToWrite({}), null);
+  });
+  test('avatar is resized to 512 WebP with metadata stripped; variants never upscale', async () => {
+    const jpeg = await sharp({ create: { width: 1200, height: 800, channels: 3, background: '#1B2A4A' } }).jpeg().withMetadata({ exif: { IFD0: { Copyright: 'gps-secret' } } }).toBuffer();
+    const out = await processAvatar(jpeg);
+    assert.equal(out.processed, true); assert.equal(out.mime, 'image/webp'); assert.equal(out.width, 512); assert.equal(out.height, 512);
+    assert.equal((await sharp(out.buffer).metadata()).exif, undefined);
+    const small = await sharp({ create: { width: 200, height: 100, channels: 3, background: '#fff' } }).png().toBuffer();
+    assert.equal((await renderVariant(small, 640, 'webp'))!.width, 200);
+    assert.equal(snapWidth(1), 160); assert.equal(snapWidth(700), 960); assert.equal(snapWidth(99999), 1600);
+  });
+});
+
 /* ============================ Integration (PostgreSQL) ============================ */
 
 const enabled = !!process.env.TEST_DATABASE_URL;
@@ -333,10 +383,21 @@ test('CMS studio, style intelligence and unified profile work end to end', { ski
     assert.equal(verified.statusCode, 200, verified.body);
     assert.equal((await pool.query('SELECT phone FROM users WHERE id = $1', [customer.id])).rows[0].phone, newPhone);
     assert.ok((await pool.query(`SELECT 1 FROM audit_logs WHERE resource_id = $1 AND action = 'profile.phone_changed'`, [customer.id])).rowCount);
-    const pngHeader = Buffer.alloc(80); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngHeader); pngHeader.write('IHDR', 12, 'ascii'); pngHeader.writeUInt32BE(256, 16); pngHeader.writeUInt32BE(256, 20);
-    const avatar = await app.inject({ method: 'POST', url: '/api/v1/profile/avatar', headers: customer.headers, payload: { dataBase64: pngHeader.toString('base64'), mime: 'image/png' } });
+    const realPng = await sharp({ create: { width: 900, height: 600, channels: 3, background: '#C1613B' } }).png().toBuffer();
+    const avatar = await app.inject({ method: 'POST', url: '/api/v1/profile/avatar', headers: customer.headers, payload: { dataBase64: realPng.toString('base64'), mime: 'image/png' } });
     assert.equal(avatar.statusCode, 201, avatar.body);
-    assert.equal((await app.inject({ method: 'GET', url: avatar.json().avatarUrl })).statusCode, 200, 'avatar is publicly served');
+    assert.equal(avatar.json().width, 512); assert.equal(avatar.json().mime, 'image/webp'); assert.equal(avatar.json().resized, true);
+    const served = await app.inject({ method: 'GET', url: avatar.json().avatarUrl });
+    assert.equal(served.statusCode, 200, 'avatar is publicly served');
+    assert.equal(served.headers['content-type'], 'image/webp');
+    const variant = await app.inject({ method: 'GET', url: `${avatar.json().avatarUrl as string}?w=150&fmt=jpeg` });
+    assert.equal(variant.statusCode, 200); assert.equal(variant.headers['x-media-variant'], '160w'); assert.equal(variant.headers['content-type'], 'image/jpeg');
+    assert.equal((await sharp(variant.rawPayload).metadata()).width, 160);
+    const cachedVariant = await app.inject({ method: 'GET', url: `${avatar.json().avatarUrl as string}?w=150&fmt=jpeg` });
+    assert.equal(cachedVariant.statusCode, 200);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM media_variants WHERE width = 160 AND format = $1', ['jpeg'])).rows[0].n >= 1, true, 'variant cached');
+    const fake = Buffer.alloc(80); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(fake); fake.write('IHDR', 12, 'ascii'); fake.writeUInt32BE(256, 16); fake.writeUInt32BE(256, 20);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/profile/avatar', headers: customer.headers, payload: { dataBase64: fake.toString('base64'), mime: 'image/png' } })).statusCode, 400, 'corrupt image is rejected');
     const security = await app.inject({ method: 'GET', url: '/api/v1/profile/security', headers: customer.headers });
     assert.equal(security.json().sessions.filter((s: { current: boolean }) => s.current).length, 1);
     assert.match(security.json().loginHistory[0].device_label, /Chrome/);
@@ -370,6 +431,64 @@ test('CMS studio, style intelligence and unified profile work end to end', { ski
     const after = await pool.query('SELECT bank_iban, version FROM supplier_profiles WHERE user_id = $1', [supplier.id]);
     assert.equal(after.rows[0].bank_iban, 'IR110170000000000000000001'); assert.equal(after.rows[0].version, 2);
     assert.ok((await pool.query('SELECT 1 FROM supplier_profile_versions WHERE user_id = $1', [supplier.id])).rowCount);
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});
+
+test('SEO Domain is the single source of head tags for CMS entities (Req 235)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const id = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)', [id, `seo-admin-${suffix}@example.test`, await argon2.hash('Password-123456!'), 'seo admin']);
+    await pool.query(`INSERT INTO user_roles(user_id,role_code) VALUES ($1,'admin')`, [id]);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { identity: `seo-admin-${suffix}@example.test`, password: 'Password-123456!' } });
+    const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
+
+    // CMS forms that still send `seo` write into the SEO Domain, not into the CMS row.
+    const vibe = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/vibes', headers, payload: { name: 'Quiet Luxury', slug: `ql-${suffix}`, description: 'لوکس آرام', seo: { title: 'استایل Quiet Luxury کلبه' } } });
+    assert.equal(vibe.statusCode, 201, vibe.body);
+    assert.deepEqual((await pool.query('SELECT seo FROM cms_vibes WHERE id = $1', [vibe.json().id])).rows[0].seo, {});
+    assert.equal((await pool.query(`SELECT title FROM seo_entries WHERE entity_type = 'vibe' AND entity_key = $1`, [`ql-${suffix}`])).rows[0].title, 'استایل Quiet Luxury کلبه');
+    // Renaming the slug keeps the SEO row attached to the same entity.
+    const renamed = await app.inject({ method: 'PATCH', url: `/api/v1/admin/cms/vibes/${vibe.json().id as string}`, headers, payload: { slug: `quiet-${suffix}` } });
+    assert.equal(renamed.statusCode, 200, renamed.body);
+    const pub = await app.inject({ method: 'GET', url: `/api/v1/seo/vibe/quiet-${suffix}` });
+    assert.equal(pub.statusCode, 200, pub.body);
+    assert.equal(pub.json().title, 'استایل Quiet Luxury کلبه | کلبه وینتج'); assert.equal(pub.json().canonical, `http://127.0.0.1:5173/vibe/quiet-${suffix}`);
+
+    // Admin SEO editor: validation, optimistic versioning, history, audit and outbox.
+    assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/seo/vibe/quiet-${suffix}`, headers, payload: { canonicalPath: 'javascript:alert(1)' } })).statusCode, 400);
+    const put = await app.inject({ method: 'PUT', url: `/api/v1/admin/seo/vibe/quiet-${suffix}`, headers,
+      payload: { description: 'استایل Quiet Luxury؛ پارچه‌های طبیعی، رنگ‌های خنثی و دوخت دقیق در کلبه وینتج.', robotsIndex: false, ogTitle: 'Quiet Luxury', schemaExtra: { keywords: 'quiet luxury' }, expectedVersion: 1 } });
+    assert.equal(put.statusCode, 200, put.body);
+    assert.equal(put.json().version, 2); assert.equal(put.json().resolved.robots, 'noindex,follow'); assert.equal(put.json().resolved.og.title, 'Quiet Luxury');
+    assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/seo/vibe/quiet-${suffix}`, headers, payload: { title: 'x', expectedVersion: 1 } })).statusCode, 400, 'stale version');
+    const detail = await app.inject({ method: 'GET', url: `/api/v1/admin/seo/vibe/quiet-${suffix}`, headers });
+    assert.equal(detail.json().history.length, 2);
+    assert.ok((await pool.query(`SELECT 1 FROM outbox_events WHERE event_type = 'seo.updated' AND payload->>'entityKey' = $1`, [`quiet-${suffix}`])).rowCount);
+    assert.ok((await pool.query(`SELECT 1 FROM audit_logs WHERE action = 'seo.updated' AND resource_id = $1`, [`quiet-${suffix}`])).rowCount);
+    const preview = await app.inject({ method: 'POST', url: `/api/v1/admin/seo/vibe/quiet-${suffix}/preview`, headers, payload: { title: 'پیش‌نمایش' } });
+    assert.equal(preview.json().resolved.title, 'پیش‌نمایش | کلبه وینتج');
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/seo/vibe/quiet-${suffix}` })).json().title, 'استایل Quiet Luxury کلبه | کلبه وینتج', 'preview does not persist');
+
+    // Sitemap honours noindex; the published About page carries SEO Domain head tags.
+    const sitemap = await app.inject({ method: 'GET', url: '/api/v1/seo/sitemap.xml' });
+    assert.equal(sitemap.statusCode, 200); assert.match(sitemap.headers['content-type'] as string, /xml/);
+    assert.equal(sitemap.body.includes(`/vibe/quiet-${suffix}`), false);
+    await app.inject({ method: 'PUT', url: '/api/v1/admin/seo/page/about', headers, payload: { title: 'داستان کلبه وینتج' } });
+    const about = await app.inject({ method: 'GET', url: '/api/v1/site/pages/about' });
+    if (about.statusCode === 200) {
+      assert.equal(about.json().seo.title, 'داستان کلبه وینتج'); assert.equal(about.json().seo.jsonLd[0]['@type'], 'AboutPage');
+    }
+    const list = await app.inject({ method: 'GET', url: '/api/v1/admin/seo?type=vibe', headers });
+    assert.ok(list.json().items.some((i: { key: string; index: boolean }) => i.key === `quiet-${suffix}` && i.index === false));
+    const anon = await app.inject({ method: 'GET', url: '/api/v1/admin/seo' });
+    assert.equal(anon.statusCode, 401);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/seo/robots.txt' })).body.includes('Sitemap:'), true);
   } finally {
     await app.close();
     await pool.end();
