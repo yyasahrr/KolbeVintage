@@ -11,6 +11,7 @@ import { nextDocumentReference } from './references.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { assertNotRestricted } from './console.js';
 import { assertSupplierMay } from './supplier360.js';
+import { postJournalEntry } from './ledger.js';
 
 /* Wallet ledger, withdrawals and settlements (items 25, 39-41).
    The wallet is provider-agnostic: transfers are reconciled through the
@@ -88,13 +89,7 @@ export async function postSupplierEarnings(client: PoolClient, orderId: string) 
 
 async function postJournal(client: PoolClient, sourceType: string, sourceId: string, reference: string,
   lines: Array<{ account: string; debit?: bigint; credit?: bigint }>) {
-  const entryId = randomUUID();
-  await client.query('INSERT INTO journal_entries(id,reference,source_type,source_id) VALUES ($1,$2,$3,$4)',
-    [entryId, reference, sourceType, sourceId]);
-  for (const item of lines) {
-    await client.query('INSERT INTO journal_lines(id,entry_id,account_id,debit_rial,credit_rial) VALUES ($1,$2,$3,$4,$5)',
-      [randomUUID(), entryId, item.account, (item.debit ?? 0n).toString(), (item.credit ?? 0n).toString()]);
-  }
+  return postJournalEntry(client, { sourceType, sourceId, reference, lines });
 }
 
 const destination = z.object({

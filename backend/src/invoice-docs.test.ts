@@ -90,6 +90,19 @@ test('invoice templates, lifecycle, snapshots and PDF documents (items 25-34)', 
     const draftJournal = await pool.query('SELECT count(*)::int AS count FROM journal_entries WHERE source_id = $1', [draftId]);
     assert.equal(draftJournal.rows[0].count, 0, 'پیش‌نویس سند حسابداری ندارد');
 
+    // --- the client cannot be a source of truth for money ------------------------------
+    const forgedTotal = await app.inject({ method: 'POST', url: '/api/v1/invoices', headers, payload: {
+      kind: 'retail_sale', buyer: { name: 'خریدار تست' }, seller: { name: 'کلبه وینتج' },
+      lines: [{ productName: 'کالای تست', quantity: 1, unitPriceRial: '1000000', discountRial: '0', taxRial: '0' }],
+      totalRial: '1', netRial: '1', subtotalRial: '1',
+    } });
+    assert.equal(forgedTotal.statusCode, 400, 'مبالغ محاسبه‌شده از سمت کلاینت پذیرفته نمی‌شوند');
+    const forgedLine = await app.inject({ method: 'POST', url: '/api/v1/invoices', headers, payload: {
+      kind: 'retail_sale', buyer: { name: 'خریدار تست' }, seller: { name: 'کلبه وینتج' },
+      lines: [{ productName: 'کالای تست', quantity: 2, unitPriceRial: '1000000', discountRial: '0', taxRial: '0', lineTotalRial: '1' }],
+    } });
+    assert.equal(forgedLine.statusCode, 400, 'جمع سطر هم از سمت کلاینت پذیرفته نمی‌شود');
+
     const issued = await app.inject({ method: 'POST', url: `/api/v1/invoices/${draftId}/issue`, headers, payload: {} });
     assert.equal(issued.statusCode, 200, issued.body);
     assert.equal(issued.json().status, 'issued');
@@ -108,6 +121,32 @@ test('invoice templates, lifecycle, snapshots and PDF documents (items 25-34)', 
       `SELECT sum(debit_rial)::text AS debit, sum(credit_rial)::text AS credit FROM journal_lines l
         JOIN journal_entries e ON e.id = l.entry_id WHERE e.source_id = $1`, [draftId]);
     assert.equal(journal.rows[0].debit, journal.rows[0].credit, 'سند حسابداری متوازن است');
+
+    // --- snapshot immutability: customer / product / template may all change afterwards -----
+    const snapshotBefore = JSON.stringify(invoiceRow.rows[0].snapshot);
+    const versionBefore = invoiceRow.rows[0].template_version_id as string;
+    const pdfBefore = await app.inject({ method: 'GET', url: `/api/v1/invoices/${draftId}/pdf`, headers });
+    assert.equal(pdfBefore.statusCode, 200, pdfBefore.body);
+    const bytesBefore = pdfBefore.rawPayload;
+
+    await pool.query('UPDATE users SET display_name = $2 WHERE id = $1', [customerId, 'نام تغییرکرده مشتری']);
+    await pool.query("UPDATE invoices SET buyer = jsonb_set(buyer, '{name}', '\"خریدار ویرایش‌شده\"') WHERE id = $1", [draftId]);
+    await pool.query("UPDATE invoice_lines SET product_name = 'نام جدید کالا' WHERE invoice_id = $1", [draftId]);
+    await app.inject({ method: 'POST', url: `/api/v1/invoices/templates/${templateId}/versions`, headers,
+      payload: { definition: { paperSize: 'A4', footer: 'قالب عوض‌شده', sections: [{ id: 'items', type: 'table', order: 1, visible: true }] },
+        changeNote: 'نسخه سوم پس از صدور سند' } });
+
+    const afterChange = await pool.query('SELECT snapshot, template_version_id FROM invoices WHERE id = $1', [draftId]);
+    assert.equal(JSON.stringify(afterChange.rows[0].snapshot), snapshotBefore,
+      'اسنپ‌شات سند پس از تغییر مشتری/کالا/قالب ثابت می‌ماند');
+    assert.equal(afterChange.rows[0].template_version_id, versionBefore, 'نسخه قالب سند تغییر نمی‌کند');
+    const pdfAfter = await app.inject({ method: 'GET', url: `/api/v1/invoices/${draftId}/pdf`, headers });
+    assert.equal(pdfAfter.statusCode, 200, pdfAfter.body);
+    assert.ok(pdfAfter.rawPayload.equals(bytesBefore), 'PDF ذخیره‌شده پس از تغییر داده‌های زنده بازتولید نمی‌شود');
+    assert.ok(extractPdfText(pdfAfter.rawPayload).includes(toVisual('کت کرم پشمی')),
+      'متن کالا در PDF همان مقدار زمان صدور است');
+    const historyVersions = await pool.query('SELECT count(*)::int AS count FROM invoice_template_versions WHERE template_id = $1', [templateId]);
+    assert.equal(historyVersions.rows[0].count, 3, 'نسخه‌های قالب فقط اضافه می‌شوند (history بازنویسی نمی‌شود)');
 
     const outbox = await pool.query("SELECT count(*)::int AS count FROM outbox_events WHERE event_type = 'invoice.issued' AND aggregate_id = $1", [draftId]);
     assert.equal(outbox.rows[0].count, 1, 'رویداد invoice.issued منتشر شده است');

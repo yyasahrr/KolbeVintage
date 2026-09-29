@@ -127,6 +127,53 @@ test('financial operations: settlements, approvals, adjustments, periods and rep
     const settlementEvents = (afterPayment.json().entries as Array<{ event: string }>).map((row) => row.event);
     assert.ok(settlementEvents.includes('settlement'), settlementEvents.join(','));
 
+    // --- traceability: every settled rial must be explainable from the raw rows ----------
+    const ledgerEntryId = (await pool.query(
+      "SELECT id FROM supplier_ledger_entries WHERE settlement_id = $1 AND order_line_id IS NOT NULL ORDER BY occurred_at LIMIT 1",
+      [settlementId])).rows[0].id as string;
+    const trace = await pool.query(
+      `SELECT l.order_id, l.order_reference, l.gross_rial::text AS gross, l.net_rial::text AS net,
+              l.journal_entry_id, e.source_type, e.source_id,
+              (SELECT count(*)::int FROM journal_lines jl WHERE jl.entry_id = l.journal_entry_id) AS lines,
+              (SELECT COALESCE(sum(jl.debit_rial),0)::text FROM journal_lines jl WHERE jl.entry_id = l.journal_entry_id) AS debit,
+              (SELECT COALESCE(sum(jl.credit_rial),0)::text FROM journal_lines jl WHERE jl.entry_id = l.journal_entry_id) AS credit
+         FROM settlement_lines l JOIN journal_entries e ON e.id = l.journal_entry_id
+        WHERE l.settlement_id = $1`, [settlementId]);
+    assert.equal(trace.rows.length, 1, 'ردیف تسویه موجود است');
+    const row = trace.rows[0];
+    assert.ok(row.order_id && row.order_reference, 'ردیف تسویه به سفارش مبدأ گره خورده است');
+    assert.ok(row.journal_entry_id, 'ردیف تسویه به سند حسابداری خود گره خورده است');
+    assert.equal(row.source_type, 'supplier_ledger', 'سند ردیف تسویه، accrual همان تأمین‌کننده است');
+    assert.equal(row.source_id, ledgerEntryId, 'سند به ردیف دفتر تأمین‌کننده اشاره می‌کند');
+    assert.ok(row.lines >= 2, 'سند ردیف تسویه حداقل دو سطر دارد');
+    assert.equal(row.debit, row.credit, 'سند ردیف تسویه متوازن است');
+
+    const payoutEntry = await pool.query(
+      `SELECT e.id, (SELECT COALESCE(sum(debit_rial),0)::text FROM journal_lines WHERE entry_id = e.id) AS debit,
+              (SELECT COALESCE(sum(credit_rial),0)::text FROM journal_lines WHERE entry_id = e.id) AS credit
+         FROM journal_entries e
+        WHERE e.source_id = $1 AND e.source_type IN ('settlement','settlement_payment')`, [settlementId]);
+    assert.ok(payoutEntry.rows.length >= 1, 'سند پرداخت تسویه ثبت شده است');
+    assert.equal(payoutEntry.rows[0].debit, payoutEntry.rows[0].credit, 'سند پرداخت تسویه متوازن است');
+
+    const ledgerLink = await pool.query(
+      `SELECT count(*)::int AS count FROM supplier_ledger_entries WHERE supplier_id = $1 AND event = 'settlement'
+        AND reference = (SELECT reference FROM settlements WHERE id = $2)`, [supplierId, settlementId]);
+    assert.ok(ledgerLink.rows[0].count >= 1, 'پرداخت تسویه در دفتر تأمین‌کننده ثبت شده است');
+    const statementDoc = await pool.query(
+      `SELECT i.reference, i.pdf_file_id, i.snapshot->'context'->'invoice'->>'number' AS snapshot_number
+         FROM settlements s JOIN invoices i ON i.id = s.statement_invoice_id WHERE s.id = $1`, [settlementId]);
+    assert.ok(statementDoc.rows[0]?.pdf_file_id, 'سند تسویه فایل PDF دارد');
+    assert.ok(statementDoc.rows[0]?.snapshot_number, 'سند تسویه اسنپ‌شات دارد');
+    const trail = await pool.query(
+      `SELECT from_status, to_status, actor_id FROM settlement_events WHERE settlement_id = $1 ORDER BY created_at, id`,
+      [settlementId]);
+    assert.deepEqual(trail.rows.map((r) => r.to_status), ['pending', 'reviewed', 'approved', 'paid', 'reconciled'],
+      `وضعیت‌های تسویه بدون پرش دنبال می‌شوند: ${trail.rows.map((r) => r.to_status).join(' → ')}`);
+    assert.deepEqual(trail.rows.map((r) => r.from_status), [null, 'requested', 'reviewed', 'approved', 'paid'],
+      'هر رویداد وضعیت قبلی را ثبت می‌کند');
+    assert.ok(trail.rows.every((r) => r.actor_id), 'هر تغییر وضعیت، کنش‌گر خود را دارد');
+
     // ------------------------------------------------------------ adjustments --
     const adjustment = await app.inject({ method: 'POST', url: '/api/v1/admin/finance/adjustments', headers: admin, payload: {
       supplierId, direction: 'debit', amountRial: '5000000', category: 'penalty', reason: 'تأخیر در ارسال',
@@ -279,6 +326,48 @@ test('financial operations: settlements, approvals, adjustments, periods and rep
     const suppliers = await app.inject({ method: 'GET', url: `/api/v1/admin/finance/suppliers?search=برند مالی ${suffix}`, headers: admin });
     assert.equal(suppliers.statusCode, 200, suppliers.body);
     assert.equal((suppliers.json().items as unknown[]).length, 1);
+
+    // --- invariants that must hold no matter which code path writes -------------------
+    // 1) every journal entry in the database is double-entry balanced (DB constraint trigger).
+    const unbalanced = await pool.query(
+      'SELECT count(*)::int AS count FROM (SELECT entry_id FROM journal_lines GROUP BY entry_id HAVING sum(debit_rial) <> sum(credit_rial)) broken');
+    assert.equal(unbalanced.rows[0].count, 0, 'هیچ سند حسابداری نامتوازنی در پایگاه‌داده نیست');
+    const trial = await pool.query(
+      'SELECT COALESCE(sum(debit_rial),0)::text AS debit, COALESCE(sum(credit_rial),0)::text AS credit FROM journal_lines');
+    assert.equal(trial.rows[0].debit, trial.rows[0].credit, 'جمع بدهکار و بستانکار کل دفتر برابر است');
+    const orphanPeriods = await pool.query(
+      `SELECT count(*)::int AS count FROM journal_entries e
+        WHERE NOT EXISTS (SELECT 1 FROM accounting_periods p WHERE p.code = e.period_code)`);
+    assert.equal(orphanPeriods.rows[0].count, 0, 'هر سند به یک دوره مالی موجود گره خورده است');
+
+    // 2) the database itself refuses to rewrite or erase posted history.
+    const postedEntry = await pool.query('SELECT id FROM journal_entries ORDER BY created_at DESC LIMIT 1');
+    const postedEntryId = postedEntry.rows[0].id as string;
+    await assert.rejects(
+      () => pool.query('UPDATE journal_entries SET reference = reference || $2 WHERE id = $1', [postedEntryId, '-x']),
+      /immutable/i, 'سند حسابداری ثبت‌شده قابل ویرایش نیست');
+    await assert.rejects(
+      () => pool.query('DELETE FROM journal_lines WHERE entry_id = $1', [postedEntryId]),
+      /immutable/i, 'ردیف‌های دفتر کل قابل حذف نیستند');
+    const supplierLedgerRow = await pool.query('SELECT id FROM supplier_ledger_entries WHERE supplier_id = $1 LIMIT 1', [supplierId]);
+    assert.ok(supplierLedgerRow.rows[0], 'دفتر تأمین‌کننده ردیف دارد');
+    await assert.rejects(
+      () => pool.query('UPDATE supplier_ledger_entries SET amount_rial = amount_rial + 1 WHERE id = $1',
+        [supplierLedgerRow.rows[0].id as string]),
+      /immutable/i, 'دفتر تأمین‌کننده فقط افزودنی است');
+    await assert.rejects(
+      () => pool.query('DELETE FROM supplier_ledger_entries WHERE id = $1', [supplierLedgerRow.rows[0].id as string]),
+      /immutable/i, 'حذف ردیف دفتر تأمین‌کننده ممکن نیست');
+
+    // 3) the trigger-level balance guard rejects a hand-crafted unbalanced posting.
+    await assert.rejects(() => transaction(pool, async (client) => {
+      const entryId = randomUUID();
+      const account = await client.query("SELECT id FROM ledger_accounts ORDER BY code LIMIT 1");
+      await client.query('INSERT INTO journal_entries(id,reference,source_type,source_id) VALUES ($1,$2,$3,$4)',
+        [entryId, `UNBAL-${suffix}`, 'manual_test', randomUUID()]);
+      await client.query('INSERT INTO journal_lines(id,entry_id,account_id,debit_rial,credit_rial) VALUES ($1,$2,$3,$4,0)',
+        [randomUUID(), entryId, account.rows[0].id as string, '5000']);
+    }), /Unbalanced journal entry/i, 'سند نامتوازن در سطح پایگاه‌داده رد می‌شود');
   } finally {
     await app.close();
     await pool.end();

@@ -508,6 +508,16 @@ export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config
         await client.query("UPDATE financial_adjustments SET status = 'applied', applied_at = now() WHERE id = $1", [adjustment.id]);
       }
       await accrueSupplier(client, entries.map((entry) => ({ ...entry, supplierId: body.supplierId, settlementId, actorId: actor.id })));
+      // Traceability (item 154): each settlement line points at the journal entry of its accrual,
+      // so «ردیف تسویه → دفتر تأمین‌کننده → سند حسابداری» is walkable without guessing.
+      await client.query(
+        `UPDATE settlement_lines sl
+            SET journal_entry_id = src.journal_entry_id
+           FROM (SELECT DISTINCT ON (order_line_id) order_line_id, journal_entry_id
+                   FROM supplier_ledger_entries
+                  WHERE settlement_id = $1 AND order_line_id IS NOT NULL AND journal_entry_id IS NOT NULL
+                  ORDER BY order_line_id, occurred_at, created_at) src
+          WHERE sl.settlement_id = $1 AND sl.order_line_id = src.order_line_id`, [settlementId]);
       await client.query(
         `INSERT INTO settlement_events(id, settlement_id, from_status, to_status, actor_id, note) VALUES ($1,$2,NULL,'pending',$3,$4)`,
         [randomUUID(), settlementId, actor.id, `ایجاد خودکار از ${lines.length} سطر سفارش`]);

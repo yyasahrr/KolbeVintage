@@ -11,6 +11,7 @@ import { nextDocumentReference } from './references.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { getFile } from './storage.js';
 import { defaultTemplateVersionId, storeInvoicePdf, storeInvoiceSnapshot } from './invoice-templates.js';
+import { postJournalEntry } from './ledger.js';
 
 /* Shared Invoice Engine (items 35-36). Every amount is computed server-side
    from the invoice lines; client totals are ignored. History is append-only. */
@@ -119,15 +120,10 @@ export async function postIssuedJournal(client: PoolClient, invoiceId: string, k
 
 export async function postInvoiceJournal(client: PoolClient, sourceType: string, sourceId: string, reference: string,
   lines: Array<{ account: string; debit?: bigint; credit?: bigint }>) {
-  const entryId = randomUUID();
-  await client.query('INSERT INTO journal_entries(id,reference,source_type,source_id) VALUES ($1,$2,$3,$4)',
-    [entryId, reference, sourceType, sourceId]);
   const posted = lines.filter((item) => (item.debit ?? 0n) > 0n || (item.credit ?? 0n) > 0n);
   if (posted.length < 2) throw badRequest('سند حسابداری حداقل به دو سطر بدهکار/بستانکار نیاز دارد.');
-  for (const item of posted) {
-    await client.query('INSERT INTO journal_lines(id,entry_id,account_id,debit_rial,credit_rial) VALUES ($1,$2,$3,$4,$5)',
-      [randomUUID(), entryId, item.account, (item.debit ?? 0n).toString(), (item.credit ?? 0n).toString()]);
-  }
+  // Single posting path: balance is asserted and the accounting period must be open.
+  return postJournalEntry(client, { sourceType, sourceId, reference, lines: posted });
 }
 
 export type Totals = { subtotal: bigint; discount: bigint; tax: bigint; shipping: bigint; services: bigint; gross: bigint; total: bigint };

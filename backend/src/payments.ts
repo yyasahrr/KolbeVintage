@@ -8,6 +8,7 @@ import { asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { issueInvoiceForOrder } from './invoices.js';
+import { ACCOUNTS, postJournalEntry } from './ledger.js';
 
 const limitsSchema = z.object({
   sources: z.enum(['all', 'kolbe']).default('all'),
@@ -64,14 +65,11 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
     await client.query(
       `UPDATE payment_intents SET provider = $2, provider_reference = $3, status = 'succeeded', succeeded_at = $4 WHERE id = $1`,
       [intent.id, payment.provider, payment.providerReference, payment.paidAt]);
-    const entryId = randomUUID();
-    await client.query('INSERT INTO journal_entries(id,reference,source_type,source_id) VALUES ($1,$2,$3,$4)',
-      [entryId, `JE-${intent.reference}`, 'payment', intent.id]);
-    await client.query(
-      `INSERT INTO journal_lines(id,entry_id,account_id,debit_rial,credit_rial) VALUES
-       ($1,$3,'00000000-0000-4000-8000-000000000001',$4,0),
-       ($2,$3,'00000000-0000-4000-8000-000000000002',0,$4)`,
-      [randomUUID(), randomUUID(), entryId, amount.toString()]);
+    await postJournalEntry(client, { sourceType: 'payment', sourceId: intent.id, reference: `JE-${intent.reference}`,
+      lines: [
+        { account: ACCOUNTS.paymentClearing, debit: amount },
+        { account: ACCOUNTS.customerPrepayment, credit: amount },
+      ] });
     if (intent.order_id) {
       const order = await one<{ status: string }>(client, 'SELECT status FROM orders WHERE id = $1 FOR UPDATE', [intent.order_id]);
       if (order?.status !== 'pending_payment') throw conflict('سفارش در انتظار پرداخت نیست.');
