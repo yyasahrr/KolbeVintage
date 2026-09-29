@@ -7,8 +7,11 @@ import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, type Product } from "../da
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
+import { promoApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
+import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage } from "../data/contracts";
+import { cmsApi, ordersApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
@@ -262,6 +265,27 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const ops = useOps();
   const retailProducts = store.products.filter((p) => p.status === "published" && p.retailPrice > 0);
   const cmsNav = (t: NavTarget) => (t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop"));
+  const [cmsHero, setCmsHero] = useState<any | null>(null);
+  const [cmsBlocks, setCmsBlocks] = useState<any[] | null>(null);
+  const [cmsPalette, setCmsPalette] = useState<any | null>(null);
+  const [cmsLoading, setCmsLoading] = useState(false);
+  const [cmsError, setCmsError] = useState<string | null>(null);
+  useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; let cancelled=false; (async()=>{ setCmsLoading(true); setCmsError(null);
+    try{
+      const page = adaptSitePage(await cmsApi.sitePage("home"));
+      if(cancelled) return;
+      if(page){
+        // Server CMS is the source of truth: hero = the «hero» section, blocks = the other sections.
+        const heroSection = page.sections.find((section) => section.component_code === "hero" && section.visible) ?? null;
+        const hero = adaptCmsHero(heroSection);
+        if(hero) setCmsHero(hero);
+        setCmsBlocks(page.sections.filter((section) => section.component_code !== "hero").map(adaptCmsSectionToBlock));
+      }
+      const pal = await cmsApi.activePalette().catch(()=>null);
+      if(!cancelled && pal) setCmsPalette(pal);
+    } catch(e){ if(!cancelled) setCmsError(e instanceof Error ? e.message : "خطا در بارگذاری محتوا"); }
+    finally{ if(!cancelled) setCmsLoading(false); }
+  })(); return()=>{ cancelled=true; }; },[]);
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [couponMsg, setCouponMsg] = useState("");
@@ -294,8 +318,12 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return s + (product?.installmentPrice ?? product?.retailPrice ?? 0) * l.qty;
   }, 0);
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverShipping, setServerShipping] = useState<any[] | null>(null);
+  useEffect(()=>{ if(isDemo) return; shippingApi.list().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemo]);
   const { shipping } = store;
-  const retailShipping = shipping.filter((s) => s.active && s.scope !== "عمده");
+  const sourceShipping = serverShipping ? serverShipping.map((s:any)=> ({ id:s.id, name:s.name, carrier:s.type ?? s.carrier ?? "", scope: s.type==='pickup'?"خرده":"خرده", price: Number(s.baseFeeRial ?? s.base_fee_rial ?? 0), freeAbove: s.freeAboveRial ? Number(s.freeAboveRial) : (s.free_above_rial? Number(s.free_above_rial): null), eta: s.estimatedMinDays ? `${s.estimatedMinDays}-${s.estimatedMaxDays} روز` : "", zones: s.zones ?? "سراسر کشور", active: s.active })) : shipping.filter((s) => s.active && s.scope !== "عمده");
+  const retailShipping = sourceShipping;
   const [shipId, setShipId] = useState("");
   const ship = retailShipping.find((s) => s.id === shipId) ?? retailShipping[0];
   const today = new Date().toISOString().slice(0, 10);
@@ -314,8 +342,17 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const shipCost = validCoupon?.type === "freeShip" ? 0 : baseShip;
   const totalDiscount = festivalDiscount + couponDiscount;
   const custRestrict = account ? ops.restrictionFor("customer", account.id) : null;
-  const applyCoupon = () => {
+  const applyCoupon = async () => {
     const code = couponInput.trim().toUpperCase();
+    // Try server validation first (PostgreSQL coupons, audience/scope/time window)
+    try {
+      const items = cart.map((c)=> { const prod = retailProducts.find((pp)=> pp.id===c.id); return { productId: c.id, category: (prod as unknown as {category?:string})?.category ?? "general", totalRial: String(Math.round((prod?.retailPrice ?? 0) * c.qty * 10)) }; });
+      if (items.length) {
+        const res = await promoApi.validate({ code, orderType: "retail", items }) as { valid: boolean; message?: string };
+        if (res.valid) { setCouponCode(code); setCouponMsg(""); return; }
+        if (res.message) { setCouponCode(""); setCouponMsg(res.message); return; }
+      }
+    } catch { /* fallback to local */ }
     const c = ops.coupons.find((x) => x.code === code);
     if (!c) { setCouponCode(""); setCouponMsg("کوپنی با این کد پیدا نشد."); return; }
     if (c.channel !== "retail") { setCouponCode(""); setCouponMsg("این کوپن مخصوص خرید عمده است."); return; }
@@ -324,7 +361,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const savedAddress = account?.addresses.find((a) => a.id === checkoutAddressId)
     ?? (checkoutAddressId === "new" ? undefined : account?.addresses.find((a) => a.isDefault) ?? account?.addresses[0]);
   const deliveryAddress = savedAddress ?? checkoutAddress;
-  const finishCheckout = () => {
+  const finishCheckout = async () => {
     setCheckoutError("");
     if (checkStep === 0) {
       if (requireLogin && !requireLogin()) return;
@@ -343,15 +380,43 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     }
     if (!account || !ship) { setCheckoutError("برای ثبت سفارش وارد حساب شوید و روش ارسال را انتخاب کنید."); return; }
     if (custRestrict?.block || custRestrict?.noOrder) { setCheckoutError(`ثبت سفارش برای حساب شما محدود شده است${custRestrict.reason ? `: ${custRestrict.reason}` : ""}. از پشتیبانی پیگیری کنید.`); return; }
-    const normalized = { ...deliveryAddress, id: deliveryAddress.id || `addr-${Date.now()}`, phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
-    const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
-    const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
-    if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
-    if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
-    if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
-    setPlacedOrderId(orderId);
-    setCheckStep(0);
-    setView("success");
+    // Server mode keeps the server address UUID; only the demo path may mint a local id.
+    const normalized = { ...deliveryAddress, id: isDemo ? (deliveryAddress.id || `addr-${Date.now()}`) : (deliveryAddress.id ?? ""), phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
+    if (isDemo) {
+      const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
+      const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
+      if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
+      if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
+      if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
+      setPlacedOrderId(orderId);
+      setCheckStep(0);
+      setView("success");
+      return;
+    }
+    // Server checkout: only authoritative fields — variantId/quantity/paymentMode/shippingMethodId/couponCode/shippingAddress
+    try {
+      // Variant ids come from the hydrated catalog cache (GET /products returns variants per product).
+      const items = cart.map((l) => {
+        const product = retailProducts.find((pp) => pp.id === l.id) as (typeof retailProducts[number] & { variants?: { id: string }[] }) | undefined;
+        return { variantId: product?.variants?.[0]?.id ?? l.id, quantity: l.qty };
+      });
+      const body: any = {
+        orderType: "retail",
+        paymentMode,
+        items,
+        shippingAddress: { recipient: normalized.recipient, phone: normalized.phone, province: normalized.province, city: normalized.city, line: normalized.line, postalCode: normalized.postalCode },
+        shippingMethodId: ship?.id,
+      };
+      if (validCoupon) body.couponCode = validCoupon.code;
+      else if (couponCode) body.couponCode = couponCode;
+      const res = await ordersApi.create(body, `retail-${crypto.randomUUID().replace(/-/g, "")}`) as { id: string; reference: string };
+      if (!res.reference && !(res as any).id) throw new Error("خطا در ثبت سفارش");
+      setPlacedOrderId(res.reference ?? (res as any).id);
+      setCheckStep(0);
+      setView("success");
+    } catch (e) {
+      setCheckoutError(e instanceof Error ? e.message : "خطا در ثبت سفارش");
+    }
   };
 
   /* ----- PDP overlay ----- */
@@ -565,8 +630,14 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   /* ----- HOME ----- */
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-12 px-4 pb-20 pt-6 md:px-8">
-      <HeroRenderer h={ops.hero} onNav={cmsNav} />
-      {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").map((b) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}
+      {cmsLoading ? <div className="py-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری محتوا…</div> : cmsError ? <div className="py-6 text-center"><p className="text-sm text-red-600">{cmsError}</p><button onClick={()=>window.location.reload()} className="mt-2 text-xs underline">تلاش دوباره</button></div> : null}
+      {(() => {
+        const hero = cmsHero ?? ops.hero;
+        const blocks = cmsBlocks ?? ops.blocks;
+        // Palette is applied via CSS vars elsewhere; fetched palette stored in cmsPalette
+        void cmsPalette;
+        return (<><HeroRenderer h={hero} onNav={cmsNav} />{blocks.filter((b: any) => b.enabled && b.type !== "announcement").map((b: any) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}</>);
+      })()}
 
       {/* curated collections */}
       <section>

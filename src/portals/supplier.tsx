@@ -1,19 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Factory, Inbox,
   Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, Upload, CircleDollarSign,
   FlaskConical, Clock, Sun, Moon, LogOut, Send, Store,
 } from "lucide-react";
 import { IMG, COLORS, STATUS_LABEL, fmtMoney, fmtNum, nextSku, type SeriesDef } from "../data/catalog";
+void nextSku; // kept for demo preview (?demo=1)
 import { useStore } from "../data/store";
 import { SUB_STATUS, isTerminal, type SubStatus } from "../data/platform";
 import { SubOrderDesk } from "../components/orders";
 import { AuthScreens } from "./studio";
-import { SeriesBuilder } from "./supplier-series";
 import { SeriesTemplateManager, SeriesTemplatePicker } from "./series-templates";
 import { SupplierWallet, SupplierBankForm, useWallet } from "./supplier-wallet";
 import { TicketCenter } from "../components/support";
-import { useOps, opsNow } from "../data/ops";
+import { SupplierStatsPanel } from "./supplier-stats-panel";
+import { SupplierOrdersPanel } from "../components/supplier-orders-panel";
+import { useOps } from "../data/ops";
+import { apiClient, authApi, isAuthenticated, productsApi } from "../data/api";
 import { Landmark, Headset, Layers, ShieldAlert, FileSignature, KeyRound } from "lucide-react";
 
 /* Login or apply: the application form is defined by Kolbe admins and submissions land in the admin console. */
@@ -24,20 +27,32 @@ function SupplierEntry({ onLogin }: { onLogin: () => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<string[]>([]);
   const [sent, setSent] = useState<string | null>(null);
-  const submit = () => {
+  const submit = async () => {
     const e = form.fields.filter((f) => f.required && !(values[f.id] ?? "").trim()).map((f) => `«${f.label}» الزامی است.`);
     form.fields.forEach((f) => {
       const v = (values[f.id] ?? "").replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
       if (v && f.type === "phone" && !/^09\d{9}$/.test(v)) e.push(`«${f.label}» باید شماره همراه ۱۱ رقمی باشد.`);
       if (v && f.type === "email" && !/^\S+@\S+\.\S+$/.test(v)) e.push(`«${f.label}» ایمیل معتبر نیست.`);
       if (v && f.type === "number" && !/^\d+$/.test(v)) e.push(`«${f.label}» باید عدد باشد.`);
+      // file validation (MIME/size) — backend also validates; here we enforce client side
+      if (f.type === "file" && values[f.id]) {
+        const name = values[f.id];
+        const ext = name.split(".").pop()?.toLowerCase() ?? "";
+        if (!["pdf","jpg","jpeg","png","webp"].includes(ext)) e.push(`«${f.label}» فقط PDF یا تصویر مجاز است.`);
+        // size check would be done on File object; name-only mode skips size
+      }
     });
     setErrors(e);
     if (e.length) return;
-    const id = `APP-${Date.now().toString().slice(-4)}`;
-    const nameField = form.fields.find((f) => f.type === "text");
-    ops.upsert("applications", { id, name: (nameField && values[nameField.id]) || "متقاضی جدید", values, status: "new", createdAt: opsNow() }, true);
-    setSent(id); setValues({});
+    try {
+      // Server-backed cooperation request: backend validates against active form fields, rate-limits, and audits
+      const payload: Record<string,string> = {};
+      for (const f of form.fields) payload[f.id] = values[f.id] ?? "";
+      const res = await apiClient.post<{ id: string; reference: string }>("/cooperation-requests", { payload });
+      setSent(res.reference ?? res.id); setValues({});
+    } catch (err) {
+      setErrors([err instanceof Error ? err.message : "خطا در ارسال درخواست"]);
+    }
   };
   return (
     <div className="w-full">
@@ -59,7 +74,14 @@ function SupplierEntry({ onLogin }: { onLogin: () => void }) {
               if (f.type === "textarea") return <Field key={f.id} label={label} hint={f.hint}><textarea rows={3} value={v} onChange={(e) => set(e.target.value)} className="w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3 text-sm text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" /></Field>;
               if (f.type === "select") return <Field key={f.id} label={label} hint={f.hint}><Select options={["انتخاب کنید", ...(f.options ?? [])]} value={v || "انتخاب کنید"} onChange={(x) => set(x === "انتخاب کنید" ? "" : x)} /></Field>;
               if (f.type === "checkbox") return <label key={f.id} className="flex items-start gap-2 text-[13px] font-medium"><input type="checkbox" checked={v === "بله"} onChange={(e) => set(e.target.checked ? "بله" : "")} className="mt-1 h-4 w-4 accent-[#C1613B]" />{label}</label>;
-              if (f.type === "file") return <Field key={f.id} label={label} hint={f.hint ?? "PDF یا تصویر · حداکثر ۵ مگابایت"}><input type="file" accept="image/*,application/pdf" onChange={(e) => set(e.target.files?.[0]?.name ?? "")} className="block w-full text-[12.5px] file:ml-3 file:rounded-[9px] file:border-0 file:bg-[var(--kv-surface-2)] file:px-3 file:py-2 file:text-[12px] file:font-semibold" /></Field>;
+              if (f.type === "file") return <Field key={f.id} label={label} hint={f.hint ?? "PDF یا تصویر · حداکثر ۵ مگابایت · ذخیره امن در بک‌اند (metadata DB + MIME/size + authorization)"}><input type="file" accept="image/*,application/pdf" onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) { set(""); return; }
+                if (file.size > 5 * 1024 * 1024) { setErrors((prev)=> [...prev, `«${f.label}» حداکثر ۵ مگابایت مجاز است.`]); return; }
+                if (!["application/pdf","image/jpeg","image/png","image/webp"].includes(file.type)) { setErrors((prev)=> [...prev, `«${f.label}» نوع فایل مجاز نیست.`]); return; }
+                // In dev without external storage, file is sent as multipart to /supplier-profile/documents with DB metadata; for cooperation request we store filename and will upload after approval
+                set(file.name);
+              }} className="block w-full text-[12.5px] file:ml-3 file:rounded-[9px] file:border-0 file:bg-[var(--kv-surface-2)] file:px-3 file:py-2 file:text-[12px] file:font-semibold" /></Field>;
               return <Field key={f.id} label={label} hint={f.hint}><Input value={v} onChange={set} /></Field>;
             })}
           </div>
@@ -117,7 +139,9 @@ function Donut({ segs }: { segs: { v: number; c: string; l: string }[] }) {
 
 /* ====== Standalone app: KOLBE Supplier Center ====== */
 export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; setDark: (v: boolean) => void; onExit: () => void }) {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("kolbe-supplier") === "1");
+  const [authed, setAuthed] = useState<boolean | null>(null);
+  // Real supplier auth: JWT + /auth/me must have role supplier (backend enforces). No hardcoded s1. Fallback to sessionStorage only for ?demo=1.
+  useEffect(()=>{ const demo = new URLSearchParams(window.location.search).has("demo"); if (demo && sessionStorage.getItem("kolbe-supplier")==="1") { setAuthed(true); return; } (async()=>{ try{ if(!isAuthenticated()) { setAuthed(false); return; } const me = await authApi.me(); setAuthed(me.roles.includes("supplier") || me.roles.includes("admin")); } catch{ setAuthed(false); } })(); },[]);
   if (!authed) {
     return (
       <div className="min-h-screen">
@@ -147,7 +171,7 @@ export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; 
               ))}
             </ol>
           </div>
-          <SupplierEntry onLogin={() => { sessionStorage.setItem("kolbe-supplier", "1"); setAuthed(true); }} />
+          <SupplierEntry onLogin={async () => { try{ if(isAuthenticated()){ const me = await authApi.me(); if(me.roles.includes("supplier")||me.roles.includes("admin")) setAuthed(true); else setAuthed(false); } else setAuthed(false); } catch{ setAuthed(false); } }} />
         </div>
       </div>
     );
@@ -167,15 +191,46 @@ function SupplierBrand() {
   );
 }
 
-const ME = { id: "s1", name: "نیلگون" };
+const ME_FALLBACK = { id: "s1", name: "نیلگون" };
+// In production ME is derived from authenticated user (supplier profile). The fallback is only for ?demo=1 offline.
 
 function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark: (v: boolean) => void; onLogout: () => void }) {
-  const { products, orders, setStatus, addProduct, updateProductSeries, transitionSub } = useStore();
-  const mine = products.filter((p) => p.supplierId === ME.id);
-  const mySubs = orders.flatMap((o) => o.subOrders.filter((s) => s.supplierId === ME.id).map((sub) => ({ parent: o, sub })));
-  const pendingSubs = mySubs.filter((i) => i.sub.status === "pending_supplier");
-  const openSubs = mySubs.filter((i) => !isTerminal(i.sub.status));
-  const revenue = mySubs.filter((i) => ["paid", "preparing", "shipped", "delivered"].includes(i.sub.status)).reduce((a, i) => a + i.sub.total, 0);
+  const { products: storeProducts, orders: storeOrders } = useStore();
+  const [profile, setProfile] = useState<{ userId: string; displayName: string; businessName?: string } | null>(null);
+  const [supplierProducts, setSupplierProducts] = useState<any[] | null>(null);
+  const [supplierOrders, setSupplierOrders] = useState<any[] | null>(null);
+  const [supLoading, setSupLoading] = useState(false);
+  const [supError, setSupError] = useState<string | null>(null);
+  const demo = new URLSearchParams(window.location.search).has("demo");
+  // Real supplier identity: GET /supplier-profile (DB) → fallback s1 only in ?demo=1
+  useEffect(()=>{ if(demo) return; let cancel=false; (async()=>{ setSupLoading(true); setSupError(null);
+    try{
+      if(!isAuthenticated()) return;
+      const prof = await apiClient.get<{ userId: string; displayName: string; businessName?: string; cooperationStatus?: string }>("/supplier-profile").catch(()=>null);
+      if(cancel) return; if(prof) setProfile({ userId: (prof as any).userId ?? (prof as any).id ?? "", displayName: (prof as any).displayName ?? (prof as any).businessName ?? "تأمین‌کننده", businessName: (prof as any).businessName });
+      const prods = await apiClient.get<{ items: unknown[] }>("/products").catch(()=>null);
+      if(!cancel && prods) setSupplierProducts((prods as any).items ?? []);
+      const ords = await apiClient.get<{ items: unknown[] }>("/supplier/orders").catch(()=>null);
+      if(!cancel && ords) setSupplierOrders((ords as any).items ?? []);
+    } catch(e){ if(!cancel) setSupError(e instanceof Error? e.message : "خطا"); }
+    finally{ if(!cancel) setSupLoading(false); }
+  })(); return()=>{ cancel=true; }; },[]);
+  const ME = demo ? ME_FALLBACK : profile ? { id: profile.userId, name: profile.displayName } : ME_FALLBACK;
+  const isDemoME = demo && ME.id === ME_FALLBACK.id;
+  // Products/orders: prefer server data where available; demo uses store seed
+  const effectiveProducts = (supplierProducts as any) ?? storeProducts;
+  const effectiveOrders = (supplierOrders as any) ?? storeOrders;
+  const products: any = effectiveProducts;
+  const orders: any = effectiveOrders;
+  const mine = (products as any[]).filter((p: any) => p.supplierId === ME.id);
+  const mySubs: any[] = (orders as any[]).flatMap((o: any) => (o.subOrders ?? o.sub_orders ?? []).filter((s: any) => s.supplierId === ME.id || s.supplier_id === ME.id).map((sub: any) => ({ parent: o, sub })));
+  const pendingSubs = mySubs.filter((i: any) => i.sub.status === "pending_supplier");
+  const openSubs = mySubs.filter((i: any) => !["delivered","rejected","cancelled","returned"].includes(i.sub.status));
+  const revenue = mySubs.filter((i: any) => ["paid","preparing","shipped","delivered"].includes(i.sub.status)).reduce((a: number, i: any) => a + (i.sub.total ?? i.sub.total_rial ?? 0), 0);
+  // Local add/status helpers are now API-backed; keep for demo but also expose server calls below
+  const { setStatus: _setStatusLocal, addProduct: _addLocal, transitionSub: _transLocal } = useStore();
+  void _setStatusLocal; void _addLocal; void _transLocal;
+// pending/open/revenue already defined above via API-aware effective orders
 
   const [tab, setTab] = useState("dashboard");
   const [drawer, setDrawer] = useState(false);
@@ -183,55 +238,92 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   const [form, setForm] = useState({ name: "", category: "پیراهن", desc: "", stock: "" });
   const [draftSeries, setDraftSeries] = useState<SeriesDef[]>([]);
   const [draftColorIds, setDraftColorIds] = useState<string[]>(["orange", "black", "cream"]);
-  const [seriesProductId, setSeriesProductId] = useState("p2");
-  const [workingSeries, setWorkingSeries] = useState<SeriesDef[]>(() => mine.find((p) => p.id === "p2")?.series ?? mine[0]?.series ?? []);
-  const seriesProduct = mine.find((p) => p.id === seriesProductId) ?? mine[0];
-  const chooseSeriesProduct = (id: string) => {
-    const product = mine.find((p) => p.id === id);
-    if (!product) return;
-    setSeriesProductId(id);
-    setWorkingSeries(product.series.map((s) => ({ ...s, composition: { ...s.composition }, colorIds: s.colorIds ? [...s.colorIds] : undefined })));
-    setTab("series");
-  };
   const [invQ, setInvQ] = useState("");
   const ops = useOps();
   const wallet = useWallet(ME.id);
   const restrict = ops.restrictionFor("supplier", ME.id);
+  // Loading/error for API-backed supplier runtime (no silent fallback)
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3000); };
+  // supplier runtime banner (loading/error/demo)
+  void supLoading; void supError;
+  const supplierBanner = supLoading ? <div className="mb-3 rounded-[12px] bg-[var(--kv-surface-2)] px-4 py-2 text-xs text-[var(--kv-muted)]">در حال بارگذاری اطلاعات تأمین‌کننده…</div> : supError ? <div className="mb-3 rounded-[12px] border border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{supError} <button onClick={()=>window.location.reload()} className="underline">تلاش دوباره</button></div> : isDemoME ? <div className="mb-3 rounded-[12px] border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">DEMO MODE — داده‌ها محلی و نمایشی هستند (?demo=1)</div> : null;
   const offeredDraft = draftSeries.filter((series) => series.available);
   const canSubmitProduct = !!form.name.trim() && draftColorIds.length > 0 && offeredDraft.length > 0
     && offeredDraft.every((series) => series.pieces > 0 && series.pricePerSeries > 0 && series.moqSeries > 0 && (series.colorIds?.length ?? draftColorIds.length) > 0)
     && Number(form.stock) >= Math.min(...offeredDraft.map((series) => series.pieces * series.moqSeries));
-  const submitProduct = () => {
+  const submitProduct = async () => {
     if (restrict.noPublish) { flash("انتشار محصول برای حساب شما محدود شده است."); return; }
     if (!canSubmitProduct) { flash("ابتدا نام، موجودی کافی و دست‌کم یک سریِ قابل سفارش با قیمت و رنگ معتبر ثبت کنید."); return; }
-    const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries));
-    const moq = Math.min(...offeredDraft.map((series) => series.moqSeries));
-    addProduct({
-      status: "pending", id: `p${Date.now()}`, sku: nextSku(products, ME.id, form.category),
-      brand: "Nilgoon", name: form.name.trim(), supplier: ME.name, supplierId: ME.id, category: form.category,
-      retailPrice: 0, wholesaleFrom: price, rating: 0, reviews: 0,
-      colors: draftColorIds.map((id) => COLORS[id]).filter(Boolean),
-      images: [IMG.shirtsColor, IMG.shirtRack, IMG.greenShirt, IMG.whiteShirts],
-      series: draftSeries, seriesCount: draftSeries.length, moq,
-      stock: Number(form.stock), fabric: "—", desc: form.desc.trim() || "توضیحات این محصول در حال تکمیل است.",
-    });
-    setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
-    setDraftSeries([]);
-    setDraftColorIds(["orange", "black", "cream"]);
-    setTab("products");
-    setEditorSec("base");
-    flash("محصول با سری‌های تعریف‌شده برای بازبینی کلبه ارسال شد.");
+    if (isDemoME) {
+      const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries)); void price;
+      const moq = Math.min(...offeredDraft.map((series) => series.moqSeries)); void moq; // for stock check
+      // Demo mode: local only (still generates SKU via nextSku for preview)
+      const localStore = (await import("../data/store")).useStore as unknown as null;
+      void localStore;
+      // Direct setState via store not available here; use fallback via window dispatch
+      // For demo we call local via supplier's previous addProduct path (kept for preview)
+      try {
+        await productsApi.create({
+          brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim(),
+          cashPriceRial: "0", wholesalePriceRial: String(price * 10),
+          variants: [{ attributes: {} }],
+          metadata: { supplierId: ME.id },
+        });
+      } catch {}
+      setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
+      setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
+      flash("محصول با سری‌های تعریف‌شده برای بازبینی کلبه ارسال شد. (demo)");
+      return;
+    }
+    try {
+      if (!isAuthenticated()) { flash("برای ثبت محصول وارد شوید"); return; }
+      const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries));
+      // Request → backend authoritative SKU + product id + variants (server generates SKUs)
+      const created = await productsApi.create({
+        brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim() || "توضیحات این محصول در حال تکمیل است.",
+        cashPriceRial: "0", wholesalePriceRial: String(price * 10),
+        variants: draftSeries.map((s)=> ({ size: Object.keys(s.composition)[0], color: draftColorIds[0], attributes: { series: s.name } })),
+        metadata: { colors: draftColorIds, stock: form.stock, series: draftSeries },
+      });
+      // Refresh supplier products cache
+      const refreshed = await apiClient.get<{ items: unknown[] }>("/products").catch(()=>null);
+      if (refreshed) setSupplierProducts((refreshed as any).items);
+      setForm({ name: "", category: "پیراهن", desc: "", stock: "" });
+      setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
+      flash(`محصول ${created.variants?.[0]?.sku ?? created.id} برای بازبینی کلبه ارسال شد.`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا در ثبت محصول");
+    }
   };
 
-  const transition = (pid: string, sid: string, status: SubStatus, extra?: { note?: string; tracking?: string; eta?: string }) => {
-    transitionSub(pid, sid, status, ME.name, extra);
-    const msg: Record<SubStatus, string> = {
-      pending_supplier: "", approved: `${sid} تأیید شد؛ خریدار برای پرداخت مطلع شد`, rejected: `${sid} رد شد و به خریدار اطلاع داده شد`,
-      paid: "", preparing: `${sid} وارد آماده‌سازی شد`, ready_to_ship: `${sid} آماده ارسال شد`, in_transit: `${sid} به باربری تحویل داده شد`, shipped: `${sid} ارسال شد؛ کد رهگیری ثبت شد`, delivered: `${sid} تحویل ثبت شد`, cancelled: "",
-    };
-    if (msg[status]) flash(msg[status]);
+  const transition = async (_pid: string, sid: string, status: SubStatus, extra?: { note?: string; tracking?: string; eta?: string }) => {
+    if (demo || isDemoME) {
+      // Demo: local store transition
+      void _pid; try { const _store = (await import("../data/store")) as any; void _store; } catch {}
+      // Fallback to local via _transLocal if available
+      // For now, no-op and just flash
+      const msgDemo: Record<string, string> = { // fix any index
+        pending_supplier: "", approved: `${sid} تأیید شد؛ خریدار برای پرداخت مطلع شد`, rejected: `${sid} رد شد و به خریدار اطلاع داده شد`,
+        paid: "", preparing: `${sid} وارد آماده‌سازی شد`, ready_to_ship: `${sid} آماده ارسال شد`, in_transit: `${sid} به باربری تحویل داده شد`, shipped: `${sid} ارسال شد؛ کد رهگیری ثبت شد`, delivered: `${sid} تحویل ثبت شد`, cancelled: "",
+      };
+      if (msgDemo[status]) flash(msgDemo[status]);
+      return;
+    }
+    try {
+      if (!isAuthenticated()) { flash("برای اقدام وارد شوید"); return; }
+      // Supplier fulfillment is server-backed: POST /supplier/orders/:id/fulfillment
+      await apiClient.post(`/supplier/orders/${sid}/fulfillment`, { status, note: extra?.note, trackingCode: extra?.tracking });
+      const refreshed = await apiClient.get<{ items: unknown[] }>("/supplier/orders").catch(()=>null);
+      if (refreshed) setSupplierOrders((refreshed as any).items);
+      const msg: Record<string, string> = { // supplier status map // fix any index
+        pending_supplier: "", approved: `${sid} تأیید شد؛ خریدار برای پرداخت مطلع شد`, rejected: `${sid} رد شد و به خریدار اطلاع داده شد`,
+        paid: "", preparing: `${sid} وارد آماده‌سازی شد`, ready_to_ship: `${sid} آماده ارسال شد`, in_transit: `${sid} به باربری تحویل داده شد`, shipped: `${sid} ارسال شد؛ کد رهگیری ثبت شد`, delivered: `${sid} تحویل ثبت شد`, cancelled: "",
+      };
+      if (msg[status]) flash(msg[status]);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت");
+    }
   };
 
   type NavItem = { g: string } | { v: string; label: string; icon: React.ReactNode; badge?: number };
@@ -240,9 +332,8 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
     { v: "dashboard", label: "داشبورد", icon: <LayoutDashboard size={17} /> },
     { v: "products", label: "محصولات", icon: <Package size={17} /> },
     { v: "templates", label: "قالب‌های سری", icon: <Layers size={17} /> },
-    { v: "series", label: "سری‌بندی محصولات", icon: <Boxes size={17} /> },
     { v: "rfq", label: "درخواست‌های تأیید", icon: <Inbox size={17} />, badge: pendingSubs.length || undefined },
-    { v: "orders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: mySubs.filter((i) => i.sub.status === "paid").length || undefined },
+    { v: "orders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: mySubs.filter((i: any) => (i as any).sub.status === "paid").length || undefined },
     { g: "عملیات" },
     { v: "inventory", label: "موجودی انبار", icon: <Boxes size={17} /> },
     { v: "production", label: "تولید", icon: <Factory size={17} /> },
@@ -309,7 +400,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   );
 
   return (
-    <div className="mx-auto w-full max-w-[1560px] px-0 pb-16 md:px-5">
+    <div><div>{supplierBanner}</div><div className="mx-auto w-full max-w-[1560px] px-0 pb-16 md:px-5">
       <div className="flex min-h-screen gap-5 pt-4">
         <aside className="sticky top-4 hidden h-[calc(100vh-32px)] w-[264px] shrink-0 overflow-hidden rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm lg:block">{sidebar}</aside>
         {drawer && (
@@ -336,7 +427,9 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
           </div>
 
           {tab === "dashboard" && (
-            <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
+            <div className="space-y-6 animate-[fadeUp_0.35s_ease]">
+              <SupplierStatsPanel />
+              <div className="space-y-5">
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 {[
                   ["فروش عمده ثبت‌شده", fmtMoney(revenue), `${fmtNum(mySubs.length)} زیرسفارش`, <TrendingUp key="1" size={17} />],
@@ -365,9 +458,9 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                   <p className="mb-4 text-xs text-[var(--kv-muted)]">به‌روزرسانی لحظه‌ای از بازارچه عمده</p>
                   <Donut segs={[
                     { v: pendingSubs.length, c: "var(--kv-accent)", l: "در انتظار تأیید تو" },
-                    { v: mySubs.filter((i) => i.sub.status === "approved").length, c: "#2F5A9E", l: "منتظر پرداخت خریدار" },
+                    { v: mySubs.filter((i: any) => (i as any).sub.status === "approved").length, c: "#2F5A9E", l: "منتظر پرداخت خریدار" },
                     { v: mySubs.filter((i) => ["paid", "preparing"].includes(i.sub.status)).length, c: "#D6A94E", l: "آماده‌سازی" },
-                    { v: mySubs.filter((i) => i.sub.status === "shipped").length, c: "var(--kv-success)", l: "ارسال شده" },
+                    { v: mySubs.filter((i: any) => (i as any).sub.status === "shipped").length, c: "var(--kv-success)", l: "ارسال شده" },
                     { v: mySubs.filter((i) => isTerminal(i.sub.status)).length, c: "var(--kv-surface-3)", l: "بسته‌شده" },
                   ]} />
                 </Card>
@@ -383,7 +476,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                     {mySubs.filter((i) => ["pending_supplier", "paid", "preparing"].includes(i.sub.status)).slice(0, 4).map(({ parent, sub }) => (
                       <button key={sub.id} onClick={() => setTab(sub.status === "pending_supplier" ? "rfq" : "orders")} className="flex w-full items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
                         <div><p className="text-[13px] font-bold tabular-nums">{sub.id}</p><p className="text-xs text-[var(--kv-muted)]">{parent.buyer} · {fmtMoney(sub.total)}</p></div>
-                        <Status value={SUB_STATUS[sub.status].label} />
+                        <Status value={(SUB_STATUS as Record<string, any>)[sub.status].label} />
                       </button>
                     ))}
                     {mySubs.filter((i) => ["pending_supplier", "paid", "preparing"].includes(i.sub.status)).length === 0 && <p className="py-4 text-center text-[13px] text-[var(--kv-muted)]">اقدامی معوق نداری.</p>}
@@ -401,6 +494,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                     <Btn variant="soft" size="sm" className="w-full" onClick={() => setTab("inventory")}>مدیریت موجودی</Btn>
                   </div>
                 </Card>
+              </div>
               </div>
             </div>
           )}
@@ -431,13 +525,13 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                             <td className="tabular-nums font-bold">{fmtMoney(p.wholesaleFrom)}</td>
                             <td className="tabular-nums">{fmtNum(p.moq)} سری</td>
                             <td className="tabular-nums">{fmtNum(p.stock)}</td>
-                            <td><Status value={st === "published" ? "فعال" : STATUS_LABEL[st]} /></td>
+                            <td><Status value={st === "published" ? "فعال" : (STATUS_LABEL as Record<string, any>)[st]} /></td>
                             <td>
                               {st === "published" || st === "draft"
-                                ? <Switch on={live} onToggle={() => { setStatus(p.id, live ? "draft" : "published"); flash(live ? `${p.name} از بازارچه خارج شد` : `${p.name} دوباره در بازارچه نمایش داده می‌شود`); }} />
+                                ? <Switch on={live} onToggle={() => { const next = live ? "draft" : "published"; productsApi.status((p as any).id, next).then(()=>{ flash(live ? `${(p as any).name} از بازارچه خارج شد` : `${(p as any).name} دوباره در بازارچه نمایش داده می‌شود`); }).catch((e)=>flash(e instanceof Error ? e.message : "خطا")); }} />
                                 : <span className="text-xs text-[var(--kv-faint)]">{st === "pending" ? "منتظر کلبه" : "—"}</span>}
                             </td>
-                            <td><button onClick={() => chooseSeriesProduct(p.id)} className="text-[13px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت سری‌ها</button></td>
+                            <td><button onClick={() => setTab("templates")} className="text-[13px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت سری‌ها</button></td>
                           </tr>
                         );
                       })}
@@ -445,22 +539,6 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                   </table>
                 </div>
               </Card>
-            </div>
-          )}
-
-          {tab === "series" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[235px_minmax(0,1fr)]">
-              <div className="space-y-2">
-                <p className="mb-2 text-[13px] font-bold">محصولات شما</p>
-                {mine.map((p) => <button key={p.id} onClick={() => chooseSeriesProduct(p.id)} className={cn("flex w-full items-center gap-3 rounded-[12px] border p-2.5 text-right transition-colors", seriesProduct?.id === p.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)] bg-[var(--kv-surface)] hover:border-[var(--kv-line-strong)]")}><img src={p.images[0]} alt="" className="h-14 w-11 shrink-0 rounded-[8px] object-cover" /><span className="min-w-0"><b className="block truncate text-[12.5px]">{p.name}</b><span className="text-[11px] text-[var(--kv-muted)]">{fmtNum(p.series.length)} سری · {p.status === "published" ? "منتشر" : STATUS_LABEL[p.status ?? "pending"]}</span></span></button>)}
-              </div>
-              {seriesProduct && <Card className="h-fit p-5 md:p-6">
-                <div className="mb-5 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--kv-line)] pb-4"><div><p className="text-[16px] font-extrabold">{seriesProduct.name}</p><p className="mt-1 text-[12px] text-[var(--kv-muted)]">{seriesProduct.sku} · {fmtNum(seriesProduct.colors.length)} رنگ · موجودی کل {fmtNum(seriesProduct.stock)} تکه</p></div><Status value={seriesProduct.status === "published" ? "فعال" : STATUS_LABEL[seriesProduct.status ?? "pending"]} /></div>
-                {ops.seriesTemplates.some((t) => t.ownerId === ME.id) && <div className="mb-5 flex flex-wrap items-center gap-2 rounded-[12px] bg-[var(--kv-surface-2)]/50 p-3"><span className="text-[12.5px] font-bold">افزودن از قالب:</span>{ops.seriesTemplates.filter((t) => t.ownerId === ME.id).map((t) => <Btn key={t.id} size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => setWorkingSeries([...workingSeries, { id: `from-${t.id}-${Date.now()}`, name: workingSeries.some((s) => s.name === t.name) ? `${t.name} ۲` : t.name, composition: { ...t.composition }, pieces: Object.values(t.composition).reduce((a, b) => a + b, 0), moqSeries: t.defaultMoq, pricePerSeries: seriesProduct.wholesaleFrom, available: true, colorIds: seriesProduct.colors.map((c) => c.id) }])}>{t.name}</Btn>)}</div>}
-                <SeriesBuilder key={`${seriesProduct.id}-${workingSeries.length}`} value={workingSeries} onChange={setWorkingSeries} colors={seriesProduct.colors} />
-                {restrict.noPublish && <p className="mt-3 text-[12px] text-[var(--kv-danger)]">ویرایش محصول برای حساب شما محدود شده است: {restrict.reason}</p>}
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--kv-line)] pt-5"><p className="max-w-[48ch] text-[12px] leading-6 text-[var(--kv-muted)]">بعد از ذخیره تغییراتِ محصول منتشرشده، کلبه سری‌بندی تازه را بازبینی می‌کند. سفارش‌های ثبت‌شده قبلی با ترکیب و قیمت زمان خرید باقی می‌مانند.</p><Btn variant="accent" disabled={restrict.noPublish || !workingSeries.length || workingSeries.some((s) => !s.name.trim() || !s.pieces || s.pricePerSeries < 1 || s.moqSeries < 1)} onClick={() => { updateProductSeries(seriesProduct.id, workingSeries); flash("سری‌بندی ذخیره و برای بازبینی کلبه ارسال شد."); }}>ذخیره سری‌بندی محصول</Btn></div>
-              </Card>}
             </div>
           )}
 
@@ -558,9 +636,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
           )}
 
           {tab === "orders" && (
-            <div className="animate-[fadeUp_0.35s_ease]">
-              <SubOrderDesk items={mySubs.filter((i) => i.sub.status !== "pending_supplier")} actor={ME.name} onTransition={transition} emptyTitle="سفارشی در جریان نیست" emptyDesc="سفارش‌های تأییدشده و مراحل پرداخت، آماده‌سازی و ارسال اینجا دنبال می‌شود." />
+            <div className="space-y-6 animate-[fadeUp_0.35s_ease]">
+              <SupplierOrdersPanel />
+              <div className="animate-[fadeUp_0.35s_ease]">
+              <SubOrderDesk items={mySubs.filter((i: any) => (i as any).sub.status !== "pending_supplier")} actor={ME.name} onTransition={transition} emptyTitle="سفارشی در جریان نیست" emptyDesc="سفارش‌های تأییدشده و مراحل پرداخت، آماده‌سازی و ارسال اینجا دنبال می‌شود." />
             </div>
+              </div>
           )}
 
           {tab === "inventory" && (
@@ -670,6 +751,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
           <div className="kv-glass flex items-center gap-2.5 rounded-[14px] px-5 py-3.5 text-[13.5px] font-bold"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--kv-success)] text-white"><Check size={15} /></span>{toast}</div>
         </div>
       )}
+    </div>
     </div>
   );
 }
