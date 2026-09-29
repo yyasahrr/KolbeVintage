@@ -110,7 +110,8 @@ export function Input({ placeholder, value, onChange, icon, className, type = "t
     <div className={cn("relative", className)}>
       {icon && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--kv-faint)]">{icon}</span>}
       <input type={type}
-        value={value} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
+        // `undefined` keeps the field uncontrolled; a null value made React warn on every render.
+        value={value ?? ""} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
         className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 text-sm text-[var(--kv-ink)] outline-none transition-all placeholder:text-[var(--kv-faint)] focus:border-[var(--kv-accent)] focus:ring-2 focus:ring-[var(--kv-accent)]/15"
         style={icon ? { paddingRight: 42 } : undefined}
       />
@@ -295,7 +296,7 @@ export function Timeline({ items }: { items: { t: string; d: string; time: strin
 export function Textarea({ placeholder, value, onChange, rows = 3 }: { placeholder?: string; value?: string; onChange?: (v: string) => void; rows?: number }) {
   return (
     <textarea
-      rows={rows} value={value} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
+      rows={rows} value={value ?? ""} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
       className="w-full resize-y rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3 text-sm leading-6 text-[var(--kv-ink)] outline-none transition-all placeholder:text-[var(--kv-faint)] focus:border-[var(--kv-accent)] focus:ring-2 focus:ring-[var(--kv-accent)]/15"
     />
   );
@@ -307,5 +308,32 @@ export function Checkbox({ checked, onChange, label }: { checked: boolean; onCha
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 accent-[#C1613B]" />
       {label}
     </label>
+  );
+}
+
+/* ---------- Server-state helpers: Loading / Error / Empty / Permission ---------- */
+export function LoadingState({ label = "در حال بارگذاری…" }: { label?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-6 py-10 text-center animate-[fadeIn_0.3s_ease]">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--kv-line-strong)] border-t-[var(--kv-accent)]" aria-label="loading" />
+      <p className="mt-3 text-[13px] font-medium text-[var(--kv-muted)]">{label}</p>
+    </div>
+  );
+}
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-danger)]/20 bg-[var(--kv-danger)]/[0.04] px-6 py-10 text-center">
+      <p className="text-[13px] font-bold text-[var(--kv-danger)]">خطا در بارگذاری</p>
+      <p className="mt-1.5 max-w-[40ch] text-[12.5px] leading-6 text-[var(--kv-muted)]">{message}</p>
+      {onRetry && <Btn variant="soft" size="sm" className="mt-4" onClick={onRetry}>تلاش دوباره</Btn>}
+    </div>
+  );
+}
+export function PermissionDenied({ message = "دسترسی لازم را ندارید." }: { message?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-dashed border-[var(--kv-line-strong)] bg-[var(--kv-surface)] px-6 py-10 text-center">
+      <p className="text-[14px] font-bold">دسترسی محدود</p>
+      <p className="mt-1.5 text-[12.5px] text-[var(--kv-muted)]">{message}</p>
+    </div>
   );
 }

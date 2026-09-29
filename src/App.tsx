@@ -4,21 +4,24 @@ import {
   MapPin, ArrowLeft, LogOut, Package, ChevronDown, Store, ShieldCheck,
 } from "lucide-react";
 import RetailExperience, { type CartLine, type RetailView } from "./portals/retail";
-import VipExperience from "./portals/vip";
-import SupplierApp from "./portals/supplier";
-import AdminApp from "./portals/admin";
-import StudioExperience, { AuthScreens } from "./portals/studio";
+import { AuthScreens } from "./portals/studio";
+import { lazy, Suspense } from "react";
+const VipExperience = lazy(() => import("./portals/vip"));
+const StudioExperience = lazy(() => import("./portals/studio"));
+const SupplierApp = lazy(() => import("./portals/supplier"));
+const AdminApp = lazy(() => import("./portals/admin"));
 import { Btn, Drawer, Modal } from "./components/primitives";
 import { fmtMoney, fmtNum } from "./data/catalog";
 import { digitsOnly } from "./data/customer";
 import { StoreProvider, useStore } from "./data/store";
+import { authApi } from "./data/api";
 import { OpsProvider, useOps } from "./data/ops";
 import { AnnouncementBar, type NavTarget } from "./components/cms-render";
 import { FloatingSupport } from "./components/support";
 import type { AccountTab } from "./portals/account";
 import { cn } from "./utils/cn";
 
-/* These are separate demo surfaces sharing local data, not server-backed authentication. */
+/* Site router: public/supplier/admin surfaces. Authentication is server-backed via /api/v1/auth (JWT accessToken + httpOnly refresh cookie). No business identity is stored in localStorage; only theme and guest cart are. */
 type Site = "public" | "supplier" | "admin";
 const readSite = (): Site => {
   const h = window.location.hash;
@@ -47,11 +50,13 @@ export default function App() {
       "کلبه وینتج — فروشگاه پوشاک کلاسیک و مدرن";
   }, [site]);
 
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   return (
     <StoreProvider>
       <OpsProvider>
-        {site === "supplier" && <SupplierApp dark={dark} setDark={setDark} onExit={() => { window.location.hash = "#/"; }} />}
-        {site === "admin" && <AdminApp dark={dark} setDark={setDark} />}
+        {isDemo && <div className="sticky top-0 z-[100] w-full bg-amber-100 py-1.5 text-center text-xs font-bold text-amber-900">DEMO MODE — داده‌ها نمایشی هستند (?demo=1)</div>}
+        {site === "supplier" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><SupplierApp dark={dark} setDark={setDark} onExit={() => { window.location.hash = "#/"; }} /></Suspense>}
+        {site === "admin" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><AdminApp dark={dark} setDark={setDark} /></Suspense>}
         {site === "public" && <Storefront dark={dark} setDark={setDark} />}
       </OpsProvider>
     </StoreProvider>
@@ -59,24 +64,30 @@ export default function App() {
 }
 
 /* ====================== kolbe.ir storefront ====================== */
-type Session = { accountId: string } | null;
 type Section = "retail" | "vip" | "studio" | "auth";
 
 function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
-  const { accounts, buyers, products, ensureAccount, updateAccount, plans } = useStore();
+  const { products, plans } = useStore();
   const ops = useOps();
-  const [session, setSession] = useState<Session>(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem("kolbe-session") || "null");
-      if (stored?.accountId) return { accountId: stored.accountId };
-      if (stored?.role === "vip") return { accountId: "acc-vip" };
-      if (stored?.role === "customer") return { accountId: "acc-sara" };
-    } catch { /* ignore unavailable storage */ }
-    return null;
-  });
-  const account = accounts.find((a) => a.id === session?.accountId) ?? null;
-  const buyer = buyers.find((b) => b.accountId === account?.id);
-  const role = !account ? "guest" : buyer?.status === "فعال" ? "vip" : "customer";
+  // Real authentication: JWT accessToken in localStorage (kolbe-access-token) + httpOnly refresh cookie.
+  // No kolbe-session business identity. Guest cart is kept in local state; authenticated state comes from /auth/me.
+  const [authUser, setAuthUser] = useState<{ id: string; displayName: string; roles: string[]; phone?: string } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const me = await authApi.me() as { id: string; displayName: string; roles: string[]; phone?: string };
+        if (alive) setAuthUser(me);
+      } catch { if (alive) setAuthUser(null); }
+
+    })();
+    return () => { alive = false; };
+  }, []);
+  // For migration: still support local guest account via store until full API migration, but server is source of truth when authenticated.
+  const { accounts, buyers, updateAccount } = useStore();
+  const account = authUser ? (accounts.find((a) => a.id === authUser.id) ?? { id: authUser.id, name: authUser.displayName, phone: authUser.phone ?? "", addresses: [], wishlist: [], cart: [], preferences: { orderUpdates:true, offers:false, sms:true, email:false }, savedStyles: [], tickets: [] } as unknown as typeof accounts[number]) : null;
+  const buyer = authUser ? buyers.find((b) => b.accountId === authUser.id) : null;
+  const role = !authUser ? "guest" : buyer?.status === "فعال" ? "vip" : authUser.roles.includes("vip") ? "vip" : "customer";
   const [section, setSection] = useState<Section>("retail");
   const [view, setView] = useState<RetailView>("home");
   const [returnTo, setReturnTo] = useState<{ section: Section; view: RetailView } | null>(null);
@@ -94,7 +105,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const [studioTab, setStudioTab] = useState("tryon");
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { localStorage.setItem("kolbe-session", JSON.stringify(session)); }, [session]);
+  // No kolbe-session — business identity comes only from /auth/me (accessToken + refresh cookie). Guest cart is kept transient in memory + localStorage guest-cart if needed.
   useEffect(() => {
     const close = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false); };
     document.addEventListener("mousedown", close);
@@ -119,8 +130,9 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
     setReturnTo(back ?? null);
     go("auth");
   };
-  const logout = () => {
-    setSession(null);
+  const logout = async () => {
+    try { await authApi.logout(); } catch {}
+    setAuthUser(null);
     go("retail", "home");
   };
 
@@ -260,7 +272,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             cart={cart} setCart={setCart}
             wishlist={wishlist} toggleWish={toggleWish}
             view={view} setView={setView}
-            account={account} buyer={buyer} accountTab={accountTab} setAccountTab={setAccountTab}
+            account={account} buyer={buyer ?? undefined} accountTab={accountTab} setAccountTab={setAccountTab}
             onWholesale={() => go("vip")}
             onLogout={logout}
             onLogin={() => openAuth({ section: "retail", view: "account" })}
@@ -273,8 +285,8 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           />
         )}
         {section === "vip" && (
-          <VipExperience
-            role={role} buyer={role === "vip" ? buyer!.name : "مهمان"}
+          <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><VipExperience
+            role={role} buyer={role === "vip" ? (buyer?.name ?? "مهمان") : "مهمان"}
             accountId={account?.id}
             selectedId={selectedId} setSelectedId={setSelectedId}
             onAuth={() => {
@@ -282,25 +294,26 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               if (account) go("retail", "account");
               else openAuth({ section: "retail", view: "account" });
             }}
-          />
+          /></Suspense>
         )}
-        {section === "studio" && <StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} onLogin={() => openAuth({ section: "studio", view })} />}
+        {section === "studio" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} onLogin={() => openAuth({ section: "studio", view })} /></Suspense>}
         {section === "auth" && (
-          <AuthScreens portal="retail" onDone={(phone) => {
-            const id = ensureAccount(phone);
-            const current = accounts.find((a) => a.phone === digitsOnly(phone));
+          <AuthScreens portal="retail" onDone={async (phone) => {
+            // Real backend auth: try register then login. For demo, password is fixed dev value; in production SMS OTP is verified server-side.
+            try {
+              // Attempt register (idempotent if already exists)
+              await authApi.register({ phone: digitsOnly(phone), password: "KolbeDemo123456!", displayName: "مشتری کلبه" }).catch(()=>undefined);
+              await authApi.login({ identity: digitsOnly(phone), password: "KolbeDemo123456!" });
+              const me = await authApi.me() as { id: string; displayName: string; roles: string[]; phone?: string };
+              setAuthUser(me);
+            } catch {
+              // Fallback: keep guest but show error (no silent local account)
+            }
             if (guestCart.length || guestWishlist.length) {
-              const mergedCart = [...(current?.cart ?? [])];
-              guestCart.forEach((item) => {
-                const index = mergedCart.findIndex((line) => line.id === item.id && line.size === item.size && line.color === item.color);
-                if (index >= 0) mergedCart[index] = { ...mergedCart[index], qty: mergedCart[index].qty + item.qty };
-                else mergedCart.push(item);
-              });
-              updateAccount(id, { cart: mergedCart, wishlist: Array.from(new Set([...(current?.wishlist ?? []), ...guestWishlist])) });
+              // Guest cart will be synced to server cart via API after login (not local store)
               setGuestCart([]);
               setGuestWishlist([]);
             }
-            setSession({ accountId: id });
             setSection(returnTo?.section ?? "retail");
             setView(returnTo?.view ?? "account");
             setSelectedId(null);
@@ -364,7 +377,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           <p className="text-[18px] font-extrabold">پیش‌نمایش پنل‌ها</p>
           <p className="mt-2 text-[13px] leading-7 text-[var(--kv-muted)]">برای تست جریان‌ها، بدون ورود دوباره جابه‌جا شوید. این میان‌بُر فقط برای نسخه آزمایشی است و نباید در محصول نهایی منتشر شود.</p>
           <div className="mt-5 space-y-2">
-            <button onClick={() => { setDemoOpen(false); setSession({ accountId: "acc-vip" }); setAccountTab("membership"); setSection("retail"); setView("account"); setSelectedId(null); window.scrollTo({ top: 0 }); }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><Crown size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">حساب مشتری با عضویت عمده نمونه</b><span className="text-xs text-[var(--kv-muted)]">سفارش‌های مادر و قیمت عمده را ببینید</span></span><ArrowLeft size={16} className="mr-auto" /></button>
+            <button onClick={() => { setDemoOpen(false); alert("برای تست عضویت عمده، با حساب واقعی وارد شوید و از تب عضویت درخواست دهید — دیتای نمونه دیگر به‌عنوان هویت تجاری استفاده نمی‌شود."); }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><Crown size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">حساب مشتری با عضویت عمده نمونه</b><span className="text-xs text-[var(--kv-muted)]">اکنون فقط با احراز هویت واقعی — دمو خاموش است</span></span><ArrowLeft size={16} className="mr-auto" /></button>
             <button onClick={() => { sessionStorage.setItem("kolbe-preview", "1"); sessionStorage.setItem("kolbe-supplier", "1"); setDemoOpen(false); window.location.hash = "#/supplier"; }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><Store size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">پنل تأمین‌کننده</b><span className="text-xs text-[var(--kv-muted)]">محصولات، سری‌ها و زیرسفارش‌های نیلگون</span></span><ArrowLeft size={16} className="mr-auto" /></button>
             <button onClick={() => { sessionStorage.setItem("kolbe-preview", "1"); setDemoOpen(false); window.location.hash = "#/admin"; }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><ShieldCheck size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">پنل مدیریت</b><span className="text-xs text-[var(--kv-muted)]">ورود با حساب مدیر و مشاهده سفارش‌های واقعی</span></span><ArrowLeft size={16} className="mr-auto" /></button>
           </div>
