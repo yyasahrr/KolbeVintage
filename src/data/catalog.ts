@@ -48,6 +48,8 @@ export type Product = {
   /** Items 245-247: audience + seasons ride the server catalog rows (absent in demo seed). */
   genderCode?: string | null;
   seasons?: string[];
+  /** Server variant rows (hydrated catalog only) — checkout resolves the exact variant. */
+  variants?: { id: string; sku: string; size: string | null; color: string | null }[];
 };
 
 export const fmtMoney = (n: number | null | undefined) =>

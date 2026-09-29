@@ -2,8 +2,8 @@
    Business source of truth is PostgreSQL via /api/v1 (Fastify). localStorage is kept
    only for ephemeral UI cache and offline fallback, never as authoritative store. */
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { PRODUCTS, IMG, COLORS, nextSku, type Product, type ProductStatus } from "./catalog";
-import { apiClient, isAuthenticated, publicApi } from "./api";
+import { PRODUCTS, IMG, COLORS, nextSku, type Colorway, type Product, type ProductStatus, type SeriesDef } from "./catalog";
+import { apiClient, filesApi, isAuthenticated, publicApi } from "./api";
 import {
   SEED_ACCOUNTS, SEED_RETAIL_ORDERS, digitsOnly,
   type CustomerAccount, type CustomerAddress, type CustomerTicket, type RetailCartLine, type RetailOrder, type SavedStyle,
@@ -152,16 +152,66 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const ticket = reloadRef.current;
     setLoading(true); setError(null);
     try {
-      // Public catalog (no auth) + authenticated orders/plans (canonical client refreshes on 401)
-      type CatalogRow = Product & { available?: number; gender_code?: string | null; seasons?: string[] };
-      const prodRes: { items: CatalogRow[] } = await publicApi.get<{ items: CatalogRow[] }>("/products?channel=retail").catch(() => ({ items: [] as CatalogRow[] }));
-      // WMS is the availability source of truth: the catalogue derives `available` from stock_balances.
-      const catalogProducts = (prodRes.items ?? []).map((item) => ({
-        ...item,
-        stock: Number(item.available ?? 0),
-        genderCode: item.genderCode ?? item.gender_code ?? null,
-        seasons: Array.isArray(item.seasons) ? item.seasons : [],
-      }) as Product);
+      // Public catalog (no auth) + authenticated orders/plans (canonical client refreshes on 401).
+      // The server row is mapped onto the storefront Product shape — every field below comes
+      // from the API row (prices Rial→Toman, media, variants, WMS availability). No seed data.
+      type CatalogRow = {
+        id: string; brand: string; name: string; category: string; description: string;
+        cashPriceRial: string; installmentPriceRial: string | null; wholesalePriceRial: string | null;
+        ownerType: string; wholesaleMoq: number | null; genderCode?: string | null; gender_code?: string | null;
+        seasons?: string[]; metadata?: Record<string, unknown>;
+        variants?: { id: string; sku: string; size: string | null; color: string | null }[];
+        available?: number;
+      };
+      const prodRes = await publicApi.get<{ items: CatalogRow[] }>("/products?channel=retail").catch(() => ({ items: [] as CatalogRow[] }));
+      const colorByName = (name: string, index: number): Colorway =>
+        Object.values(COLORS).find((candidate) => candidate.name === name)
+        ?? { id: `server-${index}`, name, hex: "#8A8F98" };
+      const catalogProducts = (prodRes.items ?? []).map((item): Product => {
+        const meta = (item.metadata ?? {}) as Record<string, unknown>;
+        const metaImages = (Array.isArray(meta.images) ? meta.images : []) as { fileId?: string | null; url?: string }[];
+        const metaSeries = (Array.isArray(meta.series) ? meta.series : []) as {
+          name?: string; pieces?: number; moqSeries?: number; pricePerSeries?: number;
+          colorIds?: string[]; composition?: Record<string, number>; available?: boolean;
+        }[];
+        const variants = item.variants ?? [];
+        const colorNames = [...new Set(variants.map((variant) => variant.color).filter((color): color is string => !!color))];
+        const sizeCodes = [...new Set(variants.map((variant) => variant.size).filter((size): size is string => !!size))];
+        const colors = colorNames.map(colorByName);
+        const toToman = (rial: string | null | undefined) => Math.max(0, Math.round(Number(rial ?? 0) / 10));
+        const wholesaleFrom = toToman(item.wholesalePriceRial);
+        const series: SeriesDef[] = metaSeries.length
+          ? metaSeries.map((entry, index) => ({
+              id: `${item.id}-series-${index}`, name: entry.name ?? `سری ${index + 1}`,
+              pieces: entry.pieces ?? Object.keys(entry.composition ?? {}).length,
+              composition: entry.composition ?? {},
+              moqSeries: entry.moqSeries ?? item.wholesaleMoq ?? 1,
+              pricePerSeries: entry.pricePerSeries ?? wholesaleFrom,
+              available: entry.available ?? true, colorIds: entry.colorIds ?? colors.map((color) => color.id),
+            }))
+          : sizeCodes.length ? [{
+              id: `${item.id}-std`, name: "سری استاندارد",
+              pieces: sizeCodes.length, composition: Object.fromEntries(sizeCodes.map((size) => [size, 1])),
+              moqSeries: item.wholesaleMoq ?? 1, pricePerSeries: wholesaleFrom,
+              available: true, colorIds: colors.map((color) => color.id),
+            }] : [];
+        return {
+          id: item.id, sku: variants[0]?.sku ?? item.id.slice(0, 8), brand: item.brand, name: item.name,
+          supplier: item.brand, supplierId: item.ownerType === "supplier" ? "supplier" : "kolbe",
+          category: item.category, retailPrice: toToman(item.cashPriceRial),
+          installmentPrice: item.installmentPriceRial ? toToman(item.installmentPriceRial) : undefined,
+          wholesaleFrom, rating: 0, reviews: 0, colors,
+          images: metaImages.map((image) => image.url || (image.fileId ? filesApi.downloadPath(image.fileId) : "")).filter(Boolean),
+          series, seriesCount: series.length, moq: item.wholesaleMoq ?? 1,
+          stock: Number(item.available ?? 0),
+          fabric: typeof meta.fabric === "string" ? meta.fabric : "",
+          desc: item.description ?? "",
+          status: "published",
+          genderCode: item.genderCode ?? item.gender_code ?? null,
+          seasons: Array.isArray(item.seasons) ? item.seasons : [],
+          variants: variants.map((variant) => ({ id: variant.id, sku: variant.sku, size: variant.size, color: variant.color })),
+        };
+      });
       const [orderRes, planRes] = await Promise.all([
         apiClient.get<{ items: ParentOrder[] }>("/orders").catch(() => ({ items: [] as ParentOrder[] })),
         apiClient.get<{ items: VipPlan[] }>("/plans").catch(() => ({ items: [] as VipPlan[] })),

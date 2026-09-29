@@ -27,6 +27,7 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
   const mine = ops.seriesTemplates.filter((t) => t.ownerId === ownerId);
   const [edit, setEdit] = useState<SeriesTemplate | null>(null);
   const [error, setError] = useState("");
+  const isDemoTpl = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const [types, setTypes] = useState<ProductType[]>([]);
   useEffect(() => {
     let live = true;
@@ -46,6 +47,7 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
   const save = () => {
     if (!edit) return;
     if (!edit.name.trim()) return setError("نام قالب را وارد کنید.");
+    if (!isDemoTpl && !edit.productTypeId) return setError("نوع محصول را انتخاب کنید — سایزها فقط از نوع محصول می‌آیند.");
     if (mine.some((t) => t.id !== edit.id && t.name.trim() === edit.name.trim())) return setError("قالب دیگری با همین نام دارید.");
     if (pieces(edit.composition) < 1) return setError("دست‌کم یک تکه در ترکیب سایز لازم است.");
     if (edit.defaultMoq < 1) return setError("حداقل سفارش پیش‌فرض باید حداقل ۱ سری باشد.");
@@ -83,8 +85,8 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
             <Field label="نام قالب"><Input value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="مثلاً سری کامل ۱۲ تایی" /></Field>
             <Field label="نوع محصول" hint="سایزها از سیستم سایز همین نوع محصول می‌آیند">
               <Select
-                options={["بدون نوع (قدیمی)", ...types.map((t) => t.name)]}
-                value={typeOf(edit)?.name ?? "بدون نوع (قدیمی)"}
+                options={isDemoTpl ? ["بدون نوع (قدیمی)", ...types.map((t) => t.name)] : ["— انتخاب نوع محصول —", ...types.map((t) => t.name)]}
+                value={typeOf(edit)?.name ?? (isDemoTpl ? "بدون نوع (قدیمی)" : "— انتخاب نوع محصول —")}
                 onChange={(label) => {
                   const found = types.find((t) => t.name === label);
                   const composition = found
@@ -94,12 +96,13 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
                 }}
               />
             </Field>
-            {!typeOf(edit) && (
+            {isDemoTpl && !typeOf(edit) && (
               <Field label="دسته‌بندی قدیمی"><Select options={Object.keys(SIZE_OPTIONS)} value={edit.category ?? "لباس"} onChange={(value) => setEdit({ ...edit, category: value as SeriesCategory, composition: Object.fromEntries(SIZE_OPTIONS[value as SeriesCategory].map((size) => [size, 0])) })} /></Field>
             )}
             <div>
               <p className="mb-2 text-[13px] font-semibold text-[var(--kv-ink-2)]">ترکیب سایز در هر سری{typeOf(edit) ? ` — ${typeOf(edit)!.sizes.filter((s) => s.active).length.toLocaleString("fa-IR")} سایز فعال نوع «${typeOf(edit)!.name}»` : ""}</p>
-              {sizesFor(edit).length === 0 ? <p className="text-[12.5px] text-[var(--kv-muted)]">این نوع محصول سایز فعالی ندارد؛ از «ساختار محصولات» سایز اضافه کنید.</p> : (
+              {!isDemoTpl && !typeOf(edit) ? <p className="rounded-[10px] border border-dashed border-[var(--kv-line-strong)] p-3 text-[12.5px] text-[var(--kv-muted)]">ابتدا نوع محصول را انتخاب کنید تا سایزهای سرور نمایش داده شود.</p> :
+              sizesFor(edit).length === 0 ? <p className="text-[12.5px] text-[var(--kv-muted)]">این نوع محصول سایز فعالی ندارد؛ از «ساختار محصولات» سایز اضافه کنید.</p> : (
               <div className="grid grid-cols-2 gap-2">
                 {sizesFor(edit).map(({ code, label }) => { const n = edit.composition[code] ?? 0; return (
                   <div key={code} className="flex items-center justify-between rounded-[10px] border border-[var(--kv-line)] px-2 py-1">

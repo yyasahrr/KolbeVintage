@@ -344,10 +344,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [serverShipping, setServerShipping] = useState<any[] | null>(null);
   const [methodQuotes, setMethodQuotes] = useState<Record<string, { feeRial: string; weightGrams: number }>>({});
   useEffect(()=>{ if(isDemo) return; shippingApi.list().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemo]);
-  const quoteItems = useMemo(() => cart.map((l) => {
-    const product = retailProducts.find((pp) => pp.id === l.id) as (typeof retailProducts[number] & { variants?: { id: string }[] }) | undefined;
-    return { variantId: product?.variants?.[0]?.id ?? l.id, quantity: l.qty };
-  }), [cart, retailProducts]);
+  const resolveVariantId = (line: CartLine): string => {
+    const variants = retailProducts.find((pp) => pp.id === line.id)?.variants ?? [];
+    return variants.find((variant) => (variant.size ?? "") === line.size && (variant.color ?? "") === line.color)?.id
+      ?? variants.find((variant) => (variant.size ?? "") === line.size)?.id
+      ?? variants[0]?.id ?? line.id;
+  };
+  const quoteItems = useMemo(() => cart.map((l) => ({ variantId: resolveVariantId(l), quantity: l.qty })), [cart, retailProducts]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (isDemo || view !== "checkout" || !serverShipping?.length || !quoteItems.length) return;
     let live = true;
@@ -446,10 +449,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     // Server checkout: only authoritative fields — variantId/quantity/paymentMode/shippingMethodId/couponCode/shippingAddress
     try {
       // Variant ids come from the hydrated catalog cache (GET /products returns variants per product).
-      const items = cart.map((l) => {
-        const product = retailProducts.find((pp) => pp.id === l.id) as (typeof retailProducts[number] & { variants?: { id: string }[] }) | undefined;
-        return { variantId: product?.variants?.[0]?.id ?? l.id, quantity: l.qty };
-      });
+      const items = cart.map((l) => ({ variantId: resolveVariantId(l), quantity: l.qty }));
       const body: any = {
         orderType: "retail",
         paymentMode,
