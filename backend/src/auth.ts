@@ -5,7 +5,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { one, transaction, type DbPool } from './db.js';
-import { conflict, forbidden, unauthorized } from './errors.js';
+import { badRequest, conflict, forbidden, unauthorized } from './errors.js';
+import { audit } from './operations.js';
 
 const registration = z.object({
   email: z.email().max(254).optional(),
@@ -51,10 +52,15 @@ export async function principal(request: FastifyRequest, pool: DbPool, config: C
   const access = await pool.query<{ role_code: string; permission_code: string | null }>(
     `SELECT ur.role_code, rp.permission_code FROM user_roles ur
      LEFT JOIN role_permissions rp ON rp.role_code = ur.role_code WHERE ur.user_id = $1`, [row.id]);
+  const planPermissions = await pool.query<{ permission_code: string }>(
+    `SELECT unnest(p.permissions) AS permission_code FROM memberships m
+     JOIN membership_plans p ON p.id = m.plan_id
+     WHERE m.user_id = $1 AND m.status = 'active' AND m.starts_at <= now() AND m.ends_at > now()`, [row.id]);
   return {
     id: row.id, displayName: row.display_name, sessionId,
     roles: [...new Set(access.rows.map((item) => item.role_code))],
-    permissions: [...new Set(access.rows.map((item) => item.permission_code).filter((code): code is string => !!code))],
+    permissions: [...new Set([...access.rows.map((item) => item.permission_code),
+      ...planPermissions.rows.map((item) => item.permission_code)].filter((code): code is string => !!code))],
   };
 }
 
@@ -114,5 +120,60 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
     return reply.code(204).send();
   });
 
-  app.get('/api/v1/auth/me', async (request) => principal(request, pool, config));
+  app.get('/api/v1/auth/me', async (request) => {
+    const user = await principal(request, pool, config);
+    const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null; preferences: Record<string, boolean> | null }>(
+      pool, 'SELECT id, display_name, email, phone, birthday, preferences FROM users WHERE id = $1', [user.id]);
+    return { id: user.id, displayName: row?.display_name ?? user.displayName, email: row?.email ?? null, phone: row?.phone ?? null,
+      birthday: row?.birthday ?? null, preferences: row?.preferences ?? {}, roles: user.roles, permissions: user.permissions };
+  });
+
+  /** Notification preferences (allowlisted keys) — the account UI persists switches here. */
+  const PREFERENCE_KEYS = ['orderUpdates', 'offers', 'sms', 'email'] as const;
+  app.patch('/api/v1/auth/me/preferences', async (request) => {
+    const user = await principal(request, pool, config);
+    const body = z.record(z.string().max(40), z.boolean()).parse(request.body);
+    const entries = Object.entries(body).filter(([key]) => (PREFERENCE_KEYS as readonly string[]).includes(key));
+    if (!entries.length) throw badRequest('کلید تنظیمات اعلان معتبر نیست.');
+    const patch = Object.fromEntries(entries);
+    return transaction(pool, async (client) => {
+      const updated = await one<{ preferences: Record<string, boolean> }>(client,
+        'UPDATE users SET preferences = preferences || $2::jsonb, updated_at = now() WHERE id = $1 RETURNING preferences',
+        [user.id, JSON.stringify(patch)]);
+      await audit(client, user.id, 'user.preferences_updated', 'user', user.id, undefined, patch, request.ip);
+      return { preferences: updated?.preferences ?? patch };
+    });
+  });
+
+  app.patch('/api/v1/auth/me', async (request) => {
+    const user = await principal(request, pool, config);
+    const body = z.object({
+      displayName: z.string().trim().min(2).max(120).optional(),
+      email: z.string().email().max(254).optional().nullable(),
+      birthday: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/).optional().nullable(),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const before = await one(client, 'SELECT display_name, email, birthday FROM users WHERE id = $1', [user.id]);
+      if (!before) throw unauthorized();
+      const updates: string[] = [];
+      const vals: unknown[] = [user.id];
+      if (body.displayName !== undefined) { vals.push(body.displayName.trim()); updates.push(`display_name = $${vals.length}`); }
+      if (body.email !== undefined) { vals.push(body.email ? body.email.toLowerCase() : null); updates.push(`email = $${vals.length}`); }
+      if (body.birthday !== undefined) {
+        let dbDate: string | null = null;
+        if (body.birthday) {
+          const [y,m,d] = body.birthday.split('/').map(Number);
+          dbDate = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        }
+        vals.push(dbDate);
+        updates.push(`birthday = $${vals.length}::date`);
+      }
+      if (!updates.length) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+      await client.query(`UPDATE users SET ${updates.join(', ')}, updated_at = now() WHERE id = $1`, vals);
+      const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null }>(client, 'SELECT id, display_name, email, phone, birthday FROM users WHERE id = $1', [user.id]);
+      if (!row) throw unauthorized();
+      await audit(client, user.id, 'profile.updated', 'user', user.id, before, row, request.ip);
+      return { id: user.id, displayName: row.display_name, email: row.email, phone: row.phone, birthday: row.birthday ? new Date(row.birthday).toLocaleDateString('fa-IR') : null };
+    });
+  });
 }
