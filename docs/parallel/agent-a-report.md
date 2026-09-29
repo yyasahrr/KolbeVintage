@@ -6,8 +6,8 @@ Scope: requirements **1–10, 35–52, 82–84, 122–135, 245–247** (14 domai
 
 ## 1. HEADs
 
-- Local HEAD at push: *(filled at commit time — see §6)*
-- Remote HEAD after push: same commit on `origin arena/01a0ed8e-kolbevintage`
+- Local HEAD at push: `7545b15` ("Finalize Agent A: audit hardening + storefront hydration + parallel docs")
+- Remote HEAD after push: `7545b15` on `origin arena/01a0ed8e-kolbevintage` (in sync)
 - Pre-finalize commit: `ae75c5c` "Complete frontend for requirements 1-10, 35-52,
   82-84, 122-135, 245-247" (already pushed)
 - Finalize commit: audit hardening + storefront hydration mapper + these two docs
