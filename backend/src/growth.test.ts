@@ -8,11 +8,12 @@ import type { Config } from './config.js';
 import { buildApp } from './app.js';
 import { createPool } from './db.js';
 import { applyVerifiedPayment } from './payments.js';
-import { dispatchAutomationEvents, matchesEventPattern, signPayload, verifySignedPayload } from './events.js';
+import { dispatchAutomationEvents, ensureDeliveries, matchesEventPattern, processDeliveries, signPayload, verifySignedPayload } from './events.js';
 import { totpCode, verifyTotp } from './profile.js';
 import { runCrmRuleSweep } from './crm-intelligence.js';
 import { dispatchDueAutomations } from './promo-safety.js';
 import { seasonForDate } from './recommendations.js';
+import { drainSmsQueue } from './sms-queue.js';
 
 const enabled = !!process.env.TEST_DATABASE_URL;
 const config: Config = {
@@ -693,6 +694,157 @@ test('membership renew/upgrade, CRM intelligence, automation, tracking, reviews,
       assert.equal(scheduledRuns.json().items[0].trigger_type, 'scheduled', 'the run log records that the worker fired it');
       const repeatSweep = await dispatchDueAutomations(pool, { limit: 10 });
       assert.ok(!repeatSweep.results.some((row) => row.code === `cart-${suffix}`), 'the daily cap stops an immediate second run');
+
+
+      /* ================= hardening audits (no new features) ================= */
+
+      /* (1) transactional vs marketing: category is stored, and consent is re-checked
+             immediately before the provider call — revocation is retroactive. */
+      const marketingText = `پیشنهاد ویژه ${suffix}`;
+      const marketingCampaign = await app.inject({ method: 'POST', url: '/api/v1/admin/crm/campaigns', headers: admin.headers,
+        payload: { title: `کمپین ممیزی ${suffix}`, message: marketingText, segmentId: segment.json().id, send: true } });
+      assert.equal(marketingCampaign.statusCode, 201, marketingCampaign.body);
+      assert.ok(Number(marketingCampaign.json().recipients) >= 1, 'the consented buyer is in the audience');
+      const queuedMarketing = await pool.query(
+        `SELECT id, category, status FROM sms_deliveries WHERE user_id = $1 AND message = $2`, [buyer.id, marketingText]);
+      assert.equal(queuedMarketing.rowCount, 1, 'one marketing row is queued');
+      assert.equal(queuedMarketing.rows[0].category, 'marketing', 'campaign SMS is categorised as marketing');
+
+      // Consent is revoked while the message still waits in the queue.
+      const revoke = await app.inject({ method: 'PATCH', url: '/api/v1/customer/consent', headers: buyer.headers,
+        payload: { marketingSms: false } });
+      assert.equal(revoke.statusCode, 200, revoke.body);
+      assert.ok(Number(revoke.json().blockedQueuedSms) >= 1, 'revocation blocks what is already queued');
+
+      // A transactional message for the same customer is queued in the same window.
+      const phoneChange = await app.inject({ method: 'POST', url: '/api/v1/customer/profile/contact-change', headers: buyer.headers,
+        payload: { kind: 'phone', newValue: `09${String(310000000 + Math.floor(Math.random() * 89999999)).slice(0, 9)}`,
+          idempotencyKey: `otp-${suffix}` } });
+      assert.equal(phoneChange.statusCode, 201, phoneChange.body);
+
+      const sentMessages: Array<{ phone: string; message: string }> = [];
+      const auditSender = { send: async (phone: string, message: string) => { sentMessages.push({ phone, message }); return `ref-${sentMessages.length}`; } };
+      const drain = await drainSmsQueue(pool, auditSender, { limit: 200 });
+      assert.ok(drain.sent >= 1, JSON.stringify(drain));
+      const blockedMarketingRow = await pool.query('SELECT status, blocked_reason, category FROM sms_deliveries WHERE id = $1',
+        [queuedMarketing.rows[0].id]);
+      assert.equal(blockedMarketingRow.rows[0]!.status, 'blocked', 'a marketing row without consent never reaches the provider');
+      assert.equal(blockedMarketingRow.rows[0]!.blocked_reason, 'consent_revoked');
+      assert.ok(!sentMessages.some((row) => row.message === marketingText), 'the revoked marketing message was not sent');
+      const transactionalRow = await pool.query(
+        `SELECT status, category FROM sms_deliveries WHERE user_id = $1 AND message LIKE 'کد تأیید تغییر شماره همراه%' ORDER BY created_at DESC LIMIT 1`,
+        [buyer.id]);
+      assert.equal(transactionalRow.rows[0]!.category, 'transactional', 'security SMS is never categorised as marketing');
+      assert.equal(transactionalRow.rows[0]!.status, 'sent', 'transactional SMS is unaffected by marketing consent');
+
+      /* (2) review rating / verified purchase are immutable at the database level. */
+      const reviewRow = await pool.query<{ id: string; rating: number }>(
+        'SELECT id, rating FROM customer_reviews WHERE product_id = $1 AND user_id = $2 ORDER BY created_at LIMIT 1', [productId, buyer.id]);
+      assert.ok(reviewRow.rowCount === 1, 'the buyer review exists from the earlier block');
+      const reviewId = reviewRow.rows[0]!.id;
+      const originalRating = reviewRow.rows[0]!.rating;
+      // Any real change is rejected — the value itself must differ from the stored one.
+      await assert.rejects(
+        () => pool.query('UPDATE customer_reviews SET rating = CASE WHEN rating = 5 THEN 1 ELSE 5 END WHERE id = $1', [reviewId]),
+        /immutable/i, 'a direct rating rewrite is rejected by the database');
+      await assert.rejects(
+        () => pool.query('UPDATE customer_reviews SET verified_purchase = NOT verified_purchase WHERE id = $1', [reviewId]),
+        /real order/i, 'verified purchase cannot be flipped by hand');
+      const moderated = await app.inject({ method: 'POST', url: `/api/v1/admin/reviews/${reviewId}/moderate`, headers: admin.headers,
+        payload: { action: 'approve', note: 'بازبینی ممیزی' } });
+      assert.equal(moderated.statusCode, 200, moderated.body);
+      assert.equal(moderated.json().rating, originalRating, 'moderation returns the untouched rating');
+      const afterModeration = await pool.query<{ rating: number; verified_purchase: boolean }>(
+        'SELECT rating, verified_purchase FROM customer_reviews WHERE id = $1', [reviewId]);
+      assert.equal(afterModeration.rows[0]!.rating, originalRating, 'moderation changed visibility only');
+      assert.equal(afterModeration.rows[0]!.verified_purchase, true, 'verified purchase comes from the real paid order');
+
+      /* (3) recommendations consume the canonical catalogue + WMS; nothing is cached. */
+      const canonical = await app.inject({ method: 'GET', url: '/api/v1/recommendations?slot=home.for_you&strategy=popular&limit=10' });
+      assert.equal(canonical.statusCode, 200, canonical.body);
+      assert.equal(canonical.json().sources.cached, false, 'the slot declares that it caches nothing');
+      assert.equal(canonical.json().sources.pricing, 'catalog.products.cash_price_rial');
+      const priced = await pool.query("UPDATE products SET cash_price_rial = 123450000 WHERE id = $1 RETURNING cash_price_rial::text AS price", [productId]);
+      const repriced = await app.inject({ method: 'GET', url: '/api/v1/recommendations?slot=home.for_you&strategy=popular&limit=10' });
+      const repricedItem = repriced.json().items.find((row: { id: string }) => row.id === productId);
+      assert.equal(repricedItem.cashPriceRial, priced.rows[0]!.price, 'the price is the catalogue price, straight from the database');
+      await pool.query("UPDATE stock_balances SET on_hand = 0, reserved = 0, damaged = 0 WHERE variant_id = $1", [variantId]);
+      const outOfStock = await app.inject({ method: 'GET', url: '/api/v1/recommendations?slot=home.for_you&strategy=popular&limit=10' });
+      assert.ok(!outOfStock.json().items.some((row: { id: string }) => row.id === productId),
+        'availability is read from WMS, so a zero-stock product disappears immediately');
+      // The schema itself keeps no price/stock copy in the recommendation domain.
+      const recTables = await pool.query<{ table_name: string; column_name: string }>(
+        `SELECT table_name, column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name LIKE 'recommendation%' OR table_name = 'customer_interest_signals'`);
+      const forbidden = recTables.rows.filter((row) => /price|stock|rial/i.test(row.column_name) && row.column_name !== 'revenue_rial');
+      assert.deepEqual(forbidden, [], 'no recommendation table caches prices or stock');
+      await pool.query("UPDATE stock_balances SET on_hand = 25 WHERE variant_id = $1", [variantId]);
+      await pool.query("UPDATE products SET cash_price_rial = 100000000 WHERE id = $1", [productId]);
+
+      /* (4) automation events: one delivery per subscription, retry-safe, idempotent. */
+      const auditSubscription = await app.inject({ method: 'POST', url: '/api/v1/admin/automation/subscriptions', headers: admin.headers,
+        payload: { code: `audit-${suffix}`, title: 'جریان ممیزی', eventPatterns: ['automation.audit'], targetUrl: receiver.url,
+          timeoutMs: 3000, maxAttempts: 3, backoffSeconds: 1, maxEventsPerMinute: 600 } });
+      assert.equal(auditSubscription.statusCode, 201, auditSubscription.body);
+      const auditEventId = randomUUID();
+      await pool.query(
+        `INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload,schema_version,source)
+         VALUES ($1,'automation.audit','user',$2,'{"audit":true}'::jsonb,1,'test')`, [auditEventId, buyer.id]);
+      const firstPass = await ensureDeliveries(pool, 100);
+      const secondPass = await ensureDeliveries(pool, 100);
+      const auditDeliveries = await pool.query('SELECT id, status FROM automation_deliveries WHERE event_id = $1', [auditEventId]);
+      assert.equal(auditDeliveries.rowCount, 1, 're-running the dispatcher does not duplicate deliveries');
+      assert.ok(firstPass.created >= 1 && secondPass.created === 0, `${JSON.stringify(firstPass)} / ${JSON.stringify(secondPass)}`);
+      const failingFetcher = (async () => new Response('{"ok":false}', { status: 503 })) as unknown as typeof fetch;
+      const firstAttempt = await processDeliveries(pool, config, { fetcher: failingFetcher, limit: 50 });
+      assert.ok(firstAttempt.failed >= 1, JSON.stringify(firstAttempt));
+      const retried = await pool.query('SELECT status, attempt, error FROM automation_deliveries WHERE event_id = $1', [auditEventId]);
+      assert.equal(retried.rows[0]!.attempt, 1, 'the failed attempt is recorded on the same delivery row');
+      assert.equal(retried.rows[0]!.status, 'failure');
+      // The retry window is made due by hand so the test stays deterministic.
+      await pool.query('UPDATE automation_deliveries SET next_attempt_at = now() WHERE event_id = $1', [auditEventId]);
+      const secondAttempt = await processDeliveries(pool, config, { limit: 50 });
+      assert.ok(secondAttempt.succeeded >= 1, JSON.stringify(secondAttempt));
+      const settled = await pool.query('SELECT status, attempt FROM automation_deliveries WHERE event_id = $1', [auditEventId]);
+      assert.equal(settled.rowCount, 1, 'retries never create a second delivery row');
+      assert.equal(settled.rows[0]!.status, 'success');
+      const deliveredEvent = await pool.query('SELECT delivered_at FROM outbox_events WHERE id = $1', [auditEventId]);
+      assert.ok(deliveredEvent.rows[0]!.delivered_at, 'the event closes once at least one subscriber succeeded');
+
+      /* (5) cart.abandoned is emitted exactly once, even if the sweep runs again. */
+      const secondSweep = await app.inject({ method: 'POST', url: '/api/v1/admin/carts/sweep', headers: admin.headers,
+        payload: { idleHours: 6 } });
+      assert.equal(secondSweep.statusCode, 200, secondSweep.body);
+      const abandonedEvents = await pool.query(
+        `SELECT count(*)::int AS n FROM outbox_events WHERE event_type = 'cart.abandoned' AND aggregate_id = $1`,
+        [cartAdd.json().cartId]);
+      assert.equal(abandonedEvents.rows[0]!.n, 1, 'a repeated sweep does not re-emit cart.abandoned');
+
+
+      /* (6) tracking: a low-confidence update lands in the review queue and never
+             reaches the customer before a human confirms it. */
+      const auditImport = await app.inject({ method: 'POST', url: '/api/v1/admin/tracking/imports', headers: admin.headers,
+        payload: { source: 'n8n', items: [{ orderReference: orderResponse.json().reference, trackingCode: 'TRK-AUDIT',
+          carrier: 'پست', status: 'delivered', location: 'ممیزی-کم‌اعتماد', occurredAt: new Date().toISOString(), confidence: 0.25 }] } });
+      assert.equal(auditImport.statusCode, 201, auditImport.body);
+      const lowConfidenceItem = await pool.query<{ status: string }>(
+        `SELECT status FROM tracking_import_items WHERE import_id = $1`, [auditImport.json().importId]);
+      assert.equal(lowConfidenceItem.rows[0]!.status, 'needs_review', 'low-confidence import rows wait for a human');
+      const lowConfidenceEvent = await pool.query(
+        `SELECT count(*)::int AS n FROM shipment_tracking_events WHERE raw_reference = 'TRK-AUDIT'`);
+      assert.equal(lowConfidenceEvent.rows[0]!.n, 0, 'an unconfirmed import never enters the trusted timeline');
+      const prematureNotifications = await pool.query(
+        `SELECT count(*)::int AS n FROM notifications WHERE user_id = $1 AND body LIKE '%ممیزی-کم‌اعتماد%'`, [buyer.id]);
+      assert.equal(prematureNotifications.rows[0]!.n, 0, 'an unconfirmed update is never pushed to the customer');
+      // The same rule holds for the manual/API path: it is stored, flagged and reviewed.
+      const trackedShipment = (await app.inject({ method: 'GET', url: '/api/v1/admin/shipments', headers: admin.headers })).json().items[0];
+      const lowConfidenceWrite = await app.inject({ method: 'POST', url: `/api/v1/admin/shipments/${trackedShipment.id}/events`, headers: admin.headers,
+        payload: { status: 'in_transit', location: 'ممیزی-دستی', occurredAt: new Date().toISOString(), source: 'carrier_api', confidence: 0.4 } });
+      assert.equal(lowConfidenceWrite.statusCode, 201, lowConfidenceWrite.body);
+      assert.equal(lowConfidenceWrite.json().reviewStatus, 'needs_review', 'the API path flags low confidence too');
+      const afterLowConfidence = await pool.query(
+        `SELECT count(*)::int AS n FROM notifications WHERE user_id = $1 AND body LIKE '%ممیزی-دستی%'`, [buyer.id]);
+      assert.equal(afterLowConfidence.rows[0]!.n, 0, 'low-confidence events stay silent until reviewed');
 
       /* ------------------- buyer 360 admin view (items 18-19) ------------------- */
       const buyers = await app.inject({ method: 'GET', url: `/api/v1/admin/buyers?search=${suffix}`, headers: admin.headers });

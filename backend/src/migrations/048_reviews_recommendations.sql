@@ -1,3 +1,6 @@
+-- =========================================================================
+-- merged from 019_reviews_recommendations.sql when this branch's migrations moved to the 045-049 slot
+-- =========================================================================
 -- Requirements 105-121: product ratings/reviews with verified purchase and
 -- moderation, plus the independent Recommendation domain (slots, strategies,
 -- tracking events and admin analytics).
@@ -103,3 +106,4 @@ INSERT INTO recommendation_slots(code, title, page_scope, default_strategy, stra
   ('checkout.last_minute', 'پیشنهاد آخرین لحظه', 'checkout', 'popular', ARRAY['popular', 'rule_based']),
   ('account.for_you', 'پیشنهاد شخصی حساب من', 'account', 'personalized', ARRAY['personalized', 'trending'])
 ON CONFLICT (code) DO NOTHING;
+

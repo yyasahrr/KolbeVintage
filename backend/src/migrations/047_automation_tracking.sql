@@ -1,3 +1,6 @@
+-- =========================================================================
+-- merged from 018_automation_tracking.sql when this branch's migrations moved to the 045-049 slot
+-- =========================================================================
 -- Requirements 85-94 + 121: the Automation Center (n8n and future platforms),
 -- the automation event contract, HMAC-protected delivery with retry/backoff and
 -- replay protection, and the shipment tracking center with import review.
@@ -141,3 +144,4 @@ CREATE TABLE IF NOT EXISTS tracking_import_items (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS tracking_import_items_import_idx ON tracking_import_items(import_id, status);
+

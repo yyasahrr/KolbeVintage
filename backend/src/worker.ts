@@ -11,6 +11,7 @@ import { expireDueMemberships } from './membership.js';
 import { runCrmRuleSweep } from './crm-intelligence.js';
 import { sweepAbandonedCarts } from './cart.js';
 import { dispatchDueAutomations } from './promo-safety.js';
+import { drainSmsQueue } from './sms-queue.js';
 
 const config = loadConfig();
 if (!config.REDIS_URL) throw new Error('REDIS_URL is required for the worker.');
@@ -66,8 +67,8 @@ async function deliver(eventId: string) {
       const smsAllowed = !route || route.channels.includes('sms');
       if (smsAllowed && user?.phone && /^09\d{9}$/.test(user.phone)) {
         await client.query(
-          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message)
-           VALUES ($1,$2,$3,$4,$5) ON CONFLICT (event_id) DO NOTHING`,
+          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category)
+           VALUES ($1,$2,$3,$4,$5,'transactional') ON CONFLICT (event_id) DO NOTHING`,
           [randomUUID(), event.id, recipient, user.phone, `${title}: ${body}`]);
       }
     }
@@ -89,25 +90,10 @@ const pump = async () => {
 };
 const timer = setInterval(() => void pump().catch((error) => console.error('Outbox pump failed', error)), 2000);
 await pump();
+// Marketing rows re-check consent at send time; blocked rows never reach the provider.
 const smsPump = async () => {
-  if (!sms) return;
-  await pool.query("UPDATE sms_deliveries SET status = 'unknown' WHERE status = 'sending' AND attempted_at < now() - interval '2 minutes'");
-  const items = await pool.query<{ id: string }>(
-    "SELECT id FROM sms_deliveries WHERE status = 'queued' ORDER BY created_at LIMIT 20");
-  for (const item of items.rows) {
-    const claimed = await pool.query<{ phone: string; message: string }>(
-      "UPDATE sms_deliveries SET status = 'sending', attempted_at = now() WHERE id = $1 AND status = 'queued' RETURNING phone,message", [item.id]);
-    if (!claimed.rows[0]) continue;
-    try {
-      const reference = await sms.send(claimed.rows[0].phone, claimed.rows[0].message);
-      await pool.query("UPDATE sms_deliveries SET status = 'sent', provider_reference = $2, sent_at = now() WHERE id = $1",
-        [item.id, reference]);
-    } catch (error) {
-      // A timeout may have occurred after dispatch; do not resend automatically.
-      await pool.query("UPDATE sms_deliveries SET status = 'unknown' WHERE id = $1", [item.id]);
-      console.error('SMS submission outcome is unknown', item.id, error instanceof Error ? error.message : 'unknown error');
-    }
-  }
+  const result = await drainSmsQueue(pool, sms, { limit: 20 });
+  if (result.blocked) console.log('SMS held back by consent', JSON.stringify(result));
 };
 const smsTimer = setInterval(() => void smsPump().catch((error) => console.error('SMS pump failed', error)), 2000);
 await smsPump();

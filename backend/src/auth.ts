@@ -54,7 +54,7 @@ async function issueSmsChallenge(pool: DbPool, input: { userId: string; identity
     let deliveryHint = 'sms_queued';
     if (row?.phone && /^09\d{9}$/.test(row.phone)) {
       await client.query(
-        `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)`,
+        `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'transactional')`,
         [randomUUID(), emitted.eventId, input.userId, row.phone, `کد ورود دومرحله‌ای کلبه وینتیج: ${code}`]);
     } else {
       deliveryHint = 'no_phone_on_file';

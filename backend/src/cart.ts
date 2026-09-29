@@ -147,7 +147,7 @@ export async function sweepAbandonedCarts(pool: DbPool, idleHours = 6, limit = 5
       if (consent.length) {
         await client.query(`UPDATE carts SET notified_at = now() WHERE id = $1`, [cart.id]);
         await client.query(
-          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)`,
+          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'marketing')`,
           [randomUUID(), emitted.eventId, cart.user_id, consent[0]!.phone,
             'کلبه وینتیج: سبد خرید شما منتظر شماست. برای تکمیل سفارش برگردید.']);
         notified = true;
@@ -308,7 +308,7 @@ export function registerCartRoutes(app: FastifyInstance, pool: DbPool, config: C
       const emitted = await emitEvent(client, { eventType: 'cart.nudged', entityType: 'cart', entityId: cart.id,
         payload: { cartId: cart.id, userId: cart.user_id, valueRial: asRial(cart.value_rial) }, actorId: user.id });
       await client.query(
-        `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)`,
+        `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'marketing')`,
         [randomUUID(), emitted.eventId, cart.user_id, consent[0]!.phone, message]);
       await client.query('UPDATE carts SET notified_at = now() WHERE id = $1', [cart.id]);
       await recordTimeline(client, { userId: cart.user_id, eventType: 'cart.nudged', source: 'crm',

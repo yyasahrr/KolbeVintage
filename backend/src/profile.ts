@@ -168,7 +168,7 @@ export function registerProfileRoutes(app: FastifyInstance, pool: DbPool, config
         const emitted = await emitEvent(client, { eventType: 'customer.contact_change', entityType: 'user', entityId: user.id,
           payload: { requestId, kind: body.kind }, actorId: user.id });
         await client.query(
-          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)`,
+          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'transactional')`,
           [randomUUID(), emitted.eventId, user.id, body.newValue, `کد تأیید تغییر شماره همراه در کلبه وینتیج: ${code}`]);
       }
       await audit(client, user.id, 'customer.contact_change_requested', 'customer_contact_change', requestId, undefined,
@@ -318,7 +318,7 @@ export function registerProfileRoutes(app: FastifyInstance, pool: DbPool, config
         payload: { method: body.method }, actorId: user.id });
       const phone = (await one<{ phone: string | null }>(client, 'SELECT phone FROM users WHERE id = $1', [user.id]))?.phone;
       if (phone) {
-        await client.query('INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)',
+        await client.query('INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,$$transactional$$)',
           [randomUUID(), emitted.eventId, user.id, phone, `کد فعال‌سازی ورود دومرحله‌ای: ${code}`]);
       }
       await client.query('UPDATE user_two_factor SET secret_hint = $2 WHERE user_id = $1', [user.id, codeHash(code).slice(0, 8)]);

@@ -9,6 +9,7 @@ import { asRial, roundRial } from './money.js';
 import { audit } from './operations.js';
 import { emitEvent } from './events.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { blockQueuedMarketingSms } from './sms-queue.js';
 
 /* CRM intelligence (items 20-21, 95-100, 108, 136-143).
    Labels are manual *and* rule-based, rules are evaluated on the server against
@@ -638,7 +639,7 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
           const event = await emitEvent(client, { eventType: 'crm.campaign_sms', entityType: 'sms_campaign',
             entityId: campaignId, payload: { campaignId, userId: recipient.id }, actorId: user.id });
           await client.query(
-            `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)`,
+            `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'marketing')`,
             [randomUUID(), event.eventId, recipient.id, recipient.phone, body.message]);
           await recordTimeline(client, { userId: recipient.id, eventType: 'crm.campaign', source: 'crm',
             title: `کمپین SMS: ${body.title}`, refType: 'sms_campaign', refId: campaignId, actorId: user.id });
@@ -681,8 +682,12 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
            unsubscribed_at = CASE WHEN $2 = false AND customer_consents.marketing_sms THEN now() ELSE customer_consents.unsubscribed_at END,
            source = 'self_service', updated_at = now() RETURNING *`,
         [user.id, body.marketingSms ?? null, body.emailMarketing ?? null, body.doNotContact ?? null]);
+      // Hardening: revocation is retroactive — queued marketing SMS never reach the provider.
+      const stillAllowed = Boolean(row?.marketing_sms) && !Boolean(row?.do_not_contact);
+      const blocked = stillAllowed ? 0 : await blockQueuedMarketingSms(client, user.id,
+        Boolean(row?.do_not_contact) ? 'do_not_contact' : 'consent_revoked');
       await audit(client, user.id, 'customer.consent_updated', 'customer_consent', user.id, before, body, request.ip);
-      return { consent: row };
+      return { consent: row, blockedQueuedSms: blocked };
     });
   });
 

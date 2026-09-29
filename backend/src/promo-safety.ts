@@ -256,7 +256,7 @@ export async function issueTemplateCoupons(client: DbClient, input: {
       await outbox(client, 'crm.campaign_sms', 'coupon', coupon.id,
         { couponId: coupon.id, userId: member.id, code: coupon.code, consented: consented.length > 0 });
       if (consented.length) {
-        await client.query('INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)',
+        await client.query('INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,$$marketing$$)',
           [randomUUID(), emitted.eventId, member.id, member.phone, message]);
       }
     }
@@ -712,7 +712,7 @@ export async function executeAutomation(pool: DbPool, id: string, options: {
       if (!recipient.phone) continue;
       const event = await emitEvent(client, { eventType: 'crm.automation_message', entityType: 'crm_automation',
         entityId: id, payload: { automationId: id, userId: recipient.id, runId }, actorId });
-      await client.query('INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)',
+      await client.query('INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,$$marketing$$)',
         [randomUUID(), event.eventId, recipient.id, recipient.phone, message]);
       await recordTimeline(client, { userId: recipient.id, eventType: 'crm.automation', source: 'crm',
         title: automation.name, refType: 'crm_automation', refId: id, actorId });

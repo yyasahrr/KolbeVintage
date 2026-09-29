@@ -1,3 +1,6 @@
+-- =========================================================================
+-- merged from 016_membership_buyer.sql when this branch's migrations moved to the 045-049 slot
+-- =========================================================================
 -- Requirements 15-19: membership lifecycle (payment-driven, never admin-driven for
 -- paid plans), plan upgrade/downgrade/renew/suspend/refund rules and the complete
 -- VIP / wholesale buyer 360 profile with its admin controls.
@@ -82,3 +85,4 @@ CREATE TABLE IF NOT EXISTS buyer_documents (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS buyer_documents_user_idx ON buyer_documents(user_id, created_at DESC);
+

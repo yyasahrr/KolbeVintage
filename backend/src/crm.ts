@@ -101,7 +101,7 @@ export async function runAutomation(pool: DbPool, automationId: string, smsOutbo
           'SELECT id FROM outbox_events WHERE event_type = $1 AND aggregate_id = $2 ORDER BY created_at DESC LIMIT 1',
           [smsOutboxEventType, contactId]);
         await client.query(
-          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)`,
+          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'marketing')`,
           [randomUUID(), eventId!.id, recipient.id, recipient.phone, message]);
         await client.query(
           `INSERT INTO crm_activities(id,contact_id,type,title,body,ref_type,ref_id,result,created_by)

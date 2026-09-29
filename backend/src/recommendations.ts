@@ -21,6 +21,9 @@ export type RecommendationStrategy =
   | 'personalized' | 'similar' | 'collaborative' | 'popular' | 'trending'
   | 'rule_based' | 'seasonal' | 'manual_campaign' | 'new_arrivals';
 
+/* Canonical-source rule: this projection reads prices from the catalogue and
+   availability from WMS on every request. Nothing is copied into recommendation
+   tables, so a price/stock change is visible immediately (requirement 118). */
 const PRODUCT_SELECT = `
   SELECT p.id, p.name, p.brand, p.category, p.cash_price_rial, p.installment_price_rial, p.wholesale_price_rial,
          p.metadata, p.created_at,
@@ -227,8 +230,13 @@ export function registerRecommendationRoutes(app: FastifyInstance, pool: DbPool,
         }
       }
       // Requirement 118: never recommend something that cannot be sold right now.
+      // Strict availability is the default (an empty slot is better than an unsellable
+      // item); a slot can opt into the "show the rest when the catalogue is empty"
+      // fallback explicitly through its own config, never implicitly.
       const inStock = rows.filter((row) => Number(row.available_stock ?? 0) > 0 || strategy === 'manual_campaign');
-      return { items: (inStock.length ? inStock : rows).slice(0, limit), strategy };
+      const allowFallback = slotConfig.allowOutOfStockFallback === true;
+      const published = allowFallback && !inStock.length ? rows : inStock;
+      return { items: published.slice(0, limit), strategy };
     });
 
     // Impressions are recorded server-side; the client never has to be trusted for them.
@@ -247,6 +255,14 @@ export function registerRecommendationRoutes(app: FastifyInstance, pool: DbPool,
       contextual: { season: seasonForDate(), month: new Date().toLocaleString('en-US', { timeZone: 'Asia/Tehran', month: 'long' }) },
       items: resolved.items.map((row, index) => serialize(row, index)),
       tracking: { slot: slot.code, strategy: resolved.strategy, sessionId: query.sessionId ?? null },
+      // Hardening (requirement 118): recommendations never cache money or stock. The
+      // response states where both values were read from, so callers cannot mistake
+      // them for recommendation-owned data.
+      sources: {
+        pricing: 'catalog.products.cash_price_rial',
+        availability: 'wms.stock_balances(on_hand - reserved - damaged)',
+        cached: false,
+      },
     };
   });
 

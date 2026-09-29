@@ -339,7 +339,7 @@ export function registerConsoleRoutes(app: FastifyInstance, pool: DbPool, config
         const emitted = await emitEvent(client, { eventType: 'crm.campaign_sms', entityType: 'sms_campaign',
           entityId: row.id, payload: { campaignId: row.id, userId: recipient.id }, actorId: user.id });
         await client.query(
-          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)`,
+          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'marketing')`,
           [randomUUID(), emitted.eventId, recipient.id, recipient.phone, campaign.rows[0]?.message ?? campaign.rows[0]?.title ?? '']);
         await recordTimeline(client, { userId: recipient.id, eventType: 'crm.campaign', source: 'sms_campaign',
           title: `کمپین پیامکی: ${campaign.rows[0]?.title ?? ''}`, refType: 'sms_campaign', refId: row.id, actorId: user.id });

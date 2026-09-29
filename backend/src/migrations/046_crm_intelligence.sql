@@ -1,3 +1,6 @@
+-- =========================================================================
+-- merged from 017_crm_intelligence.sql when this branch's migrations moved to the 045-049 slot
+-- =========================================================================
 -- Requirements 20-21 + 95-104 + 108 + 136-143: the CRM intelligence layer.
 -- Smart/behavioral labels, a server-side rule engine, dynamic segments, the
 -- customer activity timeline, internal notes, marketing consent and the
@@ -193,3 +196,4 @@ INSERT INTO crm_labels(code, title, kind, description) VALUES
   ('discount_driven', 'خریدار تخفیف‌محور', 'behavioral', 'بیشتر خریدها با کد تخفیف انجام شده'),
   ('installment_buyer', 'خریدار اقساطی', 'behavioral', 'خرید اقساطی داشته است')
 ON CONFLICT (code) DO NOTHING;
+
