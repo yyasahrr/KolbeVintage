@@ -129,16 +129,7 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
     return { palette: row ?? null };
   });
 
-  app.get('/api/v1/site/pages/:code', async (request) => {
-    const { code } = z.object({ code: z.string().trim().max(40) }).parse(request.params);
-    const page = await one<Record<string, unknown>>(pool, 'SELECT * FROM cms_pages WHERE code = $1 AND active', [code]);
-    if (!page) throw notFound();
-    const sections = await pool.query(
-      `SELECT s.id, s.title, s.payload, s.visible, s.position, c.code AS component_code, c.component_type
-       FROM cms_sections s JOIN cms_components c ON c.id = s.component_id
-       WHERE s.page_id = $1 AND s.visible ORDER BY s.position, s.created_at`, [page.id]);
-    return { ...page, sections: sections.rows };
-  });
+  // GET /api/v1/site/pages/:code lives in cms-studio.ts (published snapshot + schedule + commerce bindings).
 
   app.get('/api/v1/site/components', async () => {
     const rows = await pool.query('SELECT code, title, component_type, field_schema FROM cms_components WHERE active ORDER BY code');

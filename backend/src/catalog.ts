@@ -7,6 +7,7 @@ import { principal, requirePermission } from './auth.js';
 import { asRial, rial } from './money.js';
 import { audit, outbox } from './operations.js';
 import { badRequest, forbidden, notFound } from './errors.js';
+import { validateSpecifications, type SpecField } from './profile.js';
 
 const productBody = z.object({
   brand: z.string().trim().min(1).max(120),
@@ -18,7 +19,27 @@ const productBody = z.object({
   wholesalePriceRial: z.string().regex(/^\d+$/).optional(),
   variants: z.array(z.object({ size: z.string().max(50).optional(), color: z.string().max(100).optional(), attributes: z.record(z.string(), z.string()).default({}) })).min(1).max(100),
   metadata: z.record(z.string(), z.unknown()).default({}),
+  // Adaptive product form (Req 325-326): type → template → validated values.
+  productTypeCode: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(),
+  specifications: z.record(z.string(), z.unknown()).default({}),
+  gender: z.enum(['men', 'women', 'unisex', 'kids']).default('unisex'),
+  seasons: z.array(z.enum(['spring', 'summer', 'autumn', 'winter', 'all-season'])).max(5).default([]),
+  vibes: z.array(z.string().regex(/^[a-z0-9-]{2,40}$/)).max(8).default([]),
+  installmentEnabled: z.boolean().default(true),
+  discountPercent: z.number().int().min(0).max(95).default(0),
 });
+
+/** Loads the type template and validates the values; sizes must belong to the type's active size list. */
+async function resolveTypeSpecs(db: DbPool | import('pg').PoolClient, code: string | undefined, specs: Record<string, unknown>, sizes: (string | undefined)[]) {
+  if (!code) return { specifications: specs && Object.keys(specs).length ? specs : {} };
+  const type = await one<{ spec_template: SpecField[]; sizes: { code: string; active: boolean }[] }>(db,
+    'SELECT spec_template, sizes FROM product_types WHERE code = $1 AND active', [code]);
+  if (!type) throw badRequest('نوع محصول انتخاب‌شده معتبر یا فعال نیست.');
+  const allowed = new Set(type.sizes.filter((size) => size.active).map((size) => size.code));
+  const invalid = sizes.filter((size): size is string => Boolean(size) && allowed.size > 0 && !allowed.has(size!));
+  if (invalid.length) throw badRequest(`سایز «${invalid[0]}» برای این نوع محصول تعریف نشده است.`);
+  return { specifications: validateSpecifications(type.spec_template, specs) };
+}
 const statusBody = z.object({ status: z.enum(['published', 'rejected', 'draft', 'archived']) });
 
 const categoryCode = (category: string) => /کفش|کتانی|بوت/.test(category) ? 'SHOE' : /شلوار|جین/.test(category) ? 'PANT'
@@ -30,7 +51,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     // Availability is derived from the WMS ledger (stock_balances), never from product.metadata.
     const result = await pool.query(
       `SELECT p.id, p.brand, p.name, p.category, p.description, p.cash_price_rial,
-              p.installment_price_rial, p.metadata, p.created_at,
+              p.installment_price_rial, p.metadata, p.created_at, p.product_type_code, p.gender, p.seasons, p.vibes,
+              p.specifications, p.installment_enabled, p.discount_percent, p.supplier_id,
               COALESCE(jsonb_agg(jsonb_build_object('id', v.id, 'sku', v.sku, 'size', v.size_label, 'color', v.color_label,
                 'available', COALESCE(b.available, 0), 'reserved', COALESCE(b.reserved, 0),
                 'incoming', COALESCE(b.incoming, 0), 'damaged', COALESCE(b.damaged, 0))
@@ -54,6 +76,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         id: row.id, brand: row.brand, name: row.name, category: row.category, description: row.description,
         cashPriceRial: asRial(row.cash_price_rial), installmentPriceRial: row.installment_price_rial === null ? null : asRial(row.installment_price_rial),
         metadata: row.metadata, variants, createdAt: row.created_at,
+        productTypeCode: row.product_type_code, gender: row.gender, seasons: row.seasons, vibes: row.vibes,
+        specifications: row.specifications, installmentEnabled: row.installment_enabled, discountPercent: row.discount_percent,
+        supplierId: row.supplier_id,
         available: sum('available'), reserved: sum('reserved'), incoming: sum('incoming'), damaged: sum('damaged'),
       };
     }) };
@@ -120,13 +145,16 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       if (supplier?.cooperation_status !== 'approved') throw forbidden();
     }
     const productId = randomUUID();
+    const { specifications } = await resolveTypeSpecs(pool, body.productTypeCode, body.specifications, body.variants.map((v) => v.size));
     const result = await transaction(pool, async (client) => {
       await client.query(
-        `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial,metadata)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial,metadata,
+           product_type_code,specifications,gender,seasons,vibes,installment_enabled,discount_percent)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
         [productId, user.roles.includes('supplier') ? user.id : null, body.brand, body.name, body.category, body.description,
           user.roles.includes('supplier') ? 'pending' : 'draft', cash.toString(), installment?.toString() ?? null, wholesale?.toString() ?? null,
-          JSON.stringify(body.metadata)]);
+          JSON.stringify(body.metadata), body.productTypeCode ?? null, JSON.stringify(specifications), body.gender,
+          body.seasons.length ? body.seasons : ['autumn', 'winter'], body.vibes, body.installmentEnabled, body.discountPercent]);
       const variants = [];
       for (const variant of body.variants) {
         const seq = await one<{ id: string }>(client, "SELECT nextval('sku_sequence')::text AS id");
@@ -140,6 +168,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       }
       await audit(client, user.id, 'product.created', 'product', productId, undefined, { name: body.name, variants }, request.ip);
       await outbox(client, 'product.created', 'product', productId, { productId });
+      // Style analysis is async (Req 252): creation never waits for it.
+      await outbox(client, 'product.style_analysis_requested', 'product', productId, { productId, reason: 'product.created' });
       return { id: productId, status: user.roles.includes('supplier') ? 'pending' : 'draft', variants };
     });
     return reply.code(201).send(result);
@@ -157,10 +187,21 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       installmentPriceRial: z.string().regex(/^\d+$/).nullable().optional(),
       wholesalePriceRial: z.string().regex(/^\d+$/).nullable().optional(),
       metadata: z.record(z.string(), z.unknown()).optional(),
+      productTypeCode: z.string().regex(/^[a-z0-9_-]{2,40}$/).nullable().optional(),
+      specifications: z.record(z.string(), z.unknown()).optional(),
+      gender: z.enum(['men', 'women', 'unisex', 'kids']).optional(),
+      seasons: z.array(z.enum(['spring', 'summer', 'autumn', 'winter', 'all-season'])).min(1).max(5).optional(),
+      vibes: z.array(z.string().regex(/^[a-z0-9-]{2,40}$/)).max(8).optional(),
+      installmentEnabled: z.boolean().optional(),
+      discountPercent: z.number().int().min(0).max(95).optional(),
     }).strict().parse(request.body);
     return transaction(pool, async (client) => {
-      const before = await one<{ supplier_id: string | null; status: string }>(client,
-        'SELECT supplier_id, status FROM products WHERE id = $1 FOR UPDATE', [id]);
+      const before = await one<{ supplier_id: string | null; status: string; product_type_code: string | null }>(client,
+        'SELECT supplier_id, status, product_type_code FROM products WHERE id = $1 FOR UPDATE', [id]);
+      if (before && (body.specifications !== undefined || body.productTypeCode !== undefined)) {
+        const code = body.productTypeCode === null ? undefined : body.productTypeCode ?? before.product_type_code ?? undefined;
+        body.specifications = (await resolveTypeSpecs(client, code, body.specifications ?? {}, [])).specifications;
+      }
       if (!before) throw notFound();
       const isSupplierOwner = before.supplier_id === user.id && user.roles.includes('supplier');
       if (!isSupplierOwner) requirePermission(user, 'products:write');
@@ -171,13 +212,15 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         brand: 'brand', name: 'name', category: 'category', description: 'description',
         cashPriceRial: 'cash_price_rial', installmentPriceRial: 'installment_price_rial',
         wholesalePriceRial: 'wholesale_price_rial', metadata: 'metadata',
+        productTypeCode: 'product_type_code', specifications: 'specifications', gender: 'gender', seasons: 'seasons',
+        vibes: 'vibes', installmentEnabled: 'installment_enabled', discountPercent: 'discount_percent',
       };
       const values: unknown[] = [id];
       const updates: string[] = [];
       for (const [key, column] of Object.entries(columns)) {
         const value = (body as Record<string, unknown>)[key];
         if (value === undefined) continue;
-        values.push(key === 'metadata' ? JSON.stringify(value) : value);
+        values.push(key === 'metadata' || key === 'specifications' ? JSON.stringify(value) : value);
         updates.push(`${column} = $${values.length}`);
       }
       if (!updates.length) throw badRequest('تغییری برای ذخیره وجود ندارد.');

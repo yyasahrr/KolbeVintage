@@ -68,6 +68,10 @@ const formField = z.object({
   position: z.number().int().min(0).max(1000).default(0),
 }).strict();
 
+export async function snapshotSupplierVersion(client: PoolClient, userId: string, changedBy: string, note?: string) {
+  return snapshotVersion(client, userId, changedBy, note);
+}
+
 async function snapshotVersion(client: PoolClient, userId: string, changedBy: string, note?: string) {
   const profile = await one<Record<string, unknown>>(client, 'SELECT * FROM supplier_profiles WHERE user_id = $1', [userId]);
   if (!profile) throw notFound();
@@ -273,6 +277,13 @@ export function registerSupplierRoutes(app: FastifyInstance, pool: DbPool, confi
     const user = await principal(request, pool, config);
     const body = profilePatch.parse(request.body);
     const privileged = user.permissions.includes('suppliers:manage');
+    // Approval policy (Req 339-340): legal/bank/tax data never changes directly — it goes through
+    // POST /supplier-profile/change-requests → admin diff review → new version.
+    const SENSITIVE = ['legalName', 'nationalId', 'registrationNumber', 'economicCode', 'taxInfo', 'bankName', 'accountNumber', 'bankIban', 'accountHolder'];
+    const blocked = Object.keys(body).filter((key) => SENSITIVE.includes(key));
+    if (blocked.length && !privileged) {
+      throw badRequest('تغییر اطلاعات حقوقی، بانکی و مالیاتی نیاز به تأیید مدیریت دارد؛ از «درخواست تغییر اطلاعات حساس» استفاده کنید.');
+    }
     return transaction(pool, async (client) => {
       const current = await one<{ version: number }>(client, 'SELECT version FROM supplier_profiles WHERE user_id = $1 FOR UPDATE', [user.id]);
       if (!current) throw notFound();

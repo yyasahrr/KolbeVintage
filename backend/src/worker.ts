@@ -6,6 +6,7 @@ import { createPool, transaction, one } from './db.js';
 import { loadConfig } from './config.js';
 import { MeliPayamakSms } from './melipayamak.js';
 import { runAutomation } from './crm.js';
+import { processStyleAnalysisEvents } from './style.js';
 
 const config = loadConfig();
 if (!config.REDIS_URL) throw new Error('REDIS_URL is required for the worker.');
@@ -33,7 +34,7 @@ async function deliver(eventId: string) {
     } else if (event.aggregate_type === 'membership') {
       const membership = await one<{ user_id: string }>(client, 'SELECT user_id FROM memberships WHERE id = $1', [event.aggregate_id]);
       if (membership) { recipient = membership.user_id; title = 'عضویت عمده'; body = 'پلن عضویت شما فعال شد.'; }
-    } else if (event.aggregate_type === 'product') {
+    } else if (event.aggregate_type === 'product' && !event.event_type.startsWith('product.style_') && event.event_type !== 'review.submitted') {
       const product = await one<{ supplier_id: string | null }>(client, 'SELECT supplier_id FROM products WHERE id = $1', [event.aggregate_id]);
       if (product) { recipient = product.supplier_id; title = 'محصول'; body = 'وضعیت محصول به‌روز شد.'; }
     }
@@ -117,8 +118,12 @@ const crmPump = async () => {
 };
 const crmTimer = setInterval(() => void crmPump().catch((error) => console.error('CRM pump failed', error)), 3600_000);
 await crmPump();
+// Style intelligence (Req 252): product.style_analysis_requested is processed asynchronously.
+const stylePump = async () => { await processStyleAnalysisEvents(pool, 20); };
+const styleTimer = setInterval(() => void stylePump().catch((error) => console.error('Style analysis pump failed', error)), 15_000);
+await stylePump();
 const shutdown = async () => {
-  clearInterval(timer); clearInterval(smsTimer); clearInterval(crmTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
+  clearInterval(timer); clearInterval(smsTimer); clearInterval(crmTimer); clearInterval(styleTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
 };
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);

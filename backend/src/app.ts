@@ -32,6 +32,9 @@ import { registerAdminRoutes } from './admin.js';
 import { registerShippingRoutes } from './shipping.js';
 import { registerFileRoutes } from './files.js';
 import { registerConsoleRoutes } from './console.js';
+import { registerCmsStudioRoutes } from './cms-studio.js';
+import { registerStyleRoutes } from './style.js';
+import { registerProfileRoutes } from './profile.js';
 
 export async function buildApp(config: Config, paymentAdapters: Record<string, PaymentProviderAdapter> = {}) {
   const app = Fastify({ logger: config.NODE_ENV === 'test' ? false : { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie'] },
@@ -89,6 +92,9 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   registerShippingRoutes(app, pool, config);
   registerFileRoutes(app, pool, config);
   registerConsoleRoutes(app, pool, config);
+  registerCmsStudioRoutes(app, pool, config);
+  registerStyleRoutes(app, pool, config);
+  registerProfileRoutes(app, pool, config);
   app.addHook('onClose', async () => {
     if (redis) redis.disconnect();
     await pool.end();
