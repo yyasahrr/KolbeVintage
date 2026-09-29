@@ -550,6 +550,9 @@ export type Supplier360Overview = {
   financeSummary: { payableRial: string; availableRial: string; blockedRial: string; settledRial: string };
   performance: Record<string, unknown>;
   documents: Record<string, unknown>[];
+  /** Real WMS position of this supplier's variants (never a typed-in number). */
+  inventory: { product_count: number; variant_count: number; on_hand: number; reserved: number; damaged: number; available: number };
+  tickets: { openCount: number; items: Record<string, unknown>[] };
   profileVersions: Record<string, unknown>[];
   statusHistory: Record<string, unknown>[];
   timeline: { id: string; at: string; action: string; resourceType: string; resourceId: string | null;

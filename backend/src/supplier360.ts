@@ -173,7 +173,7 @@ export function registerSupplier360Routes(app: FastifyInstance, pool: DbPool, co
     if (!user) throw notFound();
     if (user.brand_name === null && user.legal_name === null && user.activity_status === null) throw notFound();
 
-    const [restrictions, finance, products, orders, invoices, documents, versions, statusHistory, auditTrail, caps] = await Promise.all([
+    const [restrictions, finance, products, orders, invoices, documents, versions, statusHistory, auditTrail, caps, inventory, tickets] = await Promise.all([
       pool.query(`SELECT r.*, c.display_name AS created_by_name, l.display_name AS lifted_by_name
                     FROM supplier_restrictions r LEFT JOIN users c ON c.id = r.created_by LEFT JOIN users l ON l.id = r.lifted_by
                    WHERE r.user_id = $1 ORDER BY r.created_at DESC`, [id]),
@@ -206,6 +206,20 @@ export function registerSupplier360Routes(app: FastifyInstance, pool: DbPool, co
         `SELECT
            (SELECT COUNT(*)::int FROM supplier_restrictions r WHERE r.user_id = $1 AND r.status = 'active' AND r.scope = 'product_limit') AS product_caps,
            (SELECT COUNT(*)::int FROM supplier_restrictions r WHERE r.user_id = $1 AND r.status = 'active' AND r.scope = 'sales_limit') AS sales_caps`, [id]),
+      // Inventory is the supplier's real WMS position, never a number typed into a form (item 11).
+      pool.query(
+        `SELECT COUNT(DISTINCT p.id)::int AS product_count, COUNT(DISTINCT v.id)::int AS variant_count,
+                COALESCE(SUM(b.on_hand), 0)::int AS on_hand, COALESCE(SUM(b.reserved), 0)::int AS reserved,
+                COALESCE(SUM(b.damaged), 0)::int AS damaged,
+                COALESCE(SUM(GREATEST(b.on_hand - b.reserved - b.damaged, 0)), 0)::int AS available
+           FROM product_variants v JOIN products p ON p.id = v.product_id
+           LEFT JOIN stock_balances b ON b.variant_id = v.id
+          WHERE p.supplier_id = $1`, [id]),
+      // Tickets the supplier opened with Kolbe support (item 11).
+      pool.query(
+        `SELECT t.id, t.reference, t.subject, t.category, t.priority, t.status, t.sla_due_at, t.created_at,
+                COUNT(*) FILTER (WHERE t.status NOT IN ('resolved','closed')) OVER ()::int AS open_count
+           FROM tickets t WHERE t.owner_id = $1 ORDER BY t.created_at DESC LIMIT 10`, [id]),
     ]);
 
     const performance = await one<Record<string, string>>(pool,
@@ -250,6 +264,11 @@ export function registerSupplier360Routes(app: FastifyInstance, pool: DbPool, co
         blockedRial: finance?.blocked_rial ?? '0', settledRial: finance?.settled_rial ?? '0' },
       performance: { ...(performance ?? {}), products: products.rows, orders: orders.rows[0], invoices: invoices.rows[0] },
       documents: documents.rows,
+      inventory: inventory.rows[0] ?? { product_count: 0, variant_count: 0, on_hand: 0, reserved: 0, damaged: 0, available: 0 },
+      tickets: {
+        openCount: tickets.rows[0]?.open_count ?? 0,
+        items: tickets.rows.map(({ open_count: _openCount, ...row }) => row),
+      },
       profileVersions: versions.rows,
       statusHistory: statusHistory.rows,
       timeline: auditTrail.rows.map((row) => ({

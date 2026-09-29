@@ -143,6 +143,16 @@ test('supplier 360: lifecycle, granular restrictions and financial drill-down (i
     const performance = detail.json().performance as Record<string, unknown>;
     assert.equal(typeof performance.avg_delivery_days, 'string', 'شاخص عملکرد از رویدادهای واقعی محاسبه می‌شود');
     assert.ok(performance.products, 'توزیع وضعیت محصولات');
+
+    // Item 11: the 360 file also carries the real WMS position, the supplier's tickets
+    // and the versioned profile history — never a number typed into the console.
+    const overview = detail.json();
+    assert.equal(typeof overview.inventory.available, 'number', 'موجودی از WMS خوانده می‌شود');
+    assert.ok(overview.inventory.product_count >= 1);
+    assert.ok(overview.inventory.variant_count >= 1);
+    assert.ok(Array.isArray(overview.tickets.items));
+    assert.equal(typeof overview.tickets.openCount, 'number');
+    assert.ok(Array.isArray(overview.profileVersions) && Array.isArray(overview.statusHistory));
   } finally {
     await app.close();
     await pool.end();
