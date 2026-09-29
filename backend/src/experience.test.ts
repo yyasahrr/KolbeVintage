@@ -202,6 +202,7 @@ describe('SEO Domain (Req 235) and media processing (Req 234, 334)', () => {
     assert.equal(r.title, 'استایل اولد مانی | کلبه وینتج'); assert.equal(r.canonical, 'https://kolbe.ir/vibe/old-money-2');
     assert.equal(r.robots, 'index,nofollow'); assert.equal(r.jsonLd[0]!.keywords, 'old money'); assert.equal(r.jsonLd[0]!['@context'], 'https://schema.org');
     assert.equal(resolveSeo({ ...vibe, active: false }, { robots_index: true }, origin).robots, 'noindex,follow');
+    assert.equal(resolveSeo(vibe, { title: 'درباره ما | کلبه وینتیج' }, origin).title, 'درباره ما | کلبه وینتیج', 'brand is never appended twice');
   });
   test('product schema carries offer, availability and rating from commerce data', () => {
     const r = resolveSeo({ type: 'product', key: 'p1', name: 'پالتو پشمی', description: '', path: '/product/p1', image: null, active: true,

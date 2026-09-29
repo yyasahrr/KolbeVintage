@@ -42,6 +42,8 @@ export type ResolvedSeo = {
 
 export const SITE_NAME = 'کلبه وینتج';
 const TITLE_SUFFIX = ` | ${SITE_NAME}`;
+/** The brand is written both «وینتج» and «وینتیج» (and in Latin); never append it twice. */
+const BRAND_IN_TITLE = /کلبه\s*وینت\u06cc?ج|kolbe/i;
 const SCHEMA_TYPES = ['WebPage', 'AboutPage', 'ContactPage', 'CollectionPage', 'ItemPage', 'Product', 'Organization'] as const;
 
 /** Canonical path conventions per entity type (the storefront deep-links these paths). */
@@ -115,7 +117,7 @@ export function validateSeoInput(input: SeoEntry, origin: string): { errors: str
 /** Pure resolver: SEO Domain entry (optional) + business subject → head tags. Deterministic & testable. */
 export function resolveSeo(subject: SeoSubject, entry: SeoEntry | null, origin: string): ResolvedSeo {
   const baseTitle = plain(entry?.title || subject.name || SITE_NAME);
-  const title = baseTitle.includes(SITE_NAME) ? baseTitle : `${baseTitle}${TITLE_SUFFIX}`;
+  const title = BRAND_IN_TITLE.test(baseTitle) ? baseTitle : `${baseTitle}${TITLE_SUFFIX}`;
   const description = clip(plain(entry?.description || subject.description || `${subject.name} در ${SITE_NAME}؛ پوشاک کلاسیک و مدرن با ارسال سریع و پرداخت اقساطی.`), 160);
   const path = entry?.canonical_path || subject.path;
   const canonical = absoluteUrl(origin, path) ?? absoluteUrl(origin, subject.path)!;

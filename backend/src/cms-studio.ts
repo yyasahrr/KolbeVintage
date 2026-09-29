@@ -348,6 +348,15 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     return page;
   });
 
+  /** Canonical URLs from the SEO Domain (e.g. /about, /campaign/x) deep-link into the SPA (Req 235). */
+  app.get('/api/v1/site/resolve-path', async (request) => {
+    const { path } = z.object({ path: z.string().regex(/^\/[a-z0-9/_-]{0,120}$/) }).parse(request.query);
+    const page = await one<{ code: string; active: boolean; status: string; scheduled_start_at: string | null; scheduled_end_at: string | null }>(pool,
+      'SELECT code, active, status, scheduled_start_at, scheduled_end_at FROM cms_pages WHERE path = $1 ORDER BY updated_at DESC LIMIT 1', [path]);
+    if (!page || !pageIsLive(page)) throw notFound();
+    return { kind: 'page', code: page.code };
+  });
+
   app.get('/api/v1/site/layout', async () => {
     const [header, footer, accountAppearance] = await Promise.all([
       readSetting(pool, 'global_header'), readSetting(pool, 'global_footer'), readSetting(pool, 'account_appearance')]);
