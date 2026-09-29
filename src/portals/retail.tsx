@@ -257,7 +257,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
 /* ============ MAIN RETAIL ============ */
 export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success";
 
-export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin }: {
+export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopCategory }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
@@ -267,9 +267,12 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   account: CustomerAccount | null; buyer?: Buyer;
   accountTab: AccountTab; setAccountTab: (v: AccountTab) => void;
   onWholesale: () => void; onLogout: () => void; onLogin: () => void;
+  /** CMS `category:<slug>` targets preselect the shop category (resolved to its display name by the shell). */
+  shopCategory?: { name: string; nonce: number } | null;
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
-  const [cat, setCat] = useState("همه");
+  const [cat, setCat] = useState(shopCategory?.name ?? "همه");
+  useEffect(() => { if (shopCategory) setCat(shopCategory.name); }, [shopCategory]);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("پیشنهاد کلبه");
   const [checkStep, setCheckStep] = useState(0);

@@ -1,7 +1,8 @@
 /* Browser verification for the experience layer (Req 173-356):
    CMS-composed storefront, announcement bar, quick-buy feedback, CMS About page, Style Builder
    intelligence, customer dashboard (desktop + mobile), security page and the admin CMS Studio.
-   Runs against an existing stack (local-stack.mjs + vite on :5173). Screenshots → /tmp/kv-shots. */
+   Runs against an existing stack: local-stack.mjs → seed:local → scripts/browser-smoke-fixtures.mjs → vite on :5173.
+   Screenshots → /tmp/kv-shots. */
 import { mkdirSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
 
@@ -61,7 +62,8 @@ try {
   await clickText('nav[aria-label="ناوبری اصلی"] button', 'درباره ما');
   await page.waitForFunction(() => document.body.innerText.includes('ارزش‌های ما'), { timeout: 15000 }).catch(() => undefined);
   const aboutComponents = await page.$$eval('[data-component]', (els) => els.map((e) => e.getAttribute('data-component')));
-  check('About page is CMS-driven (story, timeline, values, stats)', ['story_hero', 'timeline', 'values_grid', 'stats_strip'].every((c) => aboutComponents.includes(c)), aboutComponents.join(','));
+  check('About page is CMS-driven (story, timeline, values, gallery; no fabricated stats)',
+    ['story_hero', 'timeline', 'values_grid', 'gallery'].every((c) => aboutComponents.includes(c)) && !aboutComponents.includes('stats_strip'), aboutComponents.join(','));
   await shot('03-about', true);
   await page.waitForFunction(() => !!document.querySelector('link[rel="canonical"]'), { timeout: 8000 }).catch(() => undefined);
   const head = await page.evaluate(() => ({

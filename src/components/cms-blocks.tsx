@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, BadgeCheck, Check, Loader2, Quote, ShoppingBag, Star } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Camera, Check, CreditCard, Loader2, Quote, Sparkles, Star, X } from "lucide-react";
 import { mediaSrc, rialToToman, siteApi, type CommerceProduct, type PageSection, type SitePage } from "../data/experience-api";
 import { fmtMoney } from "../data/catalog";
-import { HeroRenderer } from "./cms-render";
+import { CmsHero, HeroVideo } from "./cms-hero";
+import { CommerceCard } from "./commerce-card";
 import { ResponsiveImg } from "./responsive-img";
 import { applySeo, resetSeo } from "./seo-head";
-import type { HeroConfig } from "../data/ops";
 import { Btn, Empty, ErrorState, LoadingState } from "./primitives";
 import { useToast } from "./toast";
 import { cn } from "../utils/cn";
@@ -19,6 +19,8 @@ const fa = (n: number) => n.toLocaleString("fa-IR");
 /** Neutral paper tone used when a CMS block has no media yet (never an empty src). */
 const PLACEHOLDER = "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><rect width="4" height="5" fill="#EFE7DA"/></svg>');
 const str = (v: unknown, d = "") => (typeof v === "string" ? v : d);
+type Responsive = { hideOnMobile?: boolean; hideOnTablet?: boolean; hideOnDesktop?: boolean; mobileColumns?: number; tabletColumns?: number; mobileAlign?: string; mobilePadding?: string; mobileTypeScale?: string };
+const mediaList = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : str(v).split("\n")).map((x) => x.split("|")[0]!.trim()).filter(Boolean);
 const lines = (v: unknown) => str(v).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => l.split("|"));
 
 /** Fires `component.view` once per mount when the block becomes visible (Req 236). */
@@ -36,93 +38,48 @@ function useViewEvent(pageCode: string | undefined, section: PageSection) {
   return ref;
 }
 
-/* ============================ Product card (rule-aware) ============================ */
+/* ============================ Product grid & countdown ============================ */
 
-const TEMPLATE_STYLE: Record<string, { ratio: string; frame: string; title?: string; badge?: { label: (p: CommerceProduct) => string | null; cls: string } }> = {
-  "kolbe-classic": { ratio: "aspect-[3/4]", frame: "rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)]" },
-  "kolbe-editorial": { ratio: "aspect-[4/5]", frame: "rounded-[22px] border border-[var(--kv-line)] bg-[var(--kv-surface)]", title: "kv-serif text-[17px]" },
-  "kolbe-minimal": { ratio: "aspect-[3/4]", frame: "rounded-[14px]" },
-  "kolbe-sale": { ratio: "aspect-[3/4]", frame: "rounded-[18px] border border-[var(--kv-danger)]/35 bg-[var(--kv-surface)]", badge: { label: (p) => (p.discountPercent ? `٪${fa(p.discountPercent)} تخفیف` : null), cls: "bg-[var(--kv-danger)] text-white" } },
-  "kolbe-flash-sale": { ratio: "aspect-[3/4]", frame: "rounded-[18px] border border-[var(--kv-accent)]/40 bg-[var(--kv-surface)]", badge: { label: () => "فروش فوری", cls: "bg-[var(--kv-accent)] text-white" } },
-  "kolbe-new-arrival": { ratio: "aspect-[3/4]", frame: "rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)]", badge: { label: () => "تازه‌رسیده", cls: "bg-[#2E5A44] text-white" } },
-  "kolbe-premium": { ratio: "aspect-[4/5]", frame: "rounded-[22px] border border-[#8A6A3E]/45 bg-[var(--kv-surface)]", title: "kv-serif text-[17px]", badge: { label: () => "Premium", cls: "bg-[#8A6A3E] text-white" } },
-  "kolbe-installment": { ratio: "aspect-[3/4]", frame: "rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)]", badge: { label: () => "۴ قسط", cls: "bg-[var(--kv-action)] text-[var(--kv-bg)]" } },
-  "kolbe-dark": { ratio: "aspect-[3/4]", frame: "dark rounded-[18px] border border-white/10 bg-[#111622] text-[#F9F6F1]" },
-};
+export { CommerceCard } from "./commerce-card";
 
-export function CommerceCard({ product, onOpen, onQuickAdd, pageCode }: { product: CommerceProduct; onOpen?: (id: string) => void; onQuickAdd?: QuickAdd; pageCode?: string }) {
-  const tpl = TEMPLATE_STYLE[product.cardTemplate ?? "kolbe-classic"] ?? TEMPLATE_STYLE["kolbe-classic"]!;
-  const toast = useToast();
-  const [state, setState] = useState<"idle" | "loading" | "done">("idle");
-  const badge = tpl.badge?.label(product);
-  const price = rialToToman(product.priceRial);
-  const compare = product.compareAtRial ? rialToToman(product.compareAtRial) : 0;
-  const soldOut = product.available < 1;
-  const add = () => {
-    if (!onQuickAdd || soldOut) return;
-    setState("loading");
-    window.setTimeout(() => {
-      const ok = onQuickAdd(product);
-      setState(ok ? "done" : "idle");
-      if (ok) { toast.bumpCart(); toast.push(`«${product.name}» به سبد خرید اضافه شد.`); window.setTimeout(() => setState("idle"), 1400); }
-      else toast.push("این سایز دیگر موجود نیست.", "error");
-    }, 250);
-  };
-  return (
-    <article className={cn("group overflow-hidden p-2 transition-shadow hover:shadow-[var(--shadow-soft-md)]", tpl.frame)}>
-      <button onClick={() => { siteApi.event({ eventType: "product_card.click", pageCode, targetId: product.id }); onOpen?.(product.id); }} className="block w-full text-right" aria-label={product.name}>
-        <div className={cn("kv-img relative overflow-hidden rounded-[14px]", tpl.ratio)}>
-          {product.image ? <ResponsiveImg src={product.image} alt={product.name} sizes="(min-width: 768px) 25vw, 50vw" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
-            : <div className="flex h-full w-full items-center justify-center bg-[var(--kv-surface-2)] text-[12px] text-[var(--kv-muted)]">بدون تصویر</div>}
-          {badge && <span className={cn("absolute right-2 top-2 rounded-full px-2.5 py-1 text-[11px] font-bold", tpl.badge!.cls)}>{badge}</span>}
-          {soldOut && <span className="absolute inset-x-2 bottom-2 rounded-lg bg-black/60 py-1 text-center text-[11.5px] font-bold text-white">ناموجود</span>}
-        </div>
-        <div className="px-1.5 pt-3">
-          <p className="text-[11.5px] text-[var(--kv-muted)]">{product.brand}</p>
-          <p className={cn("mt-0.5 line-clamp-2 font-bold leading-6", tpl.title ?? "text-[14px]")}>{product.name}</p>
-          <div className="mt-1.5 flex flex-wrap items-baseline gap-2">
-            <b className={cn("text-[14.5px] tabular-nums", product.cardTemplate === "kolbe-sale" && "text-[var(--kv-danger)]")}>{fmtMoney(price)}</b>
-            {compare > price && <s className="text-[12px] text-[var(--kv-muted)] tabular-nums">{fmtMoney(compare)}</s>}
-          </div>
-          {product.perInstallmentRial && (
-            <p className={cn("mt-1 text-[11.5px] tabular-nums", product.cardTemplate === "kolbe-installment" ? "font-bold text-[var(--kv-accent)]" : "text-[var(--kv-muted)]")}>
-              ۴ قسط × {fmtMoney(rialToToman(product.perInstallmentRial))}
-            </p>
-          )}
-          {product.reviewCount > 0 && <p className="mt-1 flex items-center gap-1 text-[11.5px] text-[var(--kv-muted)]"><Star size={12} fill="#D6A94E" strokeWidth={0} />{fa(product.rating)} ({fa(product.reviewCount)})</p>}
-        </div>
-      </button>
-      {onQuickAdd && (
-        <button onClick={add} disabled={soldOut || state === "loading"} aria-label={`افزودن ${product.name} به سبد خرید`}
-          className="kv-press mx-1.5 mb-1.5 mt-3 flex h-10 w-[calc(100%-12px)] items-center justify-center gap-1.5 rounded-[10px] bg-[var(--kv-action)] text-[12.5px] font-semibold text-[var(--kv-bg)] disabled:opacity-40 dark:text-[#0E1527]">
-          {state === "loading" ? <Loader2 size={15} className="animate-spin" /> : state === "done" ? <Check size={15} className="kv-check-pop" /> : <ShoppingBag size={15} />}
-          {state === "done" ? "اضافه شد" : soldOut ? "ناموجود" : "افزودن به سبد"}
-        </button>
-      )}
-    </article>
-  );
-}
-
-function ProductGrid({ products, columns = 4, onOpen, onQuickAdd, pageCode, empty }: { products: CommerceProduct[]; columns?: number; onOpen?: (id: string) => void; onQuickAdd?: QuickAdd; pageCode?: string; empty?: string }) {
+function ProductGrid({ products, columns = 4, onOpen, onQuickAdd, pageCode, empty, variant, responsive }: { products: CommerceProduct[]; columns?: number; onOpen?: (id: string) => void; onQuickAdd?: QuickAdd; pageCode?: string; empty?: string; variant?: string; responsive?: Responsive }) {
   if (!products.length) return <p className="rounded-[14px] border border-dashed border-[var(--kv-line-strong)] p-6 text-center text-[12.5px] text-[var(--kv-muted)]">{empty ?? "محصولی برای این بخش یافت نشد."}</p>;
+  const vars = { "--kv-cols-d": String(Math.min(Math.max(columns, 2), 5)), "--kv-cols-m": String(responsive?.mobileColumns ?? 2), ...(responsive?.tabletColumns ? { "--kv-cols-t": String(responsive.tabletColumns) } : { "--kv-cols-t": String(Math.min(columns, 3)) }) } as React.CSSProperties;
   return (
-    <div className={cn("grid grid-cols-2 gap-4", columns >= 4 ? "md:grid-cols-4" : columns === 3 ? "md:grid-cols-3" : "md:grid-cols-2")}>
-      {products.map((p) => <CommerceCard key={p.id} product={p} onOpen={onOpen} onQuickAdd={onQuickAdd} pageCode={pageCode} />)}
+    <div className="kv-cms-grid" style={vars}>
+      {products.map((p) => <CommerceCard key={p.id} product={p} onOpen={onOpen} onQuickAdd={onQuickAdd} pageCode={pageCode} variant={variant} />)}
     </div>
   );
 }
 
-function Countdown({ endsAt, title, tone, cta, onCta }: { endsAt?: string | null; title: string; tone: string; cta?: string; onCta?: () => void }) {
+const CD_TONE: Record<string, string> = { terra: "bg-[#A34E2E] text-white", navy: "bg-[#1B2A4A] text-[#F5EFE3]", dark: "bg-[#0B0F17] text-white", light: "bg-[var(--kv-surface)] text-[var(--kv-ink)] border border-[var(--kv-line)]" };
+const CD_RADIUS: Record<string, string> = { none: "rounded-none", sm: "rounded-[10px]", md: "rounded-[16px]", lg: "rounded-[20px]", xl: "rounded-[28px]" };
+type CountdownOpts = { layout?: string; tone?: string; background?: string; foreground?: string; radius?: string; units?: { d: boolean; h: boolean; m: boolean; s: boolean } };
+/** Countdown (Req 218-221): manual date or bound to a campaign; configurable units, layout, tone and colours. Hides itself at zero. */
+function Countdown({ endsAt, title, tone, cta, onCta, opts = {} }: { endsAt?: string | null; title: string; tone: string; cta?: string; onCta?: () => void; opts?: CountdownOpts }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(t); }, []);
   const left = endsAt ? Math.max(0, new Date(endsAt).getTime() - now) : 0;
   if (!left) return null;
-  const cell = (v: number, l: string) => <div className="min-w-[62px] rounded-[12px] bg-white/12 px-3 py-2.5 text-center backdrop-blur-md"><p className="text-[22px] font-extrabold tabular-nums">{v.toLocaleString("fa-IR", { minimumIntegerDigits: 2 })}</p><p className="text-[11px] opacity-80">{l}</p></div>;
+  const u = opts.units ?? { d: true, h: true, m: true, s: true };
+  const light = (opts.tone ?? tone) === "light";
+  const cell = (v: number, l: string) => <div className={cn("min-w-[62px] rounded-[12px] px-3 py-2.5 text-center", light ? "bg-[var(--kv-surface-2)]" : "bg-white/12 backdrop-blur-md")}><p className="text-[22px] font-extrabold tabular-nums">{v.toLocaleString("fa-IR", { minimumIntegerDigits: 2 })}</p><p className="text-[11px] opacity-80">{l}</p></div>;
+  // Hidden larger units fold into the next visible one so the total stays correct.
+  const days = Math.floor(left / 86400000), hours = Math.floor(left / 3600000), mins = Math.floor(left / 60000), secs = Math.floor(left / 1000);
+  const cells = [
+    u.d && cell(days, "روز"),
+    u.h && cell(u.d ? hours % 24 : hours, "ساعت"),
+    u.m && cell(u.h ? mins % 60 : u.d ? mins % 1440 : mins, "دقیقه"),
+    u.s && cell(u.m ? secs % 60 : secs, "ثانیه"),
+  ].filter(Boolean);
+  const layout = opts.layout ?? "inline";
+  const style = { ...(opts.background ? { background: opts.background } : {}), ...(opts.foreground ? { color: opts.foreground } : {}) };
   return (
-    <section className={cn("flex flex-wrap items-center justify-between gap-5 rounded-[20px] p-6 md:p-8", tone === "dark" ? "bg-[#0B0F17] text-white" : tone === "navy" ? "bg-[#1B2A4A] text-[#F5EFE3]" : "bg-[#A34E2E] text-white")}>
+    <section style={style} className={cn("gap-5 p-6 md:p-8", CD_TONE[opts.tone ?? tone] ?? CD_TONE.terra, CD_RADIUS[opts.radius ?? "lg"],
+      layout === "stacked" ? "flex flex-col items-center text-center" : layout === "split" ? "grid items-center md:grid-cols-2" : "flex flex-wrap items-center justify-between")}>
       <h2 className="text-[20px] font-extrabold md:text-[24px]">{title}</h2>
-      <div className="flex items-center gap-2" role="timer" aria-label="زمان باقی‌مانده">{cell(Math.floor(left / 86400000), "روز")}{cell(Math.floor(left / 3600000) % 24, "ساعت")}{cell(Math.floor(left / 60000) % 60, "دقیقه")}{cell(Math.floor(left / 1000) % 60, "ثانیه")}</div>
-      {cta && <button onClick={onCta} className="kv-press h-11 rounded-[11px] bg-white px-5 text-[13.5px] font-bold text-[#1B2A4A]">{cta}</button>}
+      <div className={cn("flex items-center gap-2", layout === "split" && "md:justify-end")} role="timer" aria-label="زمان باقی‌مانده">{cells}</div>
+      {cta && <button onClick={onCta} className={cn("kv-press h-11 rounded-[11px] px-5 text-[13.5px] font-bold", light ? "bg-[var(--kv-accent)] text-white" : "bg-white text-[#1B2A4A]")}>{cta}</button>}
     </section>
   );
 }
@@ -171,39 +128,79 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
   const r = section.resolved ?? {};
   const products = r.products ?? [];
   const cta = (_label: string, target: string, kind: "cta.click" | "banner.click" | "campaign.click" = "cta.click") => () => { siteApi.event({ eventType: kind, pageCode, sectionId: section.id, componentCode: section.component_code, targetId: target }); onNav(target); };
-  const responsive = (section.responsive_config ?? {}) as { hideOnMobile?: boolean; hideOnDesktop?: boolean };
+  const responsive = (section.responsive_config ?? {}) as Responsive;
+  const st = (section.style_overrides ?? {}) as Record<string, string | number | undefined>;
+  const styleAttr = (k: string) => (st[k] && st[k] !== "inherit" && st[k] !== "auto" ? String(st[k]) : undefined);
   const wrap = (node: ReactNode) => (
-    <div ref={ref} data-component={section.component_code}
-      className={cn(responsive.hideOnMobile && "hidden md:block", responsive.hideOnDesktop && "md:hidden",
-        section.section_theme === "dark" && "dark rounded-[24px] bg-[var(--kv-bg)] p-4 text-[var(--kv-ink)] md:p-6",
-        section.section_theme === "campaign" && "rounded-[24px] bg-[var(--kv-accent)]/[0.07] p-4 md:p-6")}>
+    <div ref={ref} data-component={section.component_code} data-variant={section.variant || undefined} data-kv-section=""
+      data-kv-bg={styleAttr("background")} data-kv-fg={styleAttr("foreground")} data-kv-border={styleAttr("border") === "none" ? undefined : styleAttr("border")}
+      data-kv-radius={styleAttr("radius")} data-kv-shadow={styleAttr("shadow") === "none" ? undefined : styleAttr("shadow")} data-kv-pad={styleAttr("padding") === "none" ? undefined : styleAttr("padding")}
+      data-kv-gap={styleAttr("gap")} data-kv-width={styleAttr("width")} data-kv-minh={styleAttr("minHeight")} data-kv-type={styleAttr("typeScale")}
+      data-kv-font={styleAttr("fontFamily")} data-kv-align={styleAttr("align") === "start" ? undefined : styleAttr("align")} data-kv-anim={styleAttr("animation") === "none" ? undefined : styleAttr("animation")}
+      data-kv-fit={styleAttr("mediaFit")}
+      data-kv-hide-m={responsive.hideOnMobile ? "" : undefined} data-kv-hide-t={responsive.hideOnTablet ? "" : undefined} data-kv-hide-d={responsive.hideOnDesktop ? "" : undefined}
+      data-kv-m-align={responsive.mobileAlign} data-kv-m-pad={responsive.mobilePadding} data-kv-m-type={responsive.mobileTypeScale}
+      className={cn(section.section_theme === "dark" && "dark rounded-[24px] bg-[var(--kv-bg)] p-4 text-[var(--kv-ink)] md:p-6",
+        section.section_theme === "campaign" && "rounded-[24px] bg-[var(--kv-accent)]/[0.07] p-4 md:p-6",
+        section.section_theme === "muted" && "rounded-[24px] bg-[var(--kv-surface-2)] p-4 md:p-6")}>
       {node}
     </div>
   );
+  const heading = str(p.title ?? p.heading, section.title);
 
   switch (section.component_code) {
     case "hero": case "image_hero": case "video_hero": {
       const campaignEnds = r.campaign?.ends_at;
-      const hero: HeroConfig = {
-        template: (str(p.template) || (section.component_code === "video_hero" ? "video" : "split")) as HeroConfig["template"],
-        eyebrow: str(p.eyebrow), title: str(p.title ?? p.headline, section.title), subtitle: str(p.subtitle ?? p.description),
-        ctaLabel: str(p.ctaLabel), ctaTarget: (str(p.ctaTarget, "shop")) as HeroConfig["ctaTarget"], secondaryLabel: str(p.secondaryLabel), secondaryTarget: (str(p.secondaryTarget, "vip")) as HeroConfig["secondaryTarget"],
-        image: mediaSrc(str(p.image) || products[0]?.image) ?? PLACEHOLDER, video: mediaSrc(str(p.video)) ?? "", poster: mediaSrc(str(p.poster)) ?? "",
-        overlay: Number(p.overlay ?? 35), align: p.align === "center" ? "center" : "right",
-        slides: Array.isArray(p.slides) ? (p.slides as HeroConfig["slides"]) : [{ image: mediaSrc(str(p.image)) ?? PLACEHOLDER, title: "", subtitle: "" }],
-        mosaic: (Array.isArray(p.mosaic) ? (p.mosaic as string[]).map((m) => mediaSrc(m) ?? PLACEHOLDER) : products.slice(0, 4).map((x) => mediaSrc(x.image) ?? PLACEHOLDER)).concat(Array(4).fill(PLACEHOLDER)).slice(0, 4),
-      };
-      return wrap(<><HeroRenderer h={hero} priority={eager} onNav={(t) => cta(hero.ctaLabel, t)()} />{campaignEnds && r.campaign?.live && <div className="mt-3"><Countdown endsAt={campaignEnds} title={`تا پایان ${r.campaign.name}`} tone="terra" /></div>}</>);
+      const showCd = r.campaign?.live && (str(p.bindingType) === "campaign" || !str(p.bindingType)) && campaignEnds;
+      return wrap(<><CmsHero section={section} eager={eager} onNav={(t) => cta("hero", t)()} onOpenProduct={onOpenProduct} />
+        {showCd && <div className="mt-3"><Countdown endsAt={campaignEnds} title={`تا پایان ${r.campaign!.name}`} tone="terra" /></div>}</>);
     }
     case "countdown": {
-      const endsAt = p.mode === "campaign" || r.campaign ? r.campaign?.ends_at : str(p.targetDate ?? p.endsAt);
-      return wrap(<Countdown endsAt={endsAt} title={str(p.title, section.title)} tone={str(p.tone, "terra")} cta={str(p.cta) || undefined} onCta={cta(str(p.cta), str(p.target, "shop"), "campaign.click")} />);
+      const endsAt = p.mode === "manual" ? str(p.targetDate ?? p.endsAt) : (r.campaign?.ends_at ?? str(p.targetDate ?? p.endsAt));
+      const units = { d: p.showDays !== false, h: p.showHours !== false, m: p.showMinutes !== false, s: p.showSeconds !== false };
+      return wrap(<Countdown endsAt={endsAt} title={str(p.title, section.title)} tone={str(p.tone, "terra")} cta={str(p.cta) || undefined} onCta={cta(str(p.cta), str(p.target, "shop"), "campaign.click")}
+        opts={{ layout: str(p.layout, "inline"), tone: str(p.tone, "terra"), background: str(p.background) || undefined, foreground: str(p.foreground) || undefined, radius: str(p.radius, "lg"), units }} />);
     }
-    case "product_grid": case "product_carousel": case "product_slider": case "recommendation_section":
-      return wrap(<section><Heading title={str(p.title ?? p.heading, section.title)} subtitle={str(p.subtitle)} action={<button onClick={cta("همه", "shop")} className="text-[13px] font-bold text-[var(--kv-accent)]">همه محصولات</button>} />
+    case "recommendation_section": {
+      const rec = r.recommendation;
+      const note = rec ? (rec.fallback ? "هنوز داده کافی برای پیشنهاد شخصی نداریم؛ پرطرفدارترین‌ها را ببینید." : rec.personal ? "بر اساس بازدیدها و خریدهای شما" : rec.strategy === "similar" ? "بر اساس سبک، دسته و وایب مشابه" : rec.strategy === "trending" ? "پربازدیدترین‌های این هفته" : "محبوب‌ترین‌ها") : undefined;
+      return wrap(<section data-strategy={rec?.strategy}><Heading title={heading} subtitle={str(p.subtitle) || note} action={rec?.personal ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--kv-accent)]/10 px-3 py-1 text-[11.5px] font-bold text-[var(--kv-accent)]"><Sparkles size={13} />مخصوص شما</span> : undefined} />
+        <ProductGrid products={products} columns={Number(p.columns ?? 4)} onOpen={onOpenProduct} onQuickAdd={onQuickAdd} pageCode={pageCode} responsive={responsive} empty="فعلاً پیشنهادی نداریم." /></section>);
+    }
+    case "product_card": {
+      const x = products[0];
+      if (!x) return wrap(<p className="rounded-[14px] border border-dashed border-[var(--kv-line-strong)] p-6 text-center text-[12.5px] text-[var(--kv-muted)]">محصول انتخاب‌شده در دسترس نیست.</p>);
+      if (p.layout === "vertical") return wrap(<section className="mx-auto max-w-[360px]">{str(p.title) && <Heading title={str(p.title)} />}<CommerceCard product={x} onOpen={onOpenProduct} onQuickAdd={onQuickAdd} pageCode={pageCode} variant={str(p.variant, "auto")} /></section>);
+      return wrap(<FeaturedProduct product={x} p={p} onOpen={onOpenProduct} onQuickAdd={onQuickAdd} pageCode={pageCode} />);
+    }
+    case "gallery": return wrap(<Gallery title={str(p.title)} images={mediaList(p.images)} layout={str(p.layout, "grid")} columns={Number(p.columns ?? 3)} eager={eager} />);
+    case "video_section": {
+      const aspect = str(p.aspect, "16/9");
+      const poster = mediaSrc(str(p.poster)) ?? PLACEHOLDER;
+      return wrap(<section>{str(p.title) && <Heading title={str(p.title)} />}
+        <figure className="overflow-hidden rounded-[20px] bg-black">
+          <div className="relative w-full" style={{ aspectRatio: aspect }}>
+            {p.controls !== false && p.autoplay !== true
+              ? <video src={mediaSrc(str(p.video))} poster={poster} controls playsInline preload="none" muted={p.muted === true} loop={p.loop === true} className="absolute inset-0 h-full w-full object-cover" aria-label={str(p.title) || "ویدیو"} />
+              : <HeroVideo payload={p} poster={poster} />}
+          </div>
+          {str(p.caption) && <figcaption className="bg-[var(--kv-surface)] px-4 py-3 text-[12.5px] text-[var(--kv-muted)]">{str(p.caption)}</figcaption>}
+        </figure></section>);
+    }
+    case "collection_showcase": {
+      const cols = r.collections ?? [];
+      return wrap(<section><Heading title={heading} subtitle={str(p.subtitle)} />
+        {cols.length ? <div className="grid gap-4 md:grid-cols-3">{cols.map((c) => (
+          <button key={c.code} onClick={cta(c.title, `collection:${c.code}`)} className="group overflow-hidden rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] text-right">
+            <div className="grid h-[220px] grid-cols-3 grid-rows-2 gap-1 bg-[var(--kv-surface-2)]">{[0, 1, 2].map((i) => <div key={i} className={cn("overflow-hidden", i === 0 && "col-span-2 row-span-2")}>{c.images[i] && <ResponsiveImg src={c.images[i]!} alt="" sizes="(min-width: 768px) 22vw, 60vw" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />}</div>)}</div>
+            <div className="p-4"><p className="text-[15px] font-extrabold">{c.title}</p><p className="mt-1 line-clamp-2 text-[12px] text-[var(--kv-muted)]">{c.description}</p><p className="mt-2 text-[11.5px] font-bold text-[var(--kv-accent)]">{fa(c.count)} محصول ←</p></div>
+          </button>))}</div> : <p className="text-[13px] text-[var(--kv-muted)]">کالکشن فعالی وجود ندارد.</p>}</section>);
+    }
+    case "product_grid": case "product_carousel": case "product_slider":
+      return wrap(<section><Heading title={heading} subtitle={str(p.subtitle)} action={<button onClick={cta("همه", "shop")} className="text-[13px] font-bold text-[var(--kv-accent)]">همه محصولات</button>} />
         {section.component_code === "product_carousel"
-          ? <div className="kv-no-scrollbar -mx-1 flex snap-x gap-4 overflow-x-auto px-1 pb-2">{products.map((x) => <div key={x.id} className="w-[46%] shrink-0 snap-start md:w-[23%]"><CommerceCard product={x} onOpen={onOpenProduct} onQuickAdd={onQuickAdd} pageCode={pageCode} /></div>)}</div>
-          : <ProductGrid products={products} columns={Number(p.columns ?? 4)} onOpen={onOpenProduct} onQuickAdd={onQuickAdd} pageCode={pageCode} />}
+          ? <div className="kv-no-scrollbar -mx-1 flex snap-x gap-4 overflow-x-auto px-1 pb-2">{products.map((x) => <div key={x.id} className="w-[46%] shrink-0 snap-start md:w-[23%]"><CommerceCard product={x} onOpen={onOpenProduct} onQuickAdd={onQuickAdd} pageCode={pageCode} variant={str(p.cardVariant, "auto")} /></div>)}</div>
+          : <ProductGrid products={products} columns={Number(p.columns ?? 4)} onOpen={onOpenProduct} onQuickAdd={onQuickAdd} pageCode={pageCode} variant={str(p.cardVariant, "auto")} responsive={responsive} />}
       </section>);
     case "promotion_banner": case "banner": case "promotional": case "cta":
       return wrap(<section className="relative overflow-hidden rounded-[20px] bg-[#1B2A4A] text-white kv-shadow-md">
@@ -213,29 +210,14 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
             {r.campaign?.live && <p className="mt-2 text-[12.5px] text-white/80">کمپین {r.campaign.name} فعال است</p>}</div>
           {str(p.cta ?? p.ctaLabel) && <Btn variant="accent" onClick={cta(str(p.cta ?? p.ctaLabel), str(p.target ?? p.ctaTarget, "shop"), "banner.click")} icon={<ArrowLeft size={16} />}>{str(p.cta ?? p.ctaLabel)}</Btn>}
         </div></section>);
-    case "installment_card": {
-      const sample = products[0];
-      const provider = str(p.provider, "generic");
-      const providerLabel = provider === "snapppay" ? "اسنپ‌پی" : provider === "digipay" ? "دیجی‌پی" : "خرید اقساطی";
-      return wrap(<section className="grid items-center gap-5 rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-6 md:grid-cols-[1fr_auto] md:p-8">
-        <div><p className="text-[12.5px] font-bold text-[var(--kv-accent)]">{providerLabel}</p><h2 className="mt-1 text-[20px] font-extrabold">{str(p.title, "خرید چهارقسطه")}</h2><p className="mt-1.5 text-[13px] leading-7 text-[var(--kv-muted)]">{str(p.subtitle)}</p></div>
-        {sample?.perInstallmentRial ? <div className="rounded-[16px] bg-[var(--kv-surface-2)] px-5 py-4 text-center"><p className="text-[12px] text-[var(--kv-muted)]">مثلاً برای «{sample.name}»</p><p className="mt-1 text-[20px] font-extrabold tabular-nums">۴ × {fmtMoney(rialToToman(sample.perInstallmentRial))}</p><p className="text-[11px] text-[var(--kv-muted)]">محاسبه‌شده توسط سرور از قیمت فعلی</p></div>
-          : <p className="text-[12px] text-[var(--kv-muted)]">محصول اقساطی فعالی وجود ندارد.</p>}
-      </section>);
-    }
-    case "review_section":
-      return wrap(<section><Heading title={str(p.title, section.title)} subtitle={r.reviewSummary && r.reviewSummary.total ? `میانگین ${fa(Math.round(r.reviewSummary.average * 10) / 10)} از ۵ · ${fa(r.reviewSummary.total)} دیدگاه تأییدشده` : undefined} />
-        {(r.reviews ?? []).length ? <div className="grid gap-4 md:grid-cols-3">{(r.reviews ?? []).map((rv) => <figure key={rv.id} className="rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5"><div className="flex items-center gap-0.5" aria-label={`${fa(rv.rating)} ستاره`}>{Array.from({ length: 5 }, (_, i) => <Star key={i} size={14} fill={i < rv.rating ? "#D6A94E" : "none"} strokeWidth={i < rv.rating ? 0 : 1.5} />)}</div><Quote size={18} className="mt-3 text-[var(--kv-accent)]" /><blockquote className="mt-2 text-[13.5px] leading-7">{rv.body || rv.title}</blockquote><figcaption className="mt-3 text-[12px] font-bold text-[var(--kv-muted)]">{rv.display_name} · {rv.product_name}{rv.verified_purchase && " · خرید تأییدشده"}</figcaption></figure>)}</div>
-          : <p className="text-[13px] text-[var(--kv-muted)]">هنوز دیدگاهی ثبت نشده است.</p>}</section>);
+    case "installment_card": return wrap(<InstallmentCard p={p} section={section} onCta={cta(str(p.cta), str(p.target, "shop"))} />);
+    case "review_section": return wrap(<ReviewsBlock p={p} section={section} heading={heading} />);
     case "category_card": case "category_section": {
       const cats = r.categories ?? [];
       const tpl = str(p.template, "editorial");
       return wrap(<section><Heading title={str(p.title, section.title)} />
         <div className={cn("grid gap-4", tpl === "horizontal" ? "md:grid-cols-2" : "grid-cols-2 md:grid-cols-3")}>
-          {cats.map((c) => <button key={c.id} onClick={cta(c.name, "shop")} className={cn("group relative overflow-hidden text-right", tpl === "minimal" ? "rounded-[14px] border border-[var(--kv-line)] p-5" : "rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)]")}>
-            {tpl !== "minimal" && <div className={cn("bg-[var(--kv-surface-2)]", tpl === "horizontal" ? "h-28" : "aspect-[4/3]")}>{(c.cover_url || c.image_url) && <ResponsiveImg src={c.cover_url ?? c.image_url} alt={c.name} sizes="(min-width: 768px) 33vw, 50vw" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />}</div>}
-            <div className={cn(tpl === "overlay" || tpl === "glass" ? "absolute inset-x-2 bottom-2 rounded-[12px] bg-[var(--kv-glass)] p-3 backdrop-blur-md" : "p-4")}><p className="text-[14.5px] font-extrabold">{c.name}</p><p className="mt-1 line-clamp-2 text-[12px] text-[var(--kv-muted)]">{c.description}</p></div>
-          </button>)}
+          {cats.map((c) => <CategoryCard key={c.id} category={c} fallbackTemplate={tpl} onClick={cta(c.name, `category:${c.slug}`)} />)}
         </div></section>);
     }
     case "newsletter":
@@ -266,6 +248,169 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
       if (section.composition && Array.isArray(section.composition)) return wrap(<Composable nodes={section.composition as ComposableNode[]} payload={p} product={products[0]} onNav={onNav} />);
       return null;
   }
+}
+
+/* ============================ Block helpers ============================ */
+
+type CategoryItem = NonNullable<NonNullable<PageSection["resolved"]>["categories"]>[number];
+const CAT_RADIUS: Record<string, string> = { sm: "rounded-[10px]", md: "rounded-[14px]", lg: "rounded-[18px]", xl: "rounded-[26px]" };
+/** Category card (Req 199-200): template + per-category card style tokens set in the Taxonomy panel. */
+export function CategoryCard({ category: c, fallbackTemplate = "editorial", onClick }: { category: CategoryItem; fallbackTemplate?: string; onClick?: () => void }) {
+  const cs = (c.card_style ?? {}) as { aspect?: string; radius?: string; overlay?: number; textAlign?: string; showDescription?: boolean; accent?: string };
+  const tpl = c.card_template || fallbackTemplate;
+  const img = c.cover_url || c.image_url;
+  const overlaid = tpl === "overlay" || tpl === "glass" || tpl === "image";
+  const accentBg = cs.accent === "accent" ? "bg-[var(--kv-accent)] text-white" : cs.accent === "primary" ? "bg-[var(--kv-action)] text-[var(--kv-bg)]" : "";
+  return (
+    <button onClick={onClick} data-category={c.slug} data-card-template={tpl}
+      className={cn("group relative w-full overflow-hidden text-right", CAT_RADIUS[cs.radius ?? "lg"], tpl === "minimal" ? "border border-[var(--kv-line)] p-5" : "border border-[var(--kv-line)] bg-[var(--kv-surface)]", tpl === "horizontal" && "flex items-stretch", accentBg, cs.textAlign === "center" && "text-center")}>
+      {tpl !== "minimal" && (
+        <div className={cn("relative bg-[var(--kv-surface-2)]", tpl === "horizontal" ? "w-2/5 shrink-0" : "")} style={tpl === "horizontal" ? undefined : { aspectRatio: cs.aspect ?? "4/3" }}>
+          {img && <ResponsiveImg src={img} alt={c.name} sizes="(min-width: 768px) 33vw, 50vw" className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+          {overlaid && (cs.overlay ?? 30) > 0 && <div className="absolute inset-0" style={{ background: `linear-gradient(to top, rgba(14,21,39,${(cs.overlay ?? 30) / 100}), transparent 70%)` }} />}
+        </div>
+      )}
+      <div className={cn(tpl === "glass" ? "absolute inset-x-2 bottom-2 rounded-[12px] bg-[var(--kv-glass)] p-3 backdrop-blur-md" : overlaid && tpl !== "glass" ? "absolute inset-x-0 bottom-0 p-4 text-white" : "p-4", tpl === "horizontal" && "flex flex-col justify-center")}>
+        <p className="text-[14.5px] font-extrabold">{c.name}</p>
+        {cs.showDescription !== false && c.description && <p className={cn("mt-1 line-clamp-2 text-[12px]", overlaid && tpl !== "glass" ? "text-white/85" : "text-[var(--kv-muted)]")}>{c.description}</p>}
+        {typeof c.product_count === "number" && <p className="mt-1 text-[11px] opacity-75">{fa(c.product_count)} محصول</p>}
+      </div>
+    </button>
+  );
+}
+
+function FeaturedProduct({ product: x, p, onOpen, onQuickAdd, pageCode }: { product: CommerceProduct; p: Record<string, unknown>; onOpen?: (id: string) => void; onQuickAdd?: QuickAdd; pageCode: string }) {
+  const toast = useToast();
+  const soldOut = x.available < 1;
+  const offers = x.installmentOffers ?? [];
+  const colors = [...new Set(x.variants.map((v) => v.color).filter(Boolean))] as string[];
+  return (
+    <section data-featured-product={x.id} className="grid items-center gap-6 overflow-hidden rounded-[22px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] md:p-6">
+      <button onClick={() => { siteApi.event({ eventType: "product_card.click", pageCode, targetId: x.id }); onOpen?.(x.id); }} className="kv-img relative aspect-[4/5] overflow-hidden rounded-[16px] bg-[var(--kv-surface-2)]" aria-label={x.name}>
+        {x.image && <ResponsiveImg src={x.image} alt={x.name} sizes="(min-width: 768px) 40vw, 100vw" className="h-full w-full object-cover" />}
+        {p.showBadges !== false && x.discountPercent > 0 && <span className="absolute right-3 top-3 rounded-full bg-[var(--kv-danger)] px-3 py-1 text-[12px] font-bold text-white">٪{fa(x.discountPercent)} تخفیف</span>}
+        {p.showBadges !== false && x.isNew && <span className="absolute left-3 top-3 rounded-full bg-[#2E5A44] px-3 py-1 text-[12px] font-bold text-white">تازه‌رسیده</span>}
+      </button>
+      <div>
+        {str(p.title) && <p className="text-[12.5px] font-bold text-[var(--kv-accent)]">{str(p.title)}</p>}
+        <p className="mt-1 text-[12px] text-[var(--kv-muted)]">{x.brand}</p>
+        <h2 className="kv-editorial-title mt-1 text-[24px] leading-[1.4] md:text-[30px]">{x.name}</h2>
+        {str(p.description) && <p className="mt-3 text-[14px] leading-8 text-[var(--kv-muted)]">{str(p.description)}</p>}
+        <div className="mt-4 flex flex-wrap items-baseline gap-3"><b className="text-[22px] tabular-nums">{fmtMoney(rialToToman(x.priceRial))}</b>{x.compareAtRial && <s className="text-[14px] text-[var(--kv-muted)] tabular-nums">{fmtMoney(rialToToman(x.compareAtRial))}</s>}</div>
+        {p.showRating !== false && x.reviewCount > 0 && <p className="mt-2 flex items-center gap-1 text-[12.5px] text-[var(--kv-muted)]"><Star size={13} fill="#D6A94E" strokeWidth={0} />{fa(x.rating)} از ۵ · {fa(x.reviewCount)} دیدگاه</p>}
+        {p.showSwatches !== false && colors.length > 0 && <p className="mt-2 text-[12px] text-[var(--kv-muted)]">رنگ‌ها: {colors.join("، ")}</p>}
+        {p.showInstallment !== false && offers.length > 0 && <ul className="mt-4 space-y-1.5">{offers.map((o) => <li key={o.provider} className="flex items-center gap-2 text-[12.5px]"><span className="h-2 w-2 rounded-full" style={{ background: o.color }} /><b>{o.title}</b><span className="text-[var(--kv-muted)] tabular-nums">{fa(o.count)} قسط × {fmtMoney(rialToToman(o.perInstallmentRial))}</span></li>)}</ul>}
+        <div className="mt-6 flex flex-wrap gap-3">
+          <Btn variant="accent" disabled={soldOut} onClick={() => { if (!onQuickAdd) { onOpen?.(x.id); return; } if (onQuickAdd(x)) { toast.bumpCart(); toast.push(`«${x.name}» به سبد خرید اضافه شد.`); } else toast.push("این سایز دیگر موجود نیست.", "error"); }}>{soldOut ? "ناموجود" : "افزودن به سبد"}</Btn>
+          <Btn variant="soft" onClick={() => onOpen?.(x.id)}>مشاهده جزئیات</Btn>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Gallery({ title, images, layout, columns, eager }: { title: string; images: string[]; layout: string; columns: number; eager: boolean }) {
+  const [open, setOpen] = useState<number | null>(null);
+  const srcs = images.map((m) => mediaSrc(m) ?? PLACEHOLDER);
+  useEffect(() => {
+    if (open === null) return;
+    const on = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(null); if (e.key === "ArrowLeft") setOpen((i) => (i === null ? i : (i + 1) % srcs.length)); if (e.key === "ArrowRight") setOpen((i) => (i === null ? i : (i - 1 + srcs.length) % srcs.length)); };
+    window.addEventListener("keydown", on); return () => window.removeEventListener("keydown", on);
+  }, [open, srcs.length]);
+  if (!srcs.length) return <p className="text-[13px] text-[var(--kv-muted)]">تصویری برای گالری انتخاب نشده است.</p>;
+  const item = (src: string, i: number, cls: string) => <button key={i} onClick={() => setOpen(i)} className={cn("kv-img group overflow-hidden rounded-[16px] bg-[var(--kv-surface-2)]", cls)} aria-label={`نمایش تصویر ${fa(i + 1)}`}><ResponsiveImg src={src} alt="" priority={eager && i === 0} sizes="(min-width: 768px) 33vw, 50vw" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" /></button>;
+  return (
+    <section data-gallery-layout={layout}>
+      {title && <Heading title={title} />}
+      {layout === "carousel" ? <div className="kv-no-scrollbar -mx-1 flex snap-x gap-3 overflow-x-auto px-1 pb-2">{srcs.map((src, i) => item(src, i, "aspect-[4/5] w-[70%] shrink-0 snap-start md:w-[32%]"))}</div>
+        : layout === "masonry" ? <div className="gap-3 [column-fill:_balance]" style={{ columnCount: Math.min(columns, 4) }}>{srcs.map((src, i) => <div key={i} className="mb-3 break-inside-avoid">{item(src, i, cn("block w-full", i % 3 === 0 ? "aspect-[3/4]" : i % 3 === 1 ? "aspect-square" : "aspect-[4/5]"))}</div>)}</div>
+        : <div className="kv-cms-grid" style={{ "--kv-cols-d": String(Math.min(columns, 4)), "--kv-cols-t": String(Math.min(columns, 3)) } as React.CSSProperties}>{srcs.map((src, i) => item(src, i, "aspect-square"))}</div>}
+      {open !== null && (
+        <div role="dialog" aria-modal="true" aria-label="نمایش تصویر" className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4" onClick={() => setOpen(null)}>
+          <img src={srcs[open]} alt="" className="max-h-[88vh] max-w-full rounded-[12px] object-contain" onClick={(e) => e.stopPropagation()} />
+          <button autoFocus onClick={() => setOpen(null)} aria-label="بستن" className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white"><X size={20} /></button>
+          <p className="absolute bottom-4 text-[12px] text-white/80">{fa(open + 1)} از {fa(srcs.length)}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Installment card (Req 189-192): providers, counts, fees and limits come from the Installment Provider domain. */
+function InstallmentCard({ p, section, onCta }: { p: Record<string, unknown>; section: PageSection; onCta: () => void }) {
+  const r = section.resolved ?? {};
+  const wanted = str(p.provider, "");
+  const all = r.providers ?? [];
+  const providers = wanted && wanted !== "generic" && wanted !== "all" ? all.filter((x) => x.code === wanted) : all;
+  const sample = (r.products ?? [])[0];
+  const offers = (sample?.installmentOffers ?? []).filter((o) => providers.some((x) => x.code === o.provider));
+  const title = str(p.title) || (providers.length === 1 ? `خرید اقساطی با ${providers[0]!.title}` : "خرید اقساطی");
+  if (!providers.length) return <p className="rounded-[14px] border border-dashed border-[var(--kv-line-strong)] p-6 text-center text-[12.5px] text-[var(--kv-muted)]">سرویس اقساطی فعالی تعریف نشده است.</p>;
+  return (
+    <section data-installment-providers={providers.map((x) => x.code).join(",")} className="rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-6 md:p-8">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div><p className="flex items-center gap-1.5 text-[12.5px] font-bold text-[var(--kv-accent)]"><CreditCard size={15} />پرداخت اقساطی</p><h2 className="mt-1 text-[20px] font-extrabold">{title}</h2>{str(p.subtitle) && <p className="mt-1.5 max-w-[60ch] text-[13px] leading-7 text-[var(--kv-muted)]">{str(p.subtitle)}</p>}</div>
+        {str(p.cta) && <Btn variant="accent" onClick={onCta}>{str(p.cta)}</Btn>}
+      </div>
+      <div className={cn("mt-5 grid gap-3", providers.length > 1 && "md:grid-cols-2")}>
+        {providers.map((pr) => {
+          const offer = offers.find((o) => o.provider === pr.code);
+          return (
+            <div key={pr.code} className="rounded-[16px] border p-4" style={{ borderColor: `${pr.color}55` }}>
+              <div className="flex items-center gap-2">{pr.logoUrl ? <img src={mediaSrc(pr.logoUrl)} alt="" className="h-7 w-7 rounded-md object-contain" /> : <span className="h-7 w-7 rounded-md" style={{ background: pr.color }} />}
+                <b className="text-[14px]">{pr.title}</b>{pr.badge && <span className="rounded-full px-2 py-0.5 text-[10.5px] font-bold text-white" style={{ background: pr.color }}>{pr.badge}</span>}</div>
+              {offer ? <p className="mt-3 text-[19px] font-extrabold tabular-nums">{fa(offer.count)} × {fmtMoney(rialToToman(offer.perInstallmentRial))}<span className="mr-2 text-[11.5px] font-normal text-[var(--kv-muted)]">مجموع {fmtMoney(rialToToman(offer.totalRial))}</span></p>
+                : <p className="mt-3 text-[14px] font-bold">{fa(pr.count)} قسط{Number(pr.minOrderRial) > 0 ? <span className="mr-2 text-[11.5px] font-normal text-[var(--kv-muted)]">برای خرید از {fmtMoney(rialToToman(pr.minOrderRial))}</span> : null}</p>}
+              {offer && sample && <p className="mt-1 text-[11px] text-[var(--kv-muted)]">نمونه برای «{sample.name}» — محاسبه سرور از قیمت فعلی</p>}
+              {pr.terms && <p className="mt-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">{pr.terms}</p>}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/** Reviews (Req 201-205): approved reviews, rating summary with distribution, customer photos. */
+function ReviewsBlock({ p, section, heading }: { p: Record<string, unknown>; section: PageSection; heading: string }) {
+  const r = section.resolved ?? {};
+  const display = str(p.display, section.variant && section.variant !== "default" ? section.variant : "reviews");
+  const reviews = r.reviews ?? [];
+  const sum = r.reviewSummary;
+  const photos = r.customerPhotos ?? [];
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  const summary = sum && sum.total > 0 ? (
+    <div className="grid items-center gap-5 rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5 md:grid-cols-[auto_1fr]" data-review-summary>
+      <div className="text-center"><p className="text-[40px] font-extrabold leading-none tabular-nums">{fa(Math.round(sum.average * 10) / 10)}</p>
+        <div className="mt-2 flex justify-center gap-0.5" aria-label={`${fa(Math.round(sum.average * 10) / 10)} از ۵`}>{Array.from({ length: 5 }, (_, i) => <Star key={i} size={15} fill={i < Math.round(sum.average) ? "#D6A94E" : "none"} strokeWidth={i < Math.round(sum.average) ? 0 : 1.5} />)}</div>
+        <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">{fa(sum.total)} دیدگاه تأییدشده</p></div>
+      <div className="space-y-1.5">{[5, 4, 3, 2, 1].map((star) => { const n = sum.distribution?.find((d) => d.rating === star)?.n ?? 0; const pct = sum.total ? Math.round((n / sum.total) * 100) : 0; return (
+        <div key={star} className="flex items-center gap-2 text-[12px]"><span className="w-10 tabular-nums">{fa(star)} ستاره</span><div className="h-2 flex-1 overflow-hidden rounded-full bg-[var(--kv-surface-2)]" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`${fa(star)} ستاره`}><div className="h-full rounded-full bg-[#D6A94E]" style={{ width: `${pct}%` }} /></div><span className="w-8 text-left tabular-nums text-[var(--kv-muted)]">{fa(n)}</span></div>
+      ); })}</div>
+    </div>
+  ) : null;
+  const photoGrid = photos.length ? (
+    <div className="grid grid-cols-3 gap-2 md:grid-cols-6" data-customer-photos>{photos.map((ph) => <button key={ph.url} onClick={() => setLightbox(ph.url)} className="kv-img aspect-square overflow-hidden rounded-[12px] bg-[var(--kv-surface-2)]" aria-label={`عکس ${ph.author} از ${ph.productName}`}><ResponsiveImg src={ph.url} alt={`عکس مشتری از ${ph.productName}`} sizes="(min-width: 768px) 16vw, 33vw" className="h-full w-full object-cover" /></button>)}</div>
+  ) : null;
+  const list = reviews.length ? (
+    <div className="grid gap-4 md:grid-cols-3">{reviews.map((rv) => (
+      <figure key={rv.id} className="rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5">
+        <div className="flex items-center gap-0.5" aria-label={`${fa(rv.rating)} ستاره`}>{Array.from({ length: 5 }, (_, i) => <Star key={i} size={14} fill={i < rv.rating ? "#D6A94E" : "none"} strokeWidth={i < rv.rating ? 0 : 1.5} />)}</div>
+        <Quote size={18} className="mt-3 text-[var(--kv-accent)]" /><blockquote className="mt-2 text-[13.5px] leading-7">{rv.body || rv.title}</blockquote>
+        {p.showPhotos !== false && rv.photos && rv.photos.length > 0 && <div className="mt-3 flex gap-2">{rv.photos.map((u) => <button key={u} onClick={() => setLightbox(u)} className="h-14 w-14 overflow-hidden rounded-[10px]" aria-label="بزرگ‌نمایی عکس"><img src={mediaSrc(u)} alt="" loading="lazy" className="h-full w-full object-cover" /></button>)}</div>}
+        <figcaption className="mt-3 text-[12px] font-bold text-[var(--kv-muted)]">{rv.display_name} · {rv.product_name}{rv.verified_purchase && " · خرید تأییدشده"}</figcaption>
+      </figure>))}</div>
+  ) : <p className="text-[13px] text-[var(--kv-muted)]">هنوز دیدگاهی ثبت نشده است.</p>;
+  return (
+    <section data-review-display={display} className="space-y-4">
+      <Heading title={heading} subtitle={display === "reviews" && sum?.total ? `میانگین ${fa(Math.round(sum.average * 10) / 10)} از ۵ · ${fa(sum.total)} دیدگاه تأییدشده` : undefined} action={display === "customer_photos" && photos.length ? <span className="inline-flex items-center gap-1 text-[12px] text-[var(--kv-muted)]"><Camera size={14} />{fa(photos.length)} عکس</span> : undefined} />
+      {display === "rating_summary" && (summary ?? <p className="text-[13px] text-[var(--kv-muted)]">هنوز امتیازی ثبت نشده است.</p>)}
+      {display === "customer_photos" && (photoGrid ?? <p className="text-[13px] text-[var(--kv-muted)]">هنوز عکس تأییدشده‌ای از مشتریان نداریم.</p>)}
+      {display === "product_rating" && <>{summary}{list}</>}
+      {display === "reviews" && <>{p.showSummary && summary}{list}</>}
+      {lightbox && <div role="dialog" aria-modal="true" aria-label="عکس مشتری" className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4" onClick={() => setLightbox(null)}><img src={mediaSrc(lightbox)} alt="" className="max-h-[88vh] max-w-full rounded-[12px]" /><button autoFocus onClick={() => setLightbox(null)} aria-label="بستن" className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white"><X size={20} /></button></div>}
+    </section>
+  );
 }
 
 function LeadInline({ pageCode }: { pageCode: string }) {

@@ -7,6 +7,7 @@ import { loadConfig } from './config.js';
 import { MeliPayamakSms } from './melipayamak.js';
 import { runAutomation } from './crm.js';
 import { processStyleAnalysisEvents } from './style.js';
+import { processMediaUploadedEvents } from './media-pipeline.js';
 
 const config = loadConfig();
 if (!config.REDIS_URL) throw new Error('REDIS_URL is required for the worker.');
@@ -122,8 +123,12 @@ await crmPump();
 const stylePump = async () => { await processStyleAnalysisEvents(pool, 20); };
 const styleTimer = setInterval(() => void stylePump().catch((error) => console.error('Style analysis pump failed', error)), 15_000);
 await stylePump();
+// Media pipeline (Req 234, 322-323): media.uploaded → validate / inspect / responsive variants / background removal.
+const mediaPump = async () => { await processMediaUploadedEvents(pool, 10); };
+const mediaTimer = setInterval(() => void mediaPump().catch((error) => console.error('Media pipeline pump failed', error)), 10_000);
+await mediaPump();
 const shutdown = async () => {
-  clearInterval(timer); clearInterval(smsTimer); clearInterval(crmTimer); clearInterval(styleTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
+  clearInterval(timer); clearInterval(smsTimer); clearInterval(crmTimer); clearInterval(styleTimer); clearInterval(mediaTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
 };
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);

@@ -8,7 +8,7 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
 import { processAvatar } from './images.js';
-import { badRequest, conflict, forbidden, notFound, unauthorized } from './errors.js';
+import { badRequest, conflict, forbidden, notFound, unauthorized, patchBody } from './errors.js';
 import { putFile } from './storage.js';
 import { snapshotSupplierVersion } from './suppliers.js';
 import { commerceProductsByIds, queryCommerceProducts } from './commerce-view.js';
@@ -237,7 +237,7 @@ export function registerProfileRoutes(app: FastifyInstance, pool: DbPool, config
   app.patch('/api/v1/admin/product-types/:id', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'products:write');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = typeBody.omit({ code: true }).partial().parse(request.body);
+    const body = patchBody(typeBody.omit({ code: true }).partial().parse(request.body), request.body);
     if (body.specTemplate && new Set(body.specTemplate.map((f) => f.code)).size !== body.specTemplate.length) throw badRequest('کد فیلدها باید یکتا باشد.');
     if (body.sizes && new Set(body.sizes.map((s) => s.code)).size !== body.sizes.length) throw badRequest('کد سایزها باید یکتا باشد.');
     return transaction(pool, async (client) => {
@@ -479,6 +479,7 @@ export function registerProfileRoutes(app: FastifyInstance, pool: DbPool, config
         (SELECT count(*)::int FROM orders WHERE buyer_id = $1 AND status = 'delivered') AS delivered_orders,
         (SELECT count(*)::int FROM wishlist_items i JOIN wishlist_collections c ON c.id = i.collection_id WHERE c.owner_id = $1) AS wishlist,
         (SELECT count(*)::int FROM saved_styles WHERE user_id = $1) AS saved_styles,
+        (SELECT COALESCE(jsonb_array_length(items), 0)::int FROM saved_carts WHERE user_id = $1) AS saved_cart,
         (SELECT count(*)::int FROM coupons c WHERE c.recipient_user_id = $1 AND c.active AND c.ends_at > now()
            AND NOT EXISTS (SELECT 1 FROM coupon_redemptions r WHERE r.coupon_id = c.id AND r.user_id = $1)) AS coupons,
         (SELECT COALESCE(sum(total_rial), 0)::text FROM orders WHERE buyer_id = $1 AND status NOT IN ('pending_payment','cancelled','returned')) AS spent_rial`,
@@ -518,7 +519,7 @@ export function registerProfileRoutes(app: FastifyInstance, pool: DbPool, config
     return {
       greetingName: me?.first_name || me?.display_name || user.displayName, avatarUrl: me?.avatar_url ?? null,
       summary: { activeOrders: counts?.active_orders ?? 0, deliveredOrders: counts?.delivered_orders ?? 0, wishlist: counts?.wishlist ?? 0,
-        savedStyles: counts?.saved_styles ?? 0, coupons: counts?.coupons ?? 0, loyalty: { points, tier: loyaltyTier(points) } },
+        savedStyles: counts?.saved_styles ?? 0, savedCart: counts?.saved_cart ?? 0, coupons: counts?.coupons ?? 0, loyalty: { points, tier: loyaltyTier(points) } },
       activeOrder, coupons, invoices, reviewableCount: reviewable?.n ?? 0,
       personalization: { forYou, recentlyViewed, buyAgain, wishlistProducts, suggestedStyles, basedOnVibe: topVibe ?? null },
       appearance: appearance?.value ?? null,
@@ -553,6 +554,51 @@ export function registerProfileRoutes(app: FastifyInstance, pool: DbPool, config
     const user = await principal(request, pool, config);
     return { items: (await pool.query(`SELECT id, reference, kind, order_id, status, total_rial::text, paid_rial::text, issue_date, created_at FROM invoices
       WHERE buyer->>'userId' = $1 AND kind IN ('retail_sale','wholesale_sale','refund','return_credit','installment_plan') ORDER BY created_at DESC LIMIT 100`, [user.id])).rows };
+  });
+
+  /* ---------- Saved cart (Req 344, 351): only product/variant/quantity is stored; price & stock are read live. ---------- */
+  const savedCartItems = z.array(z.object({ productId: z.uuid(), variantId: z.uuid().nullable(), quantity: z.number().int().min(1).max(20) }).strict()).max(50);
+  const loadSavedCart = async (userId: string) => {
+    const row = await one<{ items: { productId: string; variantId: string | null; quantity: number }[]; updated_at: string }>(pool, 'SELECT items, updated_at FROM saved_carts WHERE user_id = $1', [userId]);
+    const items = row?.items ?? [];
+    const products = await commerceProductsByIds(pool, [...new Set(items.map((i) => i.productId))]);
+    return {
+      updatedAt: row?.updated_at ?? null,
+      items: items.map((item) => {
+        const product = products.find((p) => p.id === item.productId) ?? null;
+        const variant = product?.variants.find((v) => v.id === item.variantId) ?? null;
+        const available = variant ? variant.available : product?.available ?? 0;
+        return { ...item, product, variant, available, unavailable: !product || available < 1, quantityAdjusted: Math.min(item.quantity, Math.max(available, 0)) };
+      }),
+    };
+  };
+  app.get('/api/v1/profile/saved-cart', async (request) => {
+    const user = await principal(request, pool, config);
+    return loadSavedCart(user.id);
+  });
+  app.put('/api/v1/profile/saved-cart', async (request) => {
+    const user = await principal(request, pool, config);
+    const body = z.object({ items: savedCartItems }).strict().parse(request.body);
+    const merged = new Map<string, { productId: string; variantId: string | null; quantity: number }>();
+    for (const item of body.items) {
+      const key = `${item.productId}:${item.variantId ?? ''}`;
+      merged.set(key, { ...item, quantity: Math.min(20, (merged.get(key)?.quantity ?? 0) + item.quantity) });
+    }
+    const items = [...merged.values()];
+    if (items.length) {
+      const known = await pool.query(`SELECT p.id FROM products p WHERE p.id = ANY($1::uuid[]) AND p.status = 'published'`, [items.map((i) => i.productId)]);
+      const ok = new Set(known.rows.map((r: { id: string }) => r.id));
+      const variantIds = items.map((i) => i.variantId).filter((v): v is string => Boolean(v));
+      const variants = variantIds.length ? await pool.query('SELECT id, product_id FROM product_variants WHERE id = ANY($1::uuid[])', [variantIds]) : { rows: [] };
+      const variantOwner = new Map(variants.rows.map((r: { id: string; product_id: string }) => [r.id, r.product_id]));
+      for (const item of items) {
+        if (!ok.has(item.productId)) throw badRequest('یکی از کالاهای سبد دیگر در فروشگاه موجود نیست.');
+        if (item.variantId && variantOwner.get(item.variantId) !== item.productId) throw badRequest('تنوع انتخاب‌شده به این کالا تعلق ندارد.');
+      }
+    }
+    await pool.query(`INSERT INTO saved_carts(user_id, items, updated_at) VALUES ($1,$2,now())
+      ON CONFLICT (user_id) DO UPDATE SET items = EXCLUDED.items, updated_at = now()`, [user.id, JSON.stringify(items)]);
+    return loadSavedCart(user.id);
   });
 
   /* ---------- Supplier profile approval policy (Req 339-341) ---------- */

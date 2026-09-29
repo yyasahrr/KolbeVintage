@@ -29,6 +29,14 @@ const TOKEN_TO_VAR: Record<string, string[]> = {
   success: ["--kv-success"], warning: ["--kv-warning"], danger: ["--kv-danger"],
 };
 
+const SHADOWS: Record<string, [string, string, string]> = {
+  soft: ["0 1px 2px rgba(27,42,74,.05), 0 2px 8px rgba(27,42,74,.05)", "0 1px 2px rgba(27,42,74,.06), 0 8px 28px -8px rgba(27,42,74,.14)", "0 2px 4px rgba(27,42,74,.06), 0 24px 64px -16px rgba(27,42,74,.22)"],
+  crisp: ["0 1px 0 rgba(15,23,42,.08)", "0 2px 0 rgba(15,23,42,.06), 0 6px 14px -6px rgba(15,23,42,.18)", "0 3px 0 rgba(15,23,42,.06), 0 16px 32px -12px rgba(15,23,42,.24)"],
+  warm: ["0 1px 2px rgba(120,60,30,.08), 0 2px 8px rgba(120,60,30,.06)", "0 1px 2px rgba(120,60,30,.08), 0 10px 28px -8px rgba(120,60,30,.2)", "0 2px 4px rgba(120,60,30,.08), 0 26px 60px -16px rgba(120,60,30,.28)"],
+  rose: ["0 1px 2px rgba(150,50,80,.07), 0 2px 8px rgba(150,50,80,.06)", "0 1px 2px rgba(150,50,80,.08), 0 10px 28px -8px rgba(150,50,80,.18)", "0 2px 4px rgba(150,50,80,.08), 0 26px 60px -16px rgba(150,50,80,.26)"],
+  "high-contrast": ["0 0 0 1px rgba(0,0,0,.6)", "0 0 0 2px rgba(0,0,0,.75)", "0 0 0 3px rgba(0,0,0,.85)"],
+};
+
 /**
  * Applies design tokens as CSS variables (Req 219-221, 226): every component reads `var(--kv-*)`,
  * so a campaign theme re-skins the whole UI without touching CSS. User dark mode keeps priority
@@ -47,6 +55,11 @@ export function useThemeTokens(theme: SiteTheme | null, dark: boolean) {
       }
     }
     if (apply && tokens.radius) root.style.setProperty("--radius-card", tokens.radius); else root.style.removeProperty("--radius-card");
+    // Shadow family, font and spacing density are tokens too (Req 221): they map to whole CSS-var sets.
+    const shadow = apply ? SHADOWS[tokens.shadow ?? ""] : undefined;
+    (["sm", "md", "lg"] as const).forEach((k, i) => { if (shadow) root.style.setProperty(`--shadow-soft-${k}`, shadow[i]!); else root.style.removeProperty(`--shadow-soft-${k}`); });
+    if (apply && tokens.font === "system") root.style.setProperty("--font-sans", "system-ui, -apple-system, \"Segoe UI\", Tahoma, sans-serif"); else root.style.removeProperty("--font-sans");
+    root.dataset.density = apply && tokens.spacing && tokens.spacing !== "comfortable" ? tokens.spacing : "";
     root.dataset.theme = apply ? theme!.code : "";
   }, [theme, dark]);
 }
@@ -69,6 +82,21 @@ function useCountdown(endsAt?: string | null) {
 }
 
 const ICONS: Record<string, React.ReactNode> = { truck: <Truck size={14} />, sparkles: <Sparkles size={14} />, crown: <Crown size={14} />, shield: <ShieldCheck size={14} /> };
+
+/** Announcement bound to a promotion / coupon / collection / landing page (Req 331): resolved server-side. */
+function BindingChip({ binding: b, onNav }: { binding: NonNullable<Announcement["binding"]>; onNav: SiteNavigate }) {
+  const [copied, setCopied] = useState(false);
+  const chip = "rounded-full bg-white/15 px-3 py-0.5 text-[11.5px] hover:bg-white/25";
+  if (b.kind === "coupon" && b.code) return (
+    <button data-binding="coupon" className={cn(chip, "kv-latin tracking-wider")} aria-label={`کپی کد تخفیف ${b.code}`}
+      onClick={() => { void navigator.clipboard?.writeText(b.code!).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1600); }).catch(() => undefined); }}>
+      {copied ? "کپی شد ✓" : <>کد: {b.code}{b.label ? ` · ${b.label}` : ""}</>}
+    </button>
+  );
+  if (b.kind === "promotion") return b.discountPercent ? <button data-binding="promotion" onClick={() => onNav(b.target ?? "shop")} className={chip}>تا ٪{b.discountPercent.toLocaleString("fa-IR")} تخفیف</button> : null;
+  if ((b.kind === "collection" || b.kind === "landing_page") && b.target) return <button data-binding={b.kind} onClick={() => onNav(b.target!)} className={chip}>{b.title ?? "مشاهده"} ←</button>;
+  return null;
+}
 
 /** Announcement bar with static / marquee / ticker / slider / rotating modes (Req 327-332). */
 export function ServerAnnouncementBar({ announcements, onNav }: { announcements: Announcement[]; onNav: SiteNavigate }) {
@@ -109,6 +137,7 @@ export function ServerAnnouncementBar({ announcements, onNav }: { announcements:
           {active.mode === "slider" && active.messages.length > 1 && <button aria-label="پیام قبلی" onClick={() => setIndex((i) => (i - 1 + active.messages.length) % active.messages.length)} className="opacity-80 hover:opacity-100"><ChevronRight size={15} /></button>}
           <span key={index} className={cn(active.mode === "ticker" && "kv-ticker-item")}><Msg m={message} /></span>
           {countdown && <span className="rounded-md bg-white/15 px-2 py-0.5 tabular-nums" role="timer" aria-label="زمان باقی‌مانده کمپین">{countdown}</span>}
+          {active.binding && <BindingChip binding={active.binding} onNav={onNav} />}
           {style.ctaLabel && style.ctaTarget && <button onClick={() => onNav(style.ctaTarget!)} className="rounded-full bg-white/15 px-3 py-0.5 text-[11.5px] hover:bg-white/25">{style.ctaLabel}</button>}
           {active.mode === "slider" && active.messages.length > 1 && <button aria-label="پیام بعدی" onClick={() => setIndex((i) => (i + 1) % active.messages.length)} className="opacity-80 hover:opacity-100"><ChevronLeft size={15} /></button>}
         </div>

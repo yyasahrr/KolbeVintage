@@ -1,4 +1,4 @@
--- Migration 016: Requirements 173-244 (CMS Redesign, Theme Engine, Product Cards, Vibes, Collections, Layout, Assets),
+-- Migration 035 (Agent C range 035-044; formerly 016): Requirements 173-244 (CMS Redesign, Theme Engine, Product Cards, Vibes, Collections, Layout, Assets),
 -- 248-283 & 315-324 (Style Builder Intelligence, Compatibility Score, Media Roles, Saved Styles, Reviews, Recommendations),
 -- 325-356 (Adaptive Product Type Templates, Announcement Bar Engine, Unified Profile Domain, Supplier Approval Diff, Account Security & Dashboard).
 
@@ -379,14 +379,6 @@ CREATE TABLE IF NOT EXISTS cms_announcements (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-INSERT INTO cms_announcements(id, title, messages, mode, style, binding_type, priority, active) VALUES
-  ('8a660000-0000-4000-8000-000000000001', 'اعلان بالای هدر کلبه',
-   '[{"text":"ارسال رایگان برای خریدهای بالای ۳ میلیون تومان","link":"shop","ctaLabel":"خرید","icon":"truck"},{"text":"امکان خرید چهارقسطی بدون کارمزد با اسنپ‌پی و دیجی‌پی","link":"shop","ctaLabel":"مشاهده","icon":"sparkles"},{"text":"کالکشن جدید پاییز و زمستان کلبه وینتیج منتشر شد","link":"shop","ctaLabel":"کالکشن جدید","icon":"crown"}]'::jsonb,
-   'rotating',
-   '{"backgroundColor":"#1B2A4A","textColor":"#F9F6F1","fontFamily":"Vazirmatn","speed":"normal","direction":"rtl","heightPx":40,"icon":"sparkles","dismissible":true,"ctaLabel":"مشاهده کالکشن","ctaTarget":"shop"}'::jsonb,
-   'none', 100, true)
-ON CONFLICT (id) DO NOTHING;
-
 CREATE TABLE IF NOT EXISTS cms_leads (
   id uuid PRIMARY KEY,
   page_code text NOT NULL,
@@ -507,42 +499,8 @@ INSERT INTO site_settings(key, value) VALUES
   }'::jsonb)
 ON CONFLICT (key) DO NOTHING;
 
--- Seed About Us page & Vibe Landing pages in cms_pages (Req 205, 274, 281-283)
-INSERT INTO cms_pages(id, code, title, path, page_type, status, description, seo, active) VALUES
-  ('8a770000-0000-4000-8000-000000000001', 'about', 'درباره کلبه وینتیج', '/about', 'about', 'published',
-   'داستان شکل‌گیری کلبه وینتیج، فلسفه طراحی، اصالت پارچه و شبکه تأمین‌کنندگان منتخب',
-   '{"title":"درباره ما | کلبه وینتیج","description":"آشنایی با داستان برند کلبه وینتیج، ارزش‌ها و استاندارد کیفیت پوشاک"}'::jsonb, true),
-  ('8a770000-0000-4000-8000-000000000002', 'vibe-old-money', 'لندینگ استایل Old Money', '/vibe/old-money', 'vibe', 'published',
-   'راهنمای کامل و محصولات منتخب استایل Old Money در کلبه وینتیج',
-   '{"title":"استایل Old Money | کلبه وینتیج","description":"پالت رنگ کرم و سرمه‌ای، کت‌های پشمی و پیراهن‌های کلاسیک"}'::jsonb, true),
-  ('8a770000-0000-4000-8000-000000000003', 'vibe-dark-academia', 'لندینگ استایل Dark Academia', '/vibe/dark-academia', 'vibe', 'published',
-   'گزیده پوشاک پاییزی و زمستانی با زیبایی‌شناسی Dark Academia',
-   '{"title":"استایل Dark Academia | کلبه وینتیج","description":"ترنچ‌کت، بلیزر پشمی و شلوارهای پیلی‌دار با تناژ گرم و تیره"}'::jsonb, true),
-  ('8a770000-0000-4000-8000-000000000004', 'vip-lead', 'ثبت‌نام زودهنگام کالکشن اختصاصی', '/landing/vip-club', 'lead_generation', 'published',
-   'صفحه جذب سرنخ متصل به CRM برای دسترسی زودهنگام به کالکشن‌های محدود',
-   '{"title":"باشگاه مشتریان ویژه | کلبه وینتیج"}'::jsonb, true)
-ON CONFLICT (code) DO NOTHING;
-
--- Seed sections for the CMS-built About / Vibe / Lead pages (Req 205, 274, 283) — no hardcoded JSX pages.
-INSERT INTO cms_sections(id, page_id, component_id, title, payload, visible, position)
-SELECT gen_random_uuid(), p.id, c.id, v.title, v.payload::jsonb, true, v.position
-FROM (VALUES
-  ('about', 'story_hero', 'هیرو داستان ما', '{"eyebrow":"از ۱۳۹۸","title":"کلبه وینتیج؛ پوشاکی برای سال‌ها","subtitle":"از یک کارگاه کوچک در تهران شروع کردیم تا پارچه خوب، دوخت دقیق و طراحی ماندگار را به کمد لباس شما بیاوریم.","yearFounded":"۱۳۹۸","location":"تهران"}', 1),
-  ('about', 'text_section', 'روایت برند', '{"eyebrow":"داستان برند","title":"اصالت، دوخت و ماندگاری","body":"هر محصول کلبه مسیر مشخصی دارد: انتخاب پارچه از بافندگان معتبر، الگوسازی دقیق، دوخت تمیز و کنترل کیفیت سه‌مرحله‌ای.\nما باور داریم لباس خوب باید سال‌ها بماند؛ نه یک فصل.","alignment":"center"}', 2),
-  ('about', 'timeline', 'مسیر کلبه', '{"title":"مسیر کلبه","milestones":"۱۳۹۸|آغاز کارگاه کوچک کلبه در تهران\n۱۴۰۰|راه‌اندازی فروشگاه آنلاین و ارسال سراسری\n۱۴۰۲|بازارچه عمده و شبکه تأمین‌کنندگان منتخب\n۱۴۰۵|استایل‌بیلدر هوشمند و پرو مجازی"}', 3),
-  ('about', 'values_grid', 'ارزش‌های ما', '{"title":"ارزش‌های ما","values":"اصالت|پارچه طبیعی، دوخت دقیق و ضمانت اصالت کالا\nماندگاری|طراحی فراتر از فصل و مد زودگذر\nشفافیت|قیمت، موجودی و ارسال واقعی و قابل پیگیری"}', 4),
-  ('about', 'stats_strip', 'کلبه در یک نگاه', '{"stats":"۱۲هزار+|مشتری وفادار\n۱۲۰+|تأمین‌کننده منتخب\n۴.۹|امتیاز رضایت\n۴۸ ساعت|ارسال سریع"}', 5),
-  ('about', 'cta', 'دعوت به خرید', '{"title":"کالکشن کلبه را ببینید","cta":"ورود به فروشگاه","target":"shop"}', 6),
-  ('vibe-old-money', 'hero', 'هیرو Old Money', '{"template":"minimal","eyebrow":"Vibe","title":"Old Money · اصالت اشرافی","subtitle":"پالت کرم، سرمه‌ای و شتری با پشم، کشمیر و کتان طبیعی.","ctaLabel":"خرید این استایل","ctaTarget":"shop"}', 1),
-  ('vibe-old-money', 'product_grid', 'منتخب Old Money', '{"title":"منتخب Old Money","collectionCode":"old-money-edit","limit":8}', 2),
-  ('vibe-dark-academia', 'hero', 'هیرو Dark Academia', '{"template":"minimal","eyebrow":"Vibe","title":"Dark Academia · آکادمیا تیره","subtitle":"قهوه‌ای تیره، زرشکی و چهارخانه پشمی الهام‌گرفته از کتابخانه‌های کلاسیک.","ctaLabel":"خرید این استایل","ctaTarget":"shop"}', 1),
-  ('vibe-dark-academia', 'product_grid', 'پالتو و کت زمستانی', '{"title":"پالتو و کت پاییز و زمستان","collectionCode":"winter-coats","limit":8}', 2),
-  ('vip-lead', 'hero', 'هیرو باشگاه ویژه', '{"template":"minimal","eyebrow":"دسترسی زودهنگام","title":"اولین نفر از کالکشن‌های محدود باخبر شوید","subtitle":"اعضای باشگاه ویژه کلبه ۲۴ ساعت زودتر به کالکشن‌های جدید دسترسی دارند.","ctaLabel":"","ctaTarget":"shop"}', 1),
-  ('vip-lead', 'lead_form', 'فرم عضویت', '{"title":"عضو باشگاه ویژه شوید","subtitle":"شماره همراه خود را ثبت کنید؛ پیش از انتشار عمومی خبرتان می‌کنیم.","campaignSource":"vip-club","ctaLabel":"ثبت‌نام","consentText":"با ارسال فرم، دریافت پیامک اطلاع‌رسانی کلبه را می‌پذیرم.","collectEmail":true,"collectName":true}', 2)
-) AS v(page_code, component_code, title, payload, position)
-JOIN cms_pages p ON p.code = v.page_code
-JOIN cms_components c ON c.code = v.component_code
-WHERE NOT EXISTS (SELECT 1 FROM cms_sections s WHERE s.page_id = p.id);
+-- About / Vibe / Lead starter pages are NOT seeded here: fresh databases start with an empty CMS.
+-- They are created on demand by POST /api/v1/admin/cms/bootstrap (backend/src/cms-starter.ts).
 
 -- 7. Product Types & Adaptive Specification Templates (Req 4-9, 122-128, 325-326)
 CREATE TABLE IF NOT EXISTS product_types (

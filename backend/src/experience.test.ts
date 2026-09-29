@@ -15,6 +15,12 @@ import { deviceLabel } from './auth.js';
 import { jsonLdString, legacySeoToWrite, resolveSeo, validateSeoInput, type SeoSubject } from './seo.js';
 import { processAvatar, renderVariant, snapWidth } from './images.js';
 import sharp from 'sharp';
+import { validateSectionPayload, validateStyleOverrides, type FieldSchema } from './cms-schema.js';
+import { installmentOffers, type InstallmentProvider } from './installments.js';
+import { similarityScore } from './recommendations.js';
+import { applyInstallmentPolicy, ruleMatches, type CommerceProduct } from './commerce-view.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 /* ============================ Pure rules (always run) ============================ */
 
@@ -236,6 +242,93 @@ describe('SEO Domain (Req 235) and media processing (Req 234, 334)', () => {
 });
 
 /* ============================ Integration (PostgreSQL) ============================ */
+
+
+/* ============================ Round 3: typed schema, installments, recommendations ============================ */
+
+describe('Typed field schema & presets (Req 175-181, 211)', () => {
+  const schema: FieldSchema = { version: 2, props: [], fields: [
+    { key: 'title', type: 'text', label: 'تیتر', group: 'content', required: true },
+    { key: 'template', type: 'select', label: 'قالب', group: 'layout', options: ['static', 'fullviewport', 'split'] },
+    { key: 'image', type: 'media', label: 'تصویر', group: 'media' },
+    { key: 'overlay', type: 'number', label: 'تیرگی', group: 'style', min: 0, max: 90 },
+    { key: 'video', type: 'video', label: 'ویدیو', group: 'media', showIf: { template: 'video' }, required: true },
+  ] } as FieldSchema;
+  test('valid payloads are coerced, legacy aliases normalised', () => {
+    const out = validateSectionPayload(schema, { title: ' سلام ', template: 'fullbleed', image: '/api/v1/media/0b2a8c1e-0000-4000-8000-000000000001', overlay: '40' });
+    assert.equal(out.title, 'سلام'); assert.equal(out.template, 'fullviewport'); assert.equal(out.overlay, 40);
+  });
+  test('unknown options, unsafe text, foreign media and out-of-range numbers are rejected', () => {
+    assert.throws(() => validateSectionPayload(schema, { title: 'x', template: 'weird' }), /باید یکی از/);
+    assert.throws(() => validateSectionPayload(schema, { title: '<script>alert(1)</script>' }), /HTML|اسکریپت/);
+    assert.throws(() => validateSectionPayload(schema, { title: 'x', image: 'javascript:alert(1)' }), /اسکریپت/);
+    assert.throws(() => validateSectionPayload(schema, { title: 'x', image: 'http://evil.test/a.jpg' }), /رسانه/);
+    assert.throws(() => validateSectionPayload(schema, { title: 'x', overlay: 400 }));
+    assert.throws(() => validateSectionPayload(schema, {}), /الزامی/);
+    assert.throws(() => validateSectionPayload(schema, { title: 'x', extra: { nested: true } }), /Schema/);
+  });
+  test('showIf-hidden required fields are not enforced', () => {
+    assert.doesNotThrow(() => validateSectionPayload(schema, { title: 'x', template: 'split' }));
+  });
+  test('style overrides only accept design tokens', () => {
+    assert.throws(() => validateStyleOverrides({ background: 'url(javascript:alert(1))' }));
+    assert.throws(() => validateStyleOverrides({ position: 'fixed' }));
+  });
+});
+
+describe('Installment policy & recommendation scoring (Req 188-191, 239)', () => {
+  const provider = (over: Partial<InstallmentProvider>): InstallmentProvider => ({ code: 'snapppay', title: 'اسنپ‌پی', integration_code: null, installments_count: 4, min_order_rial: '10000000',
+    max_order_rial: '500000000', fee_percent: '0', badge_text: '', terms: '', brand_color: '#00B2A9', logo_url: null, position: 1, active: true, ...over });
+  test('per-instalment amount = ceil(base × (1 + fee) / count) inside eligibility limits', () => {
+    const [snapp, digi] = installmentOffers(10_000_001n, true, [], [provider({}), provider({ code: 'digipay', installments_count: 3, fee_percent: '5' })]);
+    assert.equal(snapp!.perInstallmentRial, '2500001');
+    assert.equal(digi!.totalRial, '10500002'); assert.equal(digi!.perInstallmentRial, '3500001');
+    assert.equal(installmentOffers(9_000_000n, true, [], [provider({})]).length, 0, 'below minimum');
+    assert.equal(installmentOffers(900_000_000n, true, [], [provider({})]).length, 0, 'above maximum');
+    assert.equal(installmentOffers(20_000_000n, false, [], [provider({})]).length, 0, 'product not installment-enabled');
+    assert.equal(installmentOffers(20_000_000n, true, ['digipay'], [provider({})]).length, 0, 'product restricted to another provider');
+  });
+  const product = (over: Partial<CommerceProduct>): CommerceProduct => ({ id: randomUUID(), name: 'p', brand: 'b', category: 'پیراهن', productType: 'shirt', gender: 'men', seasons: ['autumn'],
+    vibes: ['old-money'], priceRial: '30000000', installmentPriceRial: null, perInstallmentRial: '7500000', compareAtRial: null, discountPercent: 0, installmentEnabled: true,
+    installmentProviders: [], image: null, flatLay: null, available: 3, isNew: false, createdAt: '', rating: 0, reviewCount: 0, variants: [], installmentsCount: 4, installmentOffers: [], ...over });
+  test('provider policy drives card numbers; no eligible provider means no instalment line', () => {
+    const [p] = applyInstallmentPolicy([product({})], [provider({ installments_count: 6 })]);
+    assert.equal(p!.installmentsCount, 6); assert.equal(p!.perInstallmentRial, '5000000');
+    const [q] = applyInstallmentPolicy([product({ priceRial: '1000000' })], [provider({})]);
+    assert.equal(q!.perInstallmentRial, null);
+    assert.equal(applyInstallmentPolicy([product({})], [])[0]!.installmentsCount, 4, 'no providers configured → legacy split');
+  });
+  test('similar products share vibe/category and stay near in price', () => {
+    const anchor = product({});
+    const close = product({ priceRial: '32000000' });
+    const far = product({ category: 'کفش', productType: 'shoes', vibes: ['streetwear'], priceRial: '300000000', seasons: ['summer'] });
+    assert.ok(similarityScore(anchor, close) > similarityScore(anchor, far));
+    assert.equal(similarityScore(anchor, anchor), -1);
+  });
+  test('card rules: collection membership and low stock conditions', () => {
+    const base = { discountPercent: 0, isNew: false, installmentEnabled: false, vibes: [], category: 'x' };
+    assert.equal(ruleMatches({ ...base, collections: ['new-arrivals'] }, { collectionCode: 'new-arrivals' }), true);
+    assert.equal(ruleMatches({ ...base, collections: [] }, { collectionCode: 'new-arrivals' }), false);
+    assert.equal(ruleMatches({ ...base, available: 2 }, { maxAvailable: 3 }), true);
+    assert.equal(ruleMatches({ ...base, available: 0 }, { maxAvailable: 3 }), false);
+    assert.equal(ruleMatches({ ...base, available: 0 }, { outOfStock: true }), true);
+  });
+});
+
+describe('Migrations carry schema, not content (fresh database = empty CMS)', () => {
+  test('agent-C migrations 035-044 never seed pages, sections, announcements or active providers', () => {
+    const dir = fileURLToPath(new URL('./migrations/', import.meta.url));
+    const own = readdirSync(dir).filter((f) => /^0(3[5-9]|4[0-4])_.*\.sql$/.test(f));
+    assert.ok(own.length >= 3);
+    for (const file of own) {
+      const sql = readFileSync(dir + file, 'utf8');
+      for (const table of ['cms_pages', 'cms_sections', 'cms_announcements']) assert.ok(!new RegExp(`INSERT INTO ${table}\\b`).test(sql), `${file} seeds ${table}`);
+      assert.ok(!/INSERT INTO installment_providers[^;]*true\)/.test(sql), `${file} seeds an active installment provider`);
+    }
+  });
+});
+
+/* ============================ End-to-end (needs TEST_DATABASE_URL) ============================ */
 
 const enabled = !!process.env.TEST_DATABASE_URL;
 const config: Config = {
@@ -490,6 +583,140 @@ test('SEO Domain is the single source of head tags for CMS entities (Req 235)', 
     const anon = await app.inject({ method: 'GET', url: '/api/v1/admin/seo' });
     assert.equal(anon.statusCode, 401);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/seo/robots.txt' })).body.includes('Sitemap:'), true);
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});
+
+test('Round 3: presets, installments, recommendations, saved cart, review photos and media pipeline (Req 180-191, 239-240, 322, 330, 344)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const hash = await argon2.hash('Password-123456!');
+    const mk = async (label: string, role: string) => {
+      const id = randomUUID();
+      await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)', [id, `${label}-${suffix}@example.test`, hash, label]);
+      await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2)', [id, role]);
+      const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { identity: `${label}-${suffix}@example.test`, password: 'Password-123456!' } });
+      return { id, headers: { authorization: `Bearer ${login.json().accessToken as string}` } };
+    };
+    const admin = await mk('r3-admin', 'admin');
+    const customer = await mk('r3-customer', 'customer');
+
+    /* Schema-validated sections + presets */
+    const page = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/landing-pages', headers: admin.headers,
+      payload: { code: `r3-${suffix}`, title: 'صفحه تست', path: `/campaign/r3-${suffix}`, pageType: 'campaign', template: 'blank' } });
+    assert.equal(page.statusCode, 201, page.body);
+    const pageId = page.json().id as string;
+    const bad = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/sections`, headers: admin.headers, payload: { componentCode: 'hero', payload: { title: 'x', height: 'giant' } } });
+    assert.equal(bad.statusCode, 400);
+    const created = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/sections`, headers: admin.headers, payload: { componentCode: 'hero', presetCode: 'cinematic', payload: { title: 'تیتر' } } });
+    assert.equal(created.statusCode, 201, created.body);
+    assert.equal(created.json().payload.template, 'cinematic'); assert.equal(created.json().payload.title, 'تیتر');
+    const applied = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/sections/${created.json().id as string}/apply-preset`, headers: admin.headers, payload: { presetCode: 'minimal' } });
+    assert.equal(applied.statusCode, 200, applied.body);
+    assert.equal(applied.json().preset, 'minimal'); assert.equal(applied.json().payload.title, 'تیتر', 'content survives a preset switch');
+    const registry = await app.inject({ method: 'GET', url: '/api/v1/admin/cms/registry', headers: admin.headers });
+    assert.ok(registry.json().items.find((c: { code: string }) => c.code === 'hero').presetDefinitions.length >= 10);
+
+    /* Installment providers are managed centrally and drive storefront numbers */
+    const provider = { title: 'اسنپ‌پی', installmentsCount: 6, minOrderRial: '1000000', maxOrderRial: '900000000', feePercent: 0, badgeText: '۶ قسط', terms: 'بدون کارمزد',
+      brandColor: '#00B2A9', logoUrl: null, position: 1, active: true, integrationCode: null };
+    assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/admin/installment-providers/snapppay', headers: customer.headers, payload: provider })).statusCode, 403);
+    const put = await app.inject({ method: 'PUT', url: '/api/v1/admin/installment-providers/snapppay', headers: admin.headers, payload: provider });
+    assert.equal(put.statusCode, 200, put.body);
+    assert.ok((await pool.query(`SELECT 1 FROM audit_logs WHERE action LIKE 'installment_provider.%' AND resource_id = 'snapppay'`)).rowCount);
+    const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers: admin.headers, payload: { brand: 'Kolbe', category: 'پیراهن', cashPriceRial: '60000000',
+      productTypeCode: 'shirt', name: `پیراهن R3 ${suffix}`, vibes: ['old-money'], seasons: ['autumn'], installmentEnabled: true, variants: [{ size: 'L', color: 'سفید' }], specifications: { material: 'کتان ۱۰۰٪', fit: 'Regular Fit' } } });
+    assert.equal(product.statusCode, 201, product.body);
+    const productId = product.json().id as string; const variantId = product.json().variants[0].id as string;
+    await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}/status`, headers: admin.headers, payload: { status: 'published' } });
+    const wh = randomUUID();
+    await pool.query('INSERT INTO warehouses(id,code,name) VALUES ($1,$2,$3)', [wh, `R3-${suffix}`, 'انبار R3']);
+    await pool.query('INSERT INTO stock_balances(variant_id,warehouse_id,on_hand) VALUES ($1,$2,3)', [variantId, wh]);
+    const similar = await app.inject({ method: 'GET', url: `/api/v1/recommendations?strategy=similar&productId=${productId}&limit=4` });
+    assert.equal(similar.statusCode, 200, similar.body);
+    assert.ok(similar.json().items.every((p: { id: string; available: number }) => p.id !== productId && p.available > 0));
+    const popular = await app.inject({ method: 'GET', url: '/api/v1/recommendations?strategy=popular&limit=16' });
+    const mine = popular.json().items.find((p: { id: string }) => p.id === productId);
+    if (mine && mine.installmentEnabled) { assert.equal(mine.installmentsCount, 6); assert.equal(mine.perInstallmentRial, '10000000'); }
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/recommendations?strategy=for_you' })).json().fallback, true, 'anonymous for_you falls back');
+
+    /* Saved cart keeps references only; price/stock are live */
+    const saved = await app.inject({ method: 'PUT', url: '/api/v1/profile/saved-cart', headers: customer.headers, payload: { items: [{ productId, variantId, quantity: 2 }] } });
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.equal(saved.json().items[0].available, 3); assert.equal(saved.json().items[0].product.priceRial, '60000000');
+    assert.equal((await pool.query('SELECT items FROM saved_carts WHERE user_id = $1', [customer.id])).rows[0].items[0].priceRial, undefined, 'no copied price');
+    assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/profile/saved-cart', headers: customer.headers, payload: { items: [{ productId, variantId: randomUUID(), quantity: 1 }] } })).statusCode, 400);
+
+    /* Review photos: only own images, moderated, then processed by the media pipeline */
+    const png = await sharp({ create: { width: 700, height: 500, channels: 3, background: '#C1613B' } }).png().toBuffer();
+    const upload = await app.inject({ method: 'POST', url: '/api/v1/files', headers: customer.headers, payload: { originalName: 'r.png', mime: 'image/png', dataBase64: png.toString('base64') } });
+    assert.equal(upload.statusCode, 201, upload.body);
+    const foreign = await app.inject({ method: 'POST', url: '/api/v1/files', headers: admin.headers, payload: { originalName: 'a.png', mime: 'image/png', dataBase64: png.toString('base64') } });
+    assert.equal((await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/reviews`, headers: customer.headers, payload: { rating: 5, photoFileIds: [foreign.json().id] } })).statusCode, 400);
+    const review = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/reviews`, headers: customer.headers, payload: { rating: 5, body: 'خوب', photoFileIds: [upload.json().id] } });
+    assert.equal(review.statusCode, 201, review.body); assert.equal(review.json().status, 'pending');
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/media/${upload.json().id as string}` })).statusCode, 404, 'unmoderated photo is not public');
+    await app.inject({ method: 'POST', url: '/api/v1/admin/media-pipeline/process', headers: admin.headers, payload: {} });
+    const run = (await pool.query(`SELECT status, metadata FROM media_pipeline_runs WHERE subject_type = 'review_photo' AND subject_id = $1`, [review.json().id])).rows[0];
+    assert.ok(run, 'pipeline run recorded'); assert.equal(run.status, 'partial'); assert.equal(run.metadata.width, 700); assert.deepEqual(run.metadata.variants, [320, 640]);
+    await pool.query(`UPDATE customer_reviews SET status = 'approved' WHERE id = $1`, [review.json().id]);
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/media/${upload.json().id as string}` })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/products/${productId}/reviews` })).json().items[0].photos.length, 1);
+
+    /* Announcements bind only to existing targets and resolve them publicly */
+    const style = { backgroundColor: '#1B2A4A', textColor: '#FFFFFF' };
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/admin/cms/announcements', headers: admin.headers,
+      payload: { title: 'x', messages: [{ text: 'x' }], mode: 'static', style, bindingType: 'collection', bindingId: `missing-${suffix}` } })).statusCode, 400);
+    const ann = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/announcements', headers: admin.headers,
+      payload: { title: 'لندینگ', messages: [{ text: 'ثبت‌نام زودهنگام' }], mode: 'static', style, bindingType: 'landing_page', bindingId: `r3-${suffix}`, priority: 999 } });
+    assert.equal(ann.statusCode, 201, ann.body);
+    const layout = await app.inject({ method: 'GET', url: '/api/v1/site/layout' });
+    assert.equal(layout.json().announcements.some((a: { id: string }) => a.id === ann.json().id), false, 'draft landing page → announcement hidden');
+    await pool.query('DELETE FROM cms_announcements WHERE id = $1', [ann.json().id]);
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});
+
+test('CMS starter content is created only by the admin bootstrap and is idempotent (Req 205, 274, 283)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const id = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)', [id, `starter-${suffix}@example.test`, await argon2.hash('Password-123456!'), 'starter']);
+    await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2)', [id, 'admin']);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { identity: `starter-${suffix}@example.test`, password: 'Password-123456!' } });
+    const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
+
+    const first = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/bootstrap', headers });
+    assert.equal(first.statusCode, 200, first.body);
+    const pages = (await pool.query(`SELECT code, status, active FROM cms_pages WHERE code IN ('about','vibe-old-money','vibe-dark-academia','vip-lead') ORDER BY code`)).rows;
+    assert.deepEqual(pages.map((r) => r.code), ['about', 'vibe-dark-academia', 'vibe-old-money', 'vip-lead']);
+    assert.ok(pages.every((r) => r.status === 'published' && r.active));
+    const seo = await app.inject({ method: 'GET', url: '/api/v1/seo/page/about' });
+    assert.equal(seo.statusCode, 200, seo.body);
+    assert.ok(String(seo.json().title ?? seo.json().head?.title).includes('درباره ما'), seo.body);
+    const stats = await pool.query(`SELECT 1 FROM cms_sections s JOIN cms_pages p ON p.id = s.page_id JOIN cms_components c ON c.id = s.component_id
+      WHERE p.code = 'about' AND c.code = 'stats_strip'`);
+    assert.equal(stats.rowCount, 0, 'no fabricated customer/rating metrics in CMS content');
+    const ann = await pool.query(`SELECT active, messages::text AS m FROM cms_announcements WHERE id = '8a660000-0000-4000-8000-000000000001'`);
+    assert.equal(ann.rows[0]?.active, false, 'starter announcement ships inactive');
+    assert.ok(!/ارسال رایگان|چهارقسطی/.test(ann.rows[0]!.m), 'shipping/instalment terms are not duplicated in CMS copy');
+    const digipay = await pool.query(`SELECT active FROM installment_providers WHERE code = 'digipay'`);
+    assert.equal(digipay.rows[0]?.active, false, 'installment providers ship inactive');
+
+    const count = async () => Number((await pool.query('SELECT count(*)::int AS n FROM cms_sections')).rows[0].n);
+    const before = await count();
+    const second = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/bootstrap', headers });
+    assert.equal(second.statusCode, 200, second.body);
+    assert.equal(second.json().starterPagesCreated, 0);
+    assert.equal(await count(), before, 're-running bootstrap never duplicates sections');
   } finally {
     await app.close();
     await pool.end();

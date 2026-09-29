@@ -16,3 +16,18 @@ backend/storage/
 
 # local smoke evidence (screenshots, stack state)
 artifacts/
+
+# build / tool caches and runtime artifacts (never committed)
+*.tsbuildinfo
+.vite/
+.cache/
+test-results/
+playwright-report/
+.playwright-mcp/
+kv-shots/
+*.pglite/
+pgdata/
+backend/.data/
+*.sqlite
+*.db
+npm-debug.log*

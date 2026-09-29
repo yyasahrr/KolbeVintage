@@ -2,6 +2,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
+import { renderVariant } from './images.js';
+import { getFile } from './storage.js';
 import type { Config } from './config.js';
 import { principal, requirePermission, type Principal } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
@@ -535,7 +537,8 @@ export function registerStyleRoutes(app: FastifyInstance, pool: DbPool, config: 
     const summary = await one<{ average: number; total: number }>(pool, `SELECT COALESCE(AVG(rating),0)::float AS average, COUNT(*)::int AS total
       FROM customer_reviews WHERE product_id = $1 AND status = 'approved'`, [id]);
     const distribution = await pool.query(`SELECT rating, COUNT(*)::int AS n FROM customer_reviews WHERE product_id = $1 AND status = 'approved' GROUP BY rating`, [id]);
-    const items = await pool.query(`SELECT r.id, r.rating, r.title, r.body, r.verified_purchase, r.created_at, u.display_name
+    const items = await pool.query(`SELECT r.id, r.rating, r.title, r.body, r.verified_purchase, r.created_at, u.display_name,
+        ARRAY(SELECT '/api/v1/media/' || f::text FROM unnest(r.photo_file_ids) f) AS photos
       FROM customer_reviews r JOIN users u ON u.id = r.user_id WHERE r.product_id = $1 AND r.status = 'approved' ORDER BY r.created_at DESC LIMIT 30`, [id]);
     return { summary: { average: Math.round((summary?.average ?? 0) * 10) / 10, total: summary?.total ?? 0, distribution: distribution.rows }, items: items.rows };
   });
@@ -543,22 +546,32 @@ export function registerStyleRoutes(app: FastifyInstance, pool: DbPool, config: 
   app.post('/api/v1/products/:id/reviews', { config: { rateLimit: { max: 10, timeWindow: '1 hour' } } }, async (request, reply) => {
     const user = await principal(request, pool, config);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = z.object({ rating: z.number().int().min(1).max(5), title: z.string().trim().max(120).default(''), body: z.string().trim().max(3000).default('') }).strict().parse(request.body);
+    const body = z.object({ rating: z.number().int().min(1).max(5), title: z.string().trim().max(120).default(''), body: z.string().trim().max(3000).default(''),
+      photoFileIds: z.array(z.uuid()).max(4).default([]) }).strict().parse(request.body);
+    for (const text of [body.title, body.body]) if (/<[a-z!/]/i.test(text)) throw badRequest('HTML مجاز نیست.');
     const product = await one(pool, `SELECT id FROM products WHERE id = $1 AND status = 'published'`, [id]);
     if (!product) throw notFound();
+    // Req 240: customer photos — only the reviewer's own uploaded images are accepted.
+    if (body.photoFileIds.length) {
+      const owned = await pool.query(`SELECT id FROM files WHERE id = ANY($1::uuid[]) AND owner_id = $2 AND mime_type IN ('image/jpeg','image/png','image/webp')`, [body.photoFileIds, user.id]);
+      if (owned.rowCount !== new Set(body.photoFileIds).size) throw badRequest('فقط تصاویر JPG/PNG/WebP که خودتان بارگذاری کرده‌اید قابل پیوست هستند.');
+    }
     const purchase = await one<{ order_id: string }>(pool, `SELECT o.id AS order_id FROM orders o JOIN order_lines ol ON ol.order_id = o.id
       WHERE o.buyer_id = $1 AND ol.product_id = $2 AND o.status IN ('paid','processing','preparing','ready_to_ship','in_transit','shipped','delivered')
       ORDER BY o.created_at DESC LIMIT 1`, [user.id, id]);
     const reviewId = randomUUID();
-    const status = purchase ? 'approved' : 'pending';
-    await transaction(pool, async (client) => {
-      await client.query(`INSERT INTO customer_reviews(id,product_id,user_id,order_id,rating,title,body,verified_purchase,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-        ON CONFLICT (product_id, user_id) DO UPDATE SET rating = $5, title = $6, body = $7, created_at = now(),
-          status = CASE WHEN customer_reviews.verified_purchase THEN 'approved' ELSE 'pending' END`,
-        [reviewId, id, user.id, purchase?.order_id ?? null, body.rating, body.title, body.body, Boolean(purchase), status]);
-      await outbox(client, 'review.submitted', 'product', id, { productId: id, userId: user.id, rating: body.rating, verified: Boolean(purchase) });
+    // User-generated photos always pass moderation before they become public media.
+    const status = purchase && !body.photoFileIds.length ? 'approved' : 'pending';
+    const saved = await transaction(pool, async (client) => {
+      const row = await one<{ id: string }>(client, `INSERT INTO customer_reviews(id,product_id,user_id,order_id,rating,title,body,verified_purchase,status,photo_file_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (product_id, user_id) DO UPDATE SET rating = $5, title = $6, body = $7, photo_file_ids = $10, created_at = now(),
+          status = CASE WHEN customer_reviews.verified_purchase AND cardinality($10::uuid[]) = 0 THEN 'approved' ELSE 'pending' END RETURNING id`,
+        [reviewId, id, user.id, purchase?.order_id ?? null, body.rating, body.title, body.body, Boolean(purchase), status, body.photoFileIds]);
+      await outbox(client, 'review.submitted', 'product', id, { productId: id, userId: user.id, rating: body.rating, verified: Boolean(purchase), photos: body.photoFileIds.length });
+      for (const fileId of body.photoFileIds) await outbox(client, 'media.uploaded', 'review_photo', row!.id, { reviewId: row!.id, fileId });
+      return row!;
     });
-    return reply.code(201).send({ status, verifiedPurchase: Boolean(purchase) });
+    return reply.code(201).send({ id: saved.id, status, verifiedPurchase: Boolean(purchase), photos: body.photoFileIds.length });
   });
 
   app.get('/api/v1/me/reviews', async (request) => {
@@ -578,6 +591,19 @@ export function registerStyleRoutes(app: FastifyInstance, pool: DbPool, config: 
     const q = z.object({ status: z.enum(['pending', 'approved', 'rejected']).optional() }).parse(request.query);
     return { items: (await pool.query(`SELECT r.*, p.name AS product_name, u.display_name FROM customer_reviews r JOIN products p ON p.id = r.product_id
       JOIN users u ON u.id = r.user_id WHERE ($1::text IS NULL OR r.status = $1) ORDER BY r.created_at DESC LIMIT 200`, [q.status ?? null])).rows };
+  });
+
+  /** Moderation preview (Req 240): pending photos are private, so moderators get small inline thumbnails. */
+  app.get('/api/v1/admin/reviews/:id/photos', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'products:write');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const files = await pool.query(`SELECT f.id, f.storage_key, f.mime_type FROM customer_reviews r JOIN files f ON f.id = ANY(r.photo_file_ids) WHERE r.id = $1`, [id]);
+    const items = [];
+    for (const f of files.rows as { id: string; storage_key: string; mime_type: string }[]) {
+      const thumb = await renderVariant(await getFile(f.storage_key), 320, 'webp').catch(() => null);
+      if (thumb) items.push({ fileId: f.id, dataUrl: `data:${thumb.mime};base64,${thumb.buffer.toString('base64')}` });
+    }
+    return { items };
   });
 
   app.patch('/api/v1/admin/reviews/:id', async (request) => {

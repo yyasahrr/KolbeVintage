@@ -112,10 +112,19 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const menuRef = useRef<HTMLDivElement>(null);
   const [pageCode, setPageCode] = useState("about");
   const [megaOpen, setMegaOpen] = useState(false);
+  const [shopCategory, setShopCategory] = useState<{ name: string; nonce: number } | null>(null);
+  const [navTaxonomy, setNavTaxonomy] = useState<{ categories: { slug: string; name: string }[]; vibes: { slug: string; name: string }[] } | null>(null);
   const [twoFactor, setTwoFactor] = useState<{ challengeId: string; devCode?: string; code: string; error: string } | null>(null);
   const { layout, theme } = useSiteExperience();
   useThemeTokens(theme, dark);
   const toast = useToast();
+  // Mobile navigation lists live categories / vibes when the header config asks for them (Req 336).
+  useEffect(() => {
+    const cfg = layout?.header?.mobileNav;
+    if (!cfg || (!cfg.showCategories && !cfg.showVibes) || navTaxonomy) return;
+    Promise.all([cfg.showCategories ? siteApi.categories().catch(() => ({ items: [] })) : { items: [] }, cfg.showVibes ? siteApi.vibes().catch(() => ({ items: [] })) : { items: [] }])
+      .then(([c, v]) => setNavTaxonomy({ categories: (c.items as { slug: string; name: string; parent_id?: string | null; active?: boolean }[]).filter((x) => x.active !== false && !x.parent_id), vibes: v.items as { slug: string; name: string }[] }));
+  }, [layout?.header?.mobileNav, navTaxonomy]);
 
   // Shared style links (#/style/CODE) open the Style Builder directly (Req 269).
   useEffect(() => {
@@ -158,7 +167,16 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const siteNav = (target: string) => {
     if (target.startsWith("https://")) { window.open(target, "_blank", "noopener,noreferrer"); return; }
     if (target === "home") return go("retail", "home");
-    if (target === "shop" || target.startsWith("collection:")) return go("retail", "shop");
+    if (target.startsWith("product:")) { go("retail", "shop"); setSelectedId(target.slice(8)); return; }
+    if (target.startsWith("category:")) {
+      const slug = target.slice(9);
+      go("retail", "shop");
+      const known = navTaxonomy?.categories.find((c) => c.slug === slug);
+      if (known) { setShopCategory({ name: known.name, nonce: Date.now() }); return; }
+      siteApi.categories().then((r) => { const c = r.items.find((x) => x.slug === slug); if (c) setShopCategory({ name: c.name, nonce: Date.now() }); }).catch(() => undefined);
+      return;
+    }
+    if (target === "shop" || target.startsWith("collection:")) { setShopCategory(null); return go("retail", "shop"); }
     if (target === "journal") return go("retail", "journal");
     if (target === "vip") return go("vip");
     if (target === "tryon") { setStudioTab("tryon"); return go("studio"); }
@@ -205,7 +223,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
 
   return (
     <div className="min-h-screen">
-      {layout?.announcements?.length
+      {header?.showAnnouncement === false ? null : layout?.announcements?.length
         ? <ServerAnnouncementBar announcements={layout.announcements} onNav={siteNav} />
         : <AnnouncementBar block={ops.blocks.find((b) => b.type === "announcement")} onNav={(t: NavTarget) => t === "vip" ? go("vip") : t === "tryon" ? (setStudioTab("tryon"), go("studio")) : go("retail", t === "journal" ? "journal" : "shop")} />}
       {/* ======= STOREFRONT HEADER ======= */}
@@ -319,8 +337,21 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
                   {l.vip && <Crown size={15} />}{l.label}
                 </button>
               ))}
+              {header?.mobileNav?.items.map((item) => <button key={item.label + item.target} onClick={() => { setMobileNav(false); siteNav(item.target); }} className="flex w-full rounded-[12px] px-4 py-3 text-right text-[14.5px] font-bold hover:bg-[var(--kv-surface-2)]">{item.label}</button>)}
               <button onClick={() => go("retail", "wishlist")} className="flex w-full rounded-[12px] px-4 py-3 text-right text-[14.5px] font-bold hover:bg-[var(--kv-surface-2)]">علاقه‌مندی‌ها</button>
             </nav>
+            {header?.mobileNav?.showCategories && navTaxonomy?.categories.length ? (
+              <details className="mt-4 rounded-[12px] border border-[var(--kv-line)]" data-mobile-categories open>
+                <summary className="cursor-pointer px-4 py-3 text-[13px] font-extrabold">دسته‌بندی‌ها</summary>
+                <div className="flex flex-wrap gap-2 px-4 pb-4">{navTaxonomy.categories.map((c) => <button key={c.slug} onClick={() => { setMobileNav(false); siteNav(`category:${c.slug}`); }} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-[12.5px]">{c.name}</button>)}</div>
+              </details>
+            ) : null}
+            {header?.mobileNav?.showVibes && navTaxonomy?.vibes.length ? (
+              <details className="mt-3 rounded-[12px] border border-[var(--kv-line)]" data-mobile-vibes>
+                <summary className="cursor-pointer px-4 py-3 text-[13px] font-extrabold">وایب‌ها</summary>
+                <div className="flex flex-wrap gap-2 px-4 pb-4">{navTaxonomy.vibes.map((v) => <button key={v.slug} onClick={() => { setMobileNav(false); siteNav(`vibe:${v.slug}`); }} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-[12.5px]">{v.name}</button>)}</div>
+              </details>
+            ) : null}
             <div className="mt-auto">
               <button onClick={() => { setMobileNav(false); setDemoOpen(true); }} className="mb-4 flex min-h-10 w-full items-center gap-2.5 rounded-[11px] px-4 text-[13px] font-semibold text-[var(--kv-muted)] hover:bg-[var(--kv-surface-2)]"><ShieldCheck size={16} />پیش‌نمایش آزمایشی پنل‌ها</button>
               {role === "guest"
@@ -341,6 +372,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             view={view} setView={setView}
             account={account} buyer={buyer ?? undefined} accountTab={accountTab} setAccountTab={setAccountTab}
             onWholesale={() => go("vip")}
+            shopCategory={shopCategory}
             onLogout={logout}
             onLogin={() => openAuth({ section: "retail", view: "account" })}
             requireLogin={() => {

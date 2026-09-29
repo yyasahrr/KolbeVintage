@@ -6,13 +6,16 @@ import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
-import { badRequest, conflict, notFound } from './errors.js';
+import { badRequest, conflict, notFound, patchBody } from './errors.js';
 import { getFile, putFile } from './storage.js';
 import { isResizable, renderVariant, snapWidth } from './images.js';
 import { legacySeoToWrite, renameSeoKey, resolveSeo, loadEntry, loadSubject, upsertSeoEntry } from './seo.js';
 import { ensureContact } from './crm.js';
+import { CARD_BLOCKS, NAV_TARGET, SIMPLE_STYLE_KEYS, STYLE_SPEC, cardStylesSchema, designQualityGate, responsiveConfigSchema, validateSectionPayload, validateStyleOverrides, type FieldSchema } from './cms-schema.js';
+import { recommend } from './recommendations.js';
+import { installmentProviders } from './installments.js';
 import {
-  attachCardTemplates, commerceProductsByIds, queryCommerceProducts, type CollectionRules,
+  attachCardTemplates, commerceProductsByIds, queryCommerceProducts, type CollectionRules, type CommerceProduct,
 } from './commerce-view.js';
 
 /* ============================ Pure rules (unit-testable) ============================ */
@@ -65,27 +68,7 @@ export function contrastRatio(a: string, b: string): number {
   return Math.round(((l1! + 0.05) / (l2! + 0.05)) * 100) / 100;
 }
 
-/** Design quality gate for product-card templates (Req 197). */
-export function designQualityGate(template: { blocks: string[]; styles: Record<string, unknown> }) {
-  const blocks = template.blocks;
-  const accent = String(template.styles.accentColor ?? '#1B2A4A');
-  const dark = Boolean(template.styles.darkSurface);
-  const surface = dark ? '#111622' : '#FFFFFF';
-  const radius = Number.parseInt(String(template.styles.radius ?? '16'), 10);
-  const checks = {
-    hierarchy: blocks.includes('image') && blocks.includes('name') && blocks.some((b) => b.endsWith('price')),
-    spacing: blocks.length <= 10,
-    typography: blocks.indexOf('name') < blocks.findIndex((b) => b.endsWith('price')) || !blocks.includes('name'),
-    contrast: /^#[0-9a-f]{3,8}$/i.test(accent) && contrastRatio(accent, surface) >= 3,
-    mobile: blocks.length <= 9,
-    accessibility: blocks.includes('name'),
-    longText: true,
-    missingMedia: blocks.includes('image'),
-    rtl: true,
-    radius: Number.isFinite(radius) && radius >= 0 && radius <= 32,
-  };
-  return { checks, passed: Object.values(checks).every(Boolean), contrast: contrastRatio(accent, surface) };
-}
+export { designQualityGate } from './cms-schema.js';
 
 export const TOKEN_KEYS = ['background', 'surface', 'surfaceSecondary', 'textPrimary', 'textSecondary', 'primary', 'secondary',
   'accent', 'border', 'success', 'warning', 'danger'] as const;
@@ -133,7 +116,8 @@ export function pageIsLive(page: { status: string; active: boolean; scheduled_st
 /* ============================ Schemas ============================ */
 
 const safeString = (max: number) => z.string().trim().max(max).refine((v) => !UNSAFE.test(v) && !/<[a-z!/]/i.test(v), 'HTML یا اسکریپت مجاز نیست.');
-const navTarget = z.string().trim().max(200).refine((v) => /^(home|shop|vip|tryon|journal|about|supplier|account|https:\/\/[^\s<>"]+|page:[a-z0-9_-]{2,40}|vibe:[a-z0-9-]{2,40}|collection:[a-z0-9-]{2,40})$/.test(v), 'مقصد لینک مجاز نیست.');
+// One navigation grammar for header, footer, mega menu and CMS fields (incl. category:/product: targets).
+const navTarget = z.string().trim().max(200).refine((v) => NAV_TARGET.test(v), 'مقصد لینک مجاز نیست.');
 const hex = z.string().regex(/^#[0-9a-fA-F]{3,8}$/);
 
 const headerSchema = z.object({
@@ -143,11 +127,17 @@ const headerSchema = z.object({
   ctaLabel: safeString(40).default(''), ctaTarget: navTarget.default('vip'),
   menus: z.array(z.object({ id: z.string().regex(/^[a-z0-9_-]{2,40}$/), label: safeString(40), target: navTarget, order: z.number().int().min(0).max(100),
     active: z.boolean(), vip: z.boolean().optional(), hasMegaMenu: z.boolean().optional() }).strict()).max(12),
+  // Req 278: per-menu mega columns with media + collection / vibe / campaign promos — registered fields only.
   megaMenu: z.array(z.object({
-    id: z.string().regex(/^[a-z0-9_-]{2,40}$/), title: safeString(40),
+    id: z.string().regex(/^[a-z0-9_-]{2,40}$/), title: safeString(40), menuId: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(),
     items: z.array(z.object({ label: safeString(60), category: safeString(60).optional(), gender: safeString(20).optional(), target: navTarget.optional() }).strict()).max(12),
-    featuredVibe: z.string().max(40).optional(), featuredCollection: z.string().max(40).optional(), promoTitle: safeString(80).optional(), image: z.string().max(300).optional(),
-  }).strict()).max(6).default([]),
+    featuredVibe: z.string().regex(/^[a-z0-9-]{2,40}$/).optional(), featuredCollection: z.string().regex(/^[a-z0-9-]{2,40}$/).optional(),
+    featuredCampaign: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(), promoTitle: safeString(80).optional(),
+    image: z.string().regex(/^(https:\/\/[^\s<>"]+|\/api\/v1\/media\/[0-9a-f-]{36})$/).optional(), imageAlt: safeString(120).optional(),
+  }).strict()).max(8).default([]),
+  showAnnouncement: z.boolean().default(true),
+  mobileNav: z.object({ showCategories: z.boolean(), showVibes: z.boolean(),
+    items: z.array(z.object({ label: safeString(40), target: navTarget }).strict()).max(8) }).strict().default({ showCategories: true, showVibes: true, items: [] }),
 }).strict();
 
 const footerSchema = z.object({
@@ -213,53 +203,153 @@ async function workingSections(db: DbPool | PoolClient, pageId: string, visibleO
   return rows.rows as SectionRow[];
 }
 
+/** Req 330-332: an announcement may only bind to an existing campaign / promotion / public coupon / collection / landing page. */
+async function assertAnnouncementBinding(db: DbPool | PoolClient, type: string, ref: string | null) {
+  if (type === 'none') return;
+  if (!ref) throw badRequest('برای این نوع اتصال، شناسه مقصد لازم است.');
+  const isId = /^[0-9a-f-]{36}$/.test(ref);
+  const sql: Record<string, string> = {
+    campaign: `SELECT 1 FROM festivals WHERE ${isId ? 'id = $1::uuid' : 'code = $1'}`,
+    promotion: `SELECT 1 FROM festivals WHERE ${isId ? 'id = $1::uuid' : 'code = $1'}`,
+    coupon: `SELECT 1 FROM coupons WHERE ${isId ? 'id = $1::uuid' : 'code = $1'} AND recipient_user_id IS NULL`,
+    collection: 'SELECT 1 FROM cms_collections WHERE code = $1',
+    landing_page: 'SELECT 1 FROM cms_pages WHERE code = $1',
+  };
+  if (!sql[type] || !(await db.query(sql[type]!, [ref])).rowCount) throw badRequest('مقصد اتصال اعلان یافت نشد (کمپین/کوپن/کالکشن/صفحه باید وجود داشته باشد).');
+}
+
+const HERO_CODES = new Set(['hero', 'image_hero', 'video_hero']);
+
 /** Resolves Commerce Data Bindings server-side (Req 185-191, 212, 238-240). CMS never stores copies. */
 async function enrichSections(db: DbPool | PoolClient, sections: SectionRow[]) {
   const out = [];
+  const isUuid = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f-]{36}$/.test(v);
+  const isSlug = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9-]{2,60}$/.test(v);
   for (const section of sections) {
     const binding = { ...(section.data_binding ?? {}), ...pickBinding(section.payload) } as Record<string, unknown>;
     const resolved: Record<string, unknown> = {};
+    const code = section.component_code;
+    const limit = Math.min(Math.max(Number(section.payload.limit ?? section.payload.count ?? 8) || 8, 1), 24);
     try {
-      if (typeof binding.campaignId === 'string' && /^[0-9a-f-]{36}$/.test(binding.campaignId)) {
-        resolved.campaign = await one(db, `SELECT id, code, name, occasion, starts_at, ends_at, discount_percent,
-          (active AND starts_at <= now() AND ends_at >= now()) AS live FROM festivals WHERE id = $1`, [binding.campaignId]);
+      let campaignScope: { productIds?: string[]; categories?: string[] } | null = null;
+      if (isUuid(binding.campaignId)) {
+        const campaign = await one<Record<string, unknown> & { scope: { productIds?: string[]; categories?: string[] } }>(db, `SELECT id, code, name, occasion, starts_at, ends_at, discount_percent,
+          theme_palette_code, scope, (active AND starts_at <= now() AND ends_at >= now()) AS live FROM festivals WHERE id = $1`, [binding.campaignId]);
+        if (campaign) {
+          const { scope, ...rest } = campaign;
+          campaignScope = scope ?? {};
+          const theme = await one<{ code: string; name: string }>(db, `SELECT code, name FROM color_palettes WHERE campaign_id = $1 OR code = $2 ORDER BY (campaign_id = $1) DESC LIMIT 1`,
+            [binding.campaignId, campaign.theme_palette_code ?? null]);
+          resolved.campaign = { ...rest, theme }; // Req 187: products, discount, start, end, theme, countdown from the campaign
+        }
       }
-      const productCodes = ['product_grid', 'product_carousel', 'product_slider', 'products', 'recommendation_section', 'promotion_banner', 'installment_card', 'hero'];
-      if (productCodes.includes(section.component_code) || binding.collectionCode || binding.productIds) {
+      const productCodes = ['product_grid', 'product_carousel', 'product_slider', 'products', 'promotion_banner', 'installment_card', 'hero', 'image_hero', 'video_hero', 'product_card'];
+      if (code === 'recommendation_section') {
+        const strategy = (['for_you', 'similar', 'popular', 'trending'] as const).find((x) => x === section.payload.strategy) ?? 'popular';
+        const rec = await recommend(db, { strategy, productId: isUuid(binding.productId) ? binding.productId : null,
+          vibe: isSlug(section.payload.vibe) ? section.payload.vibe : null, category: typeof section.payload.category === 'string' && section.payload.category ? section.payload.category : null, limit });
+        resolved.products = await attachCardTemplates(db, rec.items);
+        resolved.recommendation = { strategy, personal: strategy === 'for_you', basedOn: rec.basedOn, fallback: rec.fallback };
+      } else if (productCodes.includes(code) || binding.collectionCode || binding.productIds) {
         let rules: CollectionRules | null = null;
-        if (typeof binding.collectionCode === 'string') {
-          const collection = await one<{ mode: string; query_rules: CollectionRules; product_ids: string[] }>(db,
-            'SELECT mode, query_rules, product_ids FROM cms_collections WHERE code = $1 AND active', [binding.collectionCode]);
-          if (collection) rules = collection.mode === 'manual' ? { productIds: collection.product_ids, limit: 24 } : collection.query_rules;
+        const heroBinding = String(section.payload.bindingType ?? 'manual');
+        if (typeof binding.collectionCode === 'string' && (code !== 'hero' || heroBinding === 'collection')) {
+          const collection = await one<{ code: string; title: string; description: string; mode: string; query_rules: CollectionRules; product_ids: string[] }>(db,
+            'SELECT code, title, description, mode, query_rules, product_ids FROM cms_collections WHERE code = $1 AND active', [binding.collectionCode]);
+          if (collection) {
+            rules = collection.mode === 'manual' ? { productIds: collection.product_ids, limit: 24 } : { ...collection.query_rules, limit: Math.min(collection.query_rules.limit ?? limit, 24) };
+            resolved.collection = { code: collection.code, title: collection.title, description: collection.description };
+          }
         } else if (Array.isArray(binding.productIds) && binding.productIds.length) {
-          rules = { productIds: (binding.productIds as string[]).filter((id) => /^[0-9a-f-]{36}$/.test(id)), limit: 24 };
-        } else if (section.component_code === 'recommendation_section') {
-          const strategy = String(section.payload.strategy ?? 'popular');
-          rules = { inStockOnly: true, sortBy: strategy === 'trending' ? 'newest' : 'popular', vibe: typeof section.payload.vibe === 'string' ? section.payload.vibe : undefined, limit: Number(section.payload.limit ?? 8) };
-        } else if (section.component_code === 'installment_card') {
-          rules = { installmentEnabled: true, inStockOnly: false, limit: 1, productIds: typeof binding.productId === 'string' ? [binding.productId] : undefined };
-        } else if (section.component_code !== 'hero') {
-          rules = { category: typeof section.payload.category === 'string' && section.payload.category !== 'همه' ? section.payload.category : undefined,
-            limit: Number(section.payload.limit ?? section.payload.count ?? 8), sortBy: 'newest' };
+          rules = { productIds: (binding.productIds as string[]).filter((id) => isUuid(id)), limit: 24 };
+        } else if ((code === 'product_card' || (HERO_CODES.has(code) && heroBinding === 'product') || code === 'installment_card') && isUuid(binding.productId)) {
+          rules = { productIds: [binding.productId], limit: 1 };
+        } else if (code === 'installment_card') {
+          rules = { installmentEnabled: true, inStockOnly: false, limit: 1 };
+        } else if (campaignScope && !HERO_CODES.has(code)) {
+          rules = campaignScope.productIds?.length ? { productIds: campaignScope.productIds, limit }
+            : { categories: campaignScope.categories?.length ? campaignScope.categories : undefined, inStockOnly: true, sortBy: 'discount', limit };
+        } else if (HERO_CODES.has(code) && heroBinding === 'category' && typeof section.payload.categorySlug === 'string') {
+          const cat = await one<{ name: string }>(db, 'SELECT name FROM cms_categories WHERE slug = $1', [section.payload.categorySlug]);
+          rules = cat ? { category: cat.name, inStockOnly: true, limit: 4 } : null;
+        } else if (HERO_CODES.has(code) && heroBinding === 'vibe' && isSlug(section.payload.vibeSlug)) {
+          rules = { vibe: section.payload.vibeSlug, inStockOnly: true, limit: 4 };
+        } else if (!HERO_CODES.has(code) && code !== 'product_card') {
+          rules = { category: typeof section.payload.category === 'string' && section.payload.category && section.payload.category !== 'همه' ? section.payload.category : undefined,
+            vibe: isSlug(section.payload.vibe) ? section.payload.vibe : undefined, limit, sortBy: 'newest' };
         }
         if (rules) resolved.products = await attachCardTemplates(db, await queryCommerceProducts(db, rules));
       }
-      if (section.component_code === 'review_section') {
-        const reviews = await db.query(`SELECT r.id, r.rating, r.title, r.body, r.verified_purchase, r.created_at, u.display_name, p.name AS product_name
-          FROM customer_reviews r JOIN users u ON u.id = r.user_id JOIN products p ON p.id = r.product_id
-          WHERE r.status = 'approved' AND ($1::uuid IS NULL OR r.product_id = $1) ORDER BY r.created_at DESC LIMIT $2`,
-          [typeof binding.productId === 'string' ? binding.productId : null, Number(section.payload.limit ?? 6)]);
-        const summary = await one(db, `SELECT COALESCE(AVG(rating),0)::float AS average, COUNT(*)::int AS total FROM customer_reviews
-          WHERE status = 'approved' AND ($1::uuid IS NULL OR product_id = $1)`, [typeof binding.productId === 'string' ? binding.productId : null]);
-        resolved.reviews = reviews.rows; resolved.reviewSummary = summary;
+      if (HERO_CODES.has(code)) resolved.heroEntity = await resolveHeroEntity(db, section.payload, resolved);
+      if (code === 'installment_card') {
+        const providers = await installmentProviders(db);
+        const wanted = typeof section.payload.provider === 'string' && section.payload.provider ? section.payload.provider : section.variant && section.variant !== 'default' && section.variant !== 'generic' ? section.variant : null;
+        resolved.providers = providers.filter((p) => !wanted || p.code === wanted)
+          .map((p) => ({ code: p.code, title: p.title, count: p.installments_count, badge: p.badge_text, terms: p.terms, color: p.brand_color, logoUrl: p.logo_url, minOrderRial: p.min_order_rial }));
       }
-      if (section.component_code === 'category_card' || section.component_code === 'category_section') {
-        resolved.categories = (await db.query('SELECT id, name, slug, description, image_url, cover_url, icon, card_template, card_style FROM cms_categories WHERE active ORDER BY position')).rows;
+      if (code === 'review_section') {
+        const productId = isUuid(binding.productId) ? binding.productId : null;
+        const reviews = await db.query(`SELECT r.id, r.rating, r.title, r.body, r.verified_purchase, r.created_at, r.photo_file_ids, u.display_name, p.name AS product_name, p.id AS product_id
+          FROM customer_reviews r JOIN users u ON u.id = r.user_id JOIN products p ON p.id = r.product_id
+          WHERE r.status = 'approved' AND ($1::uuid IS NULL OR r.product_id = $1) ORDER BY r.created_at DESC LIMIT $2`, [productId, limit]);
+        const summary = await one<{ average: number; total: number }>(db, `SELECT COALESCE(AVG(rating),0)::float AS average, COUNT(*)::int AS total FROM customer_reviews
+          WHERE status = 'approved' AND ($1::uuid IS NULL OR product_id = $1)`, [productId]);
+        const distribution = (await db.query(`SELECT rating, COUNT(*)::int AS n FROM customer_reviews WHERE status = 'approved' AND ($1::uuid IS NULL OR product_id = $1) GROUP BY rating`, [productId])).rows;
+        const photos = (await db.query(`SELECT r.id AS review_id, unnest(r.photo_file_ids) AS file_id, p.name AS product_name, u.display_name FROM customer_reviews r
+          JOIN products p ON p.id = r.product_id JOIN users u ON u.id = r.user_id WHERE r.status = 'approved' AND ($1::uuid IS NULL OR r.product_id = $1)
+          ORDER BY r.created_at DESC LIMIT 12`, [productId])).rows.map((row: { review_id: string; file_id: string; product_name: string; display_name: string }) =>
+          ({ reviewId: row.review_id, url: `/api/v1/media/${row.file_id}`, productName: row.product_name, author: row.display_name }));
+        resolved.reviews = reviews.rows.map((r: Record<string, unknown>) => ({ ...r, photos: ((r.photo_file_ids as string[]) ?? []).map((id) => `/api/v1/media/${id}`) }));
+        resolved.reviewSummary = { average: Math.round((summary?.average ?? 0) * 10) / 10, total: summary?.total ?? 0, distribution };
+        resolved.customerPhotos = photos;
+        if (productId) resolved.products = await attachCardTemplates(db, await commerceProductsByIds(db, [productId]));
+      }
+      if (code === 'category_card' || code === 'category_section') {
+        resolved.categories = (await db.query(`SELECT c.id, c.name, c.slug, c.description, c.image_url, c.cover_url, c.icon, c.card_template, c.card_style, c.parent_id,
+          (SELECT count(*)::int FROM products p WHERE p.category = c.name AND p.status = 'published') AS product_count
+          FROM cms_categories c WHERE c.active ORDER BY c.position, c.name`)).rows;
+      }
+      if (code === 'collection_showcase') {
+        const codes = typeof section.payload.collectionCodes === 'string' ? section.payload.collectionCodes.split(/[،,\s]+/).map((c) => c.trim()).filter((c) => /^[a-z0-9-]{2,40}$/.test(c)) : [];
+        const rows = (await db.query(`SELECT code, title, description, mode, query_rules, product_ids FROM cms_collections WHERE active AND (cardinality($1::text[]) = 0 OR code = ANY($1::text[]))
+          ORDER BY created_at LIMIT $2`, [codes, Math.min(Number(section.payload.limit ?? 4) || 4, 8)])).rows as { code: string; title: string; description: string; mode: string; query_rules: CollectionRules; product_ids: string[] }[];
+        resolved.collections = await Promise.all(rows.map(async (c) => {
+          const items = c.mode === 'manual' ? await commerceProductsByIds(db, c.product_ids.slice(0, 3)) : await queryCommerceProducts(db, { ...c.query_rules, limit: 3 });
+          return { code: c.code, title: c.title, description: c.description, images: items.map((p) => p.image).filter(Boolean), count: items.length };
+        }));
       }
     } catch { /* a broken binding must never 500 the whole page (Req 174) — the section renders its static payload */ }
     out.push({ ...section, resolved });
   }
   return out;
+}
+
+/** Hero content binding (Req 212): Campaign / Product / Category / Vibe / Collection / Manual. */
+async function resolveHeroEntity(db: DbPool | PoolClient, payload: Record<string, unknown>, resolved: Record<string, unknown>) {
+  const type = String(payload.bindingType ?? 'manual');
+  const products = (resolved.products as CommerceProduct[] | undefined) ?? [];
+  if (type === 'product' && products[0]) {
+    const p = products[0];
+    return { type, title: p.name, subtitle: `${p.brand} · ${p.category}`, image: p.image, target: `product:${p.id}`, priceRial: p.priceRial, compareAtRial: p.compareAtRial,
+      perInstallmentRial: p.perInstallmentRial, installmentsCount: p.installmentsCount, available: p.available };
+  }
+  if (type === 'category' && typeof payload.categorySlug === 'string') {
+    const c = await one<{ name: string; description: string; cover_url: string | null; image_url: string | null }>(db, 'SELECT name, description, cover_url, image_url FROM cms_categories WHERE slug = $1 AND active', [payload.categorySlug]);
+    if (c) return { type, title: c.name, subtitle: c.description, image: c.cover_url ?? c.image_url ?? products[0]?.image ?? null, target: `category:${c.name}` };
+  }
+  if (type === 'vibe' && typeof payload.vibeSlug === 'string') {
+    const v = await one<{ name: string; description: string; cover_url: string | null; palette: Record<string, string>; slug: string }>(db, 'SELECT name, slug, description, cover_url, palette FROM cms_vibes WHERE slug = $1 AND active', [payload.vibeSlug]);
+    if (v) return { type, title: v.name, subtitle: v.description, image: v.cover_url ?? products[0]?.image ?? null, target: `vibe:${v.slug}`, palette: v.palette };
+  }
+  if (type === 'collection' && resolved.collection) {
+    const c = resolved.collection as { code: string; title: string; description: string };
+    return { type, title: c.title, subtitle: c.description, image: products[0]?.image ?? null, target: `collection:${c.code}`, mosaic: products.slice(0, 4).map((p) => p.image) };
+  }
+  if (type === 'campaign' && resolved.campaign) {
+    const c = resolved.campaign as { name: string; occasion: string | null; ends_at: string; discount_percent: string | null };
+    return { type, title: c.name, subtitle: c.discount_percent ? `تا ${Math.round(Number(c.discount_percent))}٪ تخفیف` : (c.occasion ?? ''), endsAt: c.ends_at, target: 'shop' };
+  }
+  return null;
 }
 
 function pickBinding(payload: Record<string, unknown>) {
@@ -314,7 +404,8 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
          OR EXISTS (SELECT 1 FROM product_media pm JOIN products p ON p.id = pm.product_id WHERE pm.file_id = f.id AND p.status = 'published')
          OR EXISTS (SELECT 1 FROM cms_assets a WHERE a.file_id = f.id)
          OR EXISTS (SELECT 1 FROM cms_sections s WHERE s.payload::text LIKE '%' || $1::text || '%')
-         OR EXISTS (SELECT 1 FROM users u WHERE u.avatar_file_id = f.id))`, [fileId]);
+         OR EXISTS (SELECT 1 FROM users u WHERE u.avatar_file_id = f.id)
+         OR EXISTS (SELECT 1 FROM customer_reviews r WHERE r.status = 'approved' AND f.id = ANY(r.photo_file_ids)))`, [fileId]);
     if (!file) throw notFound();
     if ((w || fmt) && isResizable(file.mime_type)) {
       const width = snapWidth(w ?? 1600);
@@ -364,12 +455,31 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     const announcements = [];
     for (const row of pickActiveAnnouncements(rows)) {
       let campaign = null;
-      if (row.binding_type === 'campaign' && typeof row.binding_id === 'string' && /^[0-9a-f-]{36}$/.test(row.binding_id)) {
-        campaign = await one(pool, `SELECT id, name, starts_at, ends_at FROM festivals WHERE id = $1 AND active AND ends_at >= now()`, [row.binding_id]);
-        if (!campaign) continue; // bound campaign ended → announcement disappears automatically (Req 330-331)
+      let binding: Record<string, unknown> | null = null;
+      const ref = typeof row.binding_id === 'string' ? row.binding_id : '';
+      const isId = /^[0-9a-f-]{36}$/.test(ref);
+      if ((row.binding_type === 'campaign' || row.binding_type === 'promotion') && ref) {
+        campaign = await one<{ id: string; name: string; starts_at: string; ends_at: string; discount_percent: string | null }>(pool,
+          `SELECT id, name, starts_at, ends_at, discount_percent FROM festivals WHERE (${isId ? 'id = $1::uuid' : 'code = $1'}) AND active AND ends_at >= now()`, [ref]);
+        if (!campaign) continue; // bound campaign/promotion ended → announcement disappears automatically (Req 330-331)
+        if (row.binding_type === 'promotion') binding = { kind: 'promotion', discountPercent: campaign.discount_percent ? Math.round(Number(campaign.discount_percent)) : null, target: 'shop' };
+      } else if (row.binding_type === 'coupon' && ref) {
+        const coupon = await one<{ code: string; type: string; value: string; ends_at: string | null }>(pool,
+          `SELECT code, type, value::text, ends_at FROM coupons WHERE (${isId ? 'id = $1::uuid' : 'code = $1'}) AND active AND recipient_user_id IS NULL AND (ends_at IS NULL OR ends_at > now())`, [ref]);
+        if (!coupon) continue;
+        binding = { kind: 'coupon', code: coupon.code, label: coupon.type === 'percent' ? `${coupon.value}٪` : null, endsAt: coupon.ends_at };
+      } else if (row.binding_type === 'collection' && ref) {
+        const collection = await one<{ code: string; title: string }>(pool, 'SELECT code, title FROM cms_collections WHERE code = $1 AND active', [ref]);
+        if (!collection) continue;
+        binding = { kind: 'collection', target: `collection:${collection.code}`, title: collection.title };
+      } else if (row.binding_type === 'landing_page' && ref) {
+        const page = await one<{ code: string; title: string; status: string; active: boolean; scheduled_start_at: string | null; scheduled_end_at: string | null }>(pool,
+          'SELECT code, title, status, active, scheduled_start_at, scheduled_end_at FROM cms_pages WHERE code = $1', [ref]);
+        if (!page || !pageIsLive(page)) continue;
+        binding = { kind: 'landing_page', target: `page:${page.code}`, title: page.title };
       }
       announcements.push({ id: row.id, title: row.title, messages: row.messages, mode: row.mode, style: row.style,
-        bindingType: row.binding_type, bindingId: row.binding_id, priority: row.priority, campaign });
+        bindingType: row.binding_type, bindingId: row.binding_id, priority: row.priority, campaign, binding });
     }
     return { header, footer, accountAppearance, announcements };
   });
@@ -453,7 +563,45 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   /* ---------- Admin: registry & composable builder (Req 175-183) ---------- */
   app.get('/api/v1/admin/cms/registry', async (request) => {
     await actor(request, 'cms:read');
-    return { items: (await pool.query('SELECT * FROM cms_components ORDER BY kind, code')).rows, primitives: PRIMITIVES };
+    const [components, presets] = await Promise.all([
+      pool.query('SELECT * FROM cms_components ORDER BY kind, code'),
+      pool.query('SELECT id, component_code, code, title, variant, payload, style_overrides, responsive_config, position FROM cms_component_presets ORDER BY component_code, position'),
+    ]);
+    const byComponent = new Map<string, unknown[]>();
+    for (const row of presets.rows as { component_code: string }[]) byComponent.set(row.component_code, [...(byComponent.get(row.component_code) ?? []), row]);
+    return { items: components.rows.map((c: { code: string }) => ({ ...c, presetDefinitions: byComponent.get(c.code) ?? [] })), primitives: PRIMITIVES,
+      styleSpec: STYLE_SPEC, simpleStyleKeys: SIMPLE_STYLE_KEYS };
+  });
+
+  /** Component presets (Req 180): applying one sets variant + presentational payload + style tokens; content stays. */
+  app.post('/api/v1/admin/cms/sections/:id/apply-preset', async (request) => {
+    const user = await actor(request, 'cms:edit');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const { presetCode } = z.object({ presetCode: z.string().regex(/^[a-z0-9_-]{2,40}$/) }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const section = await one<{ payload: Record<string, unknown>; component_code: string; field_schema: FieldSchema; style_overrides: Record<string, unknown> }>(client,
+        `SELECT s.payload, s.style_overrides, c.code AS component_code, c.field_schema FROM cms_sections s JOIN cms_components c ON c.id = s.component_id WHERE s.id = $1 FOR UPDATE OF s`, [id]);
+      if (!section) throw notFound();
+      const preset = await one<{ title: string; variant: string; payload: Record<string, unknown>; style_overrides: Record<string, unknown>; responsive_config: Record<string, unknown> }>(client,
+        'SELECT title, variant, payload, style_overrides, responsive_config FROM cms_component_presets WHERE component_code = $1 AND code = $2', [section.component_code, presetCode]);
+      if (!preset) throw badRequest('این Preset برای این کامپوننت تعریف نشده است.');
+      const payload = validateSectionPayload(section.field_schema, { ...section.payload, ...preset.payload });
+      const style = validateStyleOverrides(preset.style_overrides);
+      await client.query(`UPDATE cms_sections SET payload = $2, variant = $3, preset = $4, style_overrides = $5,
+          responsive_config = CASE WHEN $6::jsonb = '{}'::jsonb THEN responsive_config ELSE $6::jsonb END, updated_at = now() WHERE id = $1`,
+        [id, JSON.stringify(payload), preset.variant, presetCode, JSON.stringify(style), JSON.stringify(preset.responsive_config ?? {})]);
+      await audit(client, user.id, 'cms.section_preset_applied', 'cms_section', id, { payload: section.payload, style: section.style_overrides }, { presetCode, variant: preset.variant }, request.ip);
+      return one(client, 'SELECT * FROM cms_sections WHERE id = $1', [id]);
+    });
+  });
+
+  /** Validates a draft payload against the typed schema without saving (used by the schema-driven editor). */
+  app.post('/api/v1/admin/cms/components/:code/validate', async (request) => {
+    await actor(request, 'cms:read');
+    const { code } = z.object({ code: z.string().regex(/^[a-z0-9_]{2,40}$/) }).parse(request.params);
+    const component = await one<{ field_schema: FieldSchema }>(pool, 'SELECT field_schema FROM cms_components WHERE code = $1', [code]);
+    if (!component) throw notFound();
+    return { payload: validateSectionPayload(component.field_schema, z.record(z.string(), z.unknown()).parse(request.body)) };
   });
 
   app.post('/api/v1/admin/cms/components/composable', async (request, reply) => {
@@ -538,7 +686,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
           { code: 'cta', title: 'دعوت به خرید', payload: { title: 'کالکشن کلبه را ببینید', cta: 'ورود به فروشگاه', target: 'shop' } },
         ],
         campaign: [
-          { code: 'hero', title: 'هیرو کمپین', payload: { template: 'fullbleed', eyebrow: 'کمپین ویژه', title: body.title, subtitle: '', ctaLabel: 'مشاهده پیشنهادها', ctaTarget: 'shop', campaignId: body.campaignId ?? undefined } },
+          { code: 'hero', title: 'هیرو کمپین', payload: { template: 'fullviewport', eyebrow: 'کمپین ویژه', title: body.title, subtitle: '', ctaLabel: 'مشاهده پیشنهادها', ctaTarget: 'shop', campaignId: body.campaignId ?? undefined } },
           { code: 'countdown', title: 'شمارش معکوس', payload: { title: 'تا پایان کمپین', mode: body.campaignId ? 'campaign' : 'manual', campaignId: body.campaignId ?? undefined, tone: 'terra' } },
           { code: 'product_grid', title: 'محصولات کمپین', payload: { title: 'پیشنهادهای ویژه', collectionCode: 'new-arrivals', limit: 8 } },
         ],
@@ -645,9 +793,10 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       dataBinding: z.object({ campaignId: z.uuid().optional(), collectionCode: z.string().regex(/^[a-z0-9-]{2,40}$/).optional(),
         productIds: z.array(z.uuid()).max(24).optional(), productId: z.uuid().optional(), source: z.enum(['products', 'categories', 'vibes', 'campaign', 'recommendations', 'reviews', 'manual']).optional() }).strict().optional(),
       styleOverrides: z.record(z.string(), z.union([z.string().max(60), z.number(), z.boolean()])).optional(),
-      responsiveConfig: z.object({ hideOnMobile: z.boolean().optional(), hideOnDesktop: z.boolean().optional(), mobileColumns: z.number().int().min(1).max(3).optional() }).strict().optional(),
+      responsiveConfig: responsiveConfigSchema.optional(),
     }).strict().parse(request.body);
-    assertSafeText(body.styleOverrides, 'styleOverrides');
+    // Req 181/226/228: only design-token values are accepted — never raw CSS.
+    if (body.styleOverrides) body.styleOverrides = validateStyleOverrides(body.styleOverrides);
     return transaction(pool, async (client) => {
       const before = await one<Record<string, unknown>>(client, 'SELECT variant, preset, section_theme, data_binding FROM cms_sections WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
@@ -685,11 +834,8 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
 
   const cardTemplateBody = z.object({
     code: z.string().regex(/^[a-z0-9-]{2,40}$/), name: safeString(120), variant: z.string().regex(/^[a-z0-9-]{2,30}$/),
-    blocks: z.array(z.enum(['image', 'badge', 'brand', 'name', 'original_price', 'discount_price', 'installment', 'rating', 'cta', 'countdown', 'swatches'])).min(2).max(11),
-    styles: z.object({ aspectRatio: z.enum(['3/4', '4/5', '1/1']).default('3/4'), radius: z.string().regex(/^\d{1,2}px$/).default('18px'),
-      badgeTone: z.string().max(20).optional(), accentColor: hex.default('#1B2A4A'), darkSurface: z.boolean().optional(),
-      serifTitle: z.boolean().optional(), highlightDiscount: z.boolean().optional(), prominentInstallment: z.boolean().optional(),
-      borderless: z.boolean().optional(), luxuryBorder: z.boolean().optional(), showSwatches: z.boolean().optional() }).strict(),
+    blocks: z.array(z.enum(CARD_BLOCKS)).min(2).max(11),
+    styles: cardStylesSchema,
     active: z.boolean().default(true),
   }).strict();
 
@@ -709,11 +855,11 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   app.patch('/api/v1/admin/cms/card-templates/:id', async (request) => {
     const user = await actor(request, 'cms:templates');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = cardTemplateBody.omit({ code: true }).partial().parse(request.body);
+    const body = patchBody(cardTemplateBody.omit({ code: true }).partial().parse(request.body), request.body);
     return transaction(pool, async (client) => {
       const before = await one<{ blocks: string[]; styles: Record<string, unknown>; is_system: boolean }>(client, 'SELECT * FROM cms_product_card_templates WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
-      const next = { blocks: body.blocks ?? before.blocks, styles: body.styles ?? before.styles };
+      const next = { blocks: body.blocks ?? before.blocks, styles: body.styles ? { ...before.styles, ...body.styles } : before.styles };
       const report = designQualityGate(next);
       if (body.active && !report.passed) throw badRequest('قالب از بررسی کیفیت طراحی عبور نکرده و قابل فعال‌سازی نیست.');
       await client.query(`UPDATE cms_product_card_templates SET name = COALESCE($2,name), variant = COALESCE($3,variant), blocks = $4, styles = $5,
@@ -738,7 +884,8 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   const cardRuleBody = z.object({
     name: safeString(160), priority: z.number().int().min(1).max(1000),
     conditions: z.object({ minDiscountPercent: z.number().int().min(1).max(95).optional(), isNew: z.boolean().optional(),
-      installmentEnabled: z.boolean().optional(), inActiveCampaign: z.boolean().optional(), vibe: z.string().max(40).optional(), category: z.string().max(120).optional() }).strict(),
+      installmentEnabled: z.boolean().optional(), inActiveCampaign: z.boolean().optional(), vibe: z.string().max(40).optional(), category: z.string().max(120).optional(),
+      collectionCode: z.string().regex(/^[a-z0-9-]{2,40}$/).optional(), maxAvailable: z.number().int().min(0).max(50).optional(), outOfStock: z.boolean().optional() }).strict(),
     templateCode: z.string().regex(/^[a-z0-9-]{2,40}$/), active: z.boolean().default(true),
     startsAt: z.iso.datetime().nullable().optional(), endsAt: z.iso.datetime().nullable().optional(),
   }).strict();
@@ -760,7 +907,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   app.patch('/api/v1/admin/cms/card-rules/:id', async (request) => {
     const user = await actor(request, 'cms:templates');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = cardRuleBody.partial().parse(request.body);
+    const body = patchBody(cardRuleBody.partial().parse(request.body), request.body);
     return transaction(pool, async (client) => {
       const before = await one(client, 'SELECT * FROM cms_product_card_rules WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
@@ -795,7 +942,10 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       ...(table === 'cms_categories'
         ? { imageUrl: z.string().max(400).nullable().optional(), icon: z.string().max(40).nullable().optional(),
             cardTemplate: z.enum(['image', 'editorial', 'minimal', 'glass', 'overlay', 'horizontal']).default('editorial'),
-            parentId: z.uuid().nullable().optional() }
+            parentId: z.uuid().nullable().optional(),
+            cardStyle: z.object({ aspect: z.enum(['4/3', '1/1', '3/4', '16/9']).optional(), radius: z.enum(['sm', 'md', 'lg', 'xl']).optional(),
+              overlay: z.number().int().min(0).max(80).optional(), textAlign: z.enum(['start', 'center']).optional(), showDescription: z.boolean().optional(),
+              accent: z.enum(['accent', 'primary', 'surface']).optional() }).strict().optional() }
         : { palette: z.object({ primary: hex, accent: hex, background: hex }).strict().optional() }),
     }).strict();
     const label = table === 'cms_categories' ? 'category' : 'vibe';
@@ -813,8 +963,12 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       const id = randomUUID();
       await transaction(pool, async (client) => {
         if (table === 'cms_categories') {
-          await client.query(`INSERT INTO cms_categories(id,name,slug,description,image_url,cover_url,icon,card_template,seo,position,parent_id,active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-            [id, body.name, body.slug, body.description, body.imageUrl ?? null, body.coverUrl ?? null, body.icon ?? null, body.cardTemplate, '{}', body.position, body.parentId ?? null, body.active]);
+          if (body.parentId) {
+            const parent = await one(client, 'SELECT id FROM cms_categories WHERE id = $1', [body.parentId]);
+            if (!parent) throw badRequest('دسته والد یافت نشد.');
+          }
+          await client.query(`INSERT INTO cms_categories(id,name,slug,description,image_url,cover_url,icon,card_template,seo,position,parent_id,active,card_style) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+            [id, body.name, body.slug, body.description, body.imageUrl ?? null, body.coverUrl ?? null, body.icon ?? null, body.cardTemplate, '{}', body.position, body.parentId ?? null, body.active, JSON.stringify(body.cardStyle ?? {})]);
         } else {
           await client.query(`INSERT INTO cms_vibes(id,name,slug,description,cover_url,palette,seo,active,position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
             [id, body.name, body.slug, body.description, body.coverUrl ?? null, JSON.stringify(body.palette ?? {}), '{}', body.active, body.position]);
@@ -828,12 +982,13 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     app.patch(`/api/v1/admin/cms/${path}/:id`, async (request) => {
       const user = await actor(request, 'cms:edit');
       const { id } = z.object({ id: z.uuid() }).parse(request.params);
-      const body = base.partial().parse(request.body) as Record<string, unknown>;
+      const body = patchBody(base.partial().parse(request.body), request.body) as Record<string, unknown>;
       const columns: Record<string, string> = { name: 'name', slug: 'slug', description: 'description', coverUrl: 'cover_url', position: 'position', active: 'active',
-        imageUrl: 'image_url', icon: 'icon', cardTemplate: 'card_template', parentId: 'parent_id', palette: 'palette' };
+        imageUrl: 'image_url', icon: 'icon', cardTemplate: 'card_template', parentId: 'parent_id', palette: 'palette', cardStyle: 'card_style' };
       return transaction(pool, async (client) => {
         const before = await one(client, `SELECT * FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
         if (!before) throw notFound();
+        if (body.parentId === id) throw badRequest('یک دسته نمی‌تواند والد خودش باشد.');
         const sets: string[] = []; const values: unknown[] = [id];
         for (const [key, value] of Object.entries(body)) {
           if (value === undefined || !columns[key]) continue;
@@ -881,7 +1036,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   app.patch('/api/v1/admin/cms/collections/:id', async (request) => {
     const user = await actor(request, 'cms:edit');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = collectionBody.omit({ code: true }).partial().parse(request.body);
+    const body = patchBody(collectionBody.omit({ code: true }).partial().parse(request.body), request.body);
     return transaction(pool, async (client) => {
       const before = await one(client, 'SELECT * FROM cms_collections WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
@@ -968,14 +1123,20 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   app.get('/api/v1/admin/cms/assets', async (request) => {
     await actor(request, 'cms:read');
     const q = z.object({ search: z.string().max(120).optional(), type: z.enum(['image', 'video', 'icon', 'document']).optional(),
-      folder: z.string().max(60).optional(), tag: z.string().max(40).optional() }).parse(request.query);
+      folder: z.string().max(60).optional(), tag: z.string().max(40).optional(),
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), uploader: z.uuid().optional(),
+      sort: z.enum(['newest', 'oldest', 'largest', 'title']).default('newest') }).parse(request.query);
+    const order = { newest: 'a.created_at DESC', oldest: 'a.created_at ASC', largest: 'a.size_bytes DESC NULLS LAST', title: 'a.title ASC' }[q.sort];
     const rows = await pool.query(`SELECT a.*, u.display_name AS uploader_name,
-        (SELECT count(*)::int FROM cms_asset_usages x WHERE x.asset_id = a.id) AS explicit_usage
+        (SELECT count(*)::int FROM cms_asset_usages x WHERE x.asset_id = a.id) AS explicit_usage,
+        (SELECT jsonb_build_object('status', r.status, 'metadata', r.metadata) FROM media_pipeline_runs r WHERE r.subject_type = 'cms_asset' AND r.subject_id = a.id ORDER BY r.created_at DESC LIMIT 1) AS pipeline
       FROM cms_assets a LEFT JOIN users u ON u.id = a.uploaded_by
       WHERE ($1::text IS NULL OR a.title ILIKE '%' || $1 || '%' OR a.alt_text ILIKE '%' || $1 || '%' OR $1 = ANY(a.tags))
         AND ($2::text IS NULL OR a.asset_type = $2) AND ($3::text IS NULL OR a.folder = $3) AND ($4::text IS NULL OR $4 = ANY(a.tags))
-      ORDER BY a.created_at DESC LIMIT 200`, [q.search ?? null, q.type ?? null, q.folder ?? null, q.tag ?? null]);
-    return { items: rows.rows };
+        AND ($5::date IS NULL OR a.created_at >= $5::date) AND ($6::date IS NULL OR a.created_at < $6::date + 1) AND ($7::uuid IS NULL OR a.uploaded_by = $7)
+      ORDER BY ${order} LIMIT 200`, [q.search ?? null, q.type ?? null, q.folder ?? null, q.tag ?? null, q.from ?? null, q.to ?? null, q.uploader ?? null]);
+    const uploaders = (await pool.query(`SELECT DISTINCT u.id, u.display_name FROM cms_assets a JOIN users u ON u.id = a.uploaded_by ORDER BY u.display_name`)).rows;
+    return { items: rows.rows, uploaders };
   });
 
   app.post('/api/v1/admin/cms/assets', async (request, reply) => {
@@ -997,7 +1158,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       await client.query(`INSERT INTO cms_assets(id,file_id,title,asset_type,url,folder,tags,alt_text,mime_type,size_bytes,uploaded_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [id, body.fileId ?? null, body.title, body.assetType, url, body.folder, body.tags, body.altText, mime, size, user.id]);
       await audit(client, user.id, 'cms.asset_created', 'cms_asset', id, undefined, { title: body.title }, request.ip);
-      await outbox(client, 'media.uploaded', 'cms_asset', id, { assetId: id, assetType: body.assetType, url });
+      await outbox(client, 'media.uploaded', 'cms_asset', id, { assetId: id, assetType: body.assetType, url, fileId: body.fileId ?? null });
     });
     return reply.code(201).send({ id, url });
   });
@@ -1065,6 +1226,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     const user = await actor(request, 'cms:edit');
     const body = announcementBody.parse(request.body);
     if (body.startsAt && body.endsAt && new Date(body.endsAt) <= new Date(body.startsAt)) throw badRequest('پایان باید بعد از شروع باشد.');
+    await assertAnnouncementBinding(pool, body.bindingType, body.bindingId ?? null);
     const id = randomUUID();
     await transaction(pool, async (client) => {
       await client.query(`INSERT INTO cms_announcements(id,title,messages,mode,style,binding_type,binding_id,priority,starts_at,ends_at,active,created_by)
@@ -1079,10 +1241,12 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
   app.patch('/api/v1/admin/cms/announcements/:id', async (request) => {
     const user = await actor(request, 'cms:edit');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = announcementBody.partial().parse(request.body);
+    const body = patchBody(announcementBody.partial().parse(request.body), request.body);
     return transaction(pool, async (client) => {
-      const before = await one(client, 'SELECT * FROM cms_announcements WHERE id = $1 FOR UPDATE', [id]);
+      const before = await one<{ binding_type: string; binding_id: string | null }>(client, 'SELECT * FROM cms_announcements WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
+      if (body.bindingType !== undefined || body.bindingId !== undefined)
+        await assertAnnouncementBinding(client, body.bindingType ?? before.binding_type, body.bindingId !== undefined ? body.bindingId ?? null : before.binding_id);
       await client.query(`UPDATE cms_announcements SET title = COALESCE($2,title), messages = COALESCE($3,messages), mode = COALESCE($4,mode),
           style = COALESCE($5,style), binding_type = COALESCE($6,binding_type), binding_id = CASE WHEN $7::boolean THEN $8 ELSE binding_id END,
           priority = COALESCE($9,priority), starts_at = CASE WHEN $10::boolean THEN $11::timestamptz ELSE starts_at END,

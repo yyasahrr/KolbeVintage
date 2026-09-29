@@ -8,18 +8,31 @@ import {
 import { filesApi } from "../data/api";
 import { useStore } from "../data/store";
 import { formatPersianDateTime } from "../data/persian-date";
-import { CmsSections, Composable, CommerceCard, type ComposableNode } from "../components/cms-blocks";
+import { CategoryCard, Composable, CommerceCard, type ComposableNode } from "../components/cms-blocks";
 import { ServerAnnouncementBar } from "../components/site-chrome";
+import { PreviewFrame } from "../components/cms-preview-frame";
+import { invalidateCardTemplates, type CardPreviewState, type CardTemplate } from "../components/commerce-card";
 import { PersianDatePicker } from "../components/persian-date-picker";
 import { Btn, Card, Drawer, Empty, ErrorState, Field, Input, LoadingState, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
 import { SeoDomainPanel, SeoLinkButton } from "./admin-seo";
+import { InstallmentsPanel } from "./admin-installments";
+import { PresetPicker, SchemaSectionEditor, fieldsOf } from "./admin-section-editor";
+import type { MegaMenuColumn, RegistryComponent } from "../data/experience-api";
+
+/** A new section starts with the schema defaults plus a title, so required fields are never empty. */
+const defaultPayload = (c: RegistryComponent): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const f of fieldsOf(c)) if (f.default !== undefined && f.default !== "") out[f.key] = f.default;
+  if (fieldsOf(c).some((f) => f.key === "title") || fieldsOf(c).length === 0) out.title = c.title;
+  return out;
+};
 
 /* CMS Studio (Req 173-244, 274-283, 322-332): the console for the server-side CMS domains.
    Everything here persists through /admin/cms/*; server validation is the source of truth. */
 
 type F = (m: string) => void;
-type Tab = "pages" | "seo" | "themes" | "cards" | "taxonomy" | "collections" | "assets" | "announcements" | "layout" | "builder" | "style" | "reviews" | "insights";
+type Tab = "pages" | "seo" | "themes" | "cards" | "taxonomy" | "collections" | "assets" | "announcements" | "layout" | "builder" | "style" | "reviews" | "insights" | "installments";
 const fa = (n: number) => n.toLocaleString("fa-IR");
 const errMsg = (e: unknown, d = "خطا") => (e instanceof Error ? e.message : d);
 
@@ -40,7 +53,7 @@ export function CmsStudio({ flash }: { flash: F }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<{ id: string; code: string; title: string; kind: string }[] | null>(null);
   const tabs: { v: Tab; label: string }[] = [
-    { v: "pages", label: "صفحات و انتشار" }, { v: "seo", label: "سئو" }, { v: "themes", label: "تم و توکن‌ها" }, { v: "cards", label: "کارت محصول" }, { v: "taxonomy", label: "دسته و وایب" },
+    { v: "pages", label: "صفحات و انتشار" }, { v: "seo", label: "سئو" }, { v: "themes", label: "تم و توکن‌ها" }, { v: "cards", label: "کارت محصول" }, { v: "installments", label: "اقساط" }, { v: "taxonomy", label: "دسته و وایب" },
     { v: "collections", label: "کالکشن‌ها" }, { v: "assets", label: "رسانه‌ها" }, { v: "announcements", label: "نوار اعلان" }, { v: "layout", label: "هدر و فوتر" },
     { v: "builder", label: "کامپوننت‌ساز" }, { v: "style", label: "هوش استایل" }, { v: "reviews", label: "نظرات" }, { v: "insights", label: "سرنخ و آمار" },
   ];
@@ -56,6 +69,7 @@ export function CmsStudio({ flash }: { flash: F }) {
       {tab === "seo" && <SeoDomainPanel flash={flash} />}
       {tab === "themes" && <ThemesPanel flash={flash} />}
       {tab === "cards" && <CardsPanel flash={flash} />}
+      {tab === "installments" && <InstallmentsPanel flash={flash} />}
       {tab === "taxonomy" && <TaxonomyPanel flash={flash} />}
       {tab === "collections" && <CollectionsPanel flash={flash} />}
       {tab === "assets" && <AssetsPanel flash={flash} />}
@@ -134,9 +148,7 @@ function PagesPanel({ flash }: { flash: F }) {
           <div className="space-y-3">
             <Segmented<"desktop" | "tablet" | "mobile"> options={[{ v: "desktop", label: "دسکتاپ" }, { v: "tablet", label: "تبلت" }, { v: "mobile", label: "موبایل" }]} value={device} onChange={setDevice} />
             <p className="flex items-center gap-1.5 text-[11.5px] text-[var(--kv-muted)]">{device === "desktop" ? <Monitor size={13} /> : device === "tablet" ? <Tablet size={13} /> : <Smartphone size={13} />}پیش‌نمایش با داده واقعی کاتالوگ، قیمت و موجودی — تا انتشار، کاربران نسخه قبلی را می‌بینند.</p>
-            <div className="mx-auto overflow-hidden rounded-[20px] border border-dashed border-[var(--kv-line-strong)] bg-[var(--kv-bg)] p-3 transition-all" style={{ maxWidth: device === "desktop" ? "100%" : device === "tablet" ? 768 : 390 }}>
-              <CmsSections page={preview} onNav={() => undefined} />
-            </div>
+            <PreviewFrame page={preview} device={device} />
           </div>
         )}
       </Drawer>
@@ -171,10 +183,9 @@ function PagesPanel({ flash }: { flash: F }) {
 function SectionsEditor({ pageId, flash }: { pageId: string; flash: F }) {
   const sections = useAsync(() => studioApi.sections(pageId), [pageId]);
   const registry = useAsync(() => studioApi.registry());
-  const collections = useAsync(() => studioApi.collections());
-  const festivals = useAsync(() => studioApi.festivals());
-  const [edit, setEdit] = useState<{ id: string; componentCode: string; title: string; payload: Record<string, unknown>; newKey: string } | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
   const [addCode, setAddCode] = useState("");
+  const [addPreset, setAddPreset] = useState("");
   // Req 177: drag & drop reorder (mouse/pen); arrow buttons remain for keyboard and touch.
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -192,7 +203,8 @@ function SectionsEditor({ pageId, flash }: { pageId: string; flash: F }) {
     try { await studioApi.reorder(pageId, list.map((x) => x.id)); await sections.load(); flash("ترتیب بخش‌ها در پیش‌نویس ذخیره شد"); }
     catch (e) { flash(errMsg(e)); } finally { setOptimistic(null); }
   };
-  const comps = registry.data.items as { code: string; title: string; variants: string[]; presets: string[]; kind: string; active: boolean }[];
+  const comps = registry.data.items;
+  const editing = editId ? items.find((x) => x.id === editId) : undefined;
   const move = async (i: number, d: -1 | 1) => {
     const j = i + d; if (j < 0 || j >= items.length) return;
     const list = [...items]; [list[i], list[j]] = [list[j]!, list[i]!];
@@ -202,8 +214,15 @@ function SectionsEditor({ pageId, flash }: { pageId: string; flash: F }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-[220px] flex-1"><Field label="افزودن کامپوننت از رجیستری"><Select options={["انتخاب کنید", ...comps.filter((c) => c.active !== false).map((c) => c.title)]} value={comps.find((c) => c.code === addCode)?.title ?? "انتخاب کنید"} onChange={(l) => setAddCode(comps.find((c) => c.title === l)?.code ?? "")} /></Field></div>
-        <Btn variant="accent" size="sm" disabled={!addCode} icon={<Plus size={14} />} onClick={async () => { const c = comps.find((x) => x.code === addCode)!; try { await studioApi.addSection(pageId, { componentCode: c.code, title: c.title, payload: { title: c.title }, visible: true }); setAddCode(""); await sections.load(); } catch (e) { flash(errMsg(e)); } }}>افزودن</Btn>
+        <Btn variant="accent" size="sm" disabled={!addCode} icon={<Plus size={14} />} onClick={async () => {
+          const c = comps.find((x) => x.code === addCode)!;
+          try {
+            const created = await studioApi.addSection(pageId, { componentCode: c.code, title: c.title, payload: defaultPayload(c), visible: true, ...(addPreset ? { presetCode: addPreset } : {}) });
+            setAddCode(""); setAddPreset(""); await sections.load(); setEditId(created.id);
+          } catch (e) { flash(errMsg(e)); }
+        }}>افزودن</Btn>
       </div>
+      {addCode && <PresetPicker component={comps.find((c) => c.code === addCode)} value={addPreset} onChange={setAddPreset} />}
       {items.length === 0 && <Empty title="این صفحه بخشی ندارد" desc="از رجیستری یک کامپوننت اضافه کنید." />}
       <ul className="space-y-2">{items.map((s, i) => {
         const comp = comps.find((c) => c.code === s.componentCode);
@@ -219,51 +238,16 @@ function SectionsEditor({ pageId, flash }: { pageId: string; flash: F }) {
               dragId === s.id && "opacity-40", overId === s.id && dragId !== s.id && "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]")}>
             <span className="hidden cursor-grab select-none px-1 text-[var(--kv-muted)] active:cursor-grabbing sm:block" title="برای جابه‌جایی بکشید" aria-hidden><GripVertical size={16} /></span>
             <div className="flex flex-col"><button aria-label="بالا" onClick={() => move(i, -1)} className="flex h-7 w-8 items-center justify-center rounded hover:bg-[var(--kv-surface-2)]"><ArrowUp size={13} /></button><button aria-label="پایین" onClick={() => move(i, 1)} className="flex h-7 w-8 items-center justify-center rounded hover:bg-[var(--kv-surface-2)]"><ArrowDown size={13} /></button></div>
-            <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">{s.title || s.componentCode}</p><p className="text-[11px] text-[var(--kv-muted)]">{comp?.title ?? s.componentCode}</p></div>
-            <Btn size="sm" variant="soft" onClick={() => setEdit({ id: s.id, componentCode: s.componentCode, title: s.title, payload: { ...s.payload }, newKey: "" })}>ویرایش</Btn>
+            <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">{s.title || s.componentCode}</p><p className="text-[11px] text-[var(--kv-muted)]">{comp?.title ?? s.componentCode}{s.variant && s.variant !== "default" ? ` · ${s.variant}` : ""}{s.preset ? ` · Preset: ${s.preset}` : ""}</p></div>
+            <Btn size="sm" variant="soft" onClick={() => setEditId(editId === s.id ? null : s.id)}>ویرایش</Btn>
             <button aria-label="تکثیر" onClick={async () => { await studioApi.duplicateSection(s.id); await sections.load(); }} className="flex h-9 w-9 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]"><Copy size={14} /></button>
             <button aria-label={s.visible ? "پنهان کردن" : "نمایش"} onClick={async () => { await studioApi.updateSection(s.id, { visible: !s.visible }); await sections.load(); }} className="flex h-9 w-9 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]">{s.visible ? <Eye size={14} /> : <EyeOff size={14} />}</button>
             <button aria-label="حذف" onClick={async () => { await studioApi.deleteSection(s.id); await sections.load(); }} className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--kv-danger)] hover:bg-[var(--kv-surface-2)]"><Trash2 size={14} /></button>
           </li>
         );
       })}</ul>
-      {edit && (() => {
-        const comp = comps.find((c) => c.code === edit.componentCode);
-        return (
-          <Card className="space-y-3 p-4">
-            <p className="text-[13.5px] font-extrabold">ویرایش «{edit.title}»</p>
-            <Field label="عنوان داخلی"><Input value={edit.title} onChange={(title) => setEdit({ ...edit, title })} /></Field>
-            {Object.entries(edit.payload).filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean").map(([k, v]) => (
-              <Field key={k} label={k}>{typeof v === "boolean" ? <Switch on={v} onToggle={() => setEdit({ ...edit, payload: { ...edit.payload, [k]: !v } })} />
-                : String(v).length > 60 || String(v).includes("\n") ? <Textarea rows={3} value={String(v)} onChange={(val) => setEdit({ ...edit, payload: { ...edit.payload, [k]: val } })} />
-                : <Input value={String(v)} onChange={(val) => setEdit({ ...edit, payload: { ...edit.payload, [k]: typeof v === "number" ? Number(val) || 0 : val } })} />}</Field>
-            ))}
-            <div className="flex gap-2"><Input className="flex-1" value={edit.newKey} onChange={(newKey) => setEdit({ ...edit, newKey: newKey.replace(/[^a-zA-Z0-9_]/g, "") })} placeholder="افزودن فیلد (مثلاً subtitle)" /><Btn size="sm" variant="soft" disabled={!edit.newKey} onClick={() => setEdit({ ...edit, payload: { ...edit.payload, [edit.newKey]: "" }, newKey: "" })}>افزودن فیلد</Btn></div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Field label="کالکشن داده (اتصال پویا)"><Select options={["بدون اتصال", ...(collections.data?.items ?? []).map((c) => c.code)]} value={String(edit.payload.collectionCode ?? "بدون اتصال")} onChange={(v) => setEdit({ ...edit, payload: { ...edit.payload, collectionCode: v === "بدون اتصال" ? undefined : v } })} /></Field>
-              <Field label="اتصال به کمپین (شمارش معکوس/هیرو)"><Select options={["بدون کمپین", ...(festivals.data?.items ?? []).map((f) => f.name)]} value={(festivals.data?.items ?? []).find((f) => f.id === edit.payload.campaignId)?.name ?? "بدون کمپین"} onChange={(v) => setEdit({ ...edit, payload: { ...edit.payload, campaignId: (festivals.data?.items ?? []).find((f) => f.name === v)?.id, mode: v === "بدون کمپین" ? "manual" : "campaign" } })} /></Field>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-3">
-              <Field label="Variant"><Select options={comp?.variants?.length ? comp.variants : ["default"]} value={String(edit.payload.__variant ?? comp?.variants?.[0] ?? "default")} onChange={(v) => setEdit({ ...edit, payload: { ...edit.payload, __variant: v } })} /></Field>
-              <Field label="تم بخش"><Select options={["inherit", "light", "dark", "campaign"]} value={String(edit.payload.__theme ?? "inherit")} onChange={(v) => setEdit({ ...edit, payload: { ...edit.payload, __theme: v } })} /></Field>
-              <Field label="نمایش"><Select options={["همه دستگاه‌ها", "فقط دسکتاپ", "فقط موبایل"]} value={String(edit.payload.__device ?? "همه دستگاه‌ها")} onChange={(v) => setEdit({ ...edit, payload: { ...edit.payload, __device: v } })} /></Field>
-            </div>
-            {comp?.presets?.length ? <p className="text-[11.5px] text-[var(--kv-muted)]">Presetهای این کامپوننت: {comp.presets.join("، ")}</p> : null}
-            <div className="flex gap-2">
-              <Btn variant="accent" size="sm" onClick={async () => {
-                const { __variant, __theme, __device, ...payload } = edit.payload;
-                try {
-                  await studioApi.updateSection(edit.id, { title: edit.title, payload: Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined)) });
-                  await studioApi.presentation(edit.id, { ...(__variant ? { variant: String(__variant) } : {}), ...(__theme ? { sectionTheme: String(__theme) } : {}),
-                    ...(__device ? { responsiveConfig: { hideOnMobile: __device === "فقط دسکتاپ", hideOnDesktop: __device === "فقط موبایل" } } : {}) });
-                  flash("بخش در پیش‌نویس ذخیره شد"); setEdit(null); await sections.load();
-                } catch (e) { flash(errMsg(e)); }
-              }}>ذخیره در پیش‌نویس</Btn>
-              <Btn variant="ghost" size="sm" onClick={() => setEdit(null)}>انصراف</Btn>
-            </div>
-          </Card>
-        );
-      })()}
+      {editing && <SchemaSectionEditor key={editing.id} section={editing} component={comps.find((c) => c.code === editing.componentCode)} styleSpec={registry.data.styleSpec ?? {}}
+        simpleStyleKeys={registry.data.simpleStyleKeys ?? []} flash={flash} onCancel={() => setEditId(null)} onSaved={() => { setEditId(null); void sections.load(); }} />}
     </div>
   );
 }
@@ -327,29 +311,73 @@ const BLOCK_LABEL: Record<string, string> = { image: "تصویر", badge: "نش�
 function CardsPanel({ flash }: { flash: F }) {
   const templates = useAsync(() => studioApi.cardTemplates());
   const rules = useAsync(() => studioApi.cardRules());
-  const [tpl, setTpl] = useState({ code: "", name: "", variant: "custom", blocks: ["image", "badge", "name", "discount_price", "installment", "cta"], accentColor: "#1B2A4A", radius: "18px" });
+  const { products: storeProducts } = useStore();
+  const [tpl, setTpl] = useState({ id: "", code: "", name: "", variant: "custom", blocks: ["image", "badge", "name", "discount_price", "installment", "cta"], accentColor: "#1B2A4A", radius: "18px",
+    aspectRatio: "3/4", ctaStyle: "solid", hoverEffect: "zoom", titleLines: 2, badgeText: "", darkSurface: false, serifTitle: false, prominentInstallment: false, highlightDiscount: false });
+  const [previewState, setPreviewState] = useState<CardPreviewState>("default");
+  const [sampleKind, setSampleKind] = useState<"long" | "image" | "sale" | "soldout">("long");
+  const styles = { accentColor: tpl.accentColor, radius: tpl.radius, aspectRatio: tpl.aspectRatio, ctaStyle: tpl.ctaStyle, hoverEffect: tpl.hoverEffect, titleLines: tpl.titleLines,
+    ...(tpl.badgeText.trim() ? { badgeText: tpl.badgeText.trim() } : {}), ...(tpl.darkSurface ? { darkSurface: true } : {}), ...(tpl.serifTitle ? { serifTitle: true } : {}),
+    ...(tpl.prominentInstallment ? { prominentInstallment: true } : {}), ...(tpl.highlightDiscount ? { highlightDiscount: true } : {}) };
   const [gate, setGate] = useState<{ passed: boolean; checks: Record<string, boolean>; contrast: number } | null>(null);
   const [rule, setRule] = useState({ name: "", priority: 10, minDiscountPercent: "", isNew: false, installmentEnabled: false, templateCode: "kolbe-sale" });
-  useEffect(() => { const t = window.setTimeout(() => { studioApi.qualityCheck({ blocks: tpl.blocks, styles: { accentColor: tpl.accentColor, radius: tpl.radius } }).then(setGate).catch(() => setGate(null)); }, 300); return () => window.clearTimeout(t); }, [tpl.blocks, tpl.accentColor, tpl.radius]);
+  const styleKey = JSON.stringify(styles);
+  useEffect(() => { const t = window.setTimeout(() => { studioApi.qualityCheck({ blocks: tpl.blocks, styles: JSON.parse(styleKey) }).then(setGate).catch(() => setGate(null)); }, 300); return () => window.clearTimeout(t); }, [tpl.blocks, styleKey]);
   if (templates.error) return <ErrorState message={templates.error} onRetry={templates.load} />;
   if (!templates.data || !rules.data) return <LoadingState />;
-  const sample: CommerceProduct = { id: "sample", name: "کت پشمی دو‌دکمه کلبه با عنوان طولانی برای تست", brand: "Kolbe", category: "کت", productType: "coat", gender: "unisex", seasons: [], vibes: [], priceRial: "89000000", installmentPriceRial: "92000000", perInstallmentRial: "23000000", compareAtRial: "129000000", discountPercent: 31, installmentEnabled: true, installmentProviders: [], image: null, flatLay: null, available: 3, isNew: true, createdAt: new Date().toISOString(), rating: 4.6, reviewCount: 12, variants: [] };
+  const base: CommerceProduct = { id: "sample", name: "کت پشمی دو‌دکمه کلبه با عنوان طولانی برای تست حالت چندخطی", brand: "Kolbe", category: "کت", productType: "coat", gender: "unisex", seasons: [], vibes: [], priceRial: "89000000", installmentPriceRial: "92000000", perInstallmentRial: "23000000", compareAtRial: "129000000", discountPercent: 31, installmentEnabled: true, installmentProviders: [], image: null, flatLay: null, available: 3, isNew: true, createdAt: new Date().toISOString(), rating: 4.6, reviewCount: 12,
+    variants: [{ id: "v1", sku: "S-1", size: "M", color: "مشکی", available: 2 }, { id: "v2", sku: "S-2", size: "L", color: "کرم", available: 1 }] };
+  const storeImage = storeProducts.find((p) => p.images?.[0])?.images[0] ?? null;
+  const sample: CommerceProduct = sampleKind === "image" ? { ...base, name: "پیراهن کتان", image: storeImage, compareAtRial: null, discountPercent: 0 }
+    : sampleKind === "sale" ? { ...base, name: "بارانی کلاسیک", image: storeImage, discountPercent: 45, compareAtRial: "162000000" }
+    : sampleKind === "soldout" ? { ...base, name: "ژاکت بافت", image: storeImage, available: 0 } : base;
+  const draftTemplate: CardTemplate = { code: tpl.code || "draft", name: tpl.name || "پیش‌نویس", variant: tpl.variant, blocks: tpl.blocks, styles };
+  const editTemplate = (t: { id: string; code: string; name: string; variant: string; blocks: string[]; styles: Record<string, unknown> }) => {
+    const st = t.styles as Record<string, string | number | boolean | undefined>;
+    setTpl({ id: t.id, code: t.code, name: t.name, variant: t.variant, blocks: t.blocks, accentColor: String(st.accentColor ?? "#1B2A4A"), radius: String(st.radius ?? "18px"), aspectRatio: String(st.aspectRatio ?? "3/4"),
+      ctaStyle: String(st.ctaStyle ?? "solid"), hoverEffect: String(st.hoverEffect ?? "zoom"), titleLines: Number(st.titleLines ?? 2), badgeText: String(st.badgeText ?? ""), darkSurface: !!st.darkSurface,
+      serifTitle: !!st.serifTitle, prominentInstallment: !!st.prominentInstallment, highlightDiscount: !!st.highlightDiscount });
+  };
   return (
     <div className="space-y-4">
-      <p className="text-[12.5px] leading-6 text-[var(--kv-muted)]">پیش‌نمایش حالت‌ها (Req 183): هر کارت با داده نمونه — عنوان بلند، بدون تصویر، تخفیف و اقساط — نمایش داده می‌شود.</p>
+      <p className="text-[12.5px] leading-6 text-[var(--kv-muted)]">پیش‌نمایش حالت‌ها (Req 183، 198): هر قالب با داده نمونه و در حالت‌های عادی، hover، در حال افزودن، افزوده‌شده، ناموجود و اسکلتون نمایش داده می‌شود.</p>
+      <div className="flex flex-wrap gap-3" data-testid="card-state-controls">
+        <Segmented<CardPreviewState> options={[{ v: "default", label: "عادی" }, { v: "hover", label: "Hover" }, { v: "loading", label: "در حال افزودن" }, { v: "added", label: "افزوده شد" }, { v: "soldout", label: "ناموجود" }, { v: "skeleton", label: "اسکلتون" }]} value={previewState} onChange={setPreviewState} />
+        <Segmented<"long" | "image" | "sale" | "soldout"> options={[{ v: "long", label: "عنوان بلند، بی‌تصویر" }, { v: "image", label: "با تصویر" }, { v: "sale", label: "تخفیف" }, { v: "soldout", label: "موجودی صفر" }]} value={sampleKind} onChange={setSampleKind} />
+      </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
         {templates.data.items.map((t) => (
-          <div key={t.id} className="space-y-1.5"><CommerceCard product={{ ...sample, cardTemplate: t.code }} /><p className="text-[11.5px] font-bold">{t.name}</p><p className={cn("text-[10.5px]", t.quality_report?.passed ? "text-[var(--kv-success)]" : "text-[var(--kv-danger)]")}>{t.quality_report?.passed ? "کنترل کیفیت: قبول" : "کنترل کیفیت: رد"} · {t.active ? "فعال" : "غیرفعال"}</p></div>
+          <div key={t.id} className="space-y-1.5"><CommerceCard product={sample} template={{ code: t.code, name: t.name, variant: t.variant, blocks: t.blocks, styles: t.styles as CardTemplate["styles"] }} previewState={previewState} />
+            <button onClick={() => editTemplate(t)} className="text-[11px] font-bold text-[var(--kv-accent)]">{t.is_system ? "کپی و ویرایش" : "ویرایش"}</button><p className="text-[11.5px] font-bold">{t.name}</p><p className={cn("text-[10.5px]", t.quality_report?.passed ? "text-[var(--kv-success)]" : "text-[var(--kv-danger)]")}>{t.quality_report?.passed ? "کنترل کیفیت: قبول" : "کنترل کیفیت: رد"} · {t.active ? "فعال" : "غیرفعال"}</p></div>
         ))}
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <Card className="space-y-3 p-4">
-          <p className="text-[14px] font-extrabold">طراح کارت محصول</p>
+          <div className="flex items-center justify-between"><p className="text-[14px] font-extrabold">{tpl.id ? `ویرایش قالب «${tpl.name}»` : "طراح کارت محصول"}</p>{tpl.id && <button className="text-[11.5px] text-[var(--kv-muted)]" onClick={() => setTpl({ ...tpl, id: "", code: "", name: "" })}>قالب جدید</button>}</div>
           <div className="grid gap-2 sm:grid-cols-2"><Field label="کد"><Input value={tpl.code} onChange={(v) => setTpl({ ...tpl, code: v.toLowerCase().replace(/[^a-z0-9-]/g, "") })} /></Field><Field label="نام"><Input value={tpl.name} onChange={(name) => setTpl({ ...tpl, name })} /></Field></div>
           <div className="flex flex-wrap gap-1.5">{BLOCKS.map((b) => <button key={b} onClick={() => setTpl({ ...tpl, blocks: tpl.blocks.includes(b) ? tpl.blocks.filter((x) => x !== b) : [...tpl.blocks, b] })} aria-pressed={tpl.blocks.includes(b)} className={cn("rounded-full border px-3 py-1 text-[11.5px] font-bold", tpl.blocks.includes(b) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)]")}>{BLOCK_LABEL[b]}</button>)}</div>
-          <div className="flex flex-wrap items-end gap-3"><label className="text-[12px] font-semibold">رنگ تأکیدی <input type="color" value={tpl.accentColor} onChange={(e) => setTpl({ ...tpl, accentColor: e.target.value })} className="mr-2 h-9 w-10 rounded border border-[var(--kv-line)]" /></label><Field label="گردی گوشه"><Select options={["12px", "14px", "18px", "22px", "28px"]} value={tpl.radius} onChange={(radius) => setTpl({ ...tpl, radius })} /></Field></div>
+          <div className="flex flex-wrap items-end gap-3"><label className="text-[12px] font-semibold">رنگ تأکیدی <input type="color" value={tpl.accentColor} onChange={(e) => setTpl({ ...tpl, accentColor: e.target.value })} className="mr-2 h-9 w-10 rounded border border-[var(--kv-line)]" /></label><Field label="گردی گوشه"><Select options={["12px", "14px", "18px", "22px", "28px"]} value={tpl.radius} onChange={(radius) => setTpl({ ...tpl, radius })} /></Field>
+            <Field label="نسبت تصویر"><Select options={["3/4", "4/5", "1/1"]} value={tpl.aspectRatio} onChange={(aspectRatio) => setTpl({ ...tpl, aspectRatio })} /></Field>
+            <Field label="دکمه"><Select options={["solid", "outline", "ghost"]} value={tpl.ctaStyle} onChange={(ctaStyle) => setTpl({ ...tpl, ctaStyle })} /></Field>
+            <Field label="Hover"><Select options={["zoom", "lift", "shadow", "none"]} value={tpl.hoverEffect} onChange={(hoverEffect) => setTpl({ ...tpl, hoverEffect })} /></Field>
+            <Field label="خطوط عنوان"><Select options={["1", "2", "3"]} value={String(tpl.titleLines)} onChange={(v) => setTpl({ ...tpl, titleLines: Number(v) })} /></Field>
+            <Field label="متن نشان"><Input className="w-32" value={tpl.badgeText} onChange={(badgeText) => setTpl({ ...tpl, badgeText })} /></Field></div>
+          <div className="flex flex-wrap gap-4 text-[12px]">
+            {([["darkSurface", "سطح تیره"], ["serifTitle", "عنوان سریف"], ["prominentInstallment", "اقساط برجسته"], ["highlightDiscount", "تأکید تخفیف"]] as const).map(([k, l]) => <label key={k} className="flex items-center gap-1.5"><input type="checkbox" checked={tpl[k]} onChange={(e) => setTpl({ ...tpl, [k]: e.target.checked })} />{l}</label>)}
+          </div>
+          <div className="grid grid-cols-2 gap-3 rounded-[14px] bg-[var(--kv-surface-2)] p-3" data-testid="card-draft-preview">
+            <CommerceCard product={sample} template={draftTemplate} previewState={previewState} />
+            <CommerceCard product={{ ...sample, image: null, name: base.name }} template={draftTemplate} previewState={previewState === "default" ? "hover" : "default"} />
+          </div>
           {gate && <div className="rounded-[12px] bg-[var(--kv-surface-2)] p-3 text-[11.5px]"><b className={gate.passed ? "text-[var(--kv-success)]" : "text-[var(--kv-danger)]"}>{gate.passed ? "از کنترل کیفیت طراحی عبور کرد" : "کنترل کیفیت رد شد"}</b> · کنتراست {fa(gate.contrast)}<div className="mt-1 flex flex-wrap gap-1.5">{Object.entries(gate.checks).map(([k, v]) => <span key={k} className={v ? "text-[var(--kv-success)]" : "text-[var(--kv-danger)]"}>{v ? "✓" : "✗"} {k}</span>)}</div></div>}
-          <Btn variant="accent" size="sm" disabled={!tpl.code || !tpl.name || !gate?.passed} onClick={async () => { try { await studioApi.createCardTemplate({ code: tpl.code, name: tpl.name, variant: tpl.variant, blocks: tpl.blocks, styles: { accentColor: tpl.accentColor, radius: tpl.radius, aspectRatio: "3/4" } }); flash("قالب کارت ساخته شد"); await templates.load(); } catch (e) { flash(errMsg(e)); } }}>ذخیره قالب</Btn>
+          <Btn variant="accent" size="sm" disabled={!tpl.code || !tpl.name || !gate?.passed} onClick={async () => {
+            const current = templates.data!.items.find((t) => t.id === tpl.id);
+            try {
+              if (current && !current.is_system) await studioApi.updateCardTemplate(tpl.id, { name: tpl.name, variant: tpl.variant, blocks: tpl.blocks, styles });
+              else await studioApi.createCardTemplate({ code: current?.is_system && current.code === tpl.code ? `${tpl.code}-custom` : tpl.code, name: tpl.name, variant: tpl.variant, blocks: tpl.blocks, styles });
+              invalidateCardTemplates(); flash(current && !current.is_system ? "قالب به‌روزرسانی شد" : "قالب کارت ساخته شد"); await templates.load();
+            } catch (e) { flash(errMsg(e)); }
+          }}>{tpl.id && !templates.data.items.find((t) => t.id === tpl.id)?.is_system ? "به‌روزرسانی قالب" : "ذخیره قالب"}</Btn>
         </Card>
         <Card className="space-y-3 p-4">
           <p className="text-[14px] font-extrabold">قوانین انتخاب کارت (اولویت کمتر = مهم‌تر)</p>
@@ -377,6 +405,7 @@ function TaxonomyPanel({ flash }: { flash: F }) {
   const [kind, setKind] = useState<"categories" | "vibes">("vibes");
   const { data, error, load } = useAsync(() => studioApi.taxonomy(kind), [kind]);
   const [form, setForm] = useState({ name: "", slug: "", description: "", coverUrl: "", cardTemplate: "editorial" });
+  const [styleFor, setStyleFor] = useState<{ id: string; name: string; slug: string; description: string; cover: string | null; cardTemplate: string; cardStyle: CategoryCardStyle } | null>(null);
   if (error) return <ErrorState message={error} onRetry={load} />;
   return (
     <div className="space-y-4">
@@ -388,6 +417,7 @@ function TaxonomyPanel({ flash }: { flash: F }) {
             <div className="flex flex-col items-end gap-2">
               <Switch on={t.active} onToggle={async () => { try { await studioApi.updateTaxonomy(kind, t.id, { active: !t.active }); await load(); } catch (e) { flash(errMsg(e)); } }} />
               <SeoLinkButton type={kind === "vibes" ? "vibe" : "category"} entityKey={t.slug} name={t.name} flash={flash} />
+              {kind === "categories" && <Btn size="sm" variant="ghost" onClick={() => setStyleFor({ id: t.id, name: t.name, slug: t.slug, description: t.description, cover: (t.cover_url as string | null) ?? (t.image_url as string | null) ?? null, cardTemplate: String(t.card_template ?? "editorial"), cardStyle: (t.card_style as CategoryCardStyle) ?? {} })}>ظاهر کارت</Btn>}
             </div>
           </Card>
         ))}</div>
@@ -400,9 +430,33 @@ function TaxonomyPanel({ flash }: { flash: F }) {
         <Field label="توضیح"><Textarea rows={2} value={form.description} onChange={(description) => setForm({ ...form, description })} /></Field>
         <Btn variant="accent" size="sm" disabled={!form.name || form.slug.length < 2} onClick={async () => { try { await studioApi.createTaxonomy(kind, { name: form.name, slug: form.slug, description: form.description, coverUrl: form.coverUrl || null, ...(kind === "categories" ? { cardTemplate: form.cardTemplate } : {}) }); flash("ذخیره شد"); setForm({ name: "", slug: "", description: "", coverUrl: "", cardTemplate: "editorial" }); await load(); } catch (e) { flash(errMsg(e)); } }}>ذخیره</Btn>
       </Card>
+      <Drawer open={!!styleFor} onClose={() => setStyleFor(null)} title={styleFor ? `ظاهر کارت «${styleFor.name}»` : ""}>
+        {styleFor && (() => {
+          const cs = styleFor.cardStyle;
+          const set = (patch: Partial<CategoryCardStyle>) => setStyleFor({ ...styleFor, cardStyle: { ...cs, ...patch } });
+          return (
+            <div className="space-y-3" data-testid="category-style-editor">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Field label="قالب"><Select options={["image", "editorial", "minimal", "glass", "overlay", "horizontal"]} value={styleFor.cardTemplate} onChange={(cardTemplate) => setStyleFor({ ...styleFor, cardTemplate })} /></Field>
+                <Field label="نسبت تصویر"><Select options={["4/3", "1/1", "3/4", "16/9"]} value={cs.aspect ?? "4/3"} onChange={(aspect) => set({ aspect: aspect as CategoryCardStyle["aspect"] })} /></Field>
+                <Field label="گردی"><Select options={["sm", "md", "lg", "xl"]} value={cs.radius ?? "lg"} onChange={(radius) => set({ radius: radius as CategoryCardStyle["radius"] })} /></Field>
+                <Field label="رنگ زمینه"><Select options={["surface", "accent", "primary"]} value={cs.accent ?? "surface"} onChange={(accent) => set({ accent: accent as CategoryCardStyle["accent"] })} /></Field>
+                <Field label="چینش متن"><Select options={["start", "center"]} value={cs.textAlign ?? "start"} onChange={(textAlign) => set({ textAlign: textAlign as CategoryCardStyle["textAlign"] })} /></Field>
+                <Field label={`تیرگی لایه (${fa(cs.overlay ?? 30)}٪)`}><input type="range" min={0} max={80} step={5} value={cs.overlay ?? 30} onChange={(e) => set({ overlay: Number(e.target.value) })} className="w-full accent-[var(--kv-accent)]" /></Field>
+              </div>
+              <label className="flex items-center gap-2 text-[12.5px]"><Switch on={cs.showDescription !== false} onToggle={() => set({ showDescription: cs.showDescription === false })} />نمایش توضیح</label>
+              <div className="rounded-[14px] bg-[var(--kv-surface-2)] p-3"><p className="mb-2 text-[11.5px] font-bold text-[var(--kv-muted)]">پیش‌نمایش زنده</p>
+                <div className="max-w-[280px]"><CategoryCard category={{ id: styleFor.id, name: styleFor.name, slug: styleFor.slug, description: styleFor.description, image_url: styleFor.cover, cover_url: styleFor.cover, card_template: styleFor.cardTemplate, card_style: cs }} /></div></div>
+              <Btn variant="accent" className="w-full" onClick={async () => { try { await studioApi.updateTaxonomy("categories", styleFor.id, { cardTemplate: styleFor.cardTemplate, cardStyle: cs }); flash("ظاهر کارت ذخیره شد"); setStyleFor(null); await load(); } catch (e) { flash(errMsg(e)); } }}>ذخیره ظاهر</Btn>
+            </div>
+          );
+        })()}
+      </Drawer>
     </div>
   );
 }
+
+type CategoryCardStyle = { aspect?: "4/3" | "1/1" | "3/4" | "16/9"; radius?: "sm" | "md" | "lg" | "xl"; overlay?: number; textAlign?: "start" | "center"; showDescription?: boolean; accent?: "accent" | "primary" | "surface" };
 
 /* ============================ Collections (Req 206-208) ============================ */
 
@@ -450,9 +504,14 @@ function CollectionsPanel({ flash }: { flash: F }) {
 
 /* ============================ Assets (Req 229-230, 305) ============================ */
 
+const localDay = (iso: string) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const PIPE_LABEL: Record<string, string> = { queued: "در صف", running: "در حال پردازش", completed: "پردازش کامل", partial: "پردازش ناقص", failed: "خطا", skipped: "رد شد", pending: "در انتظار" };
+const STEP_LABEL: Record<string, string> = { validate: "اعتبارسنجی", inspect: "بررسی", responsive_variants: "نسخه‌های واکنش‌گرا", background_removal: "حذف پس‌زمینه" };
+
 function AssetsPanel({ flash }: { flash: F }) {
-  const [filters, setFilters] = useState({ search: "", type: "" });
-  const { data, error, load } = useAsync(() => studioApi.assets(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))), [filters.search, filters.type]);
+  const [filters, setFilters] = useState({ search: "", type: "", from: "", to: "", uploader: "", sort: "newest" });
+  const { data, error, load } = useAsync(() => studioApi.assets(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))), [filters.search, filters.type, filters.from, filters.to, filters.uploader, filters.sort]);
+  const [runs, setRuns] = useState<Awaited<ReturnType<typeof studioApi.mediaRuns>>["items"] | null>(null);
   const [usage, setUsage] = useState<{ id: string; title: string; items: { type: string; label: string }[] } | null>(null);
   const [form, setForm] = useState({ title: "", url: "", folder: "general", tags: "", altText: "" });
   const [busy, setBusy] = useState(false);
@@ -475,18 +534,38 @@ function AssetsPanel({ flash }: { flash: F }) {
           <Btn variant="soft" disabled={!/^https:\/\//.test(form.url) || !form.title} onClick={async () => { try { await studioApi.createAsset({ url: form.url, title: form.title, assetType: /\.(mp4|webm)$/i.test(form.url) ? "video" : "image", folder: form.folder, tags: form.tags.split(/[،,]/).map((t) => t.trim()).filter(Boolean), altText: form.altText }); flash("ثبت شد"); await load(); } catch (e) { flash(errMsg(e)); } }}>ثبت نشانی</Btn>
         </div>
       </Card>
-      <div className="flex gap-2"><div className="flex-1"><Input value={filters.search} onChange={(search) => setFilters({ ...filters, search })} placeholder="جست‌وجو در عنوان، Alt و برچسب" /></div><Select options={["همه", "image", "video", "icon", "document"]} value={filters.type || "همه"} onChange={(v) => setFilters({ ...filters, type: v === "همه" ? "" : v })} /></div>
+      <div className="flex flex-wrap items-end gap-2" data-testid="asset-filters">
+        <div className="min-w-[200px] flex-1"><Input value={filters.search} onChange={(search) => setFilters({ ...filters, search })} placeholder="جست‌وجو در عنوان، Alt و برچسب" /></div>
+        <Select options={["همه", "image", "video", "icon", "document"]} value={filters.type || "همه"} onChange={(v) => setFilters({ ...filters, type: v === "همه" ? "" : v })} />
+        <Select options={["همه آپلودکننده‌ها", ...(data?.uploaders ?? []).map((u) => u.display_name)]} value={(data?.uploaders ?? []).find((u) => u.id === filters.uploader)?.display_name ?? "همه آپلودکننده‌ها"} onChange={(l) => setFilters({ ...filters, uploader: (data?.uploaders ?? []).find((u) => u.display_name === l)?.id ?? "" })} />
+        <Select options={["جدیدترین", "قدیمی‌ترین", "بزرگ‌ترین", "عنوان"]} value={({ newest: "جدیدترین", oldest: "قدیمی‌ترین", largest: "بزرگ‌ترین", title: "عنوان" } as Record<string, string>)[filters.sort]} onChange={(l) => setFilters({ ...filters, sort: ({ "جدیدترین": "newest", "قدیمی‌ترین": "oldest", "بزرگ‌ترین": "largest", "عنوان": "title" } as Record<string, string>)[l] ?? "newest" })} />
+        <div className="w-[170px]"><PersianDatePicker label="از تاریخ" value={filters.from ? new Date(`${filters.from}T00:00:00`).toISOString() : null} onChange={(v) => setFilters({ ...filters, from: v ? localDay(v) : "" })} /></div>
+        <div className="w-[170px]"><PersianDatePicker label="تا تاریخ" value={filters.to ? new Date(`${filters.to}T00:00:00`).toISOString() : null} onChange={(v) => setFilters({ ...filters, to: v ? localDay(v) : "" })} /></div>
+        <Btn size="sm" variant="ghost" onClick={async () => { try { setRuns((await studioApi.mediaRuns()).items); } catch (e) { flash(errMsg(e)); } }}>اجراهای پردازش</Btn>
+      </div>
       {!data ? <LoadingState /> : data.items.length === 0 ? <Empty title="کتابخانه خالی است" desc="اولین رسانه را بارگذاری کنید." /> : (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">{data.items.map((a) => (
           <Card key={a.id} className="overflow-hidden">
             <div className="flex aspect-square items-center justify-center bg-[var(--kv-surface-2)]">{a.asset_type === "image" ? <img src={mediaSrc(a.url)} alt={a.alt_text} loading="lazy" className="h-full w-full object-cover" /> : a.asset_type === "video" ? <video src={mediaSrc(a.url)} muted className="h-full w-full object-cover" /> : <ImageIcon size={22} className="text-[var(--kv-muted)]" />}</div>
             <div className="p-2"><p className="truncate text-[12px] font-bold">{a.title}</p><p className="truncate text-[10.5px] text-[var(--kv-muted)]">{a.folder} · {a.tags.join("، ")}</p>
+              <p className="mt-0.5 truncate text-[10.5px] text-[var(--kv-muted)]">{a.uploader_name ?? "سیستم"} · {formatPersianDateTime(a.created_at)}{a.size_bytes ? ` · ${fa(Math.round(a.size_bytes / 1024))}KB` : ""}</p>
+              {a.pipeline && <span data-pipeline={a.pipeline.status} className={cn("mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-bold", a.pipeline.status === "completed" ? "bg-[var(--kv-success)]/12 text-[var(--kv-success)]" : a.pipeline.status === "failed" ? "bg-[var(--kv-danger)]/12 text-[var(--kv-danger)]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>{PIPE_LABEL[a.pipeline.status] ?? a.pipeline.status}</span>}
               <div className="mt-1.5 flex gap-1"><Btn size="sm" variant="ghost" onClick={async () => setUsage({ id: a.id, title: a.title, items: (await studioApi.assetUsage(a.id)).items })}>کاربردها</Btn>
                 <button aria-label="کپی نشانی" onClick={() => { void navigator.clipboard?.writeText(a.url); flash("نشانی کپی شد"); }} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]"><Copy size={13} /></button>
                 <button aria-label="حذف" onClick={async () => { try { await studioApi.deleteAsset(a.id); flash("حذف شد"); await load(); } catch (e) { setUsage({ id: a.id, title: a.title, items: (await studioApi.assetUsage(a.id)).items }); flash(errMsg(e)); } }} className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--kv-danger)] hover:bg-[var(--kv-surface-2)]"><Trash2 size={13} /></button></div></div>
           </Card>
         ))}</div>
       )}
+      <Drawer open={!!runs} onClose={() => setRuns(null)} title="اجراهای پایپ‌لاین رسانه" wide>
+        {runs && <div className="space-y-3">
+          <Btn size="sm" variant="soft" onClick={async () => { try { const r = await studioApi.processMedia(); flash(`${fa(r.processed)} مورد پردازش شد`); setRuns((await studioApi.mediaRuns()).items); await load(); } catch (e) { flash(errMsg(e)); } }}>پردازش صف اکنون</Btn>
+          {runs.length === 0 ? <p className="text-[13px] text-[var(--kv-muted)]">هنوز اجرایی ثبت نشده است.</p> : <ul className="space-y-2">{runs.map((r) => (
+            <li key={r.id} className="rounded-[12px] border border-[var(--kv-line)] p-3 text-[12px]">
+              <div className="flex flex-wrap items-center justify-between gap-2"><b>{r.subject_type} · <span dir="ltr" className="font-normal">{r.subject_id.slice(0, 8)}</span></b><span>{PIPE_LABEL[r.status] ?? r.status} · {formatPersianDateTime(r.created_at)}</span></div>
+              <div className="mt-2 flex flex-wrap gap-1.5">{r.steps.map((st) => <span key={st.step} title={st.detail} className={cn("rounded-full px-2 py-0.5 text-[10.5px]", st.status === "completed" ? "bg-[var(--kv-success)]/12 text-[var(--kv-success)]" : st.status === "failed" ? "bg-[var(--kv-danger)]/12 text-[var(--kv-danger)]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>{STEP_LABEL[st.step] ?? st.step}: {PIPE_LABEL[st.status] ?? st.status}</span>)}</div>
+            </li>))}</ul>}
+        </div>}
+      </Drawer>
       <Drawer open={!!usage} onClose={() => setUsage(null)} title={usage ? `کاربردهای «${usage.title}»` : ""}>
         {usage && <div className="space-y-3">{usage.items.length === 0 ? <p className="text-[13px] text-[var(--kv-muted)]">این رسانه جایی استفاده نشده و حذف آن امن است.</p> : <ul className="space-y-1.5">{usage.items.map((u, i) => <li key={i} className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[12.5px]"><b>{u.label}</b> <span className="text-[var(--kv-muted)]">· {u.type}</span></li>)}</ul>}
           {usage.items.length > 0 && <Btn variant="soft" className="w-full text-[var(--kv-danger)]" onClick={async () => { try { await studioApi.deleteAsset(usage.id, true); flash("با وجود کاربرد، حذف شد"); setUsage(null); await load(); } catch (e) { flash(errMsg(e)); } }}>حذف اجباری</Btn>}</div>}
@@ -497,27 +576,42 @@ function AssetsPanel({ flash }: { flash: F }) {
 
 /* ============================ Announcements (Req 327-332) ============================ */
 
-type AnnForm = { id?: string; title: string; messages: string; mode: Announcement["mode"]; backgroundColor: string; textColor: string; speed: "slow" | "normal" | "fast"; direction: "rtl" | "ltr"; heightPx: number; dismissible: boolean; ctaLabel: string; ctaTarget: string; bindingId: string; showCountdown: boolean; priority: number; startsAt: string | null; endsAt: string | null; active: boolean };
-const emptyAnn = (): AnnForm => ({ title: "", messages: "ارسال رایگان بالای ۳ میلیون تومان|shop\nخرید چهارقسطی بدون کارمزد|shop", mode: "rotating", backgroundColor: "#1B2A4A", textColor: "#F9F6F1", speed: "normal", direction: "rtl", heightPx: 40, dismissible: true, ctaLabel: "", ctaTarget: "shop", bindingId: "", showCountdown: false, priority: 10, startsAt: null, endsAt: null, active: true });
+type AnnForm = { id?: string; title: string; messages: string; mode: Announcement["mode"]; backgroundColor: string; textColor: string; speed: "slow" | "normal" | "fast"; direction: "rtl" | "ltr"; heightPx: number; dismissible: boolean; ctaLabel: string; ctaTarget: string; bindingType: BindingKind; bindingId: string; showCountdown: boolean; priority: number; startsAt: string | null; endsAt: string | null; active: boolean };
+const emptyAnn = (): AnnForm => ({ title: "", messages: "ارسال رایگان بالای ۳ میلیون تومان|shop\nخرید چهارقسطی بدون کارمزد|shop", mode: "rotating", backgroundColor: "#1B2A4A", textColor: "#F9F6F1", speed: "normal", direction: "rtl", heightPx: 40, dismissible: true, ctaLabel: "", ctaTarget: "shop", bindingType: "none", bindingId: "", showCountdown: false, priority: 10, startsAt: null, endsAt: null, active: true });
+type BindingKind = "none" | "campaign" | "promotion" | "coupon" | "collection" | "landing_page";
+const BINDING_LABEL: Record<BindingKind, string> = { none: "بدون اتصال", campaign: "کمپین", promotion: "پروموشن (تخفیف کمپین)", coupon: "کوپن عمومی", collection: "کالکشن", landing_page: "صفحه لندینگ" };
 function AnnouncementsPanel({ flash }: { flash: F }) {
   const { data, error, load } = useAsync(() => studioApi.announcements());
   const festivals = useAsync(() => studioApi.festivals());
+  const coupons = useAsync(() => studioApi.publicCoupons().catch(() => ({ items: [] })));
+  const collectionsList = useAsync(() => studioApi.collections());
+  const pagesList = useAsync(() => studioApi.pages());
   const [form, setForm] = useState<AnnForm>(emptyAnn());
   if (error) return <ErrorState message={error} onRetry={load} />;
   if (!data) return <LoadingState />;
   const messages = form.messages.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => { const [text, link] = l.split("|"); return { text: text!.trim(), ...(link?.trim() ? { link: link.trim() } : {}) }; });
   const payload = { title: form.title, messages, mode: form.mode, priority: form.priority, active: form.active, startsAt: form.startsAt, endsAt: form.endsAt,
-    bindingType: form.bindingId ? "campaign" : "none", bindingId: form.bindingId || null,
+    bindingType: form.bindingId ? form.bindingType : "none", bindingId: form.bindingType === "none" ? null : form.bindingId || null,
     style: { backgroundColor: form.backgroundColor, textColor: form.textColor, speed: form.speed, direction: form.direction, heightPx: form.heightPx, dismissible: form.dismissible, showCountdown: form.showCountdown, ...(form.ctaLabel ? { ctaLabel: form.ctaLabel, ctaTarget: form.ctaTarget } : {}) } };
-  const previewAnn: Announcement = { id: "preview", title: form.title, mode: form.mode, priority: 0, messages, style: { ...payload.style, dismissible: false }, bindingType: "none", bindingId: null,
-    campaign: form.bindingId ? (() => { const f = (festivals.data?.items ?? []).find((x) => x.id === form.bindingId); return f ? { id: f.id, name: f.name, starts_at: f.starts_at, ends_at: f.ends_at } : null; })() : null };
+  // Binding options: value = what the server stores (festival id, public coupon code, collection/page code).
+  const bindingOptions: { value: string; label: string }[] = form.bindingType === "campaign" || form.bindingType === "promotion" ? (festivals.data?.items ?? []).map((f) => ({ value: f.id, label: f.name }))
+    : form.bindingType === "coupon" ? (coupons.data?.items ?? []).filter((c) => !c.recipient_user_id).map((c) => ({ value: c.code, label: `${c.code}${c.campaign_name ? ` · ${c.campaign_name}` : ""}` }))
+    : form.bindingType === "collection" ? (collectionsList.data?.items ?? []).map((c) => ({ value: c.code, label: c.title }))
+    : form.bindingType === "landing_page" ? (pagesList.data?.items ?? []).filter((p) => p.page_type !== "home").map((p) => ({ value: p.code, label: p.title })) : [];
+  const chosen = bindingOptions.find((o) => o.value === form.bindingId);
+  const previewBinding: Announcement["binding"] = !chosen ? null : form.bindingType === "coupon" ? { kind: "coupon", code: chosen.value }
+    : form.bindingType === "promotion" ? { kind: "promotion", discountPercent: Number((festivals.data?.items ?? []).find((f) => f.id === form.bindingId)?.discount_percent ?? 0) || null, target: "shop" }
+    : form.bindingType === "collection" ? { kind: "collection", target: `collection:${chosen.value}`, title: chosen.label }
+    : form.bindingType === "landing_page" ? { kind: "landing_page", target: `page:${chosen.value}`, title: chosen.label } : null;
+  const previewAnn: Announcement = { id: "preview", title: form.title, mode: form.mode, priority: 0, messages, style: { ...payload.style, dismissible: false }, bindingType: form.bindingType, bindingId: form.bindingId || null, binding: previewBinding,
+    campaign: form.bindingId && (form.bindingType === "campaign" || form.bindingType === "promotion") ? (() => { const f = (festivals.data?.items ?? []).find((x) => x.id === form.bindingId); return f ? { id: f.id, name: f.name, starts_at: f.starts_at, ends_at: f.ends_at } : null; })() : null };
   return (
     <div className="space-y-4">
       <ul className="space-y-2">{data.items.map((a) => (
         <li key={a.id} className="flex flex-wrap items-center gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 py-2.5 text-[12.5px]">
           <span className="h-5 w-5 rounded-full border border-black/10" style={{ background: a.style.backgroundColor }} /><b>{a.title}</b><span className="text-[var(--kv-muted)]">{a.mode} · اولویت {fa(a.priority)}{a.starts_at && ` · از ${formatPersianDateTime(a.starts_at)}`}{a.ends_at && ` تا ${formatPersianDateTime(a.ends_at)}`}</span>
           <span className="mr-auto flex items-center gap-2"><Switch on={a.active} onToggle={async () => { await studioApi.updateAnnouncement(a.id, { active: !a.active }); await load(); }} />
-            <Btn size="sm" variant="soft" onClick={() => setForm({ id: a.id, title: a.title, messages: a.messages.map((m) => [m.text, m.link].filter(Boolean).join("|")).join("\n"), mode: a.mode, backgroundColor: a.style.backgroundColor, textColor: a.style.textColor, speed: a.style.speed ?? "normal", direction: a.style.direction ?? "rtl", heightPx: a.style.heightPx ?? 40, dismissible: a.style.dismissible !== false, ctaLabel: a.style.ctaLabel ?? "", ctaTarget: a.style.ctaTarget ?? "shop", bindingId: a.binding_id ?? "", showCountdown: Boolean(a.style.showCountdown), priority: a.priority, startsAt: a.starts_at, endsAt: a.ends_at, active: a.active })}>ویرایش</Btn>
+            <Btn size="sm" variant="soft" onClick={() => setForm({ id: a.id, title: a.title, messages: a.messages.map((m) => [m.text, m.link].filter(Boolean).join("|")).join("\n"), mode: a.mode, backgroundColor: a.style.backgroundColor, textColor: a.style.textColor, speed: a.style.speed ?? "normal", direction: a.style.direction ?? "rtl", heightPx: a.style.heightPx ?? 40, dismissible: a.style.dismissible !== false, ctaLabel: a.style.ctaLabel ?? "", ctaTarget: a.style.ctaTarget ?? "shop", bindingType: (a.binding_type as BindingKind) ?? "none", bindingId: a.binding_id ?? "", showCountdown: Boolean(a.style.showCountdown), priority: a.priority, startsAt: a.starts_at, endsAt: a.ends_at, active: a.active })}>ویرایش</Btn>
             <button aria-label="حذف" onClick={async () => { await studioApi.deleteAnnouncement(a.id); await load(); }} className="text-[var(--kv-danger)]"><Trash2 size={14} /></button></span>
         </li>
       ))}</ul>
@@ -536,7 +630,8 @@ function AnnouncementsPanel({ flash }: { flash: F }) {
           <Field label="ارتفاع (px)"><Input value={String(form.heightPx)} onChange={(v) => setForm({ ...form, heightPx: Math.min(64, Math.max(28, Number(v.replace(/\D/g, "")) || 40)) })} /></Field>
           <Field label="متن CTA"><Input value={form.ctaLabel} onChange={(ctaLabel) => setForm({ ...form, ctaLabel })} /></Field>
           <Field label="مقصد CTA"><Input value={form.ctaTarget} onChange={(ctaTarget) => setForm({ ...form, ctaTarget })} /></Field>
-          <Field label="اتصال به کمپین"><Select options={["بدون کمپین", ...(festivals.data?.items ?? []).map((f) => f.name)]} value={(festivals.data?.items ?? []).find((f) => f.id === form.bindingId)?.name ?? "بدون کمپین"} onChange={(l) => setForm({ ...form, bindingId: (festivals.data?.items ?? []).find((f) => f.name === l)?.id ?? "" })} /></Field>
+          <Field label="نوع اتصال"><Select options={Object.values(BINDING_LABEL)} value={BINDING_LABEL[form.bindingType]} onChange={(l) => setForm({ ...form, bindingType: (Object.entries(BINDING_LABEL).find(([, v]) => v === l)?.[0] as BindingKind) ?? "none", bindingId: "" })} /></Field>
+          {form.bindingType !== "none" && <Field label={`انتخاب ${BINDING_LABEL[form.bindingType]}`}><Select options={["—", ...bindingOptions.map((o) => o.label)]} value={chosen?.label ?? "—"} onChange={(l) => setForm({ ...form, bindingId: bindingOptions.find((o) => o.label === l)?.value ?? "" })} /></Field>}
         </div>
         <div className="grid gap-2 sm:grid-cols-2"><PersianDatePicker label="شروع نمایش" withTime value={form.startsAt} onChange={(startsAt) => setForm({ ...form, startsAt })} /><PersianDatePicker label="پایان نمایش" withTime value={form.endsAt} onChange={(endsAt) => setForm({ ...form, endsAt })} /></div>
         <div className="flex flex-wrap gap-4 text-[12px]"><label className="flex items-center gap-1.5"><input type="checkbox" checked={form.dismissible} onChange={(e) => setForm({ ...form, dismissible: e.target.checked })} />قابل بستن توسط کاربر</label><label className="flex items-center gap-1.5"><input type="checkbox" checked={form.showCountdown} onChange={(e) => setForm({ ...form, showCountdown: e.target.checked })} />نمایش شمارش معکوس کمپین</label></div>
@@ -577,19 +672,38 @@ function LayoutPanel({ flash }: { flash: F }) {
           </div>
         ))}
         <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => setHeader({ ...header, menus: [...header.menus, { id: `m${Date.now().toString(36)}`, label: "منوی جدید", target: "shop", order: header.menus.length + 1, active: true }] })}>افزودن منو</Btn>
-        <Btn variant="accent" size="sm" onClick={() => save("global_header", header)}>ذخیره هدر</Btn>
+        <label className="flex items-center gap-2 pt-2 text-[12.5px]"><Switch on={header.showAnnouncement !== false} onToggle={() => setHeader({ ...header, showAnnouncement: header.showAnnouncement === false })} />نمایش نوار اعلان بالای هدر</label>
+        <MobileNavEditor value={header.mobileNav ?? { showCategories: true, showVibes: true, items: [] }} onChange={(mobileNav) => setHeader({ ...header, mobileNav })} />
+        <MegaMenuEditor columns={header.megaMenu} menus={header.menus} onChange={(megaMenu) => setHeader({ ...header, megaMenu })} />
+        <Btn variant="accent" size="sm" onClick={() => { const bad = badTargets([...header.menus.map((m) => m.target), ...(header.mobileNav?.items ?? []).map((i) => i.target), ...header.megaMenu.flatMap((c) => c.items.map((i) => i.target ?? "shop"))]); if (bad) { flash(`مقصد «${bad}» مجاز نیست.`); return; } void save("global_header", header); }}>ذخیره هدر</Btn>
       </Card>
       <Card className="space-y-3 p-4">
         <p className="text-[14px] font-extrabold">فوتر</p>
         <div className="grid gap-2 sm:grid-cols-2"><Field label="عنوان برند"><Input value={footer.brandTitle} onChange={(brandTitle) => setFooter({ ...footer, brandTitle })} /></Field><Field label="زیرعنوان"><Input value={footer.brandSubtitle} onChange={(brandSubtitle) => setFooter({ ...footer, brandSubtitle })} /></Field></div>
         <Field label="توضیح برند"><Textarea rows={2} value={footer.brandDescription} onChange={(brandDescription) => setFooter({ ...footer, brandDescription })} /></Field>
         {footer.columns.map((col, i) => (
-          <Field key={i} label={`ستون «${col.title}» (هر خط: متن|مقصد)`}><Textarea rows={3} value={col.links.map((l) => `${l.label}|${l.target}`).join("\n")} onChange={(v) => setFooter({ ...footer, columns: footer.columns.map((c, j) => (j === i ? { ...c, links: v.split("\n").map((l) => l.split("|")).filter((p) => p[0]?.trim()).map(([label, target]) => ({ label: label!.trim(), target: (target ?? "shop").trim() })) } : c)) })} /></Field>
+          <div key={i} className="space-y-1.5 rounded-[12px] border border-[var(--kv-line)] p-2.5">
+          <div className="flex items-center gap-2"><Input className="flex-1" value={col.title} onChange={(title) => setFooter({ ...footer, columns: footer.columns.map((c, j) => (j === i ? { ...c, title } : c)) })} />
+            <button aria-label="حذف ستون" onClick={() => setFooter({ ...footer, columns: footer.columns.filter((_, j) => j !== i) })} className="text-[var(--kv-danger)]"><Trash2 size={14} /></button></div>
+          <Field label="لینک‌ها (هر خط: متن|مقصد — مثل shop، page:about، category:slug)"><Textarea rows={3} value={col.links.map((l) => `${l.label}|${l.target}`).join("\n")} onChange={(v) => setFooter({ ...footer, columns: footer.columns.map((c, j) => (j === i ? { ...c, links: v.split("\n").map((l) => l.split("|")).filter((p) => p[0]?.trim()).map(([label, target]) => ({ label: label!.trim(), target: (target ?? "shop").trim() })) } : c)) })} /></Field>
+          </div>
         ))}
+        {footer.columns.length < 5 && <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => setFooter({ ...footer, columns: [...footer.columns, { title: "ستون جدید", links: [] }] })}>افزودن ستون</Btn>}
+        <p className="pt-1 text-[12.5px] font-bold">شبکه‌های اجتماعی</p>
+        {footer.social.map((so, i) => (
+          <div key={i} className="flex flex-wrap items-center gap-2">
+            <Select className="w-32" options={["instagram", "telegram", "whatsapp", "youtube", "linkedin", "x"]} value={so.platform} onChange={(platform) => setFooter({ ...footer, social: footer.social.map((x, j) => (j === i ? { ...x, platform } : x)) })} />
+            <Input className="w-28" value={so.label} onChange={(label) => setFooter({ ...footer, social: footer.social.map((x, j) => (j === i ? { ...x, label } : x)) })} />
+            <Input className="min-w-0 flex-1" value={so.url} placeholder="https://…" onChange={(url) => setFooter({ ...footer, social: footer.social.map((x, j) => (j === i ? { ...x, url } : x)) })} />
+            <button aria-label="حذف" onClick={() => setFooter({ ...footer, social: footer.social.filter((_, j) => j !== i) })} className="text-[var(--kv-danger)]"><Trash2 size={14} /></button>
+          </div>
+        ))}
+        {footer.social.length < 8 && <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => setFooter({ ...footer, social: [...footer.social, { platform: "instagram", label: "اینستاگرام", url: "https://instagram.com/" }] })}>افزودن شبکه</Btn>}
+        <label className="flex items-center gap-2 text-[12.5px]"><Switch on={footer.newsletterEnabled} onToggle={() => setFooter({ ...footer, newsletterEnabled: !footer.newsletterEnabled })} />فرم عضویت خبرنامه در فوتر</label>
         <div className="grid gap-2 sm:grid-cols-3"><Field label="تلفن"><Input value={footer.contact.phone} onChange={(phone) => setFooter({ ...footer, contact: { ...footer.contact, phone } })} /></Field><Field label="ایمیل"><Input value={footer.contact.email} onChange={(email) => setFooter({ ...footer, contact: { ...footer.contact, email } })} /></Field><Field label="کپی‌رایت"><Input value={footer.copyright} onChange={(copyright) => setFooter({ ...footer, copyright })} /></Field></div>
         <Field label="آدرس"><Input value={footer.contact.address} onChange={(address) => setFooter({ ...footer, contact: { ...footer.contact, address } })} /></Field>
         <Field label="نشان‌های اعتماد (با ، جدا کنید)"><Input value={footer.trustBadges.join("، ")} onChange={(v) => setFooter({ ...footer, trustBadges: v.split(/[،,]/).map((x) => x.trim()).filter(Boolean) })} /></Field>
-        <Btn variant="accent" size="sm" onClick={() => save("global_footer", footer)}>ذخیره فوتر</Btn>
+        <Btn variant="accent" size="sm" onClick={() => { const bad = badTargets(footer.columns.flatMap((c) => c.links.map((l) => l.target))); if (bad) { flash(`مقصد «${bad}» مجاز نیست.`); return; } if (footer.social.some((x) => !/^https:\/\/\S+$/.test(x.url))) { flash("نشانی شبکه اجتماعی باید با https شروع شود."); return; } void save("global_footer", footer); }}>ذخیره فوتر</Btn>
       </Card>
       <Card className="space-y-3 p-4 xl:col-span-2">
         <p className="text-[14px] font-extrabold">ظاهر داشبورد مشتری</p>
@@ -598,6 +712,80 @@ function LayoutPanel({ flash }: { flash: F }) {
         <label className="flex items-center gap-2 text-[12.5px]"><Switch on={account.promoCard.enabled} onToggle={() => setAccount({ ...account, promoCard: { ...account.promoCard, enabled: !account.promoCard.enabled } })} />نمایش کارت تبلیغ</label>
         <Btn variant="accent" size="sm" onClick={() => save("account_appearance", account)}>ذخیره ظاهر حساب</Btn>
       </Card>
+    </div>
+  );
+}
+
+/** Same grammar as the server's NAV_TARGET — early feedback only; the server still validates. */
+const NAV_RE = /^(home|shop|vip|tryon|journal|about|supplier|account|https:\/\/[^\s<>"]+|page:[a-z0-9_-]{2,40}|vibe:[a-z0-9-]{2,40}|collection:[a-z0-9-]{2,40}|category:[^\s<>"]{1,60}|product:[0-9a-f-]{36})$/;
+const badTargets = (targets: string[]) => targets.find((t) => !NAV_RE.test(t.trim())) ?? null;
+
+function LinkRows({ items, onChange, max, addLabel }: { items: { label: string; target: string }[]; onChange: (v: { label: string; target: string }[]) => void; max: number; addLabel: string }) {
+  return (
+    <div className="space-y-1.5">
+      {items.map((it, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <Input className="w-36" value={it.label} onChange={(label) => onChange(items.map((x, j) => (j === i ? { ...x, label } : x)))} />
+          <Input className={cn("min-w-0 flex-1", !NAV_RE.test(it.target) && "[&_input]:border-[var(--kv-danger)]")} value={it.target} placeholder="shop / category:slug / page:code" onChange={(target) => onChange(items.map((x, j) => (j === i ? { ...x, target } : x)))} />
+          <button aria-label="حذف" onClick={() => onChange(items.filter((_, j) => j !== i))} className="text-[var(--kv-danger)]"><Trash2 size={14} /></button>
+        </div>
+      ))}
+      {items.length < max && <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => onChange([...items, { label: "لینک جدید", target: "shop" }])}>{addLabel}</Btn>}
+    </div>
+  );
+}
+
+function MobileNavEditor({ value, onChange }: { value: NonNullable<HeaderConfig["mobileNav"]>; onChange: (v: NonNullable<HeaderConfig["mobileNav"]>) => void }) {
+  return (
+    <div className="space-y-2 rounded-[12px] border border-[var(--kv-line)] p-3" data-testid="mobile-nav-editor">
+      <p className="text-[12.5px] font-bold">منوی موبایل</p>
+      <div className="flex flex-wrap gap-4 text-[12.5px]">
+        <label className="flex items-center gap-2"><Switch on={value.showCategories} onToggle={() => onChange({ ...value, showCategories: !value.showCategories })} />نمایش دسته‌بندی‌ها</label>
+        <label className="flex items-center gap-2"><Switch on={value.showVibes} onToggle={() => onChange({ ...value, showVibes: !value.showVibes })} />نمایش وایب‌ها</label>
+      </div>
+      <LinkRows items={value.items} max={8} addLabel="افزودن لینک موبایل" onChange={(items) => onChange({ ...value, items })} />
+    </div>
+  );
+}
+
+/** Mega menu (Req 278): columns tied to a header menu, links, and a featured vibe / collection / campaign promo with media. */
+function MegaMenuEditor({ columns, menus, onChange }: { columns: MegaMenuColumn[]; menus: HeaderConfig["menus"]; onChange: (v: MegaMenuColumn[]) => void }) {
+  const set = (i: number, patch: Partial<MegaMenuColumn>) => onChange(columns.map((c, j) => (j === i ? { ...c, ...patch } : c)));
+  const megaMenus = menus.filter((m) => m.hasMegaMenu);
+  const clean = (v: string) => (v.trim() ? v.trim() : undefined);
+  return (
+    <div className="space-y-2 rounded-[12px] border border-[var(--kv-line)] p-3" data-testid="mega-menu-editor">
+      <div className="flex items-center justify-between"><p className="text-[12.5px] font-bold">مگامنو ({columns.length.toLocaleString("fa-IR")} ستون)</p>
+        {!megaMenus.length && <span className="text-[11px] text-[var(--kv-warning,#B7791F)]">هیچ منویی «مگامنو» فعال ندارد.</span>}</div>
+      {columns.map((c, i) => (
+        <details key={c.id} className="rounded-[10px] bg-[var(--kv-surface-2)] p-2.5">
+          <summary className="cursor-pointer text-[12.5px] font-bold">{c.title || "ستون بدون عنوان"} <span className="font-normal text-[var(--kv-muted)]">· {c.items.length.toLocaleString("fa-IR")} لینک</span></summary>
+          <div className="mt-2 space-y-2">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Field label="عنوان ستون"><Input value={c.title} onChange={(title) => set(i, { title })} /></Field>
+              <Field label="منوی والد"><Select options={["—", ...megaMenus.map((m) => m.id)]} value={c.menuId ?? "—"} onChange={(v) => set(i, { menuId: v === "—" ? undefined : v })} /></Field>
+            </div>
+            <LinkRows items={c.items.map((x) => ({ label: x.label, target: x.target ?? (x.category ? `category:${x.category}` : "shop") }))} max={12} addLabel="افزودن لینک"
+              onChange={(items) => set(i, { items: items.map((x) => ({ label: x.label, target: x.target })) })} />
+            <div className="grid gap-2 sm:grid-cols-3">
+              <Field label="وایب ویژه (slug)"><Input value={c.featuredVibe ?? ""} onChange={(v) => set(i, { featuredVibe: clean(v) })} /></Field>
+              <Field label="کالکشن ویژه (code)"><Input value={c.featuredCollection ?? ""} onChange={(v) => set(i, { featuredCollection: clean(v) })} /></Field>
+              <Field label="کمپین ویژه (code)"><Input value={c.featuredCampaign ?? ""} onChange={(v) => set(i, { featuredCampaign: clean(v) })} /></Field>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <Field label="متن تبلیغ"><Input value={c.promoTitle ?? ""} onChange={(v) => set(i, { promoTitle: clean(v) })} /></Field>
+              <Field label="تصویر (https یا /api/v1/media/…)"><Input value={c.image ?? ""} onChange={(v) => set(i, { image: clean(v) })} /></Field>
+              <Field label="متن جایگزین تصویر"><Input value={c.imageAlt ?? ""} onChange={(v) => set(i, { imageAlt: clean(v) })} /></Field>
+            </div>
+            <div className="flex gap-2">
+              <Btn size="sm" variant="soft" disabled={i === 0} onClick={() => { const n = [...columns]; [n[i - 1], n[i]] = [n[i]!, n[i - 1]!]; onChange(n); }}>بالا</Btn>
+              <Btn size="sm" variant="soft" disabled={i === columns.length - 1} onClick={() => { const n = [...columns]; [n[i + 1], n[i]] = [n[i]!, n[i + 1]!]; onChange(n); }}>پایین</Btn>
+              <Btn size="sm" variant="soft" icon={<Trash2 size={13} />} onClick={() => onChange(columns.filter((_, j) => j !== i))}>حذف ستون</Btn>
+            </div>
+          </div>
+        </details>
+      ))}
+      {columns.length < 8 && <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => onChange([...columns, { id: `mm${Date.now().toString(36)}`, title: "ستون جدید", menuId: megaMenus[0]?.id, items: [] }])}>افزودن ستون مگامنو</Btn>}
     </div>
   );
 }
@@ -677,11 +865,25 @@ function ReviewsPanel({ flash }: { flash: F }) {
       <Segmented<"pending" | "approved" | "rejected"> options={[{ v: "pending", label: "در انتظار" }, { v: "approved", label: "منتشرشده" }, { v: "rejected", label: "ردشده" }]} value={status} onChange={setStatus} />
       {!data ? <LoadingState /> : data.items.length === 0 ? <Empty title="موردی نیست" desc="دیدگاه‌های خرید تأییدشده خودکار منتشر می‌شوند؛ بقیه اینجا بررسی می‌شوند." /> : data.items.map((r) => (
         <Card key={r.id} className="flex flex-wrap items-start gap-3 p-4">
-          <div className="min-w-0 flex-1"><p className="text-[13px] font-bold">{r.product_name} · <span className="text-[#D6A94E]">{"★".repeat(r.rating)}</span></p><p className="text-[11.5px] text-[var(--kv-muted)]">{r.display_name} · {formatPersianDateTime(r.created_at)}{r.verified_purchase && " · خرید تأییدشده"}</p>{r.body && <p className="mt-1 text-[12.5px] leading-6">{r.body}</p>}</div>
+          <div className="min-w-0 flex-1"><p className="text-[13px] font-bold">{r.product_name} · <span className="text-[#D6A94E]">{"★".repeat(r.rating)}</span></p><p className="text-[11.5px] text-[var(--kv-muted)]">{r.display_name} · {formatPersianDateTime(r.created_at)}{r.verified_purchase && " · خرید تأییدشده"}</p>{r.body && <p className="mt-1 text-[12.5px] leading-6">{r.body}</p>}{(r.photo_file_ids?.length ?? 0) > 0 && <ReviewThumbs id={r.id} count={r.photo_file_ids!.length} />}</div>
           {status !== "approved" && <Btn size="sm" variant="accent" onClick={async () => { await studioApi.moderateReview(r.id, "approved"); flash("منتشر شد"); await load(); }}>انتشار</Btn>}
           {status !== "rejected" && <Btn size="sm" variant="ghost" onClick={async () => { await studioApi.moderateReview(r.id, "rejected"); flash("رد شد"); await load(); }}>رد</Btn>}
         </Card>
       ))}
+    </div>
+  );
+}
+
+/** Pending review photos are private — moderators get server-rendered thumbnails (Req 203). */
+function ReviewThumbs({ id, count }: { id: string; count: number }) {
+  const [items, setItems] = useState<{ fileId: string; dataUrl: string }[] | null>(null);
+  const [big, setBig] = useState<string | null>(null);
+  useEffect(() => { let alive = true; studioApi.reviewPhotos(id).then((r) => alive && setItems(r.items)).catch(() => alive && setItems([])); return () => { alive = false; }; }, [id]);
+  return (
+    <div className="mt-2 flex gap-2" data-testid="review-thumbs">
+      {items === null ? Array.from({ length: count }, (_, i) => <span key={i} className="h-16 w-16 animate-pulse rounded-[10px] bg-[var(--kv-surface-2)]" />)
+        : items.map((p) => <button key={p.fileId} onClick={() => setBig(p.dataUrl)} className="h-16 w-16 overflow-hidden rounded-[10px] border border-[var(--kv-line)]" aria-label="بزرگ‌نمایی عکس"><img src={p.dataUrl} alt="عکس ارسالی مشتری" className="h-full w-full object-cover" /></button>)}
+      {big && <div role="dialog" aria-modal="true" aria-label="عکس مشتری" className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 p-4" onClick={() => setBig(null)}><img src={big} alt="" className="max-h-[80vh] rounded-[12px]" /></div>}
     </div>
   );
 }
@@ -701,4 +903,3 @@ function InsightsPanel() {
     </div>
   );
 }
-

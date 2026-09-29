@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { validateSectionPayload, validateStyleOverrides, type FieldSchema } from './cms-schema.js';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import type { PoolClient } from 'pg';
 import { one, transaction, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { legacySeoToWrite, upsertSeoEntry } from './seo.js';
-import { badRequest, notFound } from './errors.js';
+import { badRequest, notFound, patchBody } from './errors.js';
+import { seedStarterContent } from './cms-starter.js';
 
 /* CMS (items 18-22): component registry, page builder with drag-drop ordering,
    scheduled color palettes linked to festivals, and the support widget config. */
@@ -44,6 +46,7 @@ const sectionBody = z.object({
   title: z.string().trim().max(160).default(''),
   payload: z.record(z.string(), z.unknown()).default({}),
   visible: z.boolean().default(true),
+  presetCode: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(),
 }).strict();
 
 const supportWidget = z.object({
@@ -152,7 +155,8 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
   /* ---------- Admin management ---------- */
 
   /**
-   * One-click CMS bootstrap for a fresh database: home page + hero + base sections + default palette.
+   * One-click CMS bootstrap for a fresh database: home page + hero + base sections + default palette
+   * + About/Vibe/Lead starter pages (cms-starter.ts).
    * Idempotent — running it twice never duplicates rows and never resets edited content.
    */
   app.post('/api/v1/admin/cms/bootstrap', async (request) => {
@@ -190,11 +194,15 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
       }
 
       const palette = await ensureDefaultPalette(client, user.id, request.ip);
+      const starter = await seedStarterContent(client);
+      if (starter.pagesCreated) {
+        await audit(client, user.id, 'cms.starter_pages_seeded', 'cms_page', pageId, undefined, { pages: starter.pagesCreated, source: 'bootstrap' }, request.ip);
+      }
       const hero = await one(client,
         `SELECT s.id, s.title, s.payload FROM cms_sections s JOIN cms_components c ON c.id = s.component_id
          WHERE s.page_id = $1 AND c.code = 'hero' ORDER BY s.position LIMIT 1`, [pageId]);
       return {
-        pageId, pageCreated, sectionsCreated: createdSections.length,
+        pageId, pageCreated, sectionsCreated: createdSections.length, starterPagesCreated: starter.pagesCreated,
         paletteId: palette.paletteId, paletteCreated: palette.created, paletteActivated: palette.activated,
         hero,
       };
@@ -230,7 +238,7 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
   app.patch('/api/v1/admin/cms/components/:id', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'cms:manage');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = componentBody.omit({ code: true }).partial().parse(request.body);
+    const body = patchBody(componentBody.omit({ code: true }).partial().parse(request.body), request.body);
     return transaction(pool, async (client) => {
       const before = await one<Record<string, unknown>>(client, 'SELECT * FROM cms_components WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
@@ -269,7 +277,7 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
   app.patch('/api/v1/admin/cms/pages/:id', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'cms:manage');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = pageBody.omit({ code: true }).partial().parse(request.body);
+    const body = patchBody(pageBody.omit({ code: true }).partial().parse(request.body), request.body);
     return transaction(pool, async (client) => {
       const before = await one<Record<string, unknown>>(client, 'SELECT * FROM cms_pages WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
@@ -289,12 +297,14 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
     const user = await principal(request, pool, config); requirePermission(user, 'cms:read');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const rows = await pool.query(
-      `SELECT s.id, s.page_id, s.title, s.payload, s.visible, s.position, c.code AS component_code
+      `SELECT s.id, s.page_id, s.title, s.payload, s.visible, s.position, s.variant, s.preset, s.section_theme, s.style_overrides, s.responsive_config,
+              c.code AS component_code
          FROM cms_sections s JOIN cms_components c ON c.id = s.component_id
         WHERE s.page_id = $1 ORDER BY s.position, s.created_at`, [id]);
     return { items: rows.rows.map((r: Record<string, unknown>) => ({
       id: r.id, pageId: r.page_id, componentCode: r.component_code, title: r.title,
       payload: r.payload, visible: r.visible, position: r.position,
+      variant: r.variant, preset: r.preset, sectionTheme: r.section_theme, styleOverrides: r.style_overrides ?? {}, responsiveConfig: r.responsive_config ?? {},
     })) };
   });
 
@@ -305,16 +315,23 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
     return transaction(pool, async (client) => {
       const page = await one(client, 'SELECT id FROM cms_pages WHERE id = $1', [id]);
       if (!page) throw notFound();
-      const component = await one<{ id: string }>(client, 'SELECT id FROM cms_components WHERE code = $1', [body.componentCode]);
+      const component = await one<{ id: string; field_schema: FieldSchema; variants: string[] }>(client, 'SELECT id, field_schema, variants FROM cms_components WHERE code = $1 AND active', [body.componentCode]);
       if (!component) throw badRequest('کامپوننت موردنظر تعریف نشده است.');
+      // Req 180: a new section can start from a Preset (variant + presentational fields + style tokens).
+      const preset = body.presetCode ? await one<{ variant: string; payload: Record<string, unknown>; style_overrides: Record<string, unknown>; responsive_config: Record<string, unknown> }>(client,
+        'SELECT variant, payload, style_overrides, responsive_config FROM cms_component_presets WHERE component_code = $1 AND code = $2', [body.componentCode, body.presetCode]) : null;
+      if (body.presetCode && !preset) throw badRequest('Preset انتخاب‌شده برای این کامپوننت تعریف نشده است.');
+      const payload = validateSectionPayload(component.field_schema, { ...(preset?.payload ?? {}), ...body.payload });
       const position = await one<{ next: number }>(client,
         'SELECT COALESCE(max(position), 0) + 1 AS next FROM cms_sections WHERE page_id = $1', [id]);
       const sectionId = randomUUID();
       await client.query(
-        'INSERT INTO cms_sections(id,page_id,component_id,title,payload,visible,position) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [sectionId, id, component.id, body.title, JSON.stringify(body.payload), body.visible, position!.next]);
-      await audit(client, user.id, 'cms.section_added', 'cms_section', sectionId, undefined, { pageId: id, ...body }, request.ip);
-      return reply.code(201).send({ id: sectionId, position: position!.next, ...body });
+        `INSERT INTO cms_sections(id,page_id,component_id,title,payload,visible,position,variant,preset,style_overrides,responsive_config)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [sectionId, id, component.id, body.title, JSON.stringify(payload), body.visible, position!.next, preset?.variant ?? component.variants?.[0] ?? 'default',
+          body.presetCode ?? null, JSON.stringify(preset ? validateStyleOverrides(preset.style_overrides) : {}), JSON.stringify(preset?.responsive_config ?? {})]);
+      await audit(client, user.id, 'cms.section_added', 'cms_section', sectionId, undefined, { pageId: id, ...body, payload }, request.ip);
+      return reply.code(201).send({ id: sectionId, position: position!.next, ...body, payload });
     });
   });
 
@@ -325,14 +342,20 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
       title: z.string().trim().max(160).optional(),
       payload: z.record(z.string(), z.unknown()).optional(),
       visible: z.boolean().optional(),
+      variant: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(),
     }).strict().parse(request.body);
     return transaction(pool, async (client) => {
-      const before = await one<Record<string, unknown>>(client, 'SELECT * FROM cms_sections WHERE id = $1 FOR UPDATE', [id]);
+      const before = await one<Record<string, unknown> & { field_schema: FieldSchema; variants: string[] }>(client,
+        'SELECT s.*, c.field_schema, c.variants FROM cms_sections s JOIN cms_components c ON c.id = s.component_id WHERE s.id = $1 FOR UPDATE OF s', [id]);
       if (!before) throw notFound();
+      // Req 175-176: payload is validated against the component's typed Field Schema — no free JSON.
+      const payload = body.payload ? validateSectionPayload(before.field_schema, body.payload) : null;
+      if (body.variant && !(before.variants ?? []).includes(body.variant)) throw badRequest('این Variant برای کامپوننت ثبت نشده است.');
       await client.query(
-        'UPDATE cms_sections SET title = COALESCE($2, title), payload = COALESCE($3, payload), visible = COALESCE($4, visible), updated_at = now() WHERE id = $1',
-        [id, body.title ?? null, body.payload ? JSON.stringify(body.payload) : null, body.visible ?? null]);
-      await audit(client, user.id, 'cms.section_updated', 'cms_section', id, before, body, request.ip);
+        'UPDATE cms_sections SET title = COALESCE($2, title), payload = COALESCE($3, payload), visible = COALESCE($4, visible), variant = COALESCE($5, variant), updated_at = now() WHERE id = $1',
+        [id, body.title ?? null, payload ? JSON.stringify(payload) : null, body.visible ?? null, body.variant ?? null]);
+      const { field_schema: _schema, variants: _variants, ...beforeRow } = before;
+      await audit(client, user.id, 'cms.section_updated', 'cms_section', id, beforeRow, { ...body, payload: payload ?? undefined }, request.ip);
       return one(client, 'SELECT * FROM cms_sections WHERE id = $1', [id]);
     });
   });

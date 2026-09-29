@@ -368,6 +368,15 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     if (bootstrap.status !== 200) throw new Error(`cms bootstrap: ${bootstrap.status} ${JSON.stringify(bootstrap.body)}`);
     step(`صفحه اصلی + هیرو + ${bootstrap.body.sectionsCreated} بخش پایه ساخته شد.`);
   }
+  // Sample announcement (dev data only) — migrations and the bootstrap never publish announcement copy.
+  const announcements = await call(app, 'GET', '/api/v1/admin/cms/announcements', { token: adminToken });
+  if (!(announcements.body?.items ?? []).some((row: any) => row.active)) {
+    const created = await call(app, 'POST', '/api/v1/admin/cms/announcements', { token: adminToken, payload: {
+      title: 'اعلان نمونه محیط توسعه', messages: [{ text: 'کالکشن تازه کلبه وینتیج را ببینید', link: 'shop', ctaLabel: 'مشاهده' }],
+      mode: 'rotating', priority: 100, style: { backgroundColor: '#1B2A4A', textColor: '#F9F6F1' } } });
+    if (created.status !== 201) throw new Error(`announcement: ${created.status} ${JSON.stringify(created.body)}`);
+    step('اعلان نمونه ساخته شد.');
+  }
   const palettes = await call(app, 'GET', '/api/v1/admin/cms/palettes', { token: adminToken });
   if (!(palettes.body?.items ?? []).length) {
     const created = await call(app, 'POST', '/api/v1/admin/cms/palettes/default', { token: adminToken });

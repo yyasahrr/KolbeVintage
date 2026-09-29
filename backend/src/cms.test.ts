@@ -43,15 +43,15 @@ test('CMS page builder, palettes and support widget are fully manageable', { ski
     assert.equal(page.statusCode, 201, page.body);
     const pageId = page.json().id as string;
     const hero = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/sections`, headers, payload: {
-      componentCode: 'hero', title: 'هدر نوروز', payload: { image: 'hero.jpg', heading: 'کالکشن نوروز', cta: '/shop' },
+      componentCode: 'hero', title: 'هدر نوروز', payload: { image: 'https://cdn.example.test/hero.jpg', title: 'کالکشن نوروز', cta: '/shop' },
     } });
     const slider = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/sections`, headers, payload: {
       componentCode: 'product_slider', title: 'پرفروش‌ها', payload: { limit: 8 },
     } });
     const banner = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/sections`, headers, payload: {
-      componentCode: 'banner', title: 'بنر حراج', payload: { image: 'sale.jpg', link: '/sale' }, visible: false,
+      componentCode: 'banner', title: 'بنر حراج', payload: { image: 'https://cdn.example.test/sale.jpg', title: 'حراج', link: '/sale' }, visible: false,
     } });
-    assert.equal(hero.statusCode, 201, hero.body);
+    assert.equal(hero.statusCode, 201, hero.body); assert.equal(banner.statusCode, 201, banner.body);
     // Reorder via the drag-drop endpoint (item 19).
     const reordered = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/sections/reorder`,
       headers, payload: { sectionIds: [slider.json().id, hero.json().id, banner.json().id] } });

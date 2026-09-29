@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import type { DbPool } from './db.js';
+import { installmentOffers, installmentProviders, type InstallmentOffer, type InstallmentProvider } from './installments.js';
 
 /* Shared, read-only commerce projections used by CMS, Style Builder, Recommendation and Account.
    Rule (Req 185, 260, 319): nobody keeps its own copy of product/price/stock — everything here is
@@ -14,6 +15,8 @@ export type CommerceProduct = {
   compareAtRial: string | null; discountPercent: number; installmentEnabled: boolean; installmentProviders: string[];
   image: string | null; flatLay: string | null; available: number; isNew: boolean; createdAt: string;
   rating: number; reviewCount: number; cardTemplate?: string;
+  /** Provider offers computed server-side from the Installment Provider domain (Req 189-191). */
+  installmentsCount: number | null; installmentOffers: InstallmentOffer[];
   variants: { id: string; sku: string; size: string | null; color: string | null; available: number }[];
 };
 
@@ -124,6 +127,7 @@ export function toCommerceProduct(row: Record<string, unknown>): CommerceProduct
     priceRial: cash.toString(), installmentPriceRial: installment?.toString() ?? null,
     // Server-side installment maths (Req 188-191): CMS/UI only render this value.
     perInstallmentRial: installmentEnabled && installmentBase > 0n ? ((installmentBase + 3n) / 4n).toString() : null,
+    installmentsCount: installmentEnabled && installmentBase > 0n ? 4 : null, installmentOffers: [],
     compareAtRial: compare, discountPercent: discount, installmentEnabled,
     installmentProviders: (row.installment_providers as string[]) ?? [],
     image: (row.hero_media as string | null) ?? mediaUrl(images[0]), flatLay,
@@ -134,16 +138,30 @@ export function toCommerceProduct(row: Record<string, unknown>): CommerceProduct
   };
 }
 
+/** Applies the Installment Provider policy: the first eligible provider drives the card numbers; with no provider
+ *  configured at all the legacy 4-part split stays (fresh installs), with providers but none eligible → no offer (Req 190). */
+export function applyInstallmentPolicy(products: CommerceProduct[], providers: InstallmentProvider[]): CommerceProduct[] {
+  if (!providers.length) return products;
+  return products.map((product) => {
+    const base = BigInt(product.installmentPriceRial ?? product.priceRial);
+    const offers = installmentOffers(base, product.installmentEnabled, product.installmentProviders, providers);
+    const primary = offers[0];
+    return { ...product, installmentOffers: offers, perInstallmentRial: primary?.perInstallmentRial ?? null, installmentsCount: primary?.count ?? null };
+  });
+}
+
 export async function queryCommerceProducts(db: Queryable, rules: CollectionRules): Promise<CommerceProduct[]> {
   const { where, params, order, limit } = buildCollectionQuery(rules);
   const rows = await db.query(`${PRODUCT_SELECT} WHERE ${where} ORDER BY ${order} LIMIT ${limit}`, params);
-  return rows.rows.map(toCommerceProduct);
+  return applyInstallmentPolicy(rows.rows.map(toCommerceProduct), await installmentProviders(db));
 }
 
 export async function commerceProductsByIds(db: Queryable, ids: string[]): Promise<CommerceProduct[]> {
   if (!ids.length) return [];
   const rows = await db.query(`${PRODUCT_SELECT} WHERE p.id = ANY($1::uuid[])`, [ids]);
-  return rows.rows.map(toCommerceProduct);
+  const products = applyInstallmentPolicy(rows.rows.map(toCommerceProduct), await installmentProviders(db));
+  const order = new Map(ids.map((id, i) => [id, i]));
+  return products.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }
 
 /* ---------------- Product card rule engine (Req 192-195) ---------------- */
@@ -151,7 +169,10 @@ export async function commerceProductsByIds(db: Queryable, ids: string[]): Promi
 export type CardRule = { id: string; name: string; priority: number; conditions: Record<string, unknown>; template_code: string;
   active: boolean; starts_at: string | Date | null; ends_at: string | Date | null };
 
-export function ruleMatches(product: Pick<CommerceProduct, 'discountPercent' | 'isNew' | 'installmentEnabled' | 'vibes' | 'category'> & { inActiveCampaign?: boolean }, conditions: Record<string, unknown>): boolean {
+export function ruleMatches(product: Pick<CommerceProduct, 'discountPercent' | 'isNew' | 'installmentEnabled' | 'vibes' | 'category'> & { inActiveCampaign?: boolean; available?: number; collections?: string[] }, conditions: Record<string, unknown>): boolean {
+  if (typeof conditions.collectionCode === 'string' && !(product.collections ?? []).includes(conditions.collectionCode)) return false;
+  if (conditions.maxAvailable !== undefined && !(product.available !== undefined && product.available > 0 && product.available <= Number(conditions.maxAvailable))) return false;
+  if (conditions.outOfStock === true && !(product.available !== undefined && product.available < 1)) return false;
   if (conditions.minDiscountPercent !== undefined && product.discountPercent < Number(conditions.minDiscountPercent)) return false;
   if (conditions.isNew === true && !product.isNew) return false;
   if (conditions.installmentEnabled === true && !product.installmentEnabled) return false;
@@ -181,8 +202,23 @@ export async function attachCardTemplates(db: Queryable, products: CommerceProdu
     if (!row.scope?.productIds?.length) campaignAll = true;
     for (const id of row.scope?.productIds ?? []) campaignProducts.add(id);
   }
+  // Req 193: `collection = new-arrivals → editorial-new` — membership resolved from the Collection domain.
+  const membership = new Map<string, Set<string>>();
+  const now = new Date();
+  for (const code of new Set(rules.filter((r) => r.active && (!r.ends_at || new Date(r.ends_at) > now)).map((r) => r.conditions?.collectionCode).filter((c): c is string => typeof c === 'string'))) {
+    const collection = (await db.query('SELECT mode, query_rules, product_ids FROM cms_collections WHERE code = $1 AND active', [code])).rows[0] as
+      { mode: string; query_rules: CollectionRules; product_ids: string[] } | undefined;
+    if (!collection) continue;
+    let ids: string[] = collection.product_ids ?? [];
+    if (collection.mode !== 'manual') {
+      const { where, params } = buildCollectionQuery({ ...collection.query_rules, productIds: products.map((p) => p.id), limit: 48 });
+      ids = (await db.query(`${PRODUCT_SELECT} WHERE ${where}`, params)).rows.map((r: { id: string }) => String(r.id));
+    }
+    membership.set(code, new Set(ids));
+  }
   return products.map((product) => ({
     ...product,
-    cardTemplate: resolveCardTemplate({ ...product, inActiveCampaign: campaignAll || campaignProducts.has(product.id) }, rules),
+    cardTemplate: resolveCardTemplate({ ...product, inActiveCampaign: campaignAll || campaignProducts.has(product.id),
+      collections: [...membership.entries()].filter(([, set]) => set.has(product.id)).map(([code]) => code) }, rules),
   }));
 }
