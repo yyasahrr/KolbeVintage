@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, RefreshCw } from "lucide-react";
-import type { ApiRequest } from "../data/admin-api";
+import type { ApiRequest } from "../data/api";
 
 type OrderStatus = "pending_payment" | "paid" | "processing" | "preparing" | "ready_to_ship" | "in_transit" | "shipped" | "delivered" | "cancelled" | "returned";
 type Order = { id: string; reference: string; buyer_id: string; order_type: "retail" | "wholesale"; payment_mode: string; status: OrderStatus; total_rial: string; created_at: string };

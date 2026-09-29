@@ -7,18 +7,26 @@ import { one, transaction, type DbPool } from './db.js';
 import { asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { issueInvoiceForOrder } from './invoices.js';
 
 const limitsSchema = z.object({
   sources: z.enum(['all', 'kolbe']).default('all'),
   maxOrdersPerMonth: z.number().int().min(0).nullable().default(null),
   maxOrderValueRial: z.string().regex(/^\d+$/).nullable().default(null),
+  minOrderValueRial: z.string().regex(/^\d+$/).nullable().default(null),
   maxSuppliersPerOrder: z.number().int().min(1).nullable().default(null),
+  maxOrderLines: z.number().int().min(1).nullable().default(null),
+  maxQuantityPerLine: z.number().int().min(1).nullable().default(null),
   discountPercent: z.number().int().min(0).max(90).default(0),
   prioritySupport: z.boolean().default(false),
+  installmentAccess: z.boolean().default(false),
 }).strict();
 const planBody = z.object({
   code: z.string().regex(/^[a-z0-9_-]{3,40}$/), title: z.string().trim().min(2).max(120),
+  description: z.string().max(1000).default(''),
   annualPriceRial: z.string().regex(/^\d+$/), limits: limitsSchema,
+  features: z.array(z.string().trim().regex(/^[a-z0-9_-]{2,40}$/)).max(50).default([]),
+  permissions: z.array(z.string().trim().regex(/^[a-z0-9:_-]{2,60}$/)).max(100).default([]),
 });
 
 export type VerifiedPayment = {
@@ -71,6 +79,7 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
       await client.query("INSERT INTO order_events(id,order_id,from_status,to_status,note) VALUES ($1,$2,'pending_payment','paid',$3)",
         [randomUUID(), intent.order_id, `پرداخت تأیید شد: ${payment.providerReference}`]);
       await outbox(client, 'order.paid', 'order', intent.order_id, { orderId: intent.order_id, paymentIntentId: intent.id });
+      await issueInvoiceForOrder(client, intent.order_id);
     }
     if (intent.membership_id) {
       const membership = await one<{ user_id: string; status: string }>(client,
@@ -97,23 +106,71 @@ export interface PaymentProviderAdapter {
 }
 
 export function registerPaymentRoutes(app: FastifyInstance, pool: DbPool, config: Config, adapters: Record<string, PaymentProviderAdapter> = {}) {
-  app.get('/api/v1/plans', async () => {
-    const rows = await pool.query('SELECT id,code,title,annual_price_rial,limits FROM membership_plans WHERE active ORDER BY annual_price_rial');
+  app.get('/api/v1/plans', async (request) => {
+    const user = await principal(request, pool, config).catch(() => null);
+    const privileged = !!user && (user.permissions.includes('plans:manage') || user.permissions.includes('users:manage'));
+    const columns = privileged
+      ? 'id,code,title,description,annual_price_rial,limits,features,permissions,active'
+      : `id,code,title,description,annual_price_rial,
+         jsonb_build_object('sources', limits->'sources', 'discountPercent', limits->'discountPercent',
+           'maxOrdersPerMonth', limits->'maxOrdersPerMonth', 'maxOrderValueRial', limits->'maxOrderValueRial',
+           'prioritySupport', limits->'prioritySupport', 'installmentAccess', limits->'installmentAccess') AS limits,
+         features`;
+    const rows = await pool.query(`SELECT ${columns} FROM membership_plans WHERE active ORDER BY annual_price_rial`);
     return { items: rows.rows.map((row) => ({ ...row, annual_price_rial: asRial(row.annual_price_rial) })) };
   });
 
+  app.get('/api/v1/membership/current', async (request) => {
+    const user = await principal(request, pool, config);
+    const row = await one<{ id: string; status: string; starts_at: Date; ends_at: Date; plan_id: string;
+      code: string; title: string; description: string; limits: Record<string, unknown>; features: string[]; permissions: string[] }>(pool,
+      `SELECT m.id,m.status,m.starts_at,m.ends_at,p.id AS plan_id,p.code,p.title,p.description,p.limits,p.features,p.permissions
+       FROM memberships m JOIN membership_plans p ON p.id = m.plan_id
+       WHERE m.user_id = $1 AND m.status = 'active' AND m.starts_at <= now() AND m.ends_at > now()
+       ORDER BY m.created_at DESC LIMIT 1`, [user.id]);
+    if (!row) return { membership: null };
+    return { membership: row };
+  });
+
   app.post('/api/v1/plans', async (request, reply) => {
-    const user = await principal(request, pool, config); requirePermission(user, 'users:manage');
+    const user = await principal(request, pool, config); requirePermission(user, 'plans:manage');
     const body = planBody.parse(request.body);
     rial(body.annualPriceRial);
     if (body.limits.maxOrderValueRial !== null) rial(body.limits.maxOrderValueRial);
+    if (body.limits.minOrderValueRial !== null) rial(body.limits.minOrderValueRial);
     const id = randomUUID();
     await transaction(pool, async (client) => {
-      await client.query('INSERT INTO membership_plans(id,code,title,annual_price_rial,limits) VALUES ($1,$2,$3,$4,$5)',
-        [id, body.code, body.title, body.annualPriceRial, JSON.stringify(body.limits)]);
+      await client.query(
+        `INSERT INTO membership_plans(id,code,title,description,annual_price_rial,limits,features,permissions)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, body.code, body.title, body.description, body.annualPriceRial, JSON.stringify(body.limits),
+          JSON.stringify(body.features), body.permissions]);
       await audit(client, user.id, 'plan.created', 'membership_plan', id, undefined, body, request.ip);
     });
     return reply.code(201).send({ id, ...body });
+  });
+
+  app.patch('/api/v1/plans/:id', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'plans:manage');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = planBody.omit({ code: true }).partial().parse(request.body);
+    return transaction(pool, async (client) => {
+      const before = await one<Record<string, unknown>>(client, 'SELECT * FROM membership_plans WHERE id = $1 FOR UPDATE', [id]);
+      if (!before) throw notFound();
+      if (body.annualPriceRial !== undefined) rial(body.annualPriceRial);
+      if (body.limits?.maxOrderValueRial != null) rial(body.limits.maxOrderValueRial);
+      if (body.limits?.minOrderValueRial != null) rial(body.limits.minOrderValueRial);
+      await client.query(
+        `UPDATE membership_plans SET title = COALESCE($2, title), description = COALESCE($3, description),
+           annual_price_rial = COALESCE($4, annual_price_rial), limits = COALESCE($5, limits),
+           features = COALESCE($6, features), permissions = COALESCE($7, permissions)
+         WHERE id = $1`,
+        [id, body.title ?? null, body.description ?? null, body.annualPriceRial ?? null,
+          body.limits ? JSON.stringify(body.limits) : null,
+          body.features ? JSON.stringify(body.features) : null, body.permissions ?? null]);
+      await audit(client, user.id, 'plan.updated', 'membership_plan', id, before, body, request.ip);
+      return { id, ...body };
+    });
   });
 
   app.post('/api/v1/memberships', async (request, reply) => {

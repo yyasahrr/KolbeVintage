@@ -2,7 +2,9 @@
   "name": "kolbe-backend",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
@@ -10,25 +12,35 @@
     "migrate": "tsx src/migrate.ts",
     "bootstrap:admin": "tsx src/bootstrap-admin.ts",
     "worker": "tsx src/worker.ts",
-    "test": "node --import tsx --test src/core.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 src/core.test.ts src/invoices.test.ts src/wallet.test.ts src/suppliers.test.ts src/plans.test.ts src/promo.test.ts src/integrations.test.ts src/cms.test.ts src/access.test.ts src/inventory.test.ts src/domains.test.ts src/contracts.test.ts src/experience.test.ts",
+    "test:embedded": "node scripts/run-embedded-tests.mjs",
+    "test:contract": "tsx scripts/frontend-contract-smoke.ts",
+    "seed:local": "tsx src/seed-local.ts",
+    "test:browser": "node scripts/browser-admin-smoke.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.0",
     "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^10.1.2",
     "@fastify/rate-limit": "^10.0.0",
     "argon2": "^0.44.0",
     "bullmq": "^5.0.0",
     "dotenv": "^17.0.0",
     "fastify": "^5.0.0",
     "fastify-raw-body": "^5.0.0",
-    "jose": "^6.0.0",
     "ioredis": "^5.0.0",
+    "jose": "^6.0.0",
     "pg": "^8.0.0",
+    "sharp": "^0.34.5",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11",
+    "@sparticuz/chromium": "^131.0.1",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.0.0",
+    "puppeteer-core": "^23.11.1",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }

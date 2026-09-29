@@ -7,6 +7,7 @@ import { principal, requirePermission } from './auth.js';
 import { asRial, rial } from './money.js';
 import { audit, outbox } from './operations.js';
 import { badRequest, forbidden, notFound } from './errors.js';
+import { validateSpecifications, type SpecField } from './profile.js';
 
 const productBody = z.object({
   brand: z.string().trim().min(1).max(120),
@@ -17,7 +18,28 @@ const productBody = z.object({
   installmentPriceRial: z.string().regex(/^\d+$/).optional(),
   wholesalePriceRial: z.string().regex(/^\d+$/).optional(),
   variants: z.array(z.object({ size: z.string().max(50).optional(), color: z.string().max(100).optional(), attributes: z.record(z.string(), z.string()).default({}) })).min(1).max(100),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  // Adaptive product form (Req 325-326): type → template → validated values.
+  productTypeCode: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(),
+  specifications: z.record(z.string(), z.unknown()).default({}),
+  gender: z.enum(['men', 'women', 'unisex', 'kids']).default('unisex'),
+  seasons: z.array(z.enum(['spring', 'summer', 'autumn', 'winter', 'all-season'])).max(5).default([]),
+  vibes: z.array(z.string().regex(/^[a-z0-9-]{2,40}$/)).max(8).default([]),
+  installmentEnabled: z.boolean().default(true),
+  discountPercent: z.number().int().min(0).max(95).default(0),
 });
+
+/** Loads the type template and validates the values; sizes must belong to the type's active size list. */
+async function resolveTypeSpecs(db: DbPool | import('pg').PoolClient, code: string | undefined, specs: Record<string, unknown>, sizes: (string | undefined)[]) {
+  if (!code) return { specifications: specs && Object.keys(specs).length ? specs : {} };
+  const type = await one<{ spec_template: SpecField[]; sizes: { code: string; active: boolean }[] }>(db,
+    'SELECT spec_template, sizes FROM product_types WHERE code = $1 AND active', [code]);
+  if (!type) throw badRequest('نوع محصول انتخاب‌شده معتبر یا فعال نیست.');
+  const allowed = new Set(type.sizes.filter((size) => size.active).map((size) => size.code));
+  const invalid = sizes.filter((size): size is string => Boolean(size) && allowed.size > 0 && !allowed.has(size!));
+  if (invalid.length) throw badRequest(`سایز «${invalid[0]}» برای این نوع محصول تعریف نشده است.`);
+  return { specifications: validateSpecifications(type.spec_template, specs) };
+}
 const statusBody = z.object({ status: z.enum(['published', 'rejected', 'draft', 'archived']) });
 
 const categoryCode = (category: string) => /کفش|کتانی|بوت/.test(category) ? 'SHOE' : /شلوار|جین/.test(category) ? 'PANT'
@@ -26,20 +48,71 @@ const categoryCode = (category: string) => /کفش|کتانی|بوت/.test(categ
 export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.get('/api/v1/products', async (request) => {
     const query = z.object({ category: z.string().max(120).optional(), limit: z.coerce.number().int().min(1).max(100).default(30), before: z.iso.datetime().optional() }).parse(request.query);
+    // Availability is derived from the WMS ledger (stock_balances), never from product.metadata.
     const result = await pool.query(
       `SELECT p.id, p.brand, p.name, p.category, p.description, p.cash_price_rial,
-              p.installment_price_rial, p.created_at,
-              COALESCE(jsonb_agg(jsonb_build_object('id', v.id, 'sku', v.sku, 'size', v.size_label, 'color', v.color_label)
+              p.installment_price_rial, p.metadata, p.created_at, p.product_type_code, p.gender, p.seasons, p.vibes,
+              p.specifications, p.installment_enabled, p.discount_percent, p.supplier_id,
+              COALESCE(jsonb_agg(jsonb_build_object('id', v.id, 'sku', v.sku, 'size', v.size_label, 'color', v.color_label,
+                'available', COALESCE(b.available, 0), 'reserved', COALESCE(b.reserved, 0),
+                'incoming', COALESCE(b.incoming, 0), 'damaged', COALESCE(b.damaged, 0))
                 ORDER BY v.sku) FILTER (WHERE v.id IS NOT NULL), '[]'::jsonb) AS variants
-       FROM products p LEFT JOIN product_variants v ON v.product_id = p.id AND v.active
+       FROM products p
+       LEFT JOIN product_variants v ON v.product_id = p.id AND v.active
+       LEFT JOIN (
+         SELECT sb.variant_id,
+                SUM(sb.on_hand - sb.reserved - sb.damaged)::int AS available,
+                SUM(sb.reserved)::int AS reserved, SUM(sb.incoming)::int AS incoming, SUM(sb.damaged)::int AS damaged
+         FROM stock_balances sb JOIN warehouses w ON w.id = sb.warehouse_id AND w.active
+         GROUP BY sb.variant_id
+       ) b ON b.variant_id = v.id
        WHERE p.status = 'published' AND ($1::text IS NULL OR p.category = $1)
          AND ($2::timestamptz IS NULL OR p.created_at < $2)
        GROUP BY p.id ORDER BY p.created_at DESC LIMIT $3`, [query.category ?? null, query.before ?? null, query.limit]);
-    return { items: result.rows.map((row) => ({
-      id: row.id, brand: row.brand, name: row.name, category: row.category, description: row.description,
-      cashPriceRial: asRial(row.cash_price_rial), installmentPriceRial: row.installment_price_rial === null ? null : asRial(row.installment_price_rial),
-      variants: row.variants, createdAt: row.created_at,
-    })) };
+    return { items: result.rows.map((row) => {
+      const variants = row.variants as { available?: number; reserved?: number; incoming?: number; damaged?: number }[];
+      const sum = (key: 'available' | 'reserved' | 'incoming' | 'damaged') => variants.reduce((total, variant) => total + Number(variant[key] ?? 0), 0);
+      return {
+        id: row.id, brand: row.brand, name: row.name, category: row.category, description: row.description,
+        cashPriceRial: asRial(row.cash_price_rial), installmentPriceRial: row.installment_price_rial === null ? null : asRial(row.installment_price_rial),
+        metadata: row.metadata, variants, createdAt: row.created_at,
+        productTypeCode: row.product_type_code, gender: row.gender, seasons: row.seasons, vibes: row.vibes,
+        specifications: row.specifications, installmentEnabled: row.installment_enabled, discountPercent: row.discount_percent,
+        supplierId: row.supplier_id,
+        available: sum('available'), reserved: sum('reserved'), incoming: sum('incoming'), damaged: sum('damaged'),
+      };
+    }) };
+  });
+
+  /** Per-variant WMS inventory for one product — drives the ProductStudio inventory view. */
+  app.get('/api/v1/admin/products/:id/inventory', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:read');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const product = await one<{ id: string; name: string }>(pool, 'SELECT id, name FROM products WHERE id = $1', [id]);
+    if (!product) throw notFound();
+    const rows = await pool.query(
+      `SELECT v.id AS variant_id, v.sku, v.color_label AS color, v.size_label AS size,
+              w.id AS warehouse_id, w.code AS warehouse_code, w.name AS warehouse_name,
+              COALESCE(b.on_hand, 0)::int AS on_hand, COALESCE(b.reserved, 0)::int AS reserved,
+              COALESCE(b.incoming, 0)::int AS incoming, COALESCE(b.damaged, 0)::int AS damaged,
+              COALESCE(b.on_hand - b.reserved - b.damaged, 0)::int AS available
+       FROM product_variants v
+       LEFT JOIN stock_balances b ON b.variant_id = v.id
+       LEFT JOIN warehouses w ON w.id = b.warehouse_id
+       WHERE v.product_id = $1 AND v.active
+       ORDER BY v.sku, w.code`, [id]);
+    const variants = await pool.query(
+      `SELECT v.id AS variant_id, v.sku, v.color_label AS color, v.size_label AS size,
+              COALESCE(SUM(b.on_hand - b.reserved - b.damaged), 0)::int AS available
+       FROM product_variants v LEFT JOIN stock_balances b ON b.variant_id = v.id
+       WHERE v.product_id = $1 AND v.active GROUP BY v.id ORDER BY v.sku`, [id]);
+    const totals = { available: 0, reserved: 0, incoming: 0, damaged: 0 };
+    for (const row of rows.rows) {
+      totals.available += Number(row.available); totals.reserved += Number(row.reserved);
+      totals.incoming += Number(row.incoming); totals.damaged += Number(row.damaged);
+    }
+    return { productId: product.id, productName: product.name, variants: variants.rows, items: rows.rows, totals };
   });
 
   app.get('/api/v1/wholesale/products', async (request) => {
@@ -72,12 +145,16 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       if (supplier?.cooperation_status !== 'approved') throw forbidden();
     }
     const productId = randomUUID();
+    const { specifications } = await resolveTypeSpecs(pool, body.productTypeCode, body.specifications, body.variants.map((v) => v.size));
     const result = await transaction(pool, async (client) => {
       await client.query(
-        `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial,metadata,
+           product_type_code,specifications,gender,seasons,vibes,installment_enabled,discount_percent)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
         [productId, user.roles.includes('supplier') ? user.id : null, body.brand, body.name, body.category, body.description,
-          user.roles.includes('supplier') ? 'pending' : 'draft', cash.toString(), installment?.toString() ?? null, wholesale?.toString() ?? null]);
+          user.roles.includes('supplier') ? 'pending' : 'draft', cash.toString(), installment?.toString() ?? null, wholesale?.toString() ?? null,
+          JSON.stringify(body.metadata), body.productTypeCode ?? null, JSON.stringify(specifications), body.gender,
+          body.seasons.length ? body.seasons : ['autumn', 'winter'], body.vibes, body.installmentEnabled, body.discountPercent]);
       const variants = [];
       for (const variant of body.variants) {
         const seq = await one<{ id: string }>(client, "SELECT nextval('sku_sequence')::text AS id");
@@ -85,13 +162,74 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         const id = randomUUID();
         await client.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,attributes) VALUES ($1,$2,$3,$4,$5,$6)',
           [id, productId, sku, variant.size ?? null, variant.color ?? null, JSON.stringify(variant.attributes)]);
-        variants.push({ id, sku });
+        // Color/size travel with the ids so the client can bind per-variant inventory input
+        // without relying on array order.
+        variants.push({ id, sku, color: variant.color ?? null, size: variant.size ?? null });
       }
       await audit(client, user.id, 'product.created', 'product', productId, undefined, { name: body.name, variants }, request.ip);
       await outbox(client, 'product.created', 'product', productId, { productId });
+      // Style analysis is async (Req 252): creation never waits for it.
+      await outbox(client, 'product.style_analysis_requested', 'product', productId, { productId, reason: 'product.created' });
       return { id: productId, status: user.roles.includes('supplier') ? 'pending' : 'draft', variants };
     });
     return reply.code(201).send(result);
+  });
+
+  app.patch('/api/v1/products/:id', async (request) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      brand: z.string().trim().min(1).max(120).optional(),
+      name: z.string().trim().min(2).max(240).optional(),
+      category: z.string().trim().min(1).max(120).optional(),
+      description: z.string().max(10000).optional(),
+      cashPriceRial: z.string().regex(/^\d+$/).optional(),
+      installmentPriceRial: z.string().regex(/^\d+$/).nullable().optional(),
+      wholesalePriceRial: z.string().regex(/^\d+$/).nullable().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional(),
+      productTypeCode: z.string().regex(/^[a-z0-9_-]{2,40}$/).nullable().optional(),
+      specifications: z.record(z.string(), z.unknown()).optional(),
+      gender: z.enum(['men', 'women', 'unisex', 'kids']).optional(),
+      seasons: z.array(z.enum(['spring', 'summer', 'autumn', 'winter', 'all-season'])).min(1).max(5).optional(),
+      vibes: z.array(z.string().regex(/^[a-z0-9-]{2,40}$/)).max(8).optional(),
+      installmentEnabled: z.boolean().optional(),
+      discountPercent: z.number().int().min(0).max(95).optional(),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const before = await one<{ supplier_id: string | null; status: string; product_type_code: string | null }>(client,
+        'SELECT supplier_id, status, product_type_code FROM products WHERE id = $1 FOR UPDATE', [id]);
+      if (before && (body.specifications !== undefined || body.productTypeCode !== undefined)) {
+        const code = body.productTypeCode === null ? undefined : body.productTypeCode ?? before.product_type_code ?? undefined;
+        body.specifications = (await resolveTypeSpecs(client, code, body.specifications ?? {}, [])).specifications;
+      }
+      if (!before) throw notFound();
+      const isSupplierOwner = before.supplier_id === user.id && user.roles.includes('supplier');
+      if (!isSupplierOwner) requirePermission(user, 'products:write');
+      if (body.cashPriceRial !== undefined) rial(body.cashPriceRial);
+      if (body.installmentPriceRial) rial(body.installmentPriceRial);
+      if (body.wholesalePriceRial) rial(body.wholesalePriceRial);
+      const columns: Record<string, string> = {
+        brand: 'brand', name: 'name', category: 'category', description: 'description',
+        cashPriceRial: 'cash_price_rial', installmentPriceRial: 'installment_price_rial',
+        wholesalePriceRial: 'wholesale_price_rial', metadata: 'metadata',
+        productTypeCode: 'product_type_code', specifications: 'specifications', gender: 'gender', seasons: 'seasons',
+        vibes: 'vibes', installmentEnabled: 'installment_enabled', discountPercent: 'discount_percent',
+      };
+      const values: unknown[] = [id];
+      const updates: string[] = [];
+      for (const [key, column] of Object.entries(columns)) {
+        const value = (body as Record<string, unknown>)[key];
+        if (value === undefined) continue;
+        values.push(key === 'metadata' || key === 'specifications' ? JSON.stringify(value) : value);
+        updates.push(`${column} = $${values.length}`);
+      }
+      if (!updates.length) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+      await client.query(`UPDATE products SET ${updates.join(', ')}, version = version + 1, updated_at = now() WHERE id = $1`, values);
+      await audit(client, user.id, 'product.updated', 'product', id, before,
+        { fields: Object.keys(body) }, request.ip);
+      await outbox(client, 'product.updated', 'product', id, { productId: id });
+      return { id, updated: Object.keys(body) };
+    });
   });
 
   app.patch('/api/v1/products/:id/status', async (request) => {

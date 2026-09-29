@@ -8,6 +8,7 @@ import { digitsOnly } from "../data/customer";
 import { useStore } from "../data/store";
 import { Btn, Card, Field, Input } from "../components/primitives";
 import { StyleCanvas } from "./style-canvas";
+import { StyleStudio, type CartAddLine } from "./style-studio";
 import { cn } from "../utils/cn";
 
 /* ================= STYLE BUILDER ================= */
@@ -292,7 +293,8 @@ export function AuthScreens({ portal, onDone }: { portal: string; onDone: (phone
   );
 }
 
-export default function StudioExperience({ tab, setTab, accountId, onLogin }: { tab: string; setTab: (t: string) => void; accountId?: string; onLogin: () => void }) {
+export default function StudioExperience({ tab, setTab, accountId, onLogin, onAddItems }: { tab: string; setTab: (t: string) => void; accountId?: string; onLogin: () => void; onAddItems?: (lines: CartAddLine[]) => void }) {
+  const demo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   return (
     <div>
       <div className="mx-auto flex w-full max-w-[1400px] justify-center px-4 pt-5 md:px-8">
@@ -304,7 +306,7 @@ export default function StudioExperience({ tab, setTab, accountId, onLogin }: { 
           ))}
         </div>
       </div>
-      {tab === "builder" ? <StyleCanvas accountId={accountId} onLogin={onLogin} /> : <TryOn />}
+      {tab === "builder" ? (demo ? <StyleCanvas accountId={accountId} onLogin={onLogin} /> : <StyleStudio accountId={accountId} onLogin={onLogin} onAddItems={onAddItems} />) : <TryOn />}
     </div>
   );
 }

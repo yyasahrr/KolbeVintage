@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { ResponsiveImg } from "../components/responsive-img";
+import { useEntitySeo } from "../components/seo-head";
 import {
   ArrowLeft, BadgeCheck, Truck, RotateCcw, ShieldCheck, Heart, Star, ShoppingBag,
   SlidersHorizontal, Eye, Sparkles, Ruler, Check, ChevronLeft, Minus, Plus, Trash2, CreditCard, MapPin,
@@ -7,28 +9,45 @@ import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, type Product } from "../da
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
+import { promoApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
+import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage } from "../data/contracts";
+import { cmsApi, ordersApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
+import { CmsSections } from "../components/cms-blocks";
+import { ProductReviews } from "../components/product-reviews";
+import { useToast } from "../components/toast";
+import { accountApi, siteApi, type CommerceProduct, type SitePage } from "../data/experience-api";
+import { isAuthenticated } from "../data/api";
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
 import { cn } from "../utils/cn";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
 
+/** Retail sizes come from real server variants; legacy demo products fall back to series composition. */
+export const productSizes = (p: Product) => (p.sizes?.length ? p.sizes : Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition ?? {})))));
+
 /* ============ Retail product card — image-first, 70% visual ============ */
 export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
   p: Product; wished: boolean; onWish: () => void; onOpen: () => void; onAdd: (size: string, color: string) => boolean;
 }) {
   const [colorId, setColorId] = useState(p.colors[0]?.id ?? "");
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
+  const sizes = productSizes(p);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
   const [message, setMessage] = useState("");
+  const [added, setAdded] = useState(false);
+  const toast = useToast();
   const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
   const quickAdd = () => {
     if (!chosenColor) { setMessage("رنگی برای این محصول تعریف نشده است"); return; }
-    const added = onAdd(size, chosenColor.name);
-    setMessage(added ? "به سبد اضافه شد" : "موجودی کافی نیست");
+    const ok = onAdd(size, chosenColor.name);
+    if (ok) {
+      setAdded(true); toast.bumpCart(); toast.push(`«${p.name}» به سبد خرید اضافه شد.`);
+      window.setTimeout(() => setAdded(false), 1400);
+    } else toast.push(`سایز ${size} از «${p.name}» دیگر موجود نیست.`, "error");
+    setMessage(ok ? "به سبد اضافه شد" : "این سایز دیگر موجود نیست");
     window.setTimeout(() => setMessage(""), 2200);
   };
   return (
@@ -36,7 +55,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
       <div className="kv-img-zoom relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
         <button onClick={onOpen} className="block w-full text-right" aria-label={p.name}>
           <div className="kv-img aspect-[3/4] w-full overflow-hidden">
-            <img src={p.images[0]} alt={p.name} loading="lazy" className="h-full w-full object-cover" />
+            <ResponsiveImg src={p.images[0]} alt={p.name} sizes="(min-width: 1024px) 25vw, 50vw" className="h-full w-full object-cover" />
           </div>
         </button>
         {p.badge && (
@@ -76,7 +95,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
             {sizes.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <button onClick={quickAdd} disabled={p.stock < 1 || !chosenColor} aria-label={`افزودن ${p.name} رنگ ${chosenColor?.name ?? ""} سایز ${size} به سبد خرید`} className="kv-press flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-[var(--kv-action)] px-2 text-[12px] font-semibold text-[var(--kv-bg)] disabled:opacity-40 dark:text-[#0E1527]">
-            <ShoppingBag size={15} className="shrink-0" /><span className="hidden sm:inline">افزودن</span>
+            {added ? <Check size={15} className="kv-check-pop shrink-0" /> : <ShoppingBag size={15} className="shrink-0" />}<span className="hidden sm:inline">{added ? "اضافه شد" : "افزودن"}</span>
           </button>
         </div>
         <p role="status" aria-live="polite" className="h-5 pt-1 text-[11px] font-semibold text-[var(--kv-success)]">{message || (p.stock < 1 ? "ناموجود" : "")}</p>
@@ -119,7 +138,7 @@ function Hero({ onShop, onLook }: { onShop: () => void; onLook: () => void }) {
           </div>
         </div>
         <div className="kv-img relative min-h-[340px] md:min-h-[560px]">
-          <img src={IMG.trenchHero} alt="ترنچ‌کت شنی کلبه" className="absolute inset-0 h-full w-full object-cover" />
+          <ResponsiveImg src={IMG.trenchHero} alt="ترنچ‌کت شنی کلبه" priority sizes="(min-width: 768px) 50vw, 100vw" className="absolute inset-0 h-full w-full object-cover" />
           <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/35 to-transparent" />
           <div className="kv-glass absolute bottom-5 right-5 left-5 flex items-center justify-between rounded-[14px] px-4 py-3">
             <div>
@@ -159,7 +178,8 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
 }) {
   const [img, setImg] = useState(0);
   const [color, setColor] = useState(p.colors[0]);
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
+  const sizes = productSizes(p);
+  useEffect(() => { if (isAuthenticated()) accountApi.view(p.id); }, [p.id]);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
   return (
     <div className="animate-[fadeUp_0.4s_ease]">
@@ -172,12 +192,12 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
           <div className="flex w-[76px] shrink-0 flex-col gap-2.5">
             {p.images.map((im, i) => (
               <button key={i} onClick={() => setImg(i)} className={cn("overflow-hidden rounded-[12px] border-2 transition-all", img === i ? "border-[var(--kv-accent)]" : "border-[var(--kv-line)] opacity-70 hover:opacity-100")}>
-                <img src={im} alt="" className="aspect-[3/4] w-full object-cover" />
+                <ResponsiveImg src={im} alt="" widths={[160, 320]} sizes="76px" className="aspect-[3/4] w-full object-cover" />
               </button>
             ))}
           </div>
           <div className="kv-img relative flex-1 overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
-            <img key={img} src={p.images[img]} alt={p.name} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
+            <ResponsiveImg key={img} src={p.images[img]} alt={p.name} priority sizes="(min-width: 1024px) 45vw, 100vw" className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
             {p.badge && <span className="absolute right-4 top-4"><Status value={p.badge} dot={false} /></span>}
           </div>
         </div>
@@ -229,6 +249,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
           </div>
         </div>
       </div>
+      <ProductReviews productId={p.id} />
     </div>
   );
 }
@@ -236,7 +257,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
 /* ============ MAIN RETAIL ============ */
 export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success";
 
-export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin }: {
+export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopCategory }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
@@ -246,9 +267,12 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   account: CustomerAccount | null; buyer?: Buyer;
   accountTab: AccountTab; setAccountTab: (v: AccountTab) => void;
   onWholesale: () => void; onLogout: () => void; onLogin: () => void;
+  /** CMS `category:<slug>` targets preselect the shop category (resolved to its display name by the shell). */
+  shopCategory?: { name: string; nonce: number } | null;
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
-  const [cat, setCat] = useState("همه");
+  const [cat, setCat] = useState(shopCategory?.name ?? "همه");
+  useEffect(() => { if (shopCategory) setCat(shopCategory.name); }, [shopCategory]);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("پیشنهاد کلبه");
   const [checkStep, setCheckStep] = useState(0);
@@ -260,13 +284,42 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [placedOrderId, setPlacedOrderId] = useState("");
   const store = useStore();
   const ops = useOps();
+  const toast = useToast();
+  const [homePage, setHomePage] = useState<SitePage | null>(null);
+  // Hardcoded home is only a fallback once the CMS request finished without a composed page (no flash).
+  const [homeResolved, setHomeResolved] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo"));
   const retailProducts = store.products.filter((p) => p.status === "published" && p.retailPrice > 0);
   const cmsNav = (t: NavTarget) => (t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop"));
+  const [cmsHero, setCmsHero] = useState<any | null>(null);
+  const [cmsBlocks, setCmsBlocks] = useState<any[] | null>(null);
+  const [cmsPalette, setCmsPalette] = useState<any | null>(null);
+  const [cmsLoading, setCmsLoading] = useState(false);
+  const [cmsError, setCmsError] = useState<string | null>(null);
+  useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; let cancelled=false; (async()=>{ setCmsLoading(true); setCmsError(null);
+    try{
+      const rawHome = await siteApi.page("home");
+      if(!cancelled && rawHome.sections?.length) setHomePage(rawHome);
+      const page = adaptSitePage(rawHome);
+      if(cancelled) return;
+      if(page){
+        // Server CMS is the source of truth: hero = the «hero» section, blocks = the other sections.
+        const heroSection = page.sections.find((section) => section.component_code === "hero" && section.visible) ?? null;
+        const hero = adaptCmsHero(heroSection);
+        if(hero) setCmsHero(hero);
+        setCmsBlocks(page.sections.filter((section) => section.component_code !== "hero").map(adaptCmsSectionToBlock));
+      }
+      const pal = await cmsApi.activePalette().catch(()=>null);
+      if(!cancelled && pal) setCmsPalette(pal);
+    } catch(e){ if(!cancelled) setCmsError(e instanceof Error ? e.message : "خطا در بارگذاری محتوا"); }
+    finally{ if(!cancelled) { setCmsLoading(false); setHomeResolved(true); } }
+  })(); return()=>{ cancelled=true; }; },[]);
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [couponMsg, setCouponMsg] = useState("");
 
   const selected = useMemo(() => retailProducts.find((p) => p.id === selectedId) ?? null, [selectedId, retailProducts]);
+  // Req 235: product detail head (title, canonical, Product JSON-LD) comes from the SEO Domain.
+  useEntitySeo("product", selected && /^[0-9a-f-]{36}$/i.test(selected.id) ? selected.id : null);
 
   const filtered = useMemo(() => {
     let list = [...retailProducts];
@@ -288,14 +341,24 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return true;
   };
   const quickAdd = (p: Product) => (size: string, color: string) => addToCart(p.id, size, color);
+  /** CMS product cards carry the canonical variant list; pick the first sellable variant. */
+  const commerceQuickAdd = (cp: CommerceProduct) => {
+    const variant = cp.variants.find((v) => v.available > 0);
+    if (!variant) return false;
+    return addToCart(cp.id, variant.size ?? "", variant.color ?? "");
+  };
   const cartTotal = cart.reduce((s, l) => s + (retailProducts.find((p) => p.id === l.id)?.retailPrice ?? 0) * l.qty, 0);
   const installmentCartTotal = cart.reduce((s, l) => {
     const product = retailProducts.find((p) => p.id === l.id);
     return s + (product?.installmentPrice ?? product?.retailPrice ?? 0) * l.qty;
   }, 0);
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverShipping, setServerShipping] = useState<any[] | null>(null);
+  useEffect(()=>{ if(isDemo) return; shippingApi.list().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemo]);
   const { shipping } = store;
-  const retailShipping = shipping.filter((s) => s.active && s.scope !== "عمده");
+  const sourceShipping = serverShipping ? serverShipping.map((s:any)=> ({ id:s.id, name:s.name, carrier:s.type ?? s.carrier ?? "", scope: s.type==='pickup'?"خرده":"خرده", price: Number(s.baseFeeRial ?? s.base_fee_rial ?? 0), freeAbove: s.freeAboveRial ? Number(s.freeAboveRial) : (s.free_above_rial? Number(s.free_above_rial): null), eta: s.estimatedMinDays ? `${s.estimatedMinDays}-${s.estimatedMaxDays} روز` : "", zones: s.zones ?? "سراسر کشور", active: s.active })) : shipping.filter((s) => s.active && s.scope !== "عمده");
+  const retailShipping = sourceShipping;
   const [shipId, setShipId] = useState("");
   const ship = retailShipping.find((s) => s.id === shipId) ?? retailShipping[0];
   const today = new Date().toISOString().slice(0, 10);
@@ -314,8 +377,17 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const shipCost = validCoupon?.type === "freeShip" ? 0 : baseShip;
   const totalDiscount = festivalDiscount + couponDiscount;
   const custRestrict = account ? ops.restrictionFor("customer", account.id) : null;
-  const applyCoupon = () => {
+  const applyCoupon = async () => {
     const code = couponInput.trim().toUpperCase();
+    // Try server validation first (PostgreSQL coupons, audience/scope/time window)
+    try {
+      const items = cart.map((c)=> { const prod = retailProducts.find((pp)=> pp.id===c.id); return { productId: c.id, category: (prod as unknown as {category?:string})?.category ?? "general", totalRial: String(Math.round((prod?.retailPrice ?? 0) * c.qty * 10)) }; });
+      if (items.length) {
+        const res = await promoApi.validate({ code, orderType: "retail", items }) as { valid: boolean; message?: string };
+        if (res.valid) { setCouponCode(code); setCouponMsg(""); return; }
+        if (res.message) { setCouponCode(""); setCouponMsg(res.message); return; }
+      }
+    } catch { /* fallback to local */ }
     const c = ops.coupons.find((x) => x.code === code);
     if (!c) { setCouponCode(""); setCouponMsg("کوپنی با این کد پیدا نشد."); return; }
     if (c.channel !== "retail") { setCouponCode(""); setCouponMsg("این کوپن مخصوص خرید عمده است."); return; }
@@ -324,7 +396,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const savedAddress = account?.addresses.find((a) => a.id === checkoutAddressId)
     ?? (checkoutAddressId === "new" ? undefined : account?.addresses.find((a) => a.isDefault) ?? account?.addresses[0]);
   const deliveryAddress = savedAddress ?? checkoutAddress;
-  const finishCheckout = () => {
+  const finishCheckout = async () => {
     setCheckoutError("");
     if (checkStep === 0) {
       if (requireLogin && !requireLogin()) return;
@@ -343,15 +415,46 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     }
     if (!account || !ship) { setCheckoutError("برای ثبت سفارش وارد حساب شوید و روش ارسال را انتخاب کنید."); return; }
     if (custRestrict?.block || custRestrict?.noOrder) { setCheckoutError(`ثبت سفارش برای حساب شما محدود شده است${custRestrict.reason ? `: ${custRestrict.reason}` : ""}. از پشتیبانی پیگیری کنید.`); return; }
-    const normalized = { ...deliveryAddress, id: deliveryAddress.id || `addr-${Date.now()}`, phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
-    const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
-    const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
-    if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
-    if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
-    if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
-    setPlacedOrderId(orderId);
-    setCheckStep(0);
-    setView("success");
+    // Server mode keeps the server address UUID; only the demo path may mint a local id.
+    const normalized = { ...deliveryAddress, id: isDemo ? (deliveryAddress.id || `addr-${Date.now()}`) : (deliveryAddress.id ?? ""), phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
+    if (isDemo) {
+      const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
+      const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
+      if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
+      if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
+      if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
+      setPlacedOrderId(orderId);
+      setCheckStep(0);
+      setView("success");
+      return;
+    }
+    // Server checkout: only authoritative fields — variantId/quantity/paymentMode/shippingMethodId/couponCode/shippingAddress
+    try {
+      // Variant ids come from the hydrated catalog cache (GET /products returns variants per product).
+      const items = cart.map((l) => {
+        const product = retailProducts.find((pp) => pp.id === l.id) as (typeof retailProducts[number] & { variants?: { id: string }[] }) | undefined;
+        const exact = product?.variants?.find((v) => (v.size ?? "") === l.size && (v.color ?? "") === l.color)
+          ?? product?.variants?.find((v) => (v.size ?? "") === l.size) ?? product?.variants?.[0];
+        return { variantId: exact?.id ?? l.id, quantity: l.qty };
+      });
+      const body: any = {
+        orderType: "retail",
+        paymentMode,
+        items,
+        shippingAddress: { recipient: normalized.recipient, phone: normalized.phone, province: normalized.province, city: normalized.city, line: normalized.line, postalCode: normalized.postalCode },
+        shippingMethodId: ship?.id,
+      };
+      if (validCoupon) body.couponCode = validCoupon.code;
+      else if (couponCode) body.couponCode = couponCode;
+      const res = await ordersApi.create(body, `retail-${crypto.randomUUID().replace(/-/g, "")}`) as { id: string; reference: string };
+      if (!res.reference && !(res as any).id) throw new Error("خطا در ثبت سفارش");
+      setPlacedOrderId(res.reference ?? (res as any).id);
+      setCart([]); // order placed → empty the cart (signed in: PUT /profile/saved-cart with no items)
+      setCheckStep(0);
+      setView("success");
+    } catch (e) {
+      setCheckoutError(e instanceof Error ? e.message : "خطا در ثبت سفارش");
+    }
   };
 
   /* ----- PDP overlay ----- */
@@ -362,7 +465,10 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           p={selected} wished={wishlist.includes(selected.id)}
           onWish={() => toggleWish(selected.id)}
           onBack={() => setSelectedId(null)}
-          onAdd={(size, color) => { if (addToCart(selected.id, size, color)) { setSelectedId(null); setView("shop"); } }}
+          onAdd={(size, color) => {
+            if (addToCart(selected.id, size, color)) { toast.bumpCart(); toast.push(`«${selected.name}» به سبد خرید اضافه شد.`, "success", { label: "مشاهده سبد", onClick: () => setView("checkout") }); }
+            else toast.push(`سایز ${size} دیگر موجود نیست.`, "error");
+          }}
         />
         <div className="mt-14">
           <SectionHead title="شاید بپسندید" />
@@ -511,7 +617,8 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   }
   if (view === "account") {
     if (!account) return <div className="mx-auto max-w-[600px] px-4 py-12"><Empty title="برای دیدن حساب وارد شوید" desc="سفارش‌ها و نشانی‌های شما بعد از ورود در دسترس‌اند." action={<Btn variant="accent" onClick={onLogin}>ورود به حساب</Btn>} /></div>;
-    return <AccountExperience key={account.id} account={account} buyer={buyer} tab={accountTab} setTab={setAccountTab} onShop={() => setView("shop")} onWholesale={onWholesale} onOpenProduct={setSelectedId} onCheckout={() => setView("checkout")} onStudio={() => onStudio("builder")} onLogout={onLogout} />;
+    return <AccountExperience key={account.id} account={account} buyer={buyer} tab={accountTab} setTab={setAccountTab} onShop={() => setView("shop")} onWholesale={onWholesale} onOpenProduct={setSelectedId} onCheckout={() => setView("checkout")} onStudio={() => onStudio("builder")} onLogout={onLogout} cartCount={cart.reduce((n, l) => n + l.qty, 0)}
+      onAddItems={(lines) => { let next = [...cart]; for (const line of lines) { const ex = next.find((l) => l.id === line.id && l.size === line.size && l.color === line.color); next = ex ? next.map((l) => (l === ex ? { ...l, qty: l.qty + 1 } : l)) : [...next, { ...line, qty: 1 }]; } setCart(next); }} />;
   }
   if (view === "journal") {
     return (
@@ -565,16 +672,26 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   /* ----- HOME ----- */
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-12 px-4 pb-20 pt-6 md:px-8">
-      <HeroRenderer h={ops.hero} onNav={cmsNav} />
-      {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").map((b) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}
+      {cmsLoading ? <div className="py-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری محتوا…</div> : cmsError ? <div className="py-6 text-center"><p className="text-sm text-red-600">{cmsError}</p><button onClick={()=>window.location.reload()} className="mt-2 text-xs underline">تلاش دوباره</button></div> : null}
+      {homePage ? <CmsSections page={homePage} onNav={(t) => t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop")} onOpenProduct={setSelectedId} onQuickAdd={commerceQuickAdd} /> : null}
+      {!homePage && !homeResolved && <div className="space-y-4" aria-busy="true"><div className="h-[420px] animate-pulse rounded-[24px] bg-[var(--kv-surface-2)]" /><div className="grid grid-cols-2 gap-4 md:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="aspect-[3/4] animate-pulse rounded-[18px] bg-[var(--kv-surface-2)]" />)}</div></div>}
+      {!homePage && homeResolved && (() => {
+        const hero = cmsHero ?? ops.hero;
+        const blocks = cmsBlocks ?? ops.blocks;
+        // Palette is applied via CSS vars elsewhere; fetched palette stored in cmsPalette
+        void cmsPalette;
+        return (<><HeroRenderer h={hero} onNav={cmsNav} />{blocks.filter((b: any) => b.enabled && b.type !== "announcement").map((b: any) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}</>);
+      })()}
 
+      {/* Hardcoded fallback — only when the CMS home page has not been composed yet (Req 241). */}
+      {!homePage && homeResolved && (<>
       {/* curated collections */}
       <section>
         <SectionHead title="کالکشن‌های ویژه" desc="دسته‌بندی‌های منتخب فصل؛ هر کدام با وسواس از میان صدها مدل انتخاب شده‌اند." action={<Btn variant="ghost" size="sm" onClick={() => setView("shop")} icon={<ArrowLeft size={15} />}>همه محصولات</Btn>} />
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {COLLECTIONS.map((c) => (
             <button key={c.name} onClick={() => { setCat(c.name === "بارانی و مانتو" ? "مانتو و بارانی" : c.name === "پیراهن‌ها" ? "پیراهن" : c.name === "کت و بلیزر" ? "کت و بلیزر" : "شومیز"); setView("shop"); }} className="kv-card-hover group relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] text-right">
-              <div className="kv-img aspect-[4/5]"><img src={c.img} alt={c.name} loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" /></div>
+              <div className="kv-img aspect-[4/5]"><ResponsiveImg src={c.img} alt={c.name} sizes="(min-width: 768px) 33vw, 50vw" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" /></div>
               <div className="absolute inset-0 bg-gradient-to-t from-[#0E1527]/70 via-transparent to-transparent" />
               <div className="absolute inset-x-0 bottom-0 p-4 text-[#FAF6EF]">
                 <p className="text-[15px] font-extrabold">{c.name}</p>
@@ -638,7 +755,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         <div className="grid gap-5 md:grid-cols-3">
           {JOURNAL.map((j) => (
             <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-              <div className="kv-img aspect-[16/10] overflow-hidden"><img src={j.img} alt={j.title} loading="lazy" className="h-full w-full object-cover" /></div>
+              <div className="kv-img aspect-[16/10] overflow-hidden"><ResponsiveImg src={j.img} alt={j.title} sizes="(min-width: 768px) 33vw, 100vw" className="h-full w-full object-cover" /></div>
               <div className="p-5">
                 <p className="text-xs font-bold text-[var(--kv-accent)]">{j.cat} · {j.read}</p>
                 <h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3>
@@ -648,6 +765,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         </div>
       </section>
 
+      </>)}
     </div>
   );
 }

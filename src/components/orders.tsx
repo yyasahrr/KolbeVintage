@@ -41,10 +41,10 @@ export function SubProgress({ status, caption = true }: { status: SubStatus; cap
 }
 
 export function orderTotals(o: ParentOrder) {
-  const live = o.subOrders.filter((s) => s.status !== "rejected" && s.status !== "cancelled");
+  const live = (o.subOrders ?? []).filter((s) => s.status !== "rejected" && s.status !== "cancelled");
   return {
     total: live.reduce((a, s) => a + s.total, 0),
-    pieces: live.reduce((a, s) => a + s.lines.reduce((b, l) => b + l.pieces, 0), 0),
+    pieces: live.reduce((a, s) => a + (s.lines ?? []).reduce((b, l) => b + l.pieces, 0), 0),
   };
 }
 
@@ -54,12 +54,12 @@ export function ParentOrderCard({ order, perspective, defaultOpen, onPaySub, onP
   onPaySub?: (subId: string) => void; onPayAll?: () => void; onCancelSub?: (subId: string) => void; onReturnSub?: (subId: string) => void;
 }) {
   const [open, setOpen] = useState(!!defaultOpen);
-  const subs = order.subOrders;
+  const subs = order.subOrders ?? [];
   const { total, pieces } = orderTotals(order);
   const payable = subs.filter((s) => s.status === "approved");
   const payableTotal = payable.reduce((a, s) => a + s.total, 0);
   const counts = subs.reduce<Record<string, number>>((m, s) => { const l = SUB_STATUS[s.status].label; m[l] = (m[l] ?? 0) + 1; return m; }, {});
-  const thumbs = subs.flatMap((s) => s.lines.map((l) => l.image)).slice(0, 3);
+  const thumbs = subs.flatMap((s) => (s.lines ?? []).map((l) => l.image)).slice(0, 3);
 
   return (
     <article className="overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
@@ -152,7 +152,7 @@ function SubRow({ sub, index, perspective, onPay, onCancel, onReturn }: { sub: S
       </div>
       {hist && (
         <div className="mt-4 rounded-[14px] bg-[var(--kv-surface-2)]/50 p-4 animate-[fadeIn_0.2s_ease]">
-          <Timeline items={sub.events.map((e) => ({ t: e.t, d: `توسط ${e.by}`, time: e.time, done: true }))} />
+          <Timeline items={(sub.events ?? []).map((e) => ({ t: e.t, d: `توسط ${e.by}`, time: e.time, done: true }))} />
         </div>
       )}
     </div>
@@ -192,7 +192,7 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
       <Card className="h-fit p-6 lg:sticky lg:top-24">
         {!cur ? <Empty title="موردی انتخاب نشده" desc="از فهرست یک زیرسفارش را انتخاب کنید." /> : (() => {
           const { parent, sub } = cur;
-          const pieces = sub.lines.reduce((a, l) => a + l.pieces, 0);
+          const pieces = (sub.lines ?? []).reduce((a, l) => a + l.pieces, 0);
           return (
             <div className="animate-[fadeIn_0.2s_ease]">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -272,7 +272,7 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
               </div>
 
               <p className="mb-3 mt-5 text-[13px] font-bold">تاریخچه</p>
-              <Timeline items={sub.events.map((e) => ({ t: e.t, d: `توسط ${e.by}`, time: e.time, done: true }))} />
+              <Timeline items={(sub.events ?? []).map((e) => ({ t: e.t, d: `توسط ${e.by}`, time: e.time, done: true }))} />
               <p className="mt-4 text-[11px] text-[var(--kv-faint)]">اقدام‌کننده فعلی: {actor}</p>
             </div>
           );

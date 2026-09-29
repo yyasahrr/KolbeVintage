@@ -1,11 +1,12 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import { SignJWT, jwtVerify } from 'jose';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { one, transaction, type DbPool } from './db.js';
-import { conflict, forbidden, unauthorized } from './errors.js';
+import { badRequest, conflict, forbidden, unauthorized } from './errors.js';
+import { audit } from './operations.js';
 
 const registration = z.object({
   email: z.email().max(254).optional(),
@@ -27,10 +28,24 @@ async function accessToken(user: UserRow, sessionId: string, config: Config) {
     .setAudience('kolbe-clients').setIssuedAt().setExpirationTime('15m').sign(secret(config));
 }
 
-async function createSession(pool: DbPool, user: UserRow, config: Config) {
+/** Human-readable device label for the security page (Req 351) — derived, never trusted for auth. */
+export function deviceLabel(userAgent: string | undefined): string {
+  const ua = userAgent ?? '';
+  const os = /Android/i.test(ua) ? 'اندروید' : /iPhone|iPad|iOS/i.test(ua) ? 'iOS' : /Windows/i.test(ua) ? 'ویندوز' : /Mac OS/i.test(ua) ? 'مک' : /Linux/i.test(ua) ? 'لینوکس' : 'دستگاه نامشخص';
+  const browser = /Edg\//i.test(ua) ? 'Edge' : /Chrome\//i.test(ua) ? 'Chrome' : /Firefox\//i.test(ua) ? 'Firefox' : /Safari\//i.test(ua) ? 'Safari' : 'مرورگر';
+  return `${browser} روی ${os}`;
+}
+
+type ClientInfo = { ip?: string; userAgent?: string; method?: string };
+
+async function createSession(pool: DbPool, user: UserRow, config: Config, info: ClientInfo = {}) {
   const sessionId = randomUUID();
   const refreshToken = randomBytes(48).toString('base64url');
-  await pool.query('INSERT INTO sessions(id, user_id, refresh_hash, expires_at) VALUES ($1, $2, $3, now() + interval \'30 days\')', [sessionId, user.id, tokenHash(refreshToken)]);
+  const ua = info.userAgent?.slice(0, 300) ?? null;
+  await pool.query(`INSERT INTO sessions(id, user_id, refresh_hash, expires_at, user_agent, ip_address, device_label)
+    VALUES ($1, $2, $3, now() + interval '30 days', $4, $5, $6)`, [sessionId, user.id, tokenHash(refreshToken), ua, info.ip ?? null, deviceLabel(ua ?? undefined)]);
+  await pool.query(`INSERT INTO login_history(id, user_id, session_id, ip_address, user_agent, device_label, method, succeeded) VALUES ($1,$2,$3,$4,$5,$6,$7,true)`,
+    [randomUUID(), user.id, sessionId, info.ip ?? null, ua, deviceLabel(ua ?? undefined), info.method ?? 'password']);
   return { accessToken: await accessToken(user, sessionId, config), refreshToken };
 }
 
@@ -51,10 +66,15 @@ export async function principal(request: FastifyRequest, pool: DbPool, config: C
   const access = await pool.query<{ role_code: string; permission_code: string | null }>(
     `SELECT ur.role_code, rp.permission_code FROM user_roles ur
      LEFT JOIN role_permissions rp ON rp.role_code = ur.role_code WHERE ur.user_id = $1`, [row.id]);
+  const planPermissions = await pool.query<{ permission_code: string }>(
+    `SELECT unnest(p.permissions) AS permission_code FROM memberships m
+     JOIN membership_plans p ON p.id = m.plan_id
+     WHERE m.user_id = $1 AND m.status = 'active' AND m.starts_at <= now() AND m.ends_at > now()`, [row.id]);
   return {
     id: row.id, displayName: row.display_name, sessionId,
     roles: [...new Set(access.rows.map((item) => item.role_code))],
-    permissions: [...new Set(access.rows.map((item) => item.permission_code).filter((code): code is string => !!code))],
+    permissions: [...new Set([...access.rows.map((item) => item.permission_code),
+      ...planPermissions.rows.map((item) => item.permission_code)].filter((code): code is string => !!code))],
   };
 }
 
@@ -85,8 +105,48 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
     const user = await one<UserRow>(pool,
       'SELECT * FROM users WHERE email = $1 OR phone = $1', [body.identity.toLowerCase()]);
     const valid = user ? await argon2.verify(user.password_hash, body.password) : false;
+    if (user && !valid) {
+      await pool.query(`INSERT INTO login_history(id, user_id, ip_address, user_agent, device_label, method, succeeded) VALUES ($1,$2,$3,$4,$5,'password',false)`,
+        [randomUUID(), user.id, request.ip, request.headers['user-agent']?.slice(0, 300) ?? null, deviceLabel(request.headers['user-agent'])]);
+    }
     if (!valid || user?.status !== 'active') throw unauthorized();
-    const session = await createSession(pool, user, config);
+    // Two-step login (Req 104, 351): password is only the first factor when 2FA is enabled.
+    const twoFactor = await one<{ two_factor_enabled: boolean }>(pool, 'SELECT two_factor_enabled FROM users WHERE id = $1', [user.id]);
+    if (twoFactor?.two_factor_enabled && user.phone) {
+      const challengeId = randomUUID();
+      const code = String(randomInt(100000, 999999));
+      await transaction(pool, async (client) => {
+        await client.query(`UPDATE contact_change_requests SET status = 'cancelled' WHERE user_id = $1 AND channel = '2fa' AND status = 'pending'`, [user.id]);
+        await client.query(`INSERT INTO contact_change_requests(id,user_id,channel,new_value,otp_code_hash,expires_at) VALUES ($1,$2,'2fa','-',$3, now() + interval '5 minutes')`,
+          [challengeId, user.id, tokenHash(`${challengeId}:${code}:${config.JWT_SECRET}`)]);
+        const eventId = randomUUID();
+        await client.query(`INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload) VALUES ($1,'auth.2fa_challenge','user',$2,$3)`,
+          [eventId, user.id, JSON.stringify({ challengeId })]);
+        await client.query('INSERT INTO sms_deliveries(id,event_id,user_id,phone,message) VALUES ($1,$2,$3,$4,$5)',
+          [randomUUID(), eventId, user.id, user.phone, `کلبه وینتیج — کد ورود دومرحله‌ای: ${code}`]);
+      });
+      return { twoFactorRequired: true, challengeId, devCode: config.NODE_ENV === 'production' ? undefined : code };
+    }
+    const session = await createSession(pool, user, config, { ip: request.ip, userAgent: request.headers['user-agent'], method: 'password' });
+    reply.setCookie('kolbe_refresh', session.refreshToken, cookieOptions(config));
+    return { accessToken: session.accessToken, tokenType: 'Bearer', expiresIn: 900 };
+  });
+
+  app.post('/api/v1/auth/login/2fa', { config: { rateLimit: { max: 10, timeWindow: '5 minutes' } } }, async (request, reply) => {
+    const body = z.object({ challengeId: z.uuid(), code: z.string().regex(/^\d{6}$/) }).strict().parse(request.body);
+    const result = await transaction(pool, async (client) => {
+      const row = await one<{ user_id: string; status: string; expires_at: string; attempts: number; otp_code_hash: string }>(client,
+        `SELECT * FROM contact_change_requests WHERE id = $1 AND channel = '2fa' FOR UPDATE`, [body.challengeId]);
+      if (!row || row.status !== 'pending' || new Date(row.expires_at) < new Date() || row.attempts >= 5) return null;
+      if (tokenHash(`${body.challengeId}:${body.code}:${config.JWT_SECRET}`) !== row.otp_code_hash) {
+        await client.query('UPDATE contact_change_requests SET attempts = attempts + 1 WHERE id = $1', [body.challengeId]);
+        return null;
+      }
+      await client.query(`UPDATE contact_change_requests SET status = 'verified', verified_at = now() WHERE id = $1`, [body.challengeId]);
+      return one<UserRow>(client, 'SELECT * FROM users WHERE id = $1', [row.user_id]);
+    });
+    if (!result || result.status !== 'active') throw unauthorized();
+    const session = await createSession(pool, result, config, { ip: request.ip, userAgent: request.headers['user-agent'], method: 'password+sms_otp' });
     reply.setCookie('kolbe_refresh', session.refreshToken, cookieOptions(config));
     return { accessToken: session.accessToken, tokenType: 'Bearer', expiresIn: 900 };
   });
@@ -100,7 +160,7 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
         `SELECT u.*, s.id AS session_id FROM sessions s JOIN users u ON u.id = s.user_id
          WHERE s.refresh_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status = 'active' FOR UPDATE OF s`, [tokenHash(current)]);
       if (!row) throw unauthorized();
-      await client.query('UPDATE sessions SET refresh_hash = $1 WHERE id = $2', [tokenHash(replacement), row.session_id]);
+      await client.query('UPDATE sessions SET refresh_hash = $1, last_active_at = now() WHERE id = $2', [tokenHash(replacement), row.session_id]);
       return row;
     });
     reply.setCookie('kolbe_refresh', replacement, cookieOptions(config));
@@ -114,5 +174,60 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
     return reply.code(204).send();
   });
 
-  app.get('/api/v1/auth/me', async (request) => principal(request, pool, config));
+  app.get('/api/v1/auth/me', async (request) => {
+    const user = await principal(request, pool, config);
+    const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null; preferences: Record<string, boolean> | null }>(
+      pool, 'SELECT id, display_name, email, phone, birthday, preferences FROM users WHERE id = $1', [user.id]);
+    return { id: user.id, displayName: row?.display_name ?? user.displayName, email: row?.email ?? null, phone: row?.phone ?? null,
+      birthday: row?.birthday ?? null, preferences: row?.preferences ?? {}, roles: user.roles, permissions: user.permissions };
+  });
+
+  /** Notification preferences (allowlisted keys) — the account UI persists switches here. */
+  const PREFERENCE_KEYS = ['orderUpdates', 'offers', 'sms', 'email'] as const;
+  app.patch('/api/v1/auth/me/preferences', async (request) => {
+    const user = await principal(request, pool, config);
+    const body = z.record(z.string().max(40), z.boolean()).parse(request.body);
+    const entries = Object.entries(body).filter(([key]) => (PREFERENCE_KEYS as readonly string[]).includes(key));
+    if (!entries.length) throw badRequest('کلید تنظیمات اعلان معتبر نیست.');
+    const patch = Object.fromEntries(entries);
+    return transaction(pool, async (client) => {
+      const updated = await one<{ preferences: Record<string, boolean> }>(client,
+        'UPDATE users SET preferences = preferences || $2::jsonb, updated_at = now() WHERE id = $1 RETURNING preferences',
+        [user.id, JSON.stringify(patch)]);
+      await audit(client, user.id, 'user.preferences_updated', 'user', user.id, undefined, patch, request.ip);
+      return { preferences: updated?.preferences ?? patch };
+    });
+  });
+
+  app.patch('/api/v1/auth/me', async (request) => {
+    const user = await principal(request, pool, config);
+    const body = z.object({
+      displayName: z.string().trim().min(2).max(120).optional(),
+      email: z.string().email().max(254).optional().nullable(),
+      birthday: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/).optional().nullable(),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const before = await one(client, 'SELECT display_name, email, birthday FROM users WHERE id = $1', [user.id]);
+      if (!before) throw unauthorized();
+      const updates: string[] = [];
+      const vals: unknown[] = [user.id];
+      if (body.displayName !== undefined) { vals.push(body.displayName.trim()); updates.push(`display_name = $${vals.length}`); }
+      if (body.email !== undefined) { vals.push(body.email ? body.email.toLowerCase() : null); updates.push(`email = $${vals.length}`); }
+      if (body.birthday !== undefined) {
+        let dbDate: string | null = null;
+        if (body.birthday) {
+          const [y,m,d] = body.birthday.split('/').map(Number);
+          dbDate = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        }
+        vals.push(dbDate);
+        updates.push(`birthday = $${vals.length}::date`);
+      }
+      if (!updates.length) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+      await client.query(`UPDATE users SET ${updates.join(', ')}, updated_at = now() WHERE id = $1`, vals);
+      const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null }>(client, 'SELECT id, display_name, email, phone, birthday FROM users WHERE id = $1', [user.id]);
+      if (!row) throw unauthorized();
+      await audit(client, user.id, 'profile.updated', 'user', user.id, before, row, request.ip);
+      return { id: user.id, displayName: row.display_name, email: row.email, phone: row.phone, birthday: row.birthday ? new Date(row.birthday).toLocaleDateString('fa-IR') : null };
+    });
+  });
 }

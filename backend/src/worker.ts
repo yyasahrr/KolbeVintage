@@ -5,6 +5,9 @@ import { Redis } from 'ioredis';
 import { createPool, transaction, one } from './db.js';
 import { loadConfig } from './config.js';
 import { MeliPayamakSms } from './melipayamak.js';
+import { runAutomation } from './crm.js';
+import { processStyleAnalysisEvents } from './style.js';
+import { processMediaUploadedEvents } from './media-pipeline.js';
 
 const config = loadConfig();
 if (!config.REDIS_URL) throw new Error('REDIS_URL is required for the worker.');
@@ -32,17 +35,33 @@ async function deliver(eventId: string) {
     } else if (event.aggregate_type === 'membership') {
       const membership = await one<{ user_id: string }>(client, 'SELECT user_id FROM memberships WHERE id = $1', [event.aggregate_id]);
       if (membership) { recipient = membership.user_id; title = 'عضویت عمده'; body = 'پلن عضویت شما فعال شد.'; }
-    } else if (event.aggregate_type === 'product') {
+    } else if (event.aggregate_type === 'product' && !event.event_type.startsWith('product.style_') && event.event_type !== 'review.submitted') {
       const product = await one<{ supplier_id: string | null }>(client, 'SELECT supplier_id FROM products WHERE id = $1', [event.aggregate_id]);
       if (product) { recipient = product.supplier_id; title = 'محصول'; body = 'وضعیت محصول به‌روز شد.'; }
     }
     if (recipient) {
+      const route = await one<{ roles: string[]; priority: string; channels: string[]; active: boolean }>(client,
+        'SELECT roles, priority, channels, active FROM notification_routes WHERE event_type = $1', [event.event_type]);
+      const priority = route?.priority ?? (event.event_type.includes('failed') ? 'high' : 'normal');
       await client.query(
         `INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (user_id,event_id) DO NOTHING`,
-        [randomUUID(), recipient, event.id, title, body, event.event_type.includes('failed') ? 'high' : 'normal']);
+        [randomUUID(), recipient, event.id, title, body, priority]);
+      // Role-based routing (item 24): the right teams see the event too.
+      if (route?.active && route.roles.length) {
+        const watchers = await client.query<{ id: string }>(
+          `SELECT DISTINCT u.id FROM users u JOIN user_roles r ON r.user_id = u.id
+           WHERE r.role_code = ANY($1) AND u.status = 'active' AND u.id <> $2`, [route.roles, recipient]);
+        for (const watcher of watchers.rows) {
+          await client.query(
+            `INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (user_id,event_id) DO NOTHING`,
+            [randomUUID(), watcher.id, event.id, title, body, priority]);
+        }
+      }
       const user = await one<{ phone: string | null }>(client, 'SELECT phone FROM users WHERE id = $1', [recipient]);
-      if (user?.phone && /^09\d{9}$/.test(user.phone)) {
+      const smsAllowed = !route || route.channels.includes('sms');
+      if (smsAllowed && user?.phone && /^09\d{9}$/.test(user.phone)) {
         await client.query(
           `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message)
            VALUES ($1,$2,$3,$4,$5) ON CONFLICT (event_id) DO NOTHING`,
@@ -89,8 +108,27 @@ const smsPump = async () => {
 };
 const smsTimer = setInterval(() => void smsPump().catch((error) => console.error('SMS pump failed', error)), 2000);
 await smsPump();
+// CRM automations (item 16): the birthday rule runs at most once a day per user.
+const crmPump = async () => {
+  const due = await pool.query<{ id: string }>(
+    `SELECT id FROM crm_automations WHERE active AND automation_type = 'birthday_sms'
+       AND (last_run_at IS NULL OR last_run_at < now() - interval '20 hours')`);
+  for (const item of due.rows) {
+    await runAutomation(pool, item.id).catch((error) => console.error('CRM automation failed', item.id, error instanceof Error ? error.message : error));
+  }
+};
+const crmTimer = setInterval(() => void crmPump().catch((error) => console.error('CRM pump failed', error)), 3600_000);
+await crmPump();
+// Style intelligence (Req 252): product.style_analysis_requested is processed asynchronously.
+const stylePump = async () => { await processStyleAnalysisEvents(pool, 20); };
+const styleTimer = setInterval(() => void stylePump().catch((error) => console.error('Style analysis pump failed', error)), 15_000);
+await stylePump();
+// Media pipeline (Req 234, 322-323): media.uploaded → validate / inspect / responsive variants / background removal.
+const mediaPump = async () => { await processMediaUploadedEvents(pool, 10); };
+const mediaTimer = setInterval(() => void mediaPump().catch((error) => console.error('Media pipeline pump failed', error)), 10_000);
+await mediaPump();
 const shutdown = async () => {
-  clearInterval(timer); clearInterval(smsTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
+  clearInterval(timer); clearInterval(smsTimer); clearInterval(crmTimer); clearInterval(styleTimer); clearInterval(mediaTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
 };
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
