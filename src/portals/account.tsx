@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  ArrowLeft, Bell, CircleHelp, Crown, Heart, Home, LogOut,
+  ArrowLeft, Bell, CircleHelp, Crown, Heart, Home, LogOut, ShieldCheck,
   MapPin, Package, Pencil, Plus, ShoppingBag, Sparkles,
   Trash2, User,
 } from "lucide-react";
@@ -14,10 +14,11 @@ import { Btn, Drawer, Empty, Field, Input, Status, Switch, Textarea } from "../c
 import { WishlistPanel } from "../components/wishlist-panel";
 import { CustomerAddressesPanel } from "../components/customer-addresses";
 import { CustomerOrdersPanel } from "../components/customer-orders-panel";
+import { SecurityCenter } from "../components/security-center";
 import { cn } from "../utils/cn";
 import { addressesApi, authApi, membershipApi, ordersApi, returnsApi, wishlistApi } from "../data/api";
 
-export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile";
+export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile" | "security";
 
 const emptyAddress = (account: CustomerAccount): CustomerAddress => ({
   id: "", title: "خانه", recipient: account.name === "مشتری کلبه" ? "" : account.name,
@@ -134,6 +135,7 @@ export default function AccountExperience({
     { id: "support", label: "پشتیبانی", icon: <CircleHelp size={17} /> },
     { id: "notifications", label: "اعلان‌ها", icon: <Bell size={17} /> },
     { id: "profile", label: "اطلاعات حساب", icon: <User size={17} /> },
+    { id: "security", label: "امنیت حساب", icon: <ShieldCheck size={17} /> },
   ];
 
   const saveAddress = async () => {
@@ -404,6 +406,13 @@ export default function AccountExperience({
                 ["email", "دریافت ایمیل", "ارسال به نشانی ایمیل حساب شما"],
               ] as const).map(([key, label, desc]) => <div key={key} className="flex items-center justify-between gap-4 py-4"><div><p className="text-[13.5px] font-bold">{label}</p><p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">{desc}</p></div><Switch on={prefs[key] ?? false} onToggle={() => { void togglePreference(key); }} /></div>)}</div>
               <p className="mt-4 text-xs leading-6 text-[var(--kv-muted)]">این تنظیمات در حساب شما ذخیره می‌شوند.</p>
+            </section>
+          )}
+
+          {tab === "security" && (
+            <section className="max-w-[900px]">
+              <div className="mb-5"><h2 className="text-[21px] font-extrabold">امنیت حساب</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">اطلاعات هویتی، نشست‌ها، رمز عبور، ورود دومرحله‌ای و تاریخچه ورود.</p></div>
+              <SecurityCenter flash={flash} />
             </section>
           )}
 

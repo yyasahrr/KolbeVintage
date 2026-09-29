@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Radar, Package, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check, X, Ban, Eye,
   ShieldCheck, Sun, Moon, LogOut, Warehouse, Users, Crown, ShoppingBag, Tags, Truck, Contact,
-  LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2,
+  LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2, Workflow, Star, Sparkles,
 } from "lucide-react";
 import { SUPPLIERS, STATUS_LABEL, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
@@ -33,6 +33,13 @@ import { ServerConnectionState } from "../components/server-connection";
 import { ModuleBoundary, moduleBoundary } from "../components/boundary";
 import { NotificationsPanel } from "../components/notifications-panel";
 import { TicketBoardPanel } from "../components/ticket-board-panel";
+import { Buyer360Panel } from "../components/buyer-360-panel";
+import { CrmCenter } from "../components/crm-center";
+import { AutomationCenter } from "../components/automation-center";
+import { TrackingCenter } from "../components/tracking-center";
+import { ReviewsCenter } from "../components/reviews-center";
+import { RecommendationsPanel } from "../components/recommendations-panel";
+import { PromoSafetyPanel } from "../components/promo-safety-panel";
 
 /* ====== Standalone app: KOLBE Admin Console (internal; never linked from the public site) ====== */
 export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
@@ -186,6 +193,14 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "finance", label: "مالی و تسویه", icon: <Wallet size={17} />, badge: badge(summary?.pendingWithdrawals, ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length) },
     { v: "finance-ledger", label: "دفتر کل", icon: <ScrollText size={17} /> },
     { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
+    { g: "رشد، CRM و اتوماسیون" },
+    { v: "buyers360", label: "پرونده ۳۶۰° خریداران", icon: <Users size={17} /> },
+    { v: "crm-center", label: "مرکز رشد CRM", icon: <Contact size={17} /> },
+    { v: "automation", label: "اتوماسیون و n8n", icon: <Workflow size={17} /> },
+    { v: "tracking", label: "رهگیری مرسوله‌ها", icon: <Truck size={17} /> },
+    { v: "reviews", label: "نظرات و امتیازها", icon: <Star size={17} /> },
+    { v: "recs", label: "توصیه‌گر هوشمند", icon: <Sparkles size={17} /> },
+    { v: "promo-safety", label: "ایمنی تخفیف و کوپن شخصی", icon: <TicketPercent size={17} /> },
     { g: "سیستم" },
     { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
     { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
@@ -219,6 +234,13 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     promo: ["کوپن و جشنواره", "کدهای تخفیف خرده و عمده و جشنواره‌های زمان‌دار"],
     sms: ["پنل پیامک", "اتصال سرویس‌دهنده و ارسال همگانی"],
     restrictions: ["محدودیت کاربران", "مسدودسازی و محدودیت دسترسی تأمین‌کنندگان و کاربران"],
+    buyers360: ["پرونده ۳۶۰° خریداران", "حساب، کسب‌وکار، خرید، مالی، پشتیبانی و CRM در یک صفحه"],
+    "crm-center": ["مرکز رشد CRM", "برچسب‌ها، قواعد، سگمنت‌ها، تایم‌لاین و کمپین"],
+    automation: ["اتوماسیون و n8n", "اتصال‌ها، جریان‌های کاری، صف رویداد و تلاش مجدد"],
+    tracking: ["رهگیری مرسوله‌ها", "کد رهگیری، صف بازبینی ورود خودکار و تایم‌لاین حمل"],
+    reviews: ["نظرات و امتیازها", "بازبینی، گزارش‌ها و تحلیل امتیاز واقعی"],
+    recs: ["توصیه‌گر هوشمند", "جایگاه‌ها، استراتژی‌ها و تحلیل نمایش/کلیک/تبدیل"],
+    "promo-safety": ["ایمنی تخفیف و کوپن شخصی", "قواعد سقف‌دار، تست خشک، قالب کمپین و کوپن اختصاصی"],
   };
   const [t, d] = titles[tab] ?? titles.tower;
 
@@ -582,6 +604,13 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "shipping" && moduleBoundary("حمل‌ونقل", <ShippingAdmin flash={flash} />)}
           {tab === "wms" && moduleBoundary("انبار و موجودی", <AdminWmsPanel />)}
           {tab === "crm" && moduleBoundary("مشتریان", <CrmPanel />)}
+          {tab === "buyers360" && moduleBoundary("پرونده ۳۶۰° خریداران", <Buyer360Panel flash={flash} />)}
+          {tab === "crm-center" && moduleBoundary("مرکز رشد CRM", <CrmCenter flash={flash} />)}
+          {tab === "automation" && moduleBoundary("اتوماسیون و n8n", <AutomationCenter flash={flash} />)}
+          {tab === "tracking" && moduleBoundary("رهگیری مرسوله‌ها", <TrackingCenter flash={flash} />)}
+          {tab === "reviews" && moduleBoundary("نظرات و امتیازها", <ReviewsCenter flash={flash} />)}
+          {tab === "recs" && moduleBoundary("توصیه‌گر هوشمند", <RecommendationsPanel flash={flash} />)}
+          {tab === "promo-safety" && moduleBoundary("ایمنی تخفیف و کوپن شخصی", <PromoSafetyPanel flash={flash} />)}
           {tab === "cms" && moduleBoundary("محتوا", <CmsCenter flash={flash} />)}
           {tab === "notifs" && moduleBoundary("اعلان‌ها", <NotificationsPanel />)}
           {tab === "finance" && moduleBoundary("مالی و تسویه", <FinanceCenter flash={flash} />)}

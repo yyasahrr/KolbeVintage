@@ -16,6 +16,7 @@ import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-r
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
 import { cn } from "../utils/cn";
+import { ProductReviewsBlock, ProductVideo, RecommendationStrip } from "../components/product-social";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
 
@@ -429,6 +430,11 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           onBack={() => setSelectedId(null)}
           onAdd={(size, color) => { if (addToCart(selected.id, size, color)) { setSelectedId(null); setView("shop"); } }}
         />
+        <ProductVideo productId={selected.id} title={selected.name} />
+        <RecommendationStrip slot="product.similar" productId={selected.id} title="محصولات مشابه"
+          localProducts={retailProducts}
+          onOpen={(id) => setSelectedId(id)}
+          onAdd={(item) => { const p = retailProducts.find((x) => x.id === item.id); if (p) quickAdd(p)("M", p.colors[0]?.name ?? ""); }} />
         <div className="mt-14">
           <SectionHead title="شاید بپسندید" />
           <div className="grid grid-cols-2 gap-5 md:grid-cols-4">
@@ -437,6 +443,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
             ))}
           </div>
         </div>
+        <ProductReviewsBlock productId={selected.id} canReview={!!account} />
       </div>
     );
   }
