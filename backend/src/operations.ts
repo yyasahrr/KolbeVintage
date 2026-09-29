@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { PoolClient } from 'pg';
-import { one } from './db.js';
+import { one, type DbClient } from './db.js';
 import { conflict } from './errors.js';
 
-export const requestHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** Stable hash of a request payload; bigint amounts are stringified so the hash
+ *  never throws on money fields. */
+export const requestHash = (value: unknown) =>
+  createHash('sha256').update(JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString() : item))).digest('hex');
 
-export async function claimIdempotency(client: PoolClient, actorId: string, operation: string, key: string, hash: string) {
+export async function claimIdempotency(client: DbClient, actorId: string, operation: string, key: string, hash: string) {
   const insert = await client.query(
     `INSERT INTO idempotency_records(actor_id, operation, key, request_hash)
      VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING key`, [actorId, operation, key, hash]);
@@ -17,19 +19,19 @@ export async function claimIdempotency(client: PoolClient, actorId: string, oper
   return { previous: insert.rowCount ? null : record.response };
 }
 
-export async function completeIdempotency(client: PoolClient, actorId: string, operation: string, key: string, response: unknown) {
+export async function completeIdempotency(client: DbClient, actorId: string, operation: string, key: string, response: unknown) {
   await client.query('UPDATE idempotency_records SET response = $4 WHERE actor_id = $1 AND operation = $2 AND key = $3',
     [actorId, operation, key, JSON.stringify(response)]);
 }
 
-export async function audit(client: PoolClient, actorId: string | null, action: string, resourceType: string, resourceId: string, oldValue?: unknown, newValue?: unknown, ip?: string) {
+export async function audit(client: DbClient, actorId: string | null, action: string, resourceType: string, resourceId: string, oldValue?: unknown, newValue?: unknown, ip?: string) {
   await client.query(
     `INSERT INTO audit_logs(id, actor_id, action, resource_type, resource_id, old_value, new_value, ip)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [randomUUID(), actorId, action, resourceType, resourceId, oldValue === undefined ? null : JSON.stringify(oldValue), newValue === undefined ? null : JSON.stringify(newValue), ip ?? null]);
 }
 
-export async function outbox(client: PoolClient, eventType: string, aggregateType: string, aggregateId: string, payload: unknown) {
+export async function outbox(client: DbClient, eventType: string, aggregateType: string, aggregateId: string, payload: unknown) {
   await client.query('INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload) VALUES ($1,$2,$3,$4,$5)',
     [randomUUID(), eventType, aggregateType, aggregateId, JSON.stringify(payload)]);
 }

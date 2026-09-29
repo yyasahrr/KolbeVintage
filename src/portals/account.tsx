@@ -1,21 +1,24 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  ArrowLeft, Bell, ChevronDown, CircleHelp, Crown, Heart, Home, LogOut,
-  MapPin, Package, Pencil, Plus, RotateCcw, ShoppingBag, Sparkles,
+  ArrowLeft, Bell, CircleHelp, Crown, Heart, Home, LogOut, ShieldCheck,
+  MapPin, Package, Pencil, Plus, ShoppingBag, Sparkles,
   Trash2, User,
 } from "lucide-react";
 import { PRODUCTS, fmtMoney, fmtNum } from "../data/catalog";
-import { digitsOnly, type CustomerAccount, type CustomerAddress, type RetailOrder } from "../data/customer";
+import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import { type Buyer } from "../data/platform";
 import { useStore } from "../data/store";
-import { ParentOrderCard } from "../components/orders";
 import { TicketCenter } from "../components/support";
-import { useOps, opsNow, RETURN_STATUS } from "../data/ops";
-import { limitsOf } from "../data/platform";
-import { Btn, Drawer, Empty, Field, Input, Status, Switch, Textarea, Timeline } from "../components/primitives";
+import { useOps, RETURN_STATUS } from "../data/ops";
+import { Btn, Drawer, Empty, Field, Input, Status, Switch, Textarea } from "../components/primitives";
+import { WishlistPanel } from "../components/wishlist-panel";
+import { CustomerAddressesPanel } from "../components/customer-addresses";
+import { CustomerOrdersPanel } from "../components/customer-orders-panel";
+import { SecurityCenter } from "../components/security-center";
 import { cn } from "../utils/cn";
+import { addressesApi, authApi, membershipApi, ordersApi, returnsApi, wishlistApi } from "../data/api";
 
-export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile";
+export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile" | "security";
 
 const emptyAddress = (account: CustomerAccount): CustomerAddress => ({
   id: "", title: "خانه", recipient: account.name === "مشتری کلبه" ? "" : account.name,
@@ -40,19 +43,82 @@ export default function AccountExperience({
   const ops = useOps();
   const restrict = ops.restrictionFor("customer", account.id);
   const [profile, setProfile] = useState({ name: account.name, email: account.email, birthday: account.birthday });
+  const [serverPrefs, setServerPrefs] = useState<Record<string, boolean> | null>(null);
   const [editingAddress, setEditingAddress] = useState<CustomerAddress | null>(null);
   const [addressError, setAddressError] = useState("");
-  const [openOrder, setOpenOrder] = useState<string | null>(null);
   const [returnOrder, setReturnOrder] = useState<string | null>(null);
   const [returnReason, setReturnReason] = useState("");
   const [business, setBusiness] = useState({ name: "", city: "", tradeCode: "", planId: "silver" });
   const [feedback, setFeedback] = useState("");
   const flash = (text: string) => { setFeedback(text); window.setTimeout(() => setFeedback(""), 3500); };
 
-  const retailOrders = store.retailOrders.filter((order) => order.accountId === account.id);
-  const wholesaleOrders = buyer ? store.orders.filter((order) => order.accountId ? order.accountId === account.id : order.buyer === buyer.name) : [];
-  const savedProducts = store.products.filter((p) => account.wishlist.includes(p.id));
-  const defaultAddress = account.addresses.find((address) => address.isDefault) ?? account.addresses[0];
+  // Server-backed data: addresses, wishlist, orders, returns, profile
+  const [serverAddresses, setServerAddresses] = useState<CustomerAddress[] | null>(null);
+  const [serverWishlistIds, setServerWishlistIds] = useState<string[] | null>(null);
+  const [serverOrders, setServerOrders] = useState<any[] | null>(null);
+  const [serverReturns, setServerReturns] = useState<any[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+
+  useEffect(() => {
+    if (isDemo) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        const [me, addrs, wish, orders, rets] = await Promise.all([
+          authApi.me().catch(() => null),
+          addressesApi.list().catch(() => ({ items: [] })),
+          // wishlist: collect all item productIds across collections
+          wishlistApi.collections().catch(() => ({ items: [] })),
+          ordersApi.list().catch(() => ({ items: [] })),
+          returnsApi.list().catch(() => ({ items: [] })),
+        ]);
+        if (cancelled) return;
+        if (me?.preferences) setServerPrefs(me.preferences);
+        if ((addrs as any).items) setServerAddresses((addrs as any).items.map((a: any) => ({
+          id: a.id, title: a.title, recipient: a.recipient, phone: a.phone, province: a.province, city: a.city, line: a.line, postalCode: a.postal_code ?? a.postalCode, isDefault: a.is_default ?? a.isDefault
+        })));
+        if ((wish as any).items) {
+          // For simplicity, flatten wishlist items to productIds (would need items fetch per collection)
+          const cols = (wish as any).items as any[];
+          // Try to fetch items per collection if available
+          let ids: string[] = [];
+          for (const c of cols) {
+            try {
+              const colItems = await wishlistApi.collectionItems(c.id).catch(()=>null);
+              if (colItems) ids.push(...(colItems as any).items.map((it:any)=> it.product_id ?? it.productId));
+            } catch {}
+          }
+          // Fallback to account.wishlist if no server items
+          setServerWishlistIds(ids.length ? ids : null);
+        }
+        if ((orders as any).items) setServerOrders((orders as any).items);
+        if ((rets as any).items) setServerReturns((rets as any).items);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "خطا در بارگذاری");
+      } finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [isDemo, account.id]);
+
+  const prefs: Record<string, boolean> = { ...account.preferences, ...(serverPrefs ?? {}) };
+  const togglePreference = async (key: string) => {
+    const next = !prefs[key];
+    if (isDemo) { store.updateAccount(account.id, { preferences: { ...account.preferences, [key]: next } }); return; }
+    const previous = serverPrefs;
+    setServerPrefs({ ...prefs, [key]: next });
+    try { const res = await authApi.updatePreference(key, next); setServerPrefs(res.preferences); }
+    catch (e) { setServerPrefs(previous); setError(e instanceof Error ? e.message : "خطا در ذخیره تنظیمات اعلان"); }
+  };
+  const effectiveAddresses = serverAddresses ?? account.addresses;
+  const effectiveWishlist = serverWishlistIds ?? account.wishlist;
+  const effectiveRetailOrders = serverOrders ? serverOrders.filter((o:any)=> o.order_type === 'retail' || o.orderType === 'retail') : store.retailOrders.filter((order) => order.accountId === account.id);
+  const effectiveWholesaleOrders = serverOrders ? serverOrders.filter((o:any)=> o.order_type === 'wholesale') : (buyer ? store.orders.filter((order) => order.accountId ? order.accountId === account.id : order.buyer === buyer.name) : []);
+  const savedProducts = store.products.filter((p) => effectiveWishlist.includes(p.id));
+  const defaultAddress = effectiveAddresses.find((address) => address.isDefault) ?? effectiveAddresses[0];
   const plan = buyer ? store.plans.find((p) => p.id === buyer.planId) : undefined;
   const selectedPlan = store.plans.find((p) => p.id === business.planId && p.active) ?? store.plans.find((p) => p.active);
   const isVip = buyer?.status === "فعال";
@@ -60,8 +126,8 @@ export default function AccountExperience({
 
   const items: { id: AccountTab; label: string; icon: React.ReactNode; count?: number }[] = [
     { id: "overview", label: "نمای کلی", icon: <Home size={17} /> },
-    { id: "orders", label: "سفارش‌های من", icon: <Package size={17} />, count: retailOrders.length },
-    { id: "wholesale", label: "سفارش‌های عمده", icon: <ShoppingBag size={17} />, count: wholesaleOrders.length },
+    { id: "orders", label: "سفارش‌های من", icon: <Package size={17} />, count: effectiveRetailOrders.length },
+    { id: "wholesale", label: "سفارش‌های عمده", icon: <ShoppingBag size={17} />, count: effectiveWholesaleOrders.length },
     { id: "wishlist", label: "علاقه‌مندی‌ها", icon: <Heart size={17} />, count: savedProducts.length },
     { id: "addresses", label: "نشانی‌ها", icon: <MapPin size={17} /> },
     { id: "styles", label: "استایل‌های ذخیره‌شده", icon: <Sparkles size={17} /> },
@@ -69,43 +135,160 @@ export default function AccountExperience({
     { id: "support", label: "پشتیبانی", icon: <CircleHelp size={17} /> },
     { id: "notifications", label: "اعلان‌ها", icon: <Bell size={17} /> },
     { id: "profile", label: "اطلاعات حساب", icon: <User size={17} /> },
+    { id: "security", label: "امنیت حساب", icon: <ShieldCheck size={17} /> },
   ];
 
-  const saveAddress = () => {
+  const saveAddress = async () => {
     if (!editingAddress) return;
     if (!editingAddress.recipient.trim() || !editingAddress.city.trim() || !editingAddress.province.trim() || !editingAddress.line.trim()) {
       setAddressError("نام گیرنده، استان، شهر و نشانی کامل را وارد کنید.");
       return;
     }
-    if (!/^09\d{9}$/.test(digitsOnly(editingAddress.phone)) || !/^\d{10}$/.test(digitsOnly(editingAddress.postalCode))) {
+    if (!/^09\d{9}$/.test(digitsOnly(editingAddress.phone)) || !/^\\d{10}$/.test(digitsOnly(editingAddress.postalCode))) {
       setAddressError("شماره موبایل ۱۱ رقمی و کد پستی ۱۰ رقمی معتبر وارد کنید.");
       return;
     }
-    const address = { ...editingAddress, id: editingAddress.id || `addr-${Date.now()}`, phone: digitsOnly(editingAddress.phone), postalCode: digitsOnly(editingAddress.postalCode), isDefault: editingAddress.isDefault || account.addresses.length === 0 };
-    let addresses = account.addresses.some((a) => a.id === address.id)
-      ? account.addresses.map((a) => a.id === address.id ? address : a)
-      : [...account.addresses, address];
-    if (address.isDefault) addresses = addresses.map((a) => ({ ...a, isDefault: a.id === address.id }));
-    store.updateAccount(account.id, { addresses });
-    setEditingAddress(null);
-    setAddressError("");
-    flash("نشانی ذخیره شد.");
+    if (isDemo) {
+      const address = { ...editingAddress, id: editingAddress.id || `addr-${Date.now()}`, phone: digitsOnly(editingAddress.phone), postalCode: digitsOnly(editingAddress.postalCode), isDefault: editingAddress.isDefault || effectiveAddresses.length === 0 };
+      let addresses = effectiveAddresses.some((a) => a.id === address.id) ? effectiveAddresses.map((a) => a.id === address.id ? address : a) : [...effectiveAddresses, address];
+      if (address.isDefault) addresses = addresses.map((a) => ({ ...a, isDefault: a.id === address.id }));
+      // Demo only: update local store
+      store.updateAccount(account.id, { addresses });
+      setEditingAddress(null); setAddressError(""); flash("نشانی ذخیره شد. (demo)");
+      return;
+    }
+    try {
+      const payload = {
+        title: editingAddress.title,
+        recipient: editingAddress.recipient.trim(),
+        phone: digitsOnly(editingAddress.phone),
+        province: editingAddress.province.trim(),
+        city: editingAddress.city.trim(),
+        line: editingAddress.line.trim(),
+        postalCode: digitsOnly(editingAddress.postalCode),
+        isDefault: editingAddress.isDefault || effectiveAddresses.length === 0,
+      };
+      if (editingAddress.id && serverAddresses?.some(a=>a.id===editingAddress.id)) {
+        await addressesApi.update(editingAddress.id, payload);
+      } else {
+        await addressesApi.create(payload);
+      }
+      const refreshed = await addressesApi.list();
+      setServerAddresses((refreshed as any).items.map((a: any) => ({
+        id: a.id, title: a.title, recipient: a.recipient, phone: a.phone, province: a.province, city: a.city, line: a.line, postalCode: a.postal_code ?? a.postalCode, isDefault: a.is_default ?? a.isDefault
+      })));
+      setEditingAddress(null); setAddressError(""); flash("نشانی ذخیره شد.");
+    } catch (e) {
+      setAddressError(e instanceof Error ? e.message : "خطا در ذخیره نشانی");
+    }
   };
 
-  const submitVip = () => {
+  const submitVip = async () => {
     if (!selectedPlan) { flash("در حال حاضر پلن فعالی برای درخواست وجود ندارد."); return; }
     if (!business.name.trim() || !business.city.trim() || !business.tradeCode.trim()) {
       flash("نام کسب‌وکار، شهر و شناسه صنفی را کامل کنید.");
       return;
     }
-    store.requestVip(account.id, { businessName: business.name, city: business.city, tradeCode: business.tradeCode, planId: selectedPlan.id });
-    flash("درخواست عضویت عمده در همین حساب ثبت شد و منتظر بررسی کلبه است.");
+    if (isDemo) {
+      store.requestVip(account.id, { businessName: business.name, city: business.city, tradeCode: business.tradeCode, planId: selectedPlan.id });
+      flash("درخواست عضویت عمده در همین حساب ثبت شد و منتظر بررسی کلبه است. (demo)");
+      return;
+    }
+    try {
+      await membershipApi.request({ planId: selectedPlan.id, businessName: business.name.trim(), city: business.city.trim(), tradeCode: business.tradeCode.trim() });
+      flash("درخواست عضویت عمده ثبت شد و منتظر بررسی کلبه است.");
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا در ثبت درخواست");
+    }
   };
 
-  const showOrder = (order: RetailOrder) => setOpenOrder(openOrder === order.id ? null : order.id);
+  const removeWishlist = async (productId: string) => {
+    if (isDemo) {
+      store.updateAccount(account.id, { wishlist: effectiveWishlist.filter((id) => id !== productId) });
+      if (serverWishlistIds) setServerWishlistIds(effectiveWishlist.filter((id)=> id!==productId));
+      return;
+    }
+    try {
+      // Find collection containing product
+      const cols = await wishlistApi.collections() as any;
+      for (const c of cols.items) {
+        const items = await wishlistApi.collectionItems(c.id).catch(()=>null);
+        const it = (items as any)?.items?.find((x:any)=> (x.product_id ?? x.productId) === productId);
+        if (it) { await wishlistApi.removeItem(it.id); break; }
+      }
+      // Refresh
+      const refreshedCols = await wishlistApi.collections() as any;
+      let ids: string[] = [];
+      for (const c of refreshedCols.items) {
+        const itms = await wishlistApi.collectionItems(c.id).catch(()=>null);
+        if (itms) ids.push(...(itms as any).items.map((x:any)=> x.product_id ?? x.productId));
+      }
+      setServerWishlistIds(ids);
+      flash("از علاقه‌مندی‌ها حذف شد.");
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا");
+    }
+  };
+
+  const deleteAddress = async (addressId: string, isDefault: boolean) => {
+    if (isDemo) {
+      const remaining = effectiveAddresses.filter((a) => a.id !== addressId);
+      store.updateAccount(account.id, { addresses: isDefault && remaining.length ? remaining.map((a, i) => ({ ...a, isDefault: i === 0 })) : remaining });
+      flash("نشانی حذف شد. (demo)");
+      return;
+    }
+    try {
+      await addressesApi.remove(addressId);
+      const refreshed = await addressesApi.list();
+      setServerAddresses((refreshed as any).items.map((a: any) => ({
+        id: a.id, title: a.title, recipient: a.recipient, phone: a.phone, province: a.province, city: a.city, line: a.line, postalCode: a.postal_code ?? a.postalCode, isDefault: a.is_default ?? a.isDefault
+      })));
+      flash("نشانی حذف شد.");
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا");
+    }
+  };
+
+  const setDefaultAddress = async (addressId: string) => {
+    if (isDemo) {
+      store.updateAccount(account.id, { addresses: effectiveAddresses.map((a) => ({ ...a, isDefault: a.id === addressId })) });
+      flash("نشانی پیش‌فرض تغییر کرد. (demo)");
+      return;
+    }
+    try {
+      await addressesApi.update(addressId, { isDefault: true });
+      const refreshed = await addressesApi.list();
+      setServerAddresses((refreshed as any).items.map((a: any) => ({
+        id: a.id, title: a.title, recipient: a.recipient, phone: a.phone, province: a.province, city: a.city, line: a.line, postalCode: a.postal_code ?? a.postalCode, isDefault: a.is_default ?? a.isDefault
+      })));
+      flash("نشانی پیش‌فرض تغییر کرد.");
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا");
+    }
+  };
+
+  const saveProfile = async () => {
+    if (!profile.name.trim()) { flash("نام الزامی است."); return; }
+    if (isDemo) {
+      store.updateAccount(account.id, { name: profile.name.trim(), email: profile.email.trim(), birthday: profile.birthday.trim() });
+      flash("اطلاعات حساب ذخیره شد. (demo)");
+      return;
+    }
+    try {
+      await authApi.updateProfile({ displayName: profile.name.trim(), email: profile.email.trim() || null, birthday: profile.birthday.trim() || null });
+      flash("اطلاعات حساب ذخیره شد.");
+    } catch (e) {
+      // Fallback to store if API not yet available
+      try { store.updateAccount(account.id, { name: profile.name.trim(), email: profile.email.trim(), birthday: profile.birthday.trim() }); } catch {}
+      flash(e instanceof Error ? e.message : "خطا در ذخیره");
+    }
+  };
 
   return (
     <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-8 md:px-8">
+      {loading && <div className="mb-4 rounded-[12px] bg-[var(--kv-surface-2)] px-4 py-2 text-xs text-[var(--kv-muted)]">در حال بارگذاری اطلاعات حساب…</div>}
+      {error && <div className="mb-4 rounded-[12px] border border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{error} <button onClick={()=>window.location.reload()} className="underline">تلاش دوباره</button></div>}
+      {isDemo && <div className="mb-4 rounded-[12px] border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">DEMO MODE — داده‌ها محلی و نمایشی هستند (?demo=1)</div>}
       <header className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-sm text-[var(--kv-muted)]">حساب شخصی کلبه</p>
@@ -136,11 +319,11 @@ export default function AccountExperience({
             <div className="space-y-9">
               <section>
                 <div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-[19px] font-extrabold">سفارش‌های اخیر</h2><button onClick={() => setTab("orders")} className="inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-accent)]">همه سفارش‌ها <ArrowLeft size={14} /></button></div>
-                {retailOrders.length ? <div className="divide-y divide-[var(--kv-line)] border-y border-[var(--kv-line)]">{retailOrders.slice(0, 2).map((order) => (
-                  <button key={order.id} onClick={() => { setTab("orders"); setOpenOrder(order.id); }} className="flex w-full flex-wrap items-center gap-4 py-4 text-right hover:text-[var(--kv-accent)]">
-                    <img src={order.lines[0]?.image} alt="" className="h-16 w-13 rounded-[10px] object-cover" />
-                    <span className="min-w-0 flex-1"><b className="block text-sm tabular-nums">{order.id}</b><span className="text-[12px] text-[var(--kv-muted)]">{order.createdAt} · {fmtNum(order.lines.reduce((n, l) => n + l.qty, 0))} قلم</span></span>
-                    <Status value={order.status} /><b className="text-sm tabular-nums">{fmtMoney(order.total)}</b>
+                {effectiveRetailOrders.length ? <div className="divide-y divide-[var(--kv-line)] border-y border-[var(--kv-line)]">{effectiveRetailOrders.slice(0, 2).map((order:any) => (
+                  <button key={order.id} onClick={() => { setTab("orders"); }} className="flex w-full flex-wrap items-center gap-4 py-4 text-right hover:text-[var(--kv-accent)]">
+                    <img src={order.lines?.[0]?.image ?? order.items?.[0]?.image ?? ""} alt="" className="h-16 w-13 rounded-[10px] object-cover" />
+                    <span className="min-w-0 flex-1"><b className="block text-sm tabular-nums">{order.reference ?? order.id}</b><span className="text-[12px] text-[var(--kv-muted)]">{order.created_at ?? order.createdAt} · {fmtNum(order.lines?.reduce((n:any,l:any)=>n+(l.qty??l.quantity),0) ?? 0)} قلم</span></span>
+                    <Status value={order.status} /><b className="text-sm tabular-nums">{fmtMoney(order.total_rial ?? order.total ?? 0)}</b>
                   </button>
                 ))}</div> : <Empty title="هنوز سفارشی ندارید" desc="اولین خرید شما پس از ثبت، همین‌جا دیده می‌شود." action={<Btn variant="accent" size="sm" onClick={onShop}>دیدن فروشگاه</Btn>} />}
               </section>
@@ -167,55 +350,34 @@ export default function AccountExperience({
           )}
 
           {tab === "orders" && (
-            <section>
-              <div className="mb-5"><h2 className="text-[21px] font-extrabold">سفارش‌های خرده</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">جزییات، رهگیری و درخواست بازگشت هر سفارش در همین صفحه است.</p></div>
-              {retailOrders.length ? <div className="space-y-3">{retailOrders.map((order) => <article key={order.id} className="overflow-hidden rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)]">
-                <button onClick={() => showOrder(order)} aria-expanded={openOrder === order.id} className="flex w-full flex-wrap items-center gap-3 p-4 text-right hover:bg-[var(--kv-surface-2)]/40">
-                  <span className={cn("flex h-9 w-9 items-center justify-center rounded-full border border-[var(--kv-line)] transition-transform", openOrder === order.id && "rotate-180")}><ChevronDown size={17} /></span>
-                  <img src={order.lines[0]?.image} alt="" className="h-14 w-12 rounded-[9px] object-cover" />
-                  <span className="min-w-0 flex-1"><b className="block text-sm tabular-nums">{order.id}</b><span className="text-[12px] text-[var(--kv-muted)]">{order.createdAt} · {fmtNum(order.lines.reduce((n, l) => n + l.qty, 0))} قلم</span></span>
-                  <Status value={order.status} /><b className="text-sm tabular-nums">{fmtMoney(order.total)}</b>
-                </button>
-                {openOrder === order.id && <div className="border-t border-[var(--kv-line)] px-4 py-5 md:px-6">
-                  <div className="space-y-3">{order.lines.map((line, i) => <div key={`${line.productId}-${i}`} className="flex items-center gap-3"><img src={line.image} alt="" className="h-17 w-14 rounded-[9px] object-cover" /><div className="min-w-0 flex-1"><p className="text-[13px] font-bold">{line.name}</p><p className="text-xs text-[var(--kv-muted)]">{line.color} · سایز {line.size} · {fmtNum(line.qty)} عدد</p></div><b className="text-[13px] tabular-nums">{fmtMoney(line.unitPrice * line.qty)}</b></div>)}</div>
-                  <div className="mt-4 grid gap-5 border-t border-[var(--kv-line)] pt-4 md:grid-cols-2">
-                    <div><p className="mb-3 text-[13px] font-bold">روند سفارش</p><Timeline items={order.events.map((event) => ({ t: event.title, d: "", time: event.time, done: true }))} /></div>
-                    <div className="space-y-2 text-[12.5px]"><p className="font-bold">تحویل به {order.address.recipient}</p><p className="leading-6 text-[var(--kv-muted)]">{order.address.province}، {order.address.city}، {order.address.line}</p><p className="text-[var(--kv-muted)]">روش ارسال: {order.shippingMethod} · {order.shippingFee ? fmtMoney(order.shippingFee) : "رایگان"}</p>{order.tracking && <p className="font-bold tabular-nums">کد رهگیری: {order.tracking}</p>}</div>
-                  </div>
-                  {order.returnRequest ? <p className="mt-4 rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[12.5px]">درخواست بازگشت: {order.returnRequest.status} · {order.returnRequest.reason}</p> : order.status === "تحویل شد" && <Btn variant="soft" size="sm" className="mt-4" onClick={() => { setReturnOrder(order.id); setReturnReason(""); }} icon={<RotateCcw size={14} />}>درخواست بازگشت کالا</Btn>}
-                </div>}
-              </article>)}</div> : <Empty title="سفارشی ثبت نشده است" desc="سفارش‌های بعدی شما به‌همراه وضعیت و اقلام اینجا نمایش داده می‌شوند." action={<Btn variant="accent" size="sm" onClick={onShop}>مشاهده محصولات</Btn>} />}
-            </section>
+            <div className="space-y-6"><div className="rounded-[14px] border border-[var(--kv-accent)]/30 bg-[var(--kv-accent)]/5 p-3 text-xs leading-6"><b>سفارش‌های سرور</b> — از PostgreSQL با فاکتور و PDF.</div><CustomerOrdersPanel /></div>
           )}
 
           {tab === "wholesale" && (
             <section>
               <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">سفارش‌های عمده</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">همان حساب مشتری، با خریدهای تجاری مستقل از سفارش خرده.</p></div>{isVip && <Btn variant="soft" size="sm" onClick={onWholesale}>ورود به بازارچه</Btn>}</div>
-              {isVip ? wholesaleOrders.length ? <div className="space-y-3">{wholesaleOrders.map((order) => <ParentOrderCard key={order.id} order={order} perspective="buyer"
-                onPaySub={(subId) => { store.paySub(order.id, subId, buyer!.name); flash(`پرداخت آزمایشی زیرسفارش ${subId} ثبت شد.`); }}
-                onPayAll={() => { store.payParent(order.id, buyer!.name); flash("پرداخت آزمایشی بخش‌های تأییدشده ثبت شد."); }}
-                onCancelSub={(subId) => { store.transitionSub(order.id, subId, "cancelled", buyer!.name); flash(`زیرسفارش ${subId} لغو شد.`); }}
-                onReturnSub={(subId) => { if (ops.returns.some((r) => r.orderId === subId)) { flash("برای این زیرسفارش قبلاً مرجوعی ثبت شده است."); return; } setReturnOrder(subId); setReturnReason(""); }}
-              />)}</div> : <Empty title="سفارش عمده ندارید" desc="پس از اولین خرید سری از بازارچه، سفارش مادر و زیرسفارش‌ها اینجا دیده می‌شوند." action={<Btn variant="accent" size="sm" onClick={onWholesale}>مشاهده بازارچه عمده</Btn>} />
+              {isVip ? effectiveWholesaleOrders.length ? <div className="space-y-3">{effectiveWholesaleOrders.map((order:any) => <div key={order.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4"><p className="text-sm font-bold">{order.reference ?? order.id}</p><p className="text-xs text-[var(--kv-muted)]">{order.created_at ?? order.createdAt} · {order.status}</p></div>)}</div> : <Empty title="سفارش عمده ندارید" desc="پس از اولین خرید سری از بازارچه، سفارش مادر و زیرسفارش‌ها اینجا دیده می‌شوند." action={<Btn variant="accent" size="sm" onClick={onWholesale}>مشاهده بازارچه عمده</Btn>} />
                 : <Empty title={pending ? "درخواست عضویت در حال بررسی است" : "برای خرید عمده، همین حساب را ارتقا دهید"} desc={pending ? "بعد از تأیید کلبه، قیمت‌ها و سفارش‌های عمده همین‌جا فعال می‌شوند." : "حساب جدید لازم نیست؛ عضویت عمده به حساب فعلی شما اضافه می‌شود."} action={<Btn variant="accent" size="sm" onClick={() => setTab("membership")}>{pending ? "پیگیری درخواست" : "درخواست عضویت"}</Btn>} />}
             </section>
           )}
 
           {tab === "wishlist" && (
             <section><div className="mb-5"><h2 className="text-[21px] font-extrabold">علاقه‌مندی‌ها</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">محصولاتی که نگه داشته‌اید تا بعداً ببینید.</p></div>
-              {savedProducts.length ? <div className="divide-y divide-[var(--kv-line)] border-y border-[var(--kv-line)]">{savedProducts.map((p) => <div key={p.id} className="flex items-center gap-4 py-4"><img src={p.images[0]} alt="" className="h-21 w-17 rounded-[10px] object-cover" /><div className="min-w-0 flex-1"><p className="text-[14px] font-bold">{p.name}</p><p className="mt-1 text-[13px] font-semibold tabular-nums">{fmtMoney(p.retailPrice)}</p></div><Btn variant="soft" size="sm" onClick={() => onOpenProduct(p.id)}>دیدن محصول</Btn><button onClick={() => store.updateAccount(account.id, { wishlist: account.wishlist.filter((id) => id !== p.id) })} aria-label={`حذف ${p.name} از علاقه‌مندی‌ها`} className="flex h-10 w-10 items-center justify-center text-[var(--kv-muted)] hover:text-[var(--kv-danger)]"><Trash2 size={17} /></button></div>)}</div> : <Empty title="علاقه‌مندی‌ها خالی است" desc="روی قلب محصول بزنید تا برای بعد نگهش دارید." action={<Btn variant="accent" size="sm" onClick={onShop}>دیدن محصولات</Btn>} />}
+              <div className="mb-6 rounded-[14px] border border-[var(--kv-accent)]/30 bg-[var(--kv-accent)]/5 p-3 text-xs leading-6"><b>علاقه‌مندی‌های سرور</b> — چند کالکشن، ذخیره محصول/برند، اعلان قیمت/موجودی.</div>
+              <WishlistPanel />
+              {savedProducts.length ? <div className="mt-6 divide-y divide-[var(--kv-line)] border-y border-[var(--kv-line)]">{savedProducts.map((p) => <div key={p.id} className="flex items-center gap-4 py-4"><img src={p.images[0]} alt="" className="h-21 w-17 rounded-[10px] object-cover" /><div className="min-w-0 flex-1"><p className="text-[14px] font-bold">{p.name}</p><p className="mt-1 text-[13px] font-semibold tabular-nums">{fmtMoney(p.retailPrice)}</p></div><Btn variant="soft" size="sm" onClick={() => onOpenProduct(p.id)}>دیدن محصول</Btn><button onClick={() => removeWishlist(p.id)} aria-label={`حذف ${p.name} از علاقه‌مندی‌ها`} className="flex h-10 w-10 items-center justify-center text-[var(--kv-muted)] hover:text-[var(--kv-danger)]"><Trash2 size={17} /></button></div>)}</div> : <Empty title="علاقه‌مندی‌ها خالی است" desc="روی قلب محصول بزنید تا برای بعد نگهش دارید." action={<Btn variant="accent" size="sm" onClick={onShop}>دیدن محصولات</Btn>} />}
             </section>
           )}
 
           {tab === "addresses" && (
-            <section><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">نشانی‌های تحویل</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">در مرحله خرید یکی از نشانی‌ها را انتخاب کنید.</p></div><Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setAddressError(""); setEditingAddress(emptyAddress(account)); }}>افزودن نشانی</Btn></div>
-              {account.addresses.length ? <div className="space-y-3">{account.addresses.map((address) => <div key={address.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><b className="text-[14px]">{address.title}</b>{address.isDefault && <span className="rounded-full bg-[#E7F0E6] px-2.5 py-1 text-[11px] font-semibold text-[#3E6B4A]">پیش‌فرض</span>}</div><p className="mt-2 text-[13px] font-semibold">{address.recipient} · {address.phone}</p><p className="mt-1 text-[12.5px] leading-6 text-[var(--kv-muted)]">{address.province}، {address.city}، {address.line} · کد پستی {address.postalCode}</p></div><div className="flex gap-1"><button onClick={() => { setAddressError(""); setEditingAddress({ ...address }); }} aria-label={`ویرایش ${address.title}`} className="flex h-10 w-10 items-center justify-center rounded-[9px] hover:bg-[var(--kv-surface-2)]"><Pencil size={16} /></button><button onClick={() => { const remaining = account.addresses.filter((a) => a.id !== address.id); store.updateAccount(account.id, { addresses: address.isDefault && remaining.length ? remaining.map((a, i) => ({ ...a, isDefault: i === 0 })) : remaining }); flash("نشانی حذف شد."); }} aria-label={`حذف ${address.title}`} className="flex h-10 w-10 items-center justify-center rounded-[9px] text-[var(--kv-danger)] hover:bg-[var(--kv-surface-2)]"><Trash2 size={16} /></button></div></div>{!address.isDefault && <button onClick={() => { store.updateAccount(account.id, { addresses: account.addresses.map((a) => ({ ...a, isDefault: a.id === address.id })) }); flash("نشانی پیش‌فرض تغییر کرد."); }} className="mt-3 text-[12px] font-bold text-[var(--kv-accent)]">انتخاب به‌عنوان پیش‌فرض</button>}</div>)}</div> : <Empty title="نشانی ندارید" desc="برای سریع‌تر شدن خرید، نخستین نشانی تحویل را ثبت کنید." />}
-            </section>
+            <div className="space-y-6"><CustomerAddressesPanel /><div className="border-t border-[var(--kv-line)] pt-6"><section><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">نشانی‌های تحویل</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">در مرحله خرید یکی از نشانی‌ها را انتخاب کنید.</p></div><Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setAddressError(""); setEditingAddress(emptyAddress(account)); }}>افزودن نشانی</Btn></div>
+              {effectiveAddresses.length ? <div className="space-y-3">{effectiveAddresses.map((address) => <div key={address.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><b className="text-[14px]">{address.title}</b>{address.isDefault && <span className="rounded-full bg-[#E7F0E6] px-2.5 py-1 text-[11px] font-semibold text-[#3E6B4A]">پیش‌فرض</span>}</div><p className="mt-2 text-[13px] font-semibold">{address.recipient} · {address.phone}</p><p className="mt-1 text-[12.5px] leading-6 text-[var(--kv-muted)]">{address.province}، {address.city}، {address.line} · کد پستی {address.postalCode}</p></div><div className="flex gap-1"><button onClick={() => { setAddressError(""); setEditingAddress({ ...address }); }} aria-label={`ویرایش ${address.title}`} className="flex h-10 w-10 items-center justify-center rounded-[9px] hover:bg-[var(--kv-surface-2)]"><Pencil size={16} /></button><button onClick={() => deleteAddress(address.id, !!address.isDefault)} aria-label={`حذف ${address.title}`} className="flex h-10 w-10 items-center justify-center rounded-[9px] text-[var(--kv-danger)] hover:bg-[var(--kv-surface-2)]"><Trash2 size={16} /></button></div></div>{!address.isDefault && <button onClick={() => setDefaultAddress(address.id)} className="mt-3 text-[12px] font-bold text-[var(--kv-accent)]">انتخاب به‌عنوان پیش‌فرض</button>}</div>)}</div> : <Empty title="نشانی ندارید" desc="برای سریع‌تر شدن خرید، نخستین نشانی تحویل را ثبت کنید." />}
+            </section></div></div>
           )}
 
           {tab === "styles" && (
             <section><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">استایل‌های ذخیره‌شده</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">ترکیب‌هایی که در بوم استایلِ پرو مجازی ذخیره کرده‌اید.</p></div><Btn variant="soft" size="sm" onClick={onStudio} icon={<Sparkles size={15} />}>ساخت استایل</Btn></div>
-              {account.savedStyles.length ? <div className="grid gap-4 sm:grid-cols-2">{account.savedStyles.map((style) => <div key={style.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4"><div className="flex gap-1.5">{style.productIds.slice(0, 3).map((id) => { const p = PRODUCTS.find((x) => x.id === id); return p ? <img key={id} src={p.images[0]} alt={p.name} className="aspect-[3/4] min-w-0 flex-1 rounded-[9px] object-cover" /> : null; })}</div><div className="mt-3 flex items-center justify-between gap-2"><div><p className="text-[13.5px] font-bold">{style.title}</p><p className="text-xs text-[var(--kv-muted)]">{style.savedAt} · {fmtNum(style.productIds.length)} محصول</p></div><button onClick={() => store.updateAccount(account.id, { savedStyles: account.savedStyles.filter((s) => s.id !== style.id) })} aria-label="حذف استایل" className="text-[var(--kv-muted)] hover:text-[var(--kv-danger)]"><Trash2 size={16} /></button></div></div>)}</div> : <Empty title="استایلی ذخیره نشده" desc="از صفحه پرو مجازی وارد بوم استایل شوید و ترکیب دلخواه را ذخیره کنید." action={<Btn variant="accent" size="sm" onClick={onStudio}>رفتن به پرو مجازی</Btn>} />}
+              {account.savedStyles.length ? <div className="grid gap-4 sm:grid-cols-2">{account.savedStyles.map((style) => <div key={style.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4"><div className="flex gap-1.5">{style.productIds.slice(0, 3).map((id) => { const p = PRODUCTS.find((x) => x.id === id); return p ? <img key={id} src={p.images[0]} alt={p.name} className="aspect-[3/4] min-w-0 flex-1 rounded-[9px] object-cover" /> : null; })}</div><div className="mt-3 flex items-center justify-between gap-2"><div><p className="text-[13.5px] font-bold">{style.title}</p><p className="text-xs text-[var(--kv-muted)]">{style.savedAt} · {fmtNum(style.productIds.length)} محصول</p></div><button onClick={() => { if(isDemo) store.updateAccount(account.id, { savedStyles: account.savedStyles.filter((s) => s.id !== style.id) }); }} aria-label="حذف استایل" className="text-[var(--kv-muted)] hover:text-[var(--kv-danger)]"><Trash2 size={16} /></button></div></div>)}</div> : <Empty title="استایلی ذخیره نشده" desc="از صفحه پرو مجازی وارد بوم استایل شوید و ترکیب دلخواه را ذخیره کنید." action={<Btn variant="accent" size="sm" onClick={onStudio}>رفتن به پرو مجازی</Btn>} />}
             </section>
           )}
 
@@ -229,9 +391,9 @@ export default function AccountExperience({
           )}
 
           {tab === "support" && (
-            <section><div className="mb-5"><h2 className="text-[21px] font-extrabold">پشتیبانی و تیکت‌ها</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">گفت‌وگو با تیم کلبه؛ پاسخ‌ها همین‌جا نمایش داده می‌شوند.{buyer?.status === "فعال" && plan && limitsOf(plan).prioritySupport ? " تیکت‌های شما با اولویت بررسی می‌شوند." : ""}</p></div>
+            <section><div className="mb-5"><h2 className="text-[21px] font-extrabold">پشتیبانی و تیکت‌ها</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">گفت‌وگو با تیم کلبه؛ پاسخ‌ها همین‌جا نمایش داده می‌شوند.</p></div>
               <TicketCenter perspective="owner" ownerId={account.id} ownerName={account.name} ownerType="customer" />
-              <div className="mt-8"><h3 className="mb-3 text-[15px] font-extrabold">درخواست‌های مرجوعی من</h3>{ops.returns.filter((r) => r.ownerId === account.id).length ? <div className="space-y-2">{ops.returns.filter((r) => r.ownerId === account.id).map((r) => <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3"><div><p className="text-[13px] font-bold">{r.id} · سفارش {r.orderId}</p><p className="text-[11.5px] text-[var(--kv-muted)]">{r.items} · {r.events[r.events.length - 1]?.t}</p></div><Status value={RETURN_STATUS[r.status]} /></div>)}</div> : <p className="text-[13px] text-[var(--kv-muted)]">درخواست مرجوعی ندارید.</p>}</div>
+              <div className="mt-8"><h3 className="mb-3 text-[15px] font-extrabold">درخواست‌های مرجوعی من</h3>{(serverReturns ?? ops.returns.filter((r) => r.ownerId === account.id)).length ? <div className="space-y-2">{(serverReturns ?? ops.returns.filter((r) => r.ownerId === account.id)).map((r:any) => <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3"><div><p className="text-[13px] font-bold">{r.reference ?? r.id} · سفارش {r.orderId ?? r.order_id}</p><p className="text-[11.5px] text-[var(--kv-muted)]">{r.items ?? r.reason} · {r.status}</p></div><Status value={RETURN_STATUS[r.status as keyof typeof RETURN_STATUS] ?? r.status} /></div>)}</div> : <p className="text-[13px] text-[var(--kv-muted)]">درخواست مرجوعی ندارید.</p>}</div>
             </section>
           )}
 
@@ -242,13 +404,20 @@ export default function AccountExperience({
                 ["offers", "خبر کالکشن‌ها", "تازه‌رسیده‌ها و پیشنهادهای کلبه"],
                 ["sms", "دریافت پیامک", "ارسال اعلان‌ها به شماره ثبت‌شده"],
                 ["email", "دریافت ایمیل", "ارسال به نشانی ایمیل حساب شما"],
-              ] as const).map(([key, label, desc]) => <div key={key} className="flex items-center justify-between gap-4 py-4"><div><p className="text-[13.5px] font-bold">{label}</p><p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">{desc}</p></div><Switch on={account.preferences[key]} onToggle={() => store.updateAccount(account.id, { preferences: { ...account.preferences, [key]: !account.preferences[key] } })} /></div>)}</div>
-              <p className="mt-4 text-xs leading-6 text-[var(--kv-muted)]">این تنظیمات در حساب شما ذخیره می‌شوند. در نسخه آزمایشی پیامک و ایمیل واقعی ارسال نمی‌شود.</p>
+              ] as const).map(([key, label, desc]) => <div key={key} className="flex items-center justify-between gap-4 py-4"><div><p className="text-[13.5px] font-bold">{label}</p><p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">{desc}</p></div><Switch on={prefs[key] ?? false} onToggle={() => { void togglePreference(key); }} /></div>)}</div>
+              <p className="mt-4 text-xs leading-6 text-[var(--kv-muted)]">این تنظیمات در حساب شما ذخیره می‌شوند.</p>
+            </section>
+          )}
+
+          {tab === "security" && (
+            <section className="max-w-[900px]">
+              <div className="mb-5"><h2 className="text-[21px] font-extrabold">امنیت حساب</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">اطلاعات هویتی، نشست‌ها، رمز عبور، ورود دومرحله‌ای و تاریخچه ورود.</p></div>
+              <SecurityCenter flash={flash} />
             </section>
           )}
 
           {tab === "profile" && (
-            <section className="max-w-[620px]"><div className="mb-5"><h2 className="text-[21px] font-extrabold">اطلاعات حساب</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">همین اطلاعات برای سفارش‌های خرده و عمده استفاده می‌شوند.</p></div><div className="space-y-4 rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5"><Field label="نام و نام خانوادگی"><Input value={profile.name} onChange={(v) => setProfile({ ...profile, name: v })} /></Field><Field label="شماره همراه" hint="برای تغییر شماره همراه باید دوباره احراز هویت شوید."><div className="rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-3 text-[13px] text-[var(--kv-muted)] tabular-nums">{account.phone}</div></Field><Field label="ایمیل"><Input value={profile.email} onChange={(v) => setProfile({ ...profile, email: v })} placeholder="name@example.com" /></Field><Field label="تاریخ تولد (اختیاری)"><Input value={profile.birthday} onChange={(v) => setProfile({ ...profile, birthday: v })} placeholder="۱۴۰۰/۰۱/۰۱" /></Field><Btn variant="accent" size="sm" disabled={!profile.name.trim()} onClick={() => { store.updateAccount(account.id, { name: profile.name.trim(), email: profile.email.trim(), birthday: profile.birthday.trim() }); flash("اطلاعات حساب ذخیره شد."); }}>ذخیره تغییرات</Btn></div><p className="mt-4 text-[12px] text-[var(--kv-muted)]">عضو کلبه از {account.joinedAt}</p></section>
+            <section className="max-w-[620px]"><div className="mb-5"><h2 className="text-[21px] font-extrabold">اطلاعات حساب</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">همین اطلاعات برای سفارش‌های خرده و عمده استفاده می‌شوند.</p></div><div className="space-y-4 rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5"><Field label="نام و نام خانوادگی"><Input value={profile.name} onChange={(v) => setProfile({ ...profile, name: v })} /></Field><Field label="شماره همراه" hint="برای تغییر شماره همراه باید دوباره احراز هویت شوید."><div className="rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-3 text-[13px] text-[var(--kv-muted)] tabular-nums">{account.phone}</div></Field><Field label="ایمیل"><Input value={profile.email} onChange={(v) => setProfile({ ...profile, email: v })} placeholder="name@example.com" /></Field><Field label="تاریخ تولد (اختیاری)"><Input value={profile.birthday} onChange={(v) => setProfile({ ...profile, birthday: v })} placeholder="۱۴۰۰/۰۱/۰۱" /></Field><Btn variant="accent" size="sm" disabled={!profile.name.trim()} onClick={saveProfile}>ذخیره تغییرات</Btn></div><p className="mt-4 text-[12px] text-[var(--kv-muted)]">عضو کلبه از {account.joinedAt}</p></section>
           )}
         </div>
       </div>
@@ -259,18 +428,29 @@ export default function AccountExperience({
       <Drawer open={!!returnOrder} onClose={() => setReturnOrder(null)} title="درخواست بازگشت کالا">
         <p className="mb-4 text-[13px] leading-7 text-[var(--kv-muted)]">برای سفارش {returnOrder} دلیل بازگشت را بنویسید. درخواست برای بررسی ثبت می‌شود.</p>
         <Field label="دلیل بازگشت"><Textarea rows={5} value={returnReason} onChange={setReturnReason} placeholder="مثلاً سایز با سفارش من مطابقت ندارد…" /></Field>
-        <Btn variant="accent" className="mt-4 w-full" disabled={returnReason.trim().length < 8} onClick={() => {
+        <Btn variant="accent" className="mt-4 w-full" disabled={returnReason.trim().length < 8} onClick={async () => {
           if (!returnOrder) return;
           if (restrict.block || restrict.noReturn) { flash(`ثبت مرجوعی برای حساب شما محدود شده است${restrict.reason ? `: ${restrict.reason}` : ""}.`); return; }
-          const o = store.retailOrders.find((x) => x.id === returnOrder);
-          const sub = !o ? store.orders.flatMap((po) => po.subOrders).find((s) => s.id === returnOrder) : undefined;
-          if (o) store.requestRetailReturn(account.id, returnOrder, returnReason);
-          ops.upsert("returns", {
-            id: `RT-${Date.now().toString().slice(-4)}`, channel: o ? "retail" : "wholesale", orderId: returnOrder, ownerId: account.id, ownerName: buyer?.status === "فعال" && !o ? buyer.name : account.name,
-            items: o ? o.lines.map((l) => `${l.name} ×${l.qty}`).join("، ") : sub ? sub.lines.map((l) => `${l.name} · ${l.qtySeries} سری`).join("، ") : "—",
-            reason: returnReason.trim(), resolution: o ? "refund" : "exchange", status: "requested", amount: o?.total ?? sub?.total ?? 0, createdAt: opsNow(), events: [{ t: "درخواست ثبت شد", at: opsNow() }],
-          }, true);
-          setReturnOrder(null); flash("درخواست مرجوعی ثبت شد و در پنل پشتیبانی قابل پیگیری است.");
+          if (isDemo) {
+            const o = store.retailOrders.find((x) => x.id === returnOrder);
+            const sub = !o ? store.orders.flatMap((po) => po.subOrders ?? []).find((s) => s.id === returnOrder) as any : undefined;
+            if (o) store.requestRetailReturn(account.id, returnOrder, returnReason);
+            ops.upsert("returns", {
+              id: `RT-${Date.now().toString().slice(-4)}`, channel: o ? "retail" : "wholesale", orderId: returnOrder, ownerId: account.id, ownerName: buyer?.status === "فعال" && !o ? buyer.name : account.name,
+              items: o ? o.lines.map((l) => `${l.name} ×${l.qty}`).join("، ") : sub ? sub.lines.map((l:any) => `${l.name} · ${l.qtySeries} سری`).join("، ") : "—",
+              reason: returnReason.trim(), resolution: o ? "refund" : "exchange", status: "requested", amount: o?.total ?? sub?.total ?? 0, createdAt: new Date().toLocaleDateString("fa-IR"), events: [{ t: "درخواست ثبت شد", at: new Date().toLocaleDateString("fa-IR") }],
+            } as any, true);
+            setReturnOrder(null); flash("درخواست مرجوعی ثبت شد و در پنل پشتیبانی قابل پیگیری است. (demo)");
+            return;
+          }
+          try {
+            const res = await returnsApi.create({ orderId: returnOrder, reason: returnReason.trim(), resolution: "refund" });
+            setReturnOrder(null); flash(`درخواست مرجوعی ${res.reference} ثبت شد.`);
+            const refreshed = await returnsApi.list();
+            setServerReturns((refreshed as any).items);
+          } catch (e) {
+            flash(e instanceof Error ? e.message : "خطا در ثبت مرجوعی");
+          }
         }}>ثبت درخواست بازگشت</Btn>
       </Drawer>
       {feedback && <div role="status" aria-live="polite" className="kv-glass fixed bottom-5 left-1/2 z-[90] -translate-x-1/2 rounded-[12px] px-5 py-3 text-[13px] font-bold kv-shadow-md">{feedback}</div>}
