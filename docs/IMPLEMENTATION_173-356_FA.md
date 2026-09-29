@@ -2,15 +2,15 @@
 
 مرجع: `docs/KOLBE_REQUIREMENTS_1-356_FA.md` · شاخه: `arena/01a0ed9a-kolbevintage`
 
-منبع حقیقت همه بخش‌ها PostgreSQL است (Migration `016_cms_style_profile_356.sql`). هیچ محصول، قیمت یا موجودی جداگانه‌ای در CMS، استایل‌بیلدر یا داشبورد نگه‌داری نمی‌شود؛ همه از `commerce-view.ts` (Catalog + Pricing + WMS) خوانده می‌شوند.
+منبع حقیقت همه بخش‌ها PostgreSQL است (Migrationهای `016_cms_style_profile_356.sql` و `017_seo_domain_media_variants.sql`). هیچ محصول، قیمت یا موجودی جداگانه‌ای در CMS، استایل‌بیلدر یا داشبورد نگه‌داری نمی‌شود؛ همه از `commerce-view.ts` (Catalog + Pricing + WMS) خوانده می‌شوند.
 
 ## اجرای تست‌ها
 
 ```bash
 cd backend
-npm run test:embedded          # ۷۸ تست (شامل experience.test.ts) روی PostgreSQL تعبیه‌شده
+npm run test:embedded          # ۸۴ تست (شامل experience.test.ts) روی PostgreSQL تعبیه‌شده
 node scripts/local-stack.mjs   # استک محلی + در ترمینال دیگر: npx vite (ریشه پروژه)
-LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۱۶ بررسی مرورگر
+LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۲۲ بررسی مرورگر
 ```
 
 ## ۱۷۳–۲۴۴ · بازطراحی CMS
@@ -20,7 +20,7 @@ LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۱
 | ۱۷۳ ساختار CMS | ✅ | `cms-studio.ts`، کنسول «استودیو CMS» (`admin-cms-studio.tsx`) |
 | ۱۷۴ خطای Hero | ✅ | خطای Binding هرگز صفحه را ۵۰۰ نمی‌کند؛ تست کامل «صفحه ← هیرو ← ویرایش ← انتشار ← GET» در `experience.test.ts` |
 | ۱۷۵–۱۷۶ رجیستری و Schema | ✅ | ۳۰+ کامپوننت با `field_schema`، `presets`، `variants` |
-| ۱۷۷ ویرایشگر | ✅ | افزودن/حذف/تکثیر/جابه‌جایی/پنهان‌کردن/پیکربندی/پیش‌نمایش (جابه‌جایی با دکمه، نه Drag) |
+| ۱۷۷ ویرایشگر | ✅ | افزودن/حذف/تکثیر/جابه‌جایی/پنهان‌کردن/پیکربندی/پیش‌نمایش؛ **Drag & Drop** برای ماوس (به‌روزرسانی خوش‌بینانه + ذخیره در پیش‌نویس) و دکمه‌های بالا/پایین برای کیبورد و لمس |
 | ۱۷۸–۱۷۹ کامپوننت‌ساز امن | ✅ | فقط Primitiveهای مجاز؛ `validateComposition` هر HTML/JS/لینک `javascript:` را رد می‌کند |
 | ۱۸۰–۱۸۲ Preset، شخصی‌سازی، Variant | ✅ | Variant/تم بخش/Override کنترل‌شده |
 | ۱۸۳–۱۸۴ پیش‌نمایش حالت‌ها و Responsive | ✅ | پیش‌نمایش کارت‌ها با داده نمونه (عنوان بلند، بدون تصویر، تخفیف)؛ دسکتاپ/تبلت/موبایل؛ «فقط موبایل/دسکتاپ» |
@@ -33,8 +33,8 @@ LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۱
 | ۲۱۸–۲۲۸ موتور تم و توکن‌ها | ✅ | ۶ Preset؛ زمان‌بندی با بازگشت خودکار؛ اتصال به کمپین؛ محافظ کنتراست ≥ ۴٫۵ |
 | ۲۲۹–۲۳۱ رسانه، کاربرد، جست‌وجو | ✅ | جلوگیری از حذف رسانه در حال استفاده (با فهرست کاربردها) |
 | ۲۳۲–۲۳۳ دسترسی‌ها و Audit | ✅ | `cms:edit/publish/templates/theme/components/media`؛ Audit همه عملیات مهم |
-| ۲۳۴ کارایی | ⚠️ بخشی | Lazy برای تصاویر کارت‌ها؛ Code-splitting پنل‌ها از قبل |
-| ۲۳۵ یکپارچگی SEO | ⚠️ بخشی | فیلدهای SEO صفحه/دسته/وایب ذخیره و روی `document.title` اعمال می‌شود؛ دامنه SEO مستقل (۵۳–۸۱) در این دامنه نبود |
+| ۲۳۴ کارایی | ✅ | `ResponsiveImg`: srcset/sizes با breakpointهای ثابت؛ رسانه کلبه به‌صورت WebP در سرور تولید و در `media_variants` کش می‌شود (`/api/v1/media/:id?w=640&fmt=webp`)؛ همه تصاویر Lazy به‌جز هیروی بخش اول که `eager` + `fetchpriority=high` است؛ ویدیو با `preload=metadata`/`none` و توقف در Reduced Motion؛ داده بخش‌ها در سرور Resolve می‌شود. توجه: build تک‌فایلی (`vite-plugin-singlefile`) است، پس `lazy()` پنل‌ها ارزیابی را به تعویق می‌اندازد ولی فایل جدا نمی‌سازد |
+| ۲۳۵ یکپارچگی SEO | ✅ | **دامنه SEO مستقل** (`seo.ts`، جدول `seo_entries` + نسخه‌ها): عنوان، توضیح، Canonical، Robots (index/follow)، Open Graph/Twitter، Schema.org (JSON-LD با Offer/Availability/Rating زنده برای محصول، Breadcrumb). صفحه/دسته/وایب/کالکشن/محصول فقط به آن متصل‌اند؛ فرم‌های CMS که `seo` می‌فرستند در همین دامنه می‌نویسند و تغییر slug کلید SEO را منتقل می‌کند. ویرایشگر با پیش‌نمایش زنده گوگل/اشتراک‌گذاری، بررسی سلامت، نسخه‌بندی خوش‌بینانه، Audit و رویداد `seo.updated`. `sitemap.xml` (بدون noindex) و `robots.txt`. مسیرهای Canonical (`/about`، `/vibe/…`، `/product/…`) مستقیماً صفحه مربوط را در SPA باز می‌کنند |
 | ۲۳۶–۲۳۷ Analytics و Automation Hooks | ✅ | `component.view`, `*.click`؛ Outbox: `cms.page.published/scheduled`, `cms.theme.activated`, `cms.campaign.activated` |
 | ۲۳۸–۲۴۱ منبع داده، پیشنهاد، نظرات، ترکیب صفحه اصلی | ✅ | صفحه اصلی کاملاً از CMS؛ نسخه Hardcode فقط وقتی صفحه‌ای ساخته نشده |
 
@@ -64,7 +64,7 @@ LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۱
 | ۳۱۹ منبع واحد | ✅ | همه از `commerce-view.ts` |
 | ۳۲۰–۳۲۱ بازخورد و دسترس‌پذیری | ✅ | Live region، `role=alert`، Escape برای مگامنو، کیبورد روی بوم، Reduced Motion |
 | ۳۲۲–۳۲۳ قواعد CMS و ایمنی Header/Footer | ✅ | |
-| ۳۲۴ Definition of Done | ⚠️ | موارد این محدوده تکمیل است؛ فیلتر پیشرفته، جست‌وجوی سروری، بلاگ و ویدیو (۲۸۴–۳۱۴) خارج از محدوده درخواست بودند |
+| ۳۲۴ Definition of Done | ✅ | همه موارد این محدوده تکمیل و تست شده است؛ فیلتر پیشرفته، جست‌وجوی سروری، بلاگ و ویدیو (۲۸۴–۳۱۴) و ۲۴۵–۲۴۷ طبق درخواست خارج از محدوده‌اند |
 
 ## ۳۲۵–۳۵۶ · فرم تطبیقی، نوار اعلان، پروفایل و داشبورد
 
@@ -73,7 +73,7 @@ LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۱
 | ۳۲۵–۳۲۶ فرم محصول مبتنی بر Template | ✅ | ۶ نوع محصول با قالب مشخصات و سایز؛ اعتبارسنجی مقادیر و سایزها در سرور؛ برای مدیر و تأمین‌کننده؛ نوع جدید بدون تغییر Frontend |
 | ۳۲۷–۳۳۲ نوار اعلان | ✅ | static/marquee/ticker/slider/rotating؛ رنگ، فونت، سرعت، جهت، ارتفاع، CTA، قابل بستن؛ اتصال به کمپین + شمارش معکوس؛ زمان‌بندی و اولویت |
 | ۳۳۳ دامنه واحد پروفایل | ✅ | `GET /profile` با پروفایل‌های نقش‌محور |
-| ۳۳۴ تصویر پروفایل | ✅ | JPG/PNG/WebP، حداکثر ۲MB، بررسی Magic Bytes و ابعاد در سرور؛ برش ۵۱۲×۵۱۲ در مرورگر (کتابخانه پردازش تصویر سمت سرور اضافه نشد) |
+| ۳۳۴ تصویر پروفایل | ✅ | Upload → Validation (MIME، Magic Bytes، ۲MB، ابعاد) → **Resize در سرور با sharp** (چرخش خودکار، برش مربعی ۵۱۲×۵۱۲، WebP، حذف EXIF/GPS) → Storage → Profile؛ فایل خراب رد می‌شود |
 | ۳۳۵–۳۳۷ ویرایش، تغییر موبایل/ایمیل با OTP، رمز | ✅ | OTP با هش، انقضا و حداکثر ۵ تلاش؛ تنظیم رمز با پیامک برای کاربران OTP؛ **ارسال ایمیل نیازمند اتصال سرویس ایمیل است** (در محیط توسعه کد نمایش داده می‌شود) |
 | ۳۳۸ پروفایل VIP | ✅ | پلن/عضویت در همان دامنه |
 | ۳۳۹–۳۴۱ سیاست تأیید تأمین‌کننده، نسخه، Audit | ✅ | تغییر مستقیم فیلدهای حساس در سرور مسدود است؛ Diff قدیم/جدید؛ تأیید ← نسخه جدید؛ رد با دلیل و اعلان |
@@ -84,6 +84,14 @@ LD_LIBRARY_PATH=/tmp/al2023/lib node scripts/browser-experience-smoke.mjs   # ۱
 | ۳۵۳ موبایل‌محور | ✅ | بررسی‌شده در ۳۹۰px |
 | ۳۵۴ ظاهر حساب از CMS | ✅ | بنر خوش‌آمد، کارت تبلیغ، کارت‌های راهنما |
 | ۳۵۵ معماری پروفایل | ✅ | User → Profile → Role-specific |
+| ۳۵۶ اصل ادامه توسعه | ✅ | هر دامنه به ترتیب Domain → Backend → API → Frontend → Tests → Browser Verification → Commit جداگانه اضافه شد (کامیت‌های جدا برای بک‌اند و فرانت؛ ۸۴ تست + ۲۲ بررسی مرورگر) |
+
+## وابستگی‌های بیرونی باقی‌مانده (نیاز به پیکربندی Production)
+
+- ارسال واقعی OTP ایمیل نیازمند اتصال سرویس ایمیل است (در محیط غیر Production کد نمایش داده می‌شود).
+- ورود دومرحله‌ای پیامکی از ملی‌پیامک استفاده می‌کند و به اعتبارنامه‌های `MELIPAYAMAK_*` نیاز دارد.
+- `sharp` یک ماژول Native است؛ اگر روی سرور در دسترس نباشد، آپلود متوقف نمی‌شود و فایل اصلی (پس از اعتبارسنجی) ذخیره می‌شود.
+- برای ایندکس‌شدن مسیرهای Canonical، هاست باید برای مسیرهای ناشناخته `index.html` را برگرداند (SPA fallback).
 
 ## اصلاحات جانبی که حین کار انجام شد
 

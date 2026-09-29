@@ -61,7 +61,34 @@ export type PageSection = {
     reviews?: { id: string; rating: number; title: string; body: string; display_name: string; product_name: string; verified_purchase: boolean; created_at: string }[];
     reviewSummary?: { average: number; total: number }; categories?: { id: string; name: string; slug: string; description: string; image_url: string | null; cover_url: string | null; card_template: string }[] };
 };
-export type SitePage = { id: string; code: string; title: string; path: string; page_type: string; status: string; seo: Record<string, string>; sections: PageSection[] };
+/* ---------- SEO Domain (Req 235) ---------- */
+export type SeoEntityType = "page" | "category" | "vibe" | "collection" | "product";
+export type ResolvedSeo = {
+  entityType: SeoEntityType; entityKey: string; title: string; description: string; canonical: string; robots: string; index: boolean;
+  og: { title: string; description: string; image: string | null; url: string; type: string; siteName: string; locale: string };
+  twitter: { card: string; title: string; description: string; image: string | null };
+  jsonLd: Record<string, unknown>[]; source: "seo_domain" | "derived"; version: number | null;
+};
+export type SeoEntry = {
+  id: string; title: string | null; description: string | null; canonical_path: string | null; robots_index: boolean; robots_follow: boolean;
+  og_title: string | null; og_description: string | null; og_image: string | null; twitter_card: "summary" | "summary_large_image";
+  schema_type: string | null; schema_extra: Record<string, unknown>; version: number; updated_at: string;
+};
+export type SeoWrite = {
+  title?: string | null; description?: string | null; canonicalPath?: string | null; robotsIndex?: boolean; robotsFollow?: boolean;
+  ogTitle?: string | null; ogDescription?: string | null; ogImage?: string | null; twitterCard?: "summary" | "summary_large_image";
+  schemaType?: string | null; schemaExtra?: Record<string, unknown>; expectedVersion?: number;
+};
+export type SeoListItem = { type: SeoEntityType; key: string; name: string; active: boolean; hasEntry: boolean; title: string | null; index: boolean; version: number | null; health: "good" | "fair" | "poor"; warnings: string[] };
+export const seoApi = {
+  resolve: (type: SeoEntityType, key: string) => publicApi.get<ResolvedSeo>(`/seo/${type}/${encodeURIComponent(key)}`),
+  list: (type?: SeoEntityType) => apiClient.get<{ items: SeoListItem[] }>(`/admin/seo${type ? `?type=${type}` : ""}`),
+  detail: (type: SeoEntityType, key: string) => apiClient.get<{ subject: { name: string; description: string; path: string; image: string | null; active: boolean }; entry: SeoEntry | null; resolved: ResolvedSeo; check: { errors: string[]; warnings: string[] }; history: { version: number; created_at: string }[] }>(`/admin/seo/${type}/${encodeURIComponent(key)}`),
+  preview: (type: SeoEntityType, key: string, payload: SeoWrite) => apiClient.post<{ resolved: ResolvedSeo; check: { errors: string[]; warnings: string[] } }>(`/admin/seo/${type}/${encodeURIComponent(key)}/preview`, payload),
+  save: (type: SeoEntityType, key: string, payload: SeoWrite) => apiClient.put<{ id: string; version: number; warnings: string[]; resolved: ResolvedSeo }>(`/admin/seo/${type}/${encodeURIComponent(key)}`, payload),
+};
+
+export type SitePage = { id: string; code: string; title: string; path: string; page_type: string; status: string; seo: ResolvedSeo | null; sections: PageSection[] };
 
 /* ------------------------------- public site ------------------------------- */
 
@@ -69,6 +96,7 @@ export const siteApi = {
   layout: () => publicApi.get<SiteLayout>("/site/layout"),
   theme: () => publicApi.get<{ theme: SiteTheme | null }>("/site/theme"),
   page: (code: string) => publicApi.get<SitePage>(`/site/pages/${encodeURIComponent(code)}`),
+  resolvePath: (path: string) => publicApi.get<{ kind: "page"; code: string }>(`/site/resolve-path?path=${encodeURIComponent(path)}`),
   collection: (code: string) => publicApi.get<{ title: string; products: CommerceProduct[] }>(`/site/collections/${code}`),
   cardTemplates: () => publicApi.get<{ items: { code: string; name: string; variant: string; blocks: string[]; styles: Record<string, unknown> }[] }>("/site/card-templates"),
   vibes: () => publicApi.get<{ items: { id: string; slug: string; name: string; description: string }[] }>("/site/vibes"),

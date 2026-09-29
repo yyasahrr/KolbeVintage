@@ -451,6 +451,7 @@ export function ProductStudio({ flash }: { flash: F }) {
             {sec === "seo" && <>
               <Field label="عنوان سئو"><Input value={d.seoTitle} onChange={(v) => setD({ ...d, seoTitle: v })} placeholder={d.name || "عنوان صفحه"} /></Field>
               <Field label="نامک"><Input value={d.slug} onChange={(v) => setD({ ...d, slug: v })} placeholder="/product/…" /></Field>
+              <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">عنوان پایه همراه محصول ذخیره می‌شود؛ توضیح متا، Canonical، ایندکس، تصویر شبکه‌های اجتماعی و Schema محصول (قیمت و موجودی زنده از سرور) پس از ذخیره در «استودیو CMS ← سئو ← محصولات» مدیریت می‌شود.</p>
               <p className="text-[12px] text-[var(--kv-muted)]">کانال‌ها: {[d.retailOn && "فروشگاه خرده", d.wholesaleOn && "بازارچه عمده", d.cutout.status === "ready" && "استایل‌بیلدر"].filter(Boolean).join("، ") || "هیچ‌کدام"}</p>
             </>}
             <div className="space-y-2 border-t border-[var(--kv-line)] pt-4">

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ArrowDown, ArrowUp, Copy, Eye, EyeOff, History, Image as ImageIcon, Loader2, Monitor, Plus, Search, Smartphone, Tablet, Trash2, Upload,
+  ArrowDown, ArrowUp, Copy, GripVertical, Eye, EyeOff, History, Image as ImageIcon, Loader2, Monitor, Plus, Search, Smartphone, Tablet, Trash2, Upload,
 } from "lucide-react";
 import {
   studioApi, mediaSrc, type Announcement, type CommerceProduct, type FooterConfig, type HeaderConfig, type AccountAppearance, type SitePage,
@@ -13,12 +13,13 @@ import { ServerAnnouncementBar } from "../components/site-chrome";
 import { PersianDatePicker } from "../components/persian-date-picker";
 import { Btn, Card, Drawer, Empty, ErrorState, Field, Input, LoadingState, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
+import { SeoDomainPanel, SeoLinkButton } from "./admin-seo";
 
 /* CMS Studio (Req 173-244, 274-283, 322-332): the console for the server-side CMS domains.
    Everything here persists through /admin/cms/*; server validation is the source of truth. */
 
 type F = (m: string) => void;
-type Tab = "pages" | "themes" | "cards" | "taxonomy" | "collections" | "assets" | "announcements" | "layout" | "builder" | "style" | "reviews" | "insights";
+type Tab = "pages" | "seo" | "themes" | "cards" | "taxonomy" | "collections" | "assets" | "announcements" | "layout" | "builder" | "style" | "reviews" | "insights";
 const fa = (n: number) => n.toLocaleString("fa-IR");
 const errMsg = (e: unknown, d = "خطا") => (e instanceof Error ? e.message : d);
 
@@ -39,7 +40,7 @@ export function CmsStudio({ flash }: { flash: F }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<{ id: string; code: string; title: string; kind: string }[] | null>(null);
   const tabs: { v: Tab; label: string }[] = [
-    { v: "pages", label: "صفحات و انتشار" }, { v: "themes", label: "تم و توکن‌ها" }, { v: "cards", label: "کارت محصول" }, { v: "taxonomy", label: "دسته و وایب" },
+    { v: "pages", label: "صفحات و انتشار" }, { v: "seo", label: "سئو" }, { v: "themes", label: "تم و توکن‌ها" }, { v: "cards", label: "کارت محصول" }, { v: "taxonomy", label: "دسته و وایب" },
     { v: "collections", label: "کالکشن‌ها" }, { v: "assets", label: "رسانه‌ها" }, { v: "announcements", label: "نوار اعلان" }, { v: "layout", label: "هدر و فوتر" },
     { v: "builder", label: "کامپوننت‌ساز" }, { v: "style", label: "هوش استایل" }, { v: "reviews", label: "نظرات" }, { v: "insights", label: "سرنخ و آمار" },
   ];
@@ -52,6 +53,7 @@ export function CmsStudio({ flash }: { flash: F }) {
       {results && <Card className="p-3"><div className="flex flex-wrap gap-2">{results.length === 0 ? <span className="text-[12.5px] text-[var(--kv-muted)]">نتیجه‌ای یافت نشد.</span> : results.map((r) => <span key={`${r.kind}-${r.id}`} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1 text-[12px]"><b>{r.title}</b> <span className="text-[var(--kv-muted)]">· {r.kind} · {r.code}</span></span>)}<button onClick={() => setResults(null)} className="text-[12px] text-[var(--kv-accent)]">بستن</button></div></Card>}
       <div className="kv-no-scrollbar -mx-1 flex gap-1 overflow-x-auto px-1">{tabs.map((t) => <button key={t.v} onClick={() => setTab(t.v)} aria-pressed={tab === t.v} className={cn("shrink-0 rounded-full px-3.5 py-2 text-[12.5px] font-bold", tab === t.v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "bg-[var(--kv-surface-2)]")}>{t.label}</button>)}</div>
       {tab === "pages" && <PagesPanel flash={flash} />}
+      {tab === "seo" && <SeoDomainPanel flash={flash} />}
       {tab === "themes" && <ThemesPanel flash={flash} />}
       {tab === "cards" && <CardsPanel flash={flash} />}
       {tab === "taxonomy" && <TaxonomyPanel flash={flash} />}
@@ -114,6 +116,7 @@ function PagesPanel({ flash }: { flash: F }) {
                   <Btn size="sm" variant="soft" onClick={() => setEditing({ id: p.id, title: p.title, code: p.code })}>بخش‌ها</Btn>
                   <Btn size="sm" variant="ghost" icon={<Eye size={13} />} onClick={async () => { try { setPreview(await studioApi.preview(p.id)); } catch (e) { flash(errMsg(e)); } }}>پیش‌نمایش</Btn>
                   <Btn size="sm" variant="accent" onClick={() => setPublishFor({ id: p.id, title: p.title, start: null, end: null, summary: "" })}>انتشار</Btn>
+                  <SeoLinkButton type="page" entityKey={p.code} name={p.title} flash={flash} />
                   <Btn size="sm" variant="ghost" icon={<History size={13} />} onClick={async () => { try { setVersions({ pageId: p.id, items: (await studioApi.versions(p.id)).items }); } catch (e) { flash(errMsg(e)); } }}>نسخه‌ها</Btn>
                   {p.status !== "draft" && <Btn size="sm" variant="ghost" onClick={async () => { try { await studioApi.unpublish(p.id); flash("صفحه به پیش‌نویس برگشت"); await load(); } catch (e) { flash(errMsg(e)); } }}>لغو انتشار</Btn>}
                 </div></td>
@@ -172,9 +175,23 @@ function SectionsEditor({ pageId, flash }: { pageId: string; flash: F }) {
   const festivals = useAsync(() => studioApi.festivals());
   const [edit, setEdit] = useState<{ id: string; componentCode: string; title: string; payload: Record<string, unknown>; newKey: string } | null>(null);
   const [addCode, setAddCode] = useState("");
+  // Req 177: drag & drop reorder (mouse/pen); arrow buttons remain for keyboard and touch.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  const [optimistic, setOptimistic] = useState<{ id: string }[] | null>(null);
   if (sections.error) return <ErrorState message={sections.error} onRetry={sections.load} />;
   if (!sections.data || !registry.data) return <LoadingState />;
-  const items = sections.data.items;
+  const serverItems = sections.data.items;
+  const items = optimistic ? optimistic.map((o) => serverItems.find((s) => s.id === o.id)!).filter(Boolean) : serverItems;
+  const dropOn = async (targetId: string, sourceId: string | null) => {
+    const from = items.findIndex((x) => x.id === sourceId); const to = items.findIndex((x) => x.id === targetId);
+    setDragId(null); setOverId(null);
+    if (from < 0 || to < 0 || from === to) return;
+    const list = [...items]; const [moved] = list.splice(from, 1); list.splice(to, 0, moved!);
+    setOptimistic(list.map((x) => ({ id: x.id })));
+    try { await studioApi.reorder(pageId, list.map((x) => x.id)); await sections.load(); flash("ترتیب بخش‌ها در پیش‌نویس ذخیره شد"); }
+    catch (e) { flash(errMsg(e)); } finally { setOptimistic(null); }
+  };
   const comps = registry.data.items as { code: string; title: string; variants: string[]; presets: string[]; kind: string; active: boolean }[];
   const move = async (i: number, d: -1 | 1) => {
     const j = i + d; if (j < 0 || j >= items.length) return;
@@ -191,7 +208,16 @@ function SectionsEditor({ pageId, flash }: { pageId: string; flash: F }) {
       <ul className="space-y-2">{items.map((s, i) => {
         const comp = comps.find((c) => c.code === s.componentCode);
         return (
-          <li key={s.id} className={cn("flex flex-wrap items-center gap-2 rounded-[12px] border p-2.5", s.visible ? "border-[var(--kv-line)]" : "border-dashed opacity-60")}>
+          <li key={s.id} draggable data-section-id={s.id}
+            onDragStart={(e) => { setDragId(s.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.id); }}
+            onDragOver={(e) => { if (!e.dataTransfer.types.includes("text/plain")) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (overId !== s.id) setOverId(s.id); }}
+            onDragLeave={() => { if (overId === s.id) setOverId(null); }}
+            onDrop={(e) => { e.preventDefault(); void dropOn(s.id, e.dataTransfer.getData("text/plain") || dragId); }}
+            onDragEnd={() => { setDragId(null); setOverId(null); }}
+            aria-roledescription="بخش قابل جابه‌جایی"
+            className={cn("flex flex-wrap items-center gap-2 rounded-[12px] border p-2.5 transition-colors", s.visible ? "border-[var(--kv-line)]" : "border-dashed opacity-60",
+              dragId === s.id && "opacity-40", overId === s.id && dragId !== s.id && "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]")}>
+            <span className="hidden cursor-grab select-none px-1 text-[var(--kv-muted)] active:cursor-grabbing sm:block" title="برای جابه‌جایی بکشید" aria-hidden><GripVertical size={16} /></span>
             <div className="flex flex-col"><button aria-label="بالا" onClick={() => move(i, -1)} className="flex h-7 w-8 items-center justify-center rounded hover:bg-[var(--kv-surface-2)]"><ArrowUp size={13} /></button><button aria-label="پایین" onClick={() => move(i, 1)} className="flex h-7 w-8 items-center justify-center rounded hover:bg-[var(--kv-surface-2)]"><ArrowDown size={13} /></button></div>
             <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">{s.title || s.componentCode}</p><p className="text-[11px] text-[var(--kv-muted)]">{comp?.title ?? s.componentCode}</p></div>
             <Btn size="sm" variant="soft" onClick={() => setEdit({ id: s.id, componentCode: s.componentCode, title: s.title, payload: { ...s.payload }, newKey: "" })}>ویرایش</Btn>
@@ -359,7 +385,10 @@ function TaxonomyPanel({ flash }: { flash: F }) {
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{data.items.map((t) => (
           <Card key={t.id} className="flex items-start justify-between gap-2 p-4">
             <div className="min-w-0"><p className="text-[13.5px] font-bold">{t.name}</p><p className="text-[11px] text-[var(--kv-muted)]" dir="ltr">/{kind === "vibes" ? "vibe" : "category"}/{t.slug}</p><p className="mt-1 line-clamp-2 text-[12px] text-[var(--kv-muted)]">{t.description}</p><p className="mt-1 text-[11px]">{fa(t.product_count)} محصول</p></div>
-            <Switch on={t.active} onToggle={async () => { try { await studioApi.updateTaxonomy(kind, t.id, { active: !t.active }); await load(); } catch (e) { flash(errMsg(e)); } }} />
+            <div className="flex flex-col items-end gap-2">
+              <Switch on={t.active} onToggle={async () => { try { await studioApi.updateTaxonomy(kind, t.id, { active: !t.active }); await load(); } catch (e) { flash(errMsg(e)); } }} />
+              <SeoLinkButton type={kind === "vibes" ? "vibe" : "category"} entityKey={t.slug} name={t.name} flash={flash} />
+            </div>
           </Card>
         ))}</div>
       )}
@@ -390,7 +419,7 @@ function CollectionsPanel({ flash }: { flash: F }) {
   const cats = Array.from(new Set(products.map((p) => p.category)));
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{data.items.map((c) => <Card key={c.id} className="p-4"><div className="flex items-center justify-between"><b className="text-[13px]">{c.title}</b><Status value={c.mode === "manual" ? "دستی" : "پویا"} /></div><p className="mt-1 text-[11px] text-[var(--kv-muted)]" dir="ltr">{c.code}</p><p className="mt-2 text-[11px] leading-5 text-[var(--kv-muted)]" dir="ltr">{c.mode === "manual" ? `${c.product_ids.length} products` : JSON.stringify(c.query_rules)}</p></Card>)}</div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{data.items.map((c) => <Card key={c.id} className="p-4"><div className="flex items-center justify-between"><b className="text-[13px]">{c.title}</b><Status value={c.mode === "manual" ? "دستی" : "پویا"} /></div><p className="mt-1 text-[11px] text-[var(--kv-muted)]" dir="ltr">{c.code}</p><p className="mt-2 text-[11px] leading-5 text-[var(--kv-muted)]" dir="ltr">{c.mode === "manual" ? `${c.product_ids.length} products` : JSON.stringify(c.query_rules)}</p><div className="mt-2"><SeoLinkButton type="collection" entityKey={c.code} name={c.title} flash={flash} /></div></Card>)}</div>
       <Card className="space-y-3 p-4">
         <p className="text-[14px] font-extrabold">کالکشن جدید</p>
         <div className="grid gap-2 sm:grid-cols-3"><Field label="کد"><Input value={form.code} onChange={(v) => setForm({ ...form, code: v.toLowerCase().replace(/[^a-z0-9-]/g, "") })} /></Field><Field label="عنوان"><Input value={form.title} onChange={(title) => setForm({ ...form, title })} /></Field>

@@ -3,6 +3,8 @@ import { ArrowLeft, BadgeCheck, Check, Loader2, Quote, ShoppingBag, Star } from 
 import { mediaSrc, rialToToman, siteApi, type CommerceProduct, type PageSection, type SitePage } from "../data/experience-api";
 import { fmtMoney } from "../data/catalog";
 import { HeroRenderer } from "./cms-render";
+import { ResponsiveImg } from "./responsive-img";
+import { applySeo, resetSeo } from "./seo-head";
 import type { HeroConfig } from "../data/ops";
 import { Btn, Empty, ErrorState, LoadingState } from "./primitives";
 import { useToast } from "./toast";
@@ -70,7 +72,7 @@ export function CommerceCard({ product, onOpen, onQuickAdd, pageCode }: { produc
     <article className={cn("group overflow-hidden p-2 transition-shadow hover:shadow-[var(--shadow-soft-md)]", tpl.frame)}>
       <button onClick={() => { siteApi.event({ eventType: "product_card.click", pageCode, targetId: product.id }); onOpen?.(product.id); }} className="block w-full text-right" aria-label={product.name}>
         <div className={cn("kv-img relative overflow-hidden rounded-[14px]", tpl.ratio)}>
-          {product.image ? <img src={mediaSrc(product.image)} alt={product.name} loading="lazy" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
+          {product.image ? <ResponsiveImg src={product.image} alt={product.name} sizes="(min-width: 768px) 25vw, 50vw" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
             : <div className="flex h-full w-full items-center justify-center bg-[var(--kv-surface-2)] text-[12px] text-[var(--kv-muted)]">بدون تصویر</div>}
           {badge && <span className={cn("absolute right-2 top-2 rounded-full px-2.5 py-1 text-[11px] font-bold", tpl.badge!.cls)}>{badge}</span>}
           {soldOut && <span className="absolute inset-x-2 bottom-2 rounded-lg bg-black/60 py-1 text-center text-[11.5px] font-bold text-white">ناموجود</span>}
@@ -162,7 +164,8 @@ function Heading({ title, subtitle, action }: { title: string; subtitle?: string
 
 /* ============================ Section switch ============================ */
 
-export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd }: { section: PageSection; pageCode: string; onNav: Nav; onOpenProduct?: (id: string) => void; onQuickAdd?: QuickAdd }) {
+export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd, index = 99 }: { section: PageSection; pageCode: string; onNav: Nav; onOpenProduct?: (id: string) => void; onQuickAdd?: QuickAdd; index?: number }) {
+  const eager = index === 0; // Req 234: only the first (above-the-fold) section loads media eagerly
   const ref = useViewEvent(pageCode, section);
   const p = section.payload;
   const r = section.resolved ?? {};
@@ -190,7 +193,7 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
         slides: Array.isArray(p.slides) ? (p.slides as HeroConfig["slides"]) : [{ image: mediaSrc(str(p.image)) ?? PLACEHOLDER, title: "", subtitle: "" }],
         mosaic: (Array.isArray(p.mosaic) ? (p.mosaic as string[]).map((m) => mediaSrc(m) ?? PLACEHOLDER) : products.slice(0, 4).map((x) => mediaSrc(x.image) ?? PLACEHOLDER)).concat(Array(4).fill(PLACEHOLDER)).slice(0, 4),
       };
-      return wrap(<><HeroRenderer h={hero} onNav={(t) => cta(hero.ctaLabel, t)()} />{campaignEnds && r.campaign?.live && <div className="mt-3"><Countdown endsAt={campaignEnds} title={`تا پایان ${r.campaign.name}`} tone="terra" /></div>}</>);
+      return wrap(<><HeroRenderer h={hero} priority={eager} onNav={(t) => cta(hero.ctaLabel, t)()} />{campaignEnds && r.campaign?.live && <div className="mt-3"><Countdown endsAt={campaignEnds} title={`تا پایان ${r.campaign.name}`} tone="terra" /></div>}</>);
     }
     case "countdown": {
       const endsAt = p.mode === "campaign" || r.campaign ? r.campaign?.ends_at : str(p.targetDate ?? p.endsAt);
@@ -204,7 +207,7 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
       </section>);
     case "promotion_banner": case "banner": case "promotional": case "cta":
       return wrap(<section className="relative overflow-hidden rounded-[20px] bg-[#1B2A4A] text-white kv-shadow-md">
-        {str(p.image) && <img src={mediaSrc(str(p.image))} alt="" className="absolute inset-0 h-full w-full object-cover opacity-40" />}
+        {str(p.image) && <ResponsiveImg src={str(p.image)} alt="" sizes="100vw" className="absolute inset-0 h-full w-full object-cover opacity-40" />}
         <div className="relative flex flex-wrap items-center justify-between gap-4 p-7 md:p-10">
           <div className="max-w-[560px]"><h2 className="text-[22px] font-extrabold md:text-[28px]">{str(p.title ?? p.text, section.title)}</h2>{str(p.subtitle ?? p.text) && str(p.title) && <p className="mt-2 text-[14px] leading-7 text-white/85">{str(p.subtitle ?? p.text)}</p>}
             {r.campaign?.live && <p className="mt-2 text-[12.5px] text-white/80">کمپین {r.campaign.name} فعال است</p>}</div>
@@ -230,7 +233,7 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
       return wrap(<section><Heading title={str(p.title, section.title)} />
         <div className={cn("grid gap-4", tpl === "horizontal" ? "md:grid-cols-2" : "grid-cols-2 md:grid-cols-3")}>
           {cats.map((c) => <button key={c.id} onClick={cta(c.name, "shop")} className={cn("group relative overflow-hidden text-right", tpl === "minimal" ? "rounded-[14px] border border-[var(--kv-line)] p-5" : "rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)]")}>
-            {tpl !== "minimal" && <div className={cn("bg-[var(--kv-surface-2)]", tpl === "horizontal" ? "h-28" : "aspect-[4/3]")}>{(c.cover_url || c.image_url) && <img src={mediaSrc(c.cover_url ?? c.image_url)} alt={c.name} loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />}</div>}
+            {tpl !== "minimal" && <div className={cn("bg-[var(--kv-surface-2)]", tpl === "horizontal" ? "h-28" : "aspect-[4/3]")}>{(c.cover_url || c.image_url) && <ResponsiveImg src={c.cover_url ?? c.image_url} alt={c.name} sizes="(min-width: 768px) 33vw, 50vw" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />}</div>}
             <div className={cn(tpl === "overlay" || tpl === "glass" ? "absolute inset-x-2 bottom-2 rounded-[12px] bg-[var(--kv-glass)] p-3 backdrop-blur-md" : "p-4")}><p className="text-[14.5px] font-extrabold">{c.name}</p><p className="mt-1 line-clamp-2 text-[12px] text-[var(--kv-muted)]">{c.description}</p></div>
           </button>)}
         </div></section>);
@@ -243,7 +246,7 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
       return wrap(<section className="grid overflow-hidden rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] md:grid-cols-2">
         <div className="flex flex-col justify-center p-8 md:p-14"><p className="text-[13px] font-bold text-[var(--kv-accent)]">{str(p.eyebrow)}</p><h1 className="kv-editorial-title mt-3 text-[30px] leading-[1.35] md:text-[44px]">{str(p.title, section.title)}</h1><p className="mt-4 text-[14.5px] leading-8 text-[var(--kv-muted)]">{str(p.subtitle)}</p>
           <p className="mt-6 text-[12.5px] text-[var(--kv-muted)]">{[str(p.yearFounded) && `از ${str(p.yearFounded)}`, str(p.location)].filter(Boolean).join(" · ")}</p></div>
-        <div className="kv-img min-h-[280px] bg-[var(--kv-surface-2)]">{str(p.image) && <img src={mediaSrc(str(p.image))} alt="" className="h-full w-full object-cover" />}</div></section>);
+        <div className="kv-img min-h-[280px] bg-[var(--kv-surface-2)]">{str(p.image) && <ResponsiveImg src={str(p.image)} alt="" priority={eager} sizes="(min-width: 768px) 50vw, 100vw" className="h-full w-full object-cover" />}</div></section>);
     case "text_section": case "brand_story": case "text_image": case "richtext":
       return wrap(<section className={cn("rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-6 md:p-10", p.alignment === "center" && "text-center")}><p className="text-[12.5px] font-bold text-[var(--kv-accent)]">{str(p.eyebrow)}</p><h2 className="kv-editorial-title mt-1 text-[24px]">{str(p.title, section.title)}</h2><p className={cn("mt-3 whitespace-pre-line text-[14px] leading-8 text-[var(--kv-muted)]", p.alignment === "center" ? "mx-auto max-w-[70ch]" : "max-w-[75ch]")}>{str(p.body ?? p.text)}</p></section>);
     case "timeline":
@@ -296,10 +299,10 @@ export function Composable({ nodes, payload, product, onNav }: { nodes: Composab
       case "grid": return <div key={i} className={cn("grid gap-3", Number(pr.columns) === 3 ? "md:grid-cols-3" : "md:grid-cols-2")}>{kids}</div>;
       case "stack": return <div key={i} className="flex flex-col gap-2">{kids}</div>;
       case "text": return <p key={i} className={cn("leading-7", pr.size === "lg" ? "text-[18px] font-extrabold" : "text-[13.5px]")}>{bind(pr.value)}</p>;
-      case "image": return bind(pr.src) ? <img key={i} src={mediaSrc(bind(pr.src))} alt={bind(pr.alt)} loading="lazy" className="w-full rounded-[12px] object-cover" /> : null;
+      case "image": return bind(pr.src) ? <ResponsiveImg key={i} src={bind(pr.src)} alt={bind(pr.alt)} sizes="(min-width: 768px) 33vw, 100vw" className="w-full rounded-[12px] object-cover" /> : null;
       case "badge": return <span key={i} className="inline-block rounded-full bg-[var(--kv-accent)] px-2.5 py-1 text-[11px] font-bold text-white">{bind(pr.value)}</span>;
       case "button": return <Btn key={i} variant="accent" size="sm" onClick={() => onNav(bind(pr.href) || "shop")}>{bind(pr.label) || "مشاهده"}</Btn>;
-      case "product_image": return product?.image ? <img key={i} src={mediaSrc(product.image)} alt={product.name} className="aspect-[3/4] w-full rounded-[12px] object-cover" /> : null;
+      case "product_image": return product?.image ? <ResponsiveImg key={i} src={product.image} alt={product.name} sizes="(min-width: 768px) 25vw, 50vw" className="aspect-[3/4] w-full rounded-[12px] object-cover" /> : null;
       case "product_title": return product ? <p key={i} className="text-[14px] font-bold">{product.name}</p> : null;
       case "price": return product ? <p key={i} className="text-[14px] font-extrabold tabular-nums">{fmtMoney(rialToToman(product.priceRial))}</p> : null;
       case "installment_info": return product?.perInstallmentRial ? <p key={i} className="text-[12px] text-[var(--kv-muted)]">۴ قسط × {fmtMoney(rialToToman(product.perInstallmentRial))}</p> : null;
@@ -313,7 +316,7 @@ export function Composable({ nodes, payload, product, onNav }: { nodes: Composab
 /* ============================ Page view (About, landings, vibes) ============================ */
 
 export function CmsSections({ page, onNav, onOpenProduct, onQuickAdd }: { page: SitePage; onNav: Nav; onOpenProduct?: (id: string) => void; onQuickAdd?: QuickAdd }) {
-  return <div className="space-y-10">{page.sections.map((s) => <CmsSection key={s.id} section={s} pageCode={page.code} onNav={onNav} onOpenProduct={onOpenProduct} onQuickAdd={onQuickAdd} />)}</div>;
+  return <div className="space-y-10">{page.sections.map((s, i) => <CmsSection key={s.id} index={i} section={s} pageCode={page.code} onNav={onNav} onOpenProduct={onOpenProduct} onQuickAdd={onQuickAdd} />)}</div>;
 }
 
 export function CmsPageView({ code, onNav, onOpenProduct, onQuickAdd }: { code: string; onNav: Nav; onOpenProduct?: (id: string) => void; onQuickAdd?: QuickAdd }) {
@@ -325,13 +328,14 @@ export function CmsPageView({ code, onNav, onOpenProduct, onQuickAdd }: { code: 
     try {
       const res = await siteApi.page(code);
       setPage(res);
-      if (res.seo?.title) document.title = res.seo.title;
+      applySeo(res.seo); // Req 235: head tags come from the SEO Domain
     } catch (e) {
       const status = (e as { status?: number }).status;
       if (status === 404) setMissing(true); else setError(e instanceof Error ? e.message : "خطا در بارگذاری صفحه");
     }
   };
   useEffect(() => { void load(); window.scrollTo({ top: 0 }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [code]);
+  useEffect(() => () => resetSeo(), []);
   return (
     <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-6 md:px-8">
       {error && <ErrorState message={error} onRetry={load} />}

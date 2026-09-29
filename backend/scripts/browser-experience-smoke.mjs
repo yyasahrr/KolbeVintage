@@ -41,6 +41,14 @@ try {
   check('Server footer renders trust badges', (await text()).includes('ضمانت اصالت ۱۰۰٪'));
   await shot('01-home');
   await shot('01-home-full', true);
+  /* Req 234: hero is never lazy; product cards are lazy with responsive srcset */
+  const imgInfo = await page.evaluate(() => {
+    const hero = document.querySelector('[data-component="hero"] img');
+    const card = document.querySelector('[data-component="product_grid"] img, [data-component="product_carousel"] img');
+    return { heroLoading: hero?.getAttribute('loading'), heroPriority: hero?.getAttribute('fetchpriority'), cardLoading: card?.getAttribute('loading'), cardSrcset: card?.getAttribute('srcset') ?? '', cardSizes: card?.getAttribute('sizes') ?? '' };
+  });
+  check('Hero image loads eagerly with high fetch priority (Req 234)', imgInfo.heroLoading === 'eager' && imgInfo.heroPriority === 'high', JSON.stringify({ l: imgInfo.heroLoading, p: imgInfo.heroPriority }));
+  check('Product card images are lazy with responsive srcset/sizes (Req 234)', imgInfo.cardLoading === 'lazy' && /\s320w/.test(imgInfo.cardSrcset) && imgInfo.cardSizes.length > 0, imgInfo.cardSrcset.slice(0, 90));
 
   const added = await clickText('button', 'افزودن به سبد');
   await sleep(700);
@@ -55,6 +63,23 @@ try {
   const aboutComponents = await page.$$eval('[data-component]', (els) => els.map((e) => e.getAttribute('data-component')));
   check('About page is CMS-driven (story, timeline, values, stats)', ['story_hero', 'timeline', 'values_grid', 'stats_strip'].every((c) => aboutComponents.includes(c)), aboutComponents.join(','));
   await shot('03-about', true);
+  await page.waitForFunction(() => !!document.querySelector('link[rel="canonical"]'), { timeout: 8000 }).catch(() => undefined);
+  const head = await page.evaluate(() => ({
+    title: document.title, canonical: document.querySelector('link[rel="canonical"]')?.getAttribute('href') ?? '',
+    robots: document.querySelector('meta[name="robots"]')?.getAttribute('content') ?? '', og: document.querySelector('meta[property="og:title"]')?.getAttribute('content') ?? '',
+    descriptions: document.querySelectorAll('meta[name="description"]').length,
+    ld: [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) => JSON.parse(s.textContent || '{}')['@type']),
+  }));
+  check('About head comes from the SEO Domain: title, canonical, robots, OG, JSON-LD (Req 235)',
+    head.title.includes('درباره ما') && head.canonical.endsWith('/about') && head.robots === 'index,follow' && head.og.length > 0 && head.ld.includes('AboutPage') && head.ld.includes('BreadcrumbList') && head.descriptions === 1,
+    JSON.stringify(head));
+  /* Canonical paths deep-link into the SPA */
+  await page.goto(`${BASE}/vibe/old-money`, { waitUntil: 'networkidle2' });
+  await page.waitForFunction(() => document.body.innerText.includes('Old Money'), { timeout: 15000 }).catch(() => undefined);
+  const vibeHead = await page.evaluate(() => ({ title: document.title, canonical: document.querySelector('link[rel="canonical"]')?.getAttribute('href') ?? '' }));
+  check('Canonical /vibe/old-money opens the vibe landing with its SEO head', (await text()).includes('Old Money') && vibeHead.canonical.endsWith('/vibe/old-money'), JSON.stringify(vibeHead));
+  await shot('03b-vibe-deeplink');
+  await page.goto(BASE, { waitUntil: 'networkidle2' });
 
   /* ---------- Style Builder ---------- */
   await page.goto(`${BASE}/#/style/NOPE000`, { waitUntil: 'networkidle2' });
@@ -122,6 +147,46 @@ try {
     await shot(name, true);
   }
   check('Card templates render with quality gate', (await page.evaluate(() => document.body.innerText)).length > 0);
+
+  /* ---------- SEO Domain editor (Req 235) ---------- */
+  await clickText('button[aria-pressed]', 'سئو');
+  await page.waitForFunction(() => document.body.innerText.includes('دامنه سئو'), { timeout: 15000 }).catch(() => undefined);
+  await page.evaluate(() => { [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'وایب‌ها')?.click(); });
+  await page.waitForFunction(() => [...document.querySelectorAll('li button')].some((b) => b.textContent?.includes('old-money') && !b.textContent?.includes('vibe-')), { timeout: 10000 }).catch(() => undefined);
+  await page.evaluate(() => { [...document.querySelectorAll('li button')].find((b) => b.textContent?.includes('old-money') && !b.textContent?.includes('vibe-'))?.click(); });
+  await page.waitForFunction(() => document.body.innerText.includes('پیش‌نمایش نتیجه گوگل'), { timeout: 15000 }).catch(() => undefined);
+  const titleInput = await page.$('input[placeholder="Old Money"], input[placeholder*="Old Money"]');
+  const seoTitle = `اولد مانی کلبه ${Date.now() % 1000}`;
+  if (titleInput) { await titleInput.click({ clickCount: 3 }); await titleInput.type(seoTitle); }
+  await sleep(1200);
+  const livePreview = (await text()).includes(`${seoTitle} | کلبه وینتج`);
+  await clickText('button', 'ذخیره در دامنه سئو');
+  await sleep(1500);
+  const publicSeo = await (await fetch(`${BASE}/api/v1/seo/vibe/old-money`)).json();
+  check('SEO editor: live Google preview + save to SEO Domain + public head updated', livePreview && publicSeo.title === `${seoTitle} | کلبه وینتج` && publicSeo.source === 'seo_domain', publicSeo.title);
+  await shot('15-admin-seo', true);
+
+  /* ---------- Visual editor drag & drop reorder (Req 177) ---------- */
+  await clickText('button[aria-pressed]', 'صفحات و انتشار');
+  await sleep(1200);
+  await page.evaluate(() => { const row = [...document.querySelectorAll('tr')].find((r) => r.textContent?.includes('درباره ما')); [...(row?.querySelectorAll('button') ?? [])].find((b) => b.textContent?.includes('بخش‌ها'))?.click(); });
+  await page.waitForSelector('li[data-section-id]', { timeout: 15000 }).catch(() => undefined);
+  const before = await page.$$eval('li[data-section-id]', (els) => els.map((e) => e.getAttribute('data-section-id')));
+  if (before.length >= 2) {
+    await page.evaluate((fromId, toId) => {
+      const from = document.querySelector(`li[data-section-id="${fromId}"]`); const to = document.querySelector(`li[data-section-id="${toId}"]`);
+      const dt = new DataTransfer();
+      dt.setData('text/plain', fromId);
+      from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      to.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      to.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      from.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    }, before[0], before[1]);
+    await sleep(2000);
+  }
+  const after = await page.$$eval('li[data-section-id]', (els) => els.map((e) => e.getAttribute('data-section-id')));
+  check('Sections reorder by drag & drop and persist to the draft (Req 177)', before.length >= 2 && after[0] === before[1] && after[1] === before[0], `${before.length} sections`);
+  await shot('16-admin-dnd', true);
 } catch (error) {
   check('smoke crashed', false, error instanceof Error ? error.message : String(error));
   await shot('zz-crash').catch(() => undefined);

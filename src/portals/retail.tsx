@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { ResponsiveImg } from "../components/responsive-img";
+import { useEntitySeo } from "../components/seo-head";
 import {
   ArrowLeft, BadgeCheck, Truck, RotateCcw, ShieldCheck, Heart, Star, ShoppingBag,
   SlidersHorizontal, Eye, Sparkles, Ruler, Check, ChevronLeft, Minus, Plus, Trash2, CreditCard, MapPin,
@@ -53,7 +55,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
       <div className="kv-img-zoom relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
         <button onClick={onOpen} className="block w-full text-right" aria-label={p.name}>
           <div className="kv-img aspect-[3/4] w-full overflow-hidden">
-            <img src={p.images[0]} alt={p.name} loading="lazy" className="h-full w-full object-cover" />
+            <ResponsiveImg src={p.images[0]} alt={p.name} sizes="(min-width: 1024px) 25vw, 50vw" className="h-full w-full object-cover" />
           </div>
         </button>
         {p.badge && (
@@ -136,7 +138,7 @@ function Hero({ onShop, onLook }: { onShop: () => void; onLook: () => void }) {
           </div>
         </div>
         <div className="kv-img relative min-h-[340px] md:min-h-[560px]">
-          <img src={IMG.trenchHero} alt="ترنچ‌کت شنی کلبه" className="absolute inset-0 h-full w-full object-cover" />
+          <ResponsiveImg src={IMG.trenchHero} alt="ترنچ‌کت شنی کلبه" priority sizes="(min-width: 768px) 50vw, 100vw" className="absolute inset-0 h-full w-full object-cover" />
           <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/35 to-transparent" />
           <div className="kv-glass absolute bottom-5 right-5 left-5 flex items-center justify-between rounded-[14px] px-4 py-3">
             <div>
@@ -190,12 +192,12 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
           <div className="flex w-[76px] shrink-0 flex-col gap-2.5">
             {p.images.map((im, i) => (
               <button key={i} onClick={() => setImg(i)} className={cn("overflow-hidden rounded-[12px] border-2 transition-all", img === i ? "border-[var(--kv-accent)]" : "border-[var(--kv-line)] opacity-70 hover:opacity-100")}>
-                <img src={im} alt="" className="aspect-[3/4] w-full object-cover" />
+                <ResponsiveImg src={im} alt="" widths={[160, 320]} sizes="76px" className="aspect-[3/4] w-full object-cover" />
               </button>
             ))}
           </div>
           <div className="kv-img relative flex-1 overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
-            <img key={img} src={p.images[img]} alt={p.name} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
+            <ResponsiveImg key={img} src={p.images[img]} alt={p.name} priority sizes="(min-width: 1024px) 45vw, 100vw" className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
             {p.badge && <span className="absolute right-4 top-4"><Status value={p.badge} dot={false} /></span>}
           </div>
         </div>
@@ -313,6 +315,8 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [couponMsg, setCouponMsg] = useState("");
 
   const selected = useMemo(() => retailProducts.find((p) => p.id === selectedId) ?? null, [selectedId, retailProducts]);
+  // Req 235: product detail head (title, canonical, Product JSON-LD) comes from the SEO Domain.
+  useEntitySeo("product", selected && /^[0-9a-f-]{36}$/i.test(selected.id) ? selected.id : null);
 
   const filtered = useMemo(() => {
     let list = [...retailProducts];
@@ -683,7 +687,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {COLLECTIONS.map((c) => (
             <button key={c.name} onClick={() => { setCat(c.name === "بارانی و مانتو" ? "مانتو و بارانی" : c.name === "پیراهن‌ها" ? "پیراهن" : c.name === "کت و بلیزر" ? "کت و بلیزر" : "شومیز"); setView("shop"); }} className="kv-card-hover group relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] text-right">
-              <div className="kv-img aspect-[4/5]"><img src={c.img} alt={c.name} loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" /></div>
+              <div className="kv-img aspect-[4/5]"><ResponsiveImg src={c.img} alt={c.name} sizes="(min-width: 768px) 33vw, 50vw" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" /></div>
               <div className="absolute inset-0 bg-gradient-to-t from-[#0E1527]/70 via-transparent to-transparent" />
               <div className="absolute inset-x-0 bottom-0 p-4 text-[#FAF6EF]">
                 <p className="text-[15px] font-extrabold">{c.name}</p>
@@ -747,7 +751,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         <div className="grid gap-5 md:grid-cols-3">
           {JOURNAL.map((j) => (
             <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-              <div className="kv-img aspect-[16/10] overflow-hidden"><img src={j.img} alt={j.title} loading="lazy" className="h-full w-full object-cover" /></div>
+              <div className="kv-img aspect-[16/10] overflow-hidden"><ResponsiveImg src={j.img} alt={j.title} sizes="(min-width: 768px) 33vw, 100vw" className="h-full w-full object-cover" /></div>
               <div className="p-5">
                 <p className="text-xs font-bold text-[var(--kv-accent)]">{j.cat} · {j.read}</p>
                 <h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3>

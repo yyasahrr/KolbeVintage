@@ -19,6 +19,7 @@ import { OpsProvider, useOps } from "./data/ops";
 import { AnnouncementBar, type NavTarget } from "./components/cms-render";
 import { ServerAnnouncementBar, ServerFooter, useSiteExperience, useThemeTokens } from "./components/site-chrome";
 import { CmsPageView } from "./components/cms-blocks";
+import { siteApi } from "./data/experience-api";
 import { ToastProvider, useToast } from "./components/toast";
 import { FloatingSupport } from "./components/support";
 import type { AccountTab } from "./portals/account";
@@ -118,7 +119,15 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
 
   // Shared style links (#/style/CODE) open the Style Builder directly (Req 269).
   useEffect(() => {
-    if (window.location.hash.startsWith("#/style/")) { setStudioTab("builder"); setSection("studio"); }
+    if (window.location.hash.startsWith("#/style/")) { setStudioTab("builder"); setSection("studio"); return; }
+    // Canonical paths issued by the SEO Domain (Req 235) open the matching storefront surface.
+    const path = window.location.pathname.replace(/\/+$/, "");
+    if (!path || path === "/" || window.location.hash.length > 2) return;
+    const [, kind, key] = path.split("/");
+    if (kind === "product" && key) { setSection("retail"); setView("shop"); setSelectedId(decodeURIComponent(key)); return; }
+    if (kind === "vibe" && key) { setPageCode(`vibe-${decodeURIComponent(key)}`); setSection("page"); return; }
+    if ((kind === "collection" || kind === "category" || kind === "shop") ) { setSection("retail"); setView("shop"); return; }
+    siteApi.resolvePath(path).then((r) => { setPageCode(r.code); setSection("page"); }).catch(() => undefined);
   }, []);
   // No kolbe-session — business identity comes only from /auth/me (accessToken + refresh cookie). Guest cart is kept transient in memory + localStorage guest-cart if needed.
   useEffect(() => {
