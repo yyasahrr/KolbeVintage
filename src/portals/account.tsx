@@ -16,8 +16,11 @@ import { CustomerAddressesPanel } from "../components/customer-addresses";
 import { CustomerOrdersPanel } from "../components/customer-orders-panel";
 import { cn } from "../utils/cn";
 import { addressesApi, authApi, membershipApi, ordersApi, returnsApi, wishlistApi } from "../data/api";
+import { CouponWallet, CustomerTimelineView, DashboardOverview, InvoiceCenter, ProfileCenter, ReviewCenter, SavedStylesCenter, SecurityCenter } from "./account-center";
+import { FileText, Gift, History, ShieldCheck, Star } from "lucide-react";
 
-export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile";
+export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile"
+  | "coupons" | "reviews" | "invoices" | "security" | "timeline";
 
 const emptyAddress = (account: CustomerAccount): CustomerAddress => ({
   id: "", title: "خانه", recipient: account.name === "مشتری کلبه" ? "" : account.name,
@@ -25,8 +28,10 @@ const emptyAddress = (account: CustomerAccount): CustomerAddress => ({
 });
 
 export default function AccountExperience({
-  account, buyer, tab, setTab, onShop, onWholesale, onOpenProduct, onCheckout, onStudio, onLogout,
+  account, buyer, tab, setTab, onShop, onWholesale, onOpenProduct, onCheckout, onStudio, onLogout, cartCount = 0, onAddItems,
 }: {
+  cartCount?: number;
+  onAddItems?: (lines: { id: string; size: string; color: string }[]) => void;
   account: CustomerAccount;
   buyer?: Buyer;
   tab: AccountTab;
@@ -132,9 +137,15 @@ export default function AccountExperience({
     { id: "styles", label: "استایل‌های ذخیره‌شده", icon: <Sparkles size={17} /> },
     { id: "membership", label: "عضویت عمده", icon: <Crown size={17} /> },
     { id: "support", label: "پشتیبانی", icon: <CircleHelp size={17} /> },
+    { id: "coupons", label: "کوپن‌های من", icon: <Gift size={17} /> },
+    { id: "reviews", label: "مرکز نظرات", icon: <Star size={17} /> },
+    { id: "invoices", label: "فاکتورها", icon: <FileText size={17} /> },
+    { id: "timeline", label: "فعالیت‌های من", icon: <History size={17} /> },
     { id: "notifications", label: "اعلان‌ها", icon: <Bell size={17} /> },
     { id: "profile", label: "اطلاعات حساب", icon: <User size={17} /> },
+    { id: "security", label: "امنیت حساب", icon: <ShieldCheck size={17} /> },
   ];
+  const go = (next: string) => (next === "cart" ? onCheckout() : setTab(next as AccountTab));
 
   const saveAddress = async () => {
     if (!editingAddress) return;
@@ -299,8 +310,8 @@ export default function AccountExperience({
         </div>
       </header>
 
-      <div className="grid gap-7 lg:grid-cols-[230px_minmax(0,1fr)]">
-        <aside className="lg:sticky lg:top-24 lg:self-start">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-7 lg:grid-cols-[230px_minmax(0,1fr)]">
+        <aside className="min-w-0 lg:sticky lg:top-24 lg:self-start">
           <nav aria-label="بخش‌های حساب من" className="kv-no-scrollbar flex gap-1 overflow-x-auto border-b border-[var(--kv-line)] pb-2 lg:flex-col lg:overflow-visible lg:border-b-0 lg:border-l lg:pb-0 lg:pl-3">
             {items.map((item) => (
               <button key={item.id} onClick={() => setTab(item.id)} aria-current={tab === item.id ? "page" : undefined}
@@ -313,7 +324,13 @@ export default function AccountExperience({
         </aside>
 
         <div className="min-w-0 animate-[fadeIn_0.25s_ease]" key={tab}>
-          {tab === "overview" && (
+          {tab === "overview" && !isDemo && <DashboardOverview go={go} onOpenProduct={onOpenProduct} onShop={onShop} onStudio={onStudio} cartCount={cartCount} />}
+          {tab === "coupons" && <CouponWallet />}
+          {tab === "reviews" && <ReviewCenter />}
+          {tab === "invoices" && <InvoiceCenter />}
+          {tab === "timeline" && <CustomerTimelineView />}
+          {tab === "security" && <SecurityCenter onLoggedOut={onLogout} />}
+          {tab === "overview" && isDemo && (
             <div className="space-y-9">
               <section>
                 <div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-[19px] font-extrabold">سفارش‌های اخیر</h2><button onClick={() => setTab("orders")} className="inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-accent)]">همه سفارش‌ها <ArrowLeft size={14} /></button></div>
@@ -373,7 +390,8 @@ export default function AccountExperience({
             </section></div></div>
           )}
 
-          {tab === "styles" && (
+          {tab === "styles" && !isDemo && <SavedStylesCenter onStudio={onStudio} onAddItems={onAddItems} />}
+          {tab === "styles" && isDemo && (
             <section><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">استایل‌های ذخیره‌شده</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">ترکیب‌هایی که در بوم استایلِ پرو مجازی ذخیره کرده‌اید.</p></div><Btn variant="soft" size="sm" onClick={onStudio} icon={<Sparkles size={15} />}>ساخت استایل</Btn></div>
               {account.savedStyles.length ? <div className="grid gap-4 sm:grid-cols-2">{account.savedStyles.map((style) => <div key={style.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4"><div className="flex gap-1.5">{style.productIds.slice(0, 3).map((id) => { const p = PRODUCTS.find((x) => x.id === id); return p ? <img key={id} src={p.images[0]} alt={p.name} className="aspect-[3/4] min-w-0 flex-1 rounded-[9px] object-cover" /> : null; })}</div><div className="mt-3 flex items-center justify-between gap-2"><div><p className="text-[13.5px] font-bold">{style.title}</p><p className="text-xs text-[var(--kv-muted)]">{style.savedAt} · {fmtNum(style.productIds.length)} محصول</p></div><button onClick={() => { if(isDemo) store.updateAccount(account.id, { savedStyles: account.savedStyles.filter((s) => s.id !== style.id) }); }} aria-label="حذف استایل" className="text-[var(--kv-muted)] hover:text-[var(--kv-danger)]"><Trash2 size={16} /></button></div></div>)}</div> : <Empty title="استایلی ذخیره نشده" desc="از صفحه پرو مجازی وارد بوم استایل شوید و ترکیب دلخواه را ذخیره کنید." action={<Btn variant="accent" size="sm" onClick={onStudio}>رفتن به پرو مجازی</Btn>} />}
             </section>
@@ -407,7 +425,8 @@ export default function AccountExperience({
             </section>
           )}
 
-          {tab === "profile" && (
+          {tab === "profile" && !isDemo && <ProfileCenter onUpdated={(name) => setProfile((prev) => ({ ...prev, name }))} />}
+          {tab === "profile" && isDemo && (
             <section className="max-w-[620px]"><div className="mb-5"><h2 className="text-[21px] font-extrabold">اطلاعات حساب</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">همین اطلاعات برای سفارش‌های خرده و عمده استفاده می‌شوند.</p></div><div className="space-y-4 rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-5"><Field label="نام و نام خانوادگی"><Input value={profile.name} onChange={(v) => setProfile({ ...profile, name: v })} /></Field><Field label="شماره همراه" hint="برای تغییر شماره همراه باید دوباره احراز هویت شوید."><div className="rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-3 text-[13px] text-[var(--kv-muted)] tabular-nums">{account.phone}</div></Field><Field label="ایمیل"><Input value={profile.email} onChange={(v) => setProfile({ ...profile, email: v })} placeholder="name@example.com" /></Field><Field label="تاریخ تولد (اختیاری)"><Input value={profile.birthday} onChange={(v) => setProfile({ ...profile, birthday: v })} placeholder="۱۴۰۰/۰۱/۰۱" /></Field><Btn variant="accent" size="sm" disabled={!profile.name.trim()} onClick={saveProfile}>ذخیره تغییرات</Btn></div><p className="mt-4 text-[12px] text-[var(--kv-muted)]">عضو کلبه از {account.joinedAt}</p></section>
           )}
         </div>

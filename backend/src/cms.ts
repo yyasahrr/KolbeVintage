@@ -84,6 +84,13 @@ const BASE_SECTIONS: { componentCode: string; title: string; payload: Record<str
   { componentCode: 'hero', title: 'هیرو صفحه اصلی', payload: DEFAULT_HERO, position: 0 },
   { componentCode: 'product_slider', title: 'محصولات منتخب', payload: { heading: 'منتخب کلبه', limit: 8 }, position: 1 },
   { componentCode: 'cta', title: 'دعوت به خرید عمده', payload: { text: 'تأمین عمده پوشاک با شرایط ویژه', ctaLabel: 'درخواست همکاری', ctaTarget: 'wholesale' }, position: 2 },
+  // Component library on a fresh DB (Req 213): every block is bound to live commerce data, never copies.
+  { componentCode: 'category_card', title: 'دسته‌بندی‌ها', payload: { title: 'دسته‌بندی‌های کلبه', template: 'editorial', columns: 3 }, position: 3 },
+  { componentCode: 'product_grid', title: 'تازه‌رسیده‌ها', payload: { title: 'تازه‌رسیده‌ها', subtitle: 'جدیدترین مدل‌های موجود در انبار', collectionCode: 'new-arrivals', limit: 8 }, position: 4 },
+  { componentCode: 'installment_card', title: 'خرید اقساطی', payload: { provider: 'snapppay', installmentsCount: 4, title: 'خرید چهارقسطه بدون کارمزد', subtitle: 'مبلغ هر قسط از قیمت واقعی محصول محاسبه می‌شود.' }, position: 5 },
+  { componentCode: 'recommendation_section', title: 'محبوب‌ترین‌ها', payload: { title: 'محبوب‌ترین‌های کلبه', strategy: 'popular', limit: 4 }, position: 6 },
+  { componentCode: 'review_section', title: 'نظر مشتریان', payload: { title: 'مشتریان کلبه چه می‌گویند', limit: 3, showSummary: true }, position: 7 },
+  { componentCode: 'newsletter', title: 'خبرنامه', payload: { title: 'باشگاه کلبه', text: 'از کالکشن‌های جدید و پیشنهادهای ویژه زودتر باخبر شوید.', tone: 'stone' }, position: 8 },
 ];
 
 /** Creates (or returns) the default palette and makes it the active manual palette. Idempotent. */

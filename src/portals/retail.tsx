@@ -13,25 +13,39 @@ import { useOps } from "../data/ops";
 import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage } from "../data/contracts";
 import { cmsApi, ordersApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
+import { CmsSections } from "../components/cms-blocks";
+import { ProductReviews } from "../components/product-reviews";
+import { useToast } from "../components/toast";
+import { accountApi, siteApi, type CommerceProduct, type SitePage } from "../data/experience-api";
+import { isAuthenticated } from "../data/api";
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
 import { cn } from "../utils/cn";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
 
+/** Retail sizes come from real server variants; legacy demo products fall back to series composition. */
+export const productSizes = (p: Product) => (p.sizes?.length ? p.sizes : Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition ?? {})))));
+
 /* ============ Retail product card — image-first, 70% visual ============ */
 export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
   p: Product; wished: boolean; onWish: () => void; onOpen: () => void; onAdd: (size: string, color: string) => boolean;
 }) {
   const [colorId, setColorId] = useState(p.colors[0]?.id ?? "");
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
+  const sizes = productSizes(p);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
   const [message, setMessage] = useState("");
+  const [added, setAdded] = useState(false);
+  const toast = useToast();
   const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
   const quickAdd = () => {
     if (!chosenColor) { setMessage("رنگی برای این محصول تعریف نشده است"); return; }
-    const added = onAdd(size, chosenColor.name);
-    setMessage(added ? "به سبد اضافه شد" : "موجودی کافی نیست");
+    const ok = onAdd(size, chosenColor.name);
+    if (ok) {
+      setAdded(true); toast.bumpCart(); toast.push(`«${p.name}» به سبد خرید اضافه شد.`);
+      window.setTimeout(() => setAdded(false), 1400);
+    } else toast.push(`سایز ${size} از «${p.name}» دیگر موجود نیست.`, "error");
+    setMessage(ok ? "به سبد اضافه شد" : "این سایز دیگر موجود نیست");
     window.setTimeout(() => setMessage(""), 2200);
   };
   return (
@@ -79,7 +93,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
             {sizes.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <button onClick={quickAdd} disabled={p.stock < 1 || !chosenColor} aria-label={`افزودن ${p.name} رنگ ${chosenColor?.name ?? ""} سایز ${size} به سبد خرید`} className="kv-press flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-[var(--kv-action)] px-2 text-[12px] font-semibold text-[var(--kv-bg)] disabled:opacity-40 dark:text-[#0E1527]">
-            <ShoppingBag size={15} className="shrink-0" /><span className="hidden sm:inline">افزودن</span>
+            {added ? <Check size={15} className="kv-check-pop shrink-0" /> : <ShoppingBag size={15} className="shrink-0" />}<span className="hidden sm:inline">{added ? "اضافه شد" : "افزودن"}</span>
           </button>
         </div>
         <p role="status" aria-live="polite" className="h-5 pt-1 text-[11px] font-semibold text-[var(--kv-success)]">{message || (p.stock < 1 ? "ناموجود" : "")}</p>
@@ -162,7 +176,8 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
 }) {
   const [img, setImg] = useState(0);
   const [color, setColor] = useState(p.colors[0]);
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
+  const sizes = productSizes(p);
+  useEffect(() => { if (isAuthenticated()) accountApi.view(p.id); }, [p.id]);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
   return (
     <div className="animate-[fadeUp_0.4s_ease]">
@@ -232,6 +247,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
           </div>
         </div>
       </div>
+      <ProductReviews productId={p.id} />
     </div>
   );
 }
@@ -263,6 +279,10 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [placedOrderId, setPlacedOrderId] = useState("");
   const store = useStore();
   const ops = useOps();
+  const toast = useToast();
+  const [homePage, setHomePage] = useState<SitePage | null>(null);
+  // Hardcoded home is only a fallback once the CMS request finished without a composed page (no flash).
+  const [homeResolved, setHomeResolved] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo"));
   const retailProducts = store.products.filter((p) => p.status === "published" && p.retailPrice > 0);
   const cmsNav = (t: NavTarget) => (t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop"));
   const [cmsHero, setCmsHero] = useState<any | null>(null);
@@ -272,7 +292,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [cmsError, setCmsError] = useState<string | null>(null);
   useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; let cancelled=false; (async()=>{ setCmsLoading(true); setCmsError(null);
     try{
-      const page = adaptSitePage(await cmsApi.sitePage("home"));
+      const rawHome = await siteApi.page("home");
+      if(!cancelled && rawHome.sections?.length) setHomePage(rawHome);
+      const page = adaptSitePage(rawHome);
       if(cancelled) return;
       if(page){
         // Server CMS is the source of truth: hero = the «hero» section, blocks = the other sections.
@@ -284,7 +306,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       const pal = await cmsApi.activePalette().catch(()=>null);
       if(!cancelled && pal) setCmsPalette(pal);
     } catch(e){ if(!cancelled) setCmsError(e instanceof Error ? e.message : "خطا در بارگذاری محتوا"); }
-    finally{ if(!cancelled) setCmsLoading(false); }
+    finally{ if(!cancelled) { setCmsLoading(false); setHomeResolved(true); } }
   })(); return()=>{ cancelled=true; }; },[]);
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
@@ -312,6 +334,12 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return true;
   };
   const quickAdd = (p: Product) => (size: string, color: string) => addToCart(p.id, size, color);
+  /** CMS product cards carry the canonical variant list; pick the first sellable variant. */
+  const commerceQuickAdd = (cp: CommerceProduct) => {
+    const variant = cp.variants.find((v) => v.available > 0);
+    if (!variant) return false;
+    return addToCart(cp.id, variant.size ?? "", variant.color ?? "");
+  };
   const cartTotal = cart.reduce((s, l) => s + (retailProducts.find((p) => p.id === l.id)?.retailPrice ?? 0) * l.qty, 0);
   const installmentCartTotal = cart.reduce((s, l) => {
     const product = retailProducts.find((p) => p.id === l.id);
@@ -398,7 +426,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       // Variant ids come from the hydrated catalog cache (GET /products returns variants per product).
       const items = cart.map((l) => {
         const product = retailProducts.find((pp) => pp.id === l.id) as (typeof retailProducts[number] & { variants?: { id: string }[] }) | undefined;
-        return { variantId: product?.variants?.[0]?.id ?? l.id, quantity: l.qty };
+        const exact = product?.variants?.find((v) => (v.size ?? "") === l.size && (v.color ?? "") === l.color)
+          ?? product?.variants?.find((v) => (v.size ?? "") === l.size) ?? product?.variants?.[0];
+        return { variantId: exact?.id ?? l.id, quantity: l.qty };
       });
       const body: any = {
         orderType: "retail",
@@ -427,7 +457,10 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           p={selected} wished={wishlist.includes(selected.id)}
           onWish={() => toggleWish(selected.id)}
           onBack={() => setSelectedId(null)}
-          onAdd={(size, color) => { if (addToCart(selected.id, size, color)) { setSelectedId(null); setView("shop"); } }}
+          onAdd={(size, color) => {
+            if (addToCart(selected.id, size, color)) { toast.bumpCart(); toast.push(`«${selected.name}» به سبد خرید اضافه شد.`, "success", { label: "مشاهده سبد", onClick: () => setView("checkout") }); }
+            else toast.push(`سایز ${size} دیگر موجود نیست.`, "error");
+          }}
         />
         <div className="mt-14">
           <SectionHead title="شاید بپسندید" />
@@ -576,7 +609,8 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   }
   if (view === "account") {
     if (!account) return <div className="mx-auto max-w-[600px] px-4 py-12"><Empty title="برای دیدن حساب وارد شوید" desc="سفارش‌ها و نشانی‌های شما بعد از ورود در دسترس‌اند." action={<Btn variant="accent" onClick={onLogin}>ورود به حساب</Btn>} /></div>;
-    return <AccountExperience key={account.id} account={account} buyer={buyer} tab={accountTab} setTab={setAccountTab} onShop={() => setView("shop")} onWholesale={onWholesale} onOpenProduct={setSelectedId} onCheckout={() => setView("checkout")} onStudio={() => onStudio("builder")} onLogout={onLogout} />;
+    return <AccountExperience key={account.id} account={account} buyer={buyer} tab={accountTab} setTab={setAccountTab} onShop={() => setView("shop")} onWholesale={onWholesale} onOpenProduct={setSelectedId} onCheckout={() => setView("checkout")} onStudio={() => onStudio("builder")} onLogout={onLogout} cartCount={cart.reduce((n, l) => n + l.qty, 0)}
+      onAddItems={(lines) => { let next = [...cart]; for (const line of lines) { const ex = next.find((l) => l.id === line.id && l.size === line.size && l.color === line.color); next = ex ? next.map((l) => (l === ex ? { ...l, qty: l.qty + 1 } : l)) : [...next, { ...line, qty: 1 }]; } setCart(next); }} />;
   }
   if (view === "journal") {
     return (
@@ -631,7 +665,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-12 px-4 pb-20 pt-6 md:px-8">
       {cmsLoading ? <div className="py-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری محتوا…</div> : cmsError ? <div className="py-6 text-center"><p className="text-sm text-red-600">{cmsError}</p><button onClick={()=>window.location.reload()} className="mt-2 text-xs underline">تلاش دوباره</button></div> : null}
-      {(() => {
+      {homePage ? <CmsSections page={homePage} onNav={(t) => t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop")} onOpenProduct={setSelectedId} onQuickAdd={commerceQuickAdd} /> : null}
+      {!homePage && !homeResolved && <div className="space-y-4" aria-busy="true"><div className="h-[420px] animate-pulse rounded-[24px] bg-[var(--kv-surface-2)]" /><div className="grid grid-cols-2 gap-4 md:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="aspect-[3/4] animate-pulse rounded-[18px] bg-[var(--kv-surface-2)]" />)}</div></div>}
+      {!homePage && homeResolved && (() => {
         const hero = cmsHero ?? ops.hero;
         const blocks = cmsBlocks ?? ops.blocks;
         // Palette is applied via CSS vars elsewhere; fetched palette stored in cmsPalette
@@ -639,6 +675,8 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         return (<><HeroRenderer h={hero} onNav={cmsNav} />{blocks.filter((b: any) => b.enabled && b.type !== "announcement").map((b: any) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}</>);
       })()}
 
+      {/* Hardcoded fallback — only when the CMS home page has not been composed yet (Req 241). */}
+      {!homePage && homeResolved && (<>
       {/* curated collections */}
       <section>
         <SectionHead title="کالکشن‌های ویژه" desc="دسته‌بندی‌های منتخب فصل؛ هر کدام با وسواس از میان صدها مدل انتخاب شده‌اند." action={<Btn variant="ghost" size="sm" onClick={() => setView("shop")} icon={<ArrowLeft size={15} />}>همه محصولات</Btn>} />
@@ -719,6 +757,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         </div>
       </section>
 
+      </>)}
     </div>
   );
 }

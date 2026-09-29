@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { SupplierProfileSettings } from "./supplier-profile-settings";
+import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
+import { productTypesApi, type ProductType } from "../data/experience-api";
 import {
   LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Factory, Inbox,
   Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, Upload, CircleDollarSign,
@@ -239,6 +242,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   const [draftSeries, setDraftSeries] = useState<SeriesDef[]>([]);
   const [draftColorIds, setDraftColorIds] = useState<string[]>(["orange", "black", "cream"]);
   const [invQ, setInvQ] = useState("");
+  // Adaptive product form (Req 325-326): the supplier fills values; the schema comes from the product type.
+  const [productTypes, setProductTypes] = useState<ProductType[]>([]);
+  const [typeCode, setTypeCode] = useState("");
+  const [specs, setSpecs] = useState<Record<string, unknown>>({});
+  useEffect(() => { productTypesApi.list().then((r) => setProductTypes(r.items)).catch(() => setProductTypes([])); }, []);
+  const selectedType = productTypes.find((t) => t.code === typeCode);
   const ops = useOps();
   const wallet = useWallet(ME.id);
   const restrict = ops.restrictionFor("supplier", ME.id);
@@ -251,7 +260,8 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   const offeredDraft = draftSeries.filter((series) => series.available);
   const canSubmitProduct = !!form.name.trim() && draftColorIds.length > 0 && offeredDraft.length > 0
     && offeredDraft.every((series) => series.pieces > 0 && series.pricePerSeries > 0 && series.moqSeries > 0 && (series.colorIds?.length ?? draftColorIds.length) > 0)
-    && Number(form.stock) >= Math.min(...offeredDraft.map((series) => series.pieces * series.moqSeries));
+    && Number(form.stock) >= Math.min(...offeredDraft.map((series) => series.pieces * series.moqSeries))
+    && missingRequiredSpecs(selectedType, specs).length === 0;
   const submitProduct = async () => {
     if (restrict.noPublish) { flash("انتشار محصول برای حساب شما محدود شده است."); return; }
     if (!canSubmitProduct) { flash("ابتدا نام، موجودی کافی و دست‌کم یک سریِ قابل سفارش با قیمت و رنگ معتبر ثبت کنید."); return; }
@@ -285,6 +295,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
         cashPriceRial: "0", wholesalePriceRial: String(price * 10),
         variants: draftSeries.map((s)=> ({ size: Object.keys(s.composition)[0], color: draftColorIds[0], attributes: { series: s.name } })),
         metadata: { colors: draftColorIds, stock: form.stock, series: draftSeries },
+        ...(typeCode ? { productTypeCode: typeCode, specifications: specs } : {}),
       });
       // Refresh supplier products cache
       const refreshed = await apiClient.get<{ items: unknown[] }>("/products").catch(()=>null);
@@ -557,6 +568,9 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                   <div className="space-y-4">
                     <Field label="نام محصول"><Input placeholder="مثلاً پیراهن لینن یقه‌انگلیسی" value={form.name} onChange={(v) => setForm({ ...form, name: v })} /></Field>
                     <Field label="دسته‌بندی"><Select options={["پیراهن", "شومیز", "کت و بلیزر", "مانتو و بارانی", "پالتو", "شلوار", "کفش", "اکسسوری", "بافت"]} value={form.category} onChange={(v) => { setForm({ ...form, category: v }); setDraftSeries([]); }} /></Field>
+                    {productTypes.length > 0 && <Field label="نوع محصول" hint="فرم مشخصات از قالب همین نوع ساخته می‌شود"><Select options={["انتخاب کنید", ...productTypes.map((t) => t.name)]} value={selectedType?.name ?? "انتخاب کنید"} onChange={(l) => { setTypeCode(productTypes.find((t) => t.name === l)?.code ?? ""); setSpecs({}); }} /></Field>}
+                    {selectedType && <AdaptiveSpecForm type={selectedType} values={specs} onChange={setSpecs} />}
+                    {selectedType && missingRequiredSpecs(selectedType, specs).length > 0 && <p className="text-[11.5px] text-[var(--kv-muted)]">فیلدهای الزامی: {missingRequiredSpecs(selectedType, specs).join("، ")}</p>}
                     <Field label="توضیح کوتاه" hint="در کارت محصول بازارچه عمده نمایش داده می‌شود"><Input placeholder="پیراهن لینن با دوخت تمیز…" value={form.desc} onChange={(v) => setForm({ ...form, desc: v })} /></Field>
                     <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-4 py-3 text-[12.5px] leading-6 text-[var(--kv-muted)]">
                       بعد از ارسال، محصول با وضعیت «در انتظار تأیید» برای تیم کیفیت کلبه فرستاده می‌شود و پس از تأیید، خودکار در بازارچه عمده نمایش داده می‌شود.
@@ -731,18 +745,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
             </div>
           )}
 
-          {tab === "settings" && (
-            <Card className="max-w-[640px] p-6 animate-[fadeUp_0.35s_ease]">
-              <div className="space-y-4">
-                <Field label="نام فروشگاه"><Input placeholder="نیلگون" /></Field>
-                <Field label="شهر و استان"><Input placeholder="تهران" /></Field>
-                <Field label="شماره تماس تجاری"><Input placeholder="۰۲۱-…" /></Field>
-                <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span className="text-[13px] font-bold">اعلان زیرسفارش جدید (پیامک)</span><Switch on onToggle={() => {}} /></div>
-                <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span className="text-[13px] font-bold">تأیید خودکار سفارش‌های زیر ۵ سری</span><Switch on={false} onToggle={() => {}} /></div>
-                <Btn variant="accent" size="sm" onClick={() => flash("تنظیمات ذخیره شد")}>ذخیره تنظیمات</Btn>
-              </div>
-            </Card>
-          )}
+          {tab === "settings" && <div className="animate-[fadeUp_0.35s_ease]">{isDemoME ? <Card className="max-w-[640px] p-6"><p className="text-[13px] text-[var(--kv-muted)]">در حالت demo پروفایل تجاری سرور در دسترس نیست.</p></Card> : <SupplierProfileSettings flash={flash} />}</div>}
         </div>
       </div>
 

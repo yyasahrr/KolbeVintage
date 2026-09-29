@@ -45,6 +45,9 @@ export type Product = {
   soldNote?: string;
   fabric: string;
   desc: string;
+  /** Server catalogue: real variant sizes/ids (retail picks sizes from here, not from wholesale series). */
+  sizes?: string[];
+  variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number }[];
 };
 
 export const fmtMoney = (n: number | null | undefined) =>

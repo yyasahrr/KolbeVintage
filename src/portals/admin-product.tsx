@@ -12,6 +12,8 @@ import {
 } from "../data/contracts";
 import { ProductInventoryDrawer } from "../components/product-inventory";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
+import { AdaptiveSpecForm, ProductTypesManager, missingRequiredSpecs } from "./admin-product-types";
+import { productTypesApi, siteApi, type ProductType } from "../data/experience-api";
 import { Btn, Card, Drawer, Field, Input, Select, Status, Switch, Textarea, SearchBox, LoadingState, ErrorState } from "../components/primitives";
 import { cn } from "../utils/cn";
 
@@ -133,8 +135,9 @@ type Draft = {
   name: string; brand: string; category: string; sku: string; desc: string; fabric: string; care: string;
   retail: string; installment: string; compare: string; seoTitle: string; slug: string; retailOn: boolean; wholesaleOn: boolean;
   colors: Colorway[]; sizes: string[]; images: DraftImage[]; video: string; videoFileId: string | null; series: SeriesDef[]; cutout: Cutout;
+  typeCode: string; specs: Record<string, unknown>; gender: "men" | "women" | "unisex" | "kids"; seasons: string[]; vibes: string[];
 };
-const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" } });
+const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [] });
 
 export function ProductStudio({ flash }: { flash: F }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
@@ -154,6 +157,13 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [createdSummary, setCreatedSummary] = useState<{ product: ProductCreateResponse; receipted: number } | null>(null);
   const [inventoryFor, setInventoryFor] = useState<Product | null>(null);
+  const [types, setTypes] = useState<ProductType[]>([]);
+  const [vibeOptions, setVibeOptions] = useState<{ slug: string; name: string }[]>([]);
+  const [typesOpen, setTypesOpen] = useState(false);
+  const loadTypes = () => { if (!isDemo) productTypesApi.list().then((r) => setTypes(r.items)).catch(() => setTypes([])); };
+  useEffect(() => { loadTypes(); if (!isDemo) siteApi.vibes().then((r) => setVibeOptions(r.items)).catch(() => undefined); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  const selectedType = types.find((t) => t.code === d.typeCode);
+  const sizeOptions = selectedType ? selectedType.sizes.map((size) => size.code) : seriesSizesFor(d.category);
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -181,6 +191,8 @@ export function ProductStudio({ flash }: { flash: F }) {
     !d.retailOn && !d.wholesaleOn && "یک کانال فروش", d.retailOn && !(Number(d.retail) > 0) && "قیمت خرده",
     d.retailOn && d.installment && !(Number(d.installment) > 0) && "قیمت چهارقسطه معتبر",
     d.wholesaleOn && !seriesComplete(d.series) && "سری‌های عمده (قیمت، حداقل و رنگ)", !d.images.length && "دست‌کم یک تصویر",
+    !isDemo && types.length > 0 && !d.typeCode && "نوع محصول",
+    ...missingRequiredSpecs(selectedType, d.specs).map((label) => `مشخصه «${label}»`),
   ].filter(Boolean) as string[];
 
   /** Uploads a product image; the persisted value is the server file id, the preview stays local. */
@@ -237,7 +249,9 @@ export function ProductStudio({ flash }: { flash: F }) {
         })),
       });
       setInventoryBusy(true);
-      const res = readProductCreateResponse(await productsApi.create(payload));
+      // Adaptive form data (Req 325-326): the server validates specs against the type template.
+      const adaptivePayload = { ...payload, ...(d.typeCode ? { productTypeCode: d.typeCode, specifications: d.specs } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
+      const res = readProductCreateResponse(await productsApi.create(adaptivePayload));
       const skus = productVariantSkus(res);
 
       // Inventory never lives on the product: after the server mints the variants we open a real
@@ -273,6 +287,7 @@ export function ProductStudio({ flash }: { flash: F }) {
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <div className="min-w-[200px] flex-1"><SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول یا SKU…" /></div>
         <Btn variant="soft" size="sm" onClick={() => setManage(true)}>قالب‌های سری کلبه</Btn>
+        {!isDemo && <Btn variant="soft" size="sm" onClick={() => setTypesOpen(true)}>انواع محصول و قالب مشخصات</Btn>}
         <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setD(blank()); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
       </div>
       <Card className="overflow-hidden">
@@ -321,6 +336,20 @@ export function ProductStudio({ flash }: { flash: F }) {
             {sec === "base" && <>
               <Field label="نام محصول"><Input value={d.name} onChange={(v) => setD({ ...d, name: v })} placeholder="مثلاً کت پشمی دو‌دکمه" /></Field>
               <div className="grid gap-3 sm:grid-cols-3"><Field label="برند"><Input value={d.brand} onChange={(v) => setD({ ...d, brand: v })} /></Field><Field label="دسته"><Select options={[...new Set([...cats, "شلوار", "کفش", "اکسسوری"])]} value={d.category} onChange={(v) => setD({ ...d, category: v, sizes: seriesSizesFor(v).slice(0, 4), series: [] })} /></Field><Field label="SKU"><Input value={d.sku} onChange={(v) => setD({ ...d, sku: v })} placeholder="خودکار · در صورت نیاز قابل تغییر" /></Field></div>
+              {types.length > 0 && (
+                <Field label="نوع محصول" hint="فرم مشخصات و سایزها از قالب همین نوع ساخته می‌شود">
+                  <Select options={["انتخاب کنید", ...types.map((t) => t.name)]} value={selectedType?.name ?? "انتخاب کنید"}
+                    onChange={(label) => { const t = types.find((x) => x.name === label); setD({ ...d, typeCode: t?.code ?? "", specs: {}, sizes: t ? t.sizes.slice(0, 4).map((s) => s.code) : d.sizes, series: [] }); }} />
+                </Field>
+              )}
+              {selectedType && <AdaptiveSpecForm type={selectedType} values={d.specs} onChange={(specs) => setD({ ...d, specs })} />}
+              {!isDemo && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="جنسیت / مخاطب"><Select options={["یونیسکس", "مردانه", "زنانه", "بچگانه"]} value={{ unisex: "یونیسکس", men: "مردانه", women: "زنانه", kids: "بچگانه" }[d.gender]} onChange={(l) => setD({ ...d, gender: ({ "یونیسکس": "unisex", "مردانه": "men", "زنانه": "women", "بچگانه": "kids" } as const)[l as "یونیسکس"] ?? "unisex" })} /></Field>
+                  <Field label="فصل‌ها (چندانتخابی)"><div className="flex flex-wrap gap-1.5">{([["spring", "بهار"], ["summer", "تابستان"], ["autumn", "پاییز"], ["winter", "زمستان"], ["all-season", "چهارفصل"]] as const).map(([v, l]) => <button key={v} type="button" aria-pressed={d.seasons.includes(v)} onClick={() => setD({ ...d, seasons: d.seasons.includes(v) ? d.seasons.filter((x) => x !== v) : [...d.seasons, v] })} className={cn("rounded-full border px-2.5 py-1 text-[11.5px]", d.seasons.includes(v) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)]")}>{l}</button>)}</div></Field>
+                  {vibeOptions.length > 0 && <div className="sm:col-span-2"><Field label="وایب‌ها"><div className="flex flex-wrap gap-1.5">{vibeOptions.map((v) => <button key={v.slug} type="button" aria-pressed={d.vibes.includes(v.slug)} onClick={() => setD({ ...d, vibes: d.vibes.includes(v.slug) ? d.vibes.filter((x) => x !== v.slug) : [...d.vibes, v.slug] })} className={cn("rounded-full border px-2.5 py-1 text-[11.5px]", d.vibes.includes(v.slug) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)]")}>{v.name}</button>)}</div></Field></div>}
+                </div>
+              )}
               <Field label="توضیحات"><Textarea rows={4} value={d.desc} onChange={(v) => setD({ ...d, desc: v })} /></Field>
               <div className="grid gap-3 sm:grid-cols-2"><Field label="جنس پارچه"><Input value={d.fabric} onChange={(v) => setD({ ...d, fabric: v })} /></Field><Field label="نگهداری"><Input value={d.care} onChange={(v) => setD({ ...d, care: v })} /></Field></div>
             </>}
@@ -339,7 +368,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                   <Btn variant="soft" disabled={!newColor.name.trim() || palette.some((c) => c.name === newColor.name.trim())} onClick={() => { if (typeof window !== "undefined" && !new URLSearchParams(window.location.search).has("demo")) { flash("ایجاد رنگ در حالت عادی باید از API باشد"); return; } const c = { id: `c-${Date.now()}`, name: newColor.name.trim(), hex: newColor.hex }; setD({ ...d, colors: [...d.colors, c] }); setNewColor({ name: "", hex: "#8A6A4F" }); }} icon={<Plus size={14} />}>افزودن</Btn>
                 </div>
               </div>
-              <Field label="سایزهای خرده"><div className="flex flex-wrap gap-2">{seriesSizesFor(d.category).map((s) => <button key={s} aria-pressed={d.sizes.includes(s)} onClick={() => setD({ ...d, sizes: d.sizes.includes(s) ? d.sizes.filter((x) => x !== s) : [...d.sizes, s] })} className={cn("min-h-10 min-w-[46px] rounded-[10px] border px-3 text-[12.5px] font-bold", d.sizes.includes(s) ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)]")}>{s}</button>)}</div></Field>
+              <Field label={selectedType ? `سایزهای ${selectedType.name} (از قالب نوع محصول)` : "سایزهای خرده"}><div className="flex flex-wrap gap-2">{sizeOptions.map((s) => <button key={s} aria-pressed={d.sizes.includes(s)} onClick={() => setD({ ...d, sizes: d.sizes.includes(s) ? d.sizes.filter((x) => x !== s) : [...d.sizes, s] })} className={cn("min-h-10 min-w-[46px] rounded-[10px] border px-3 text-[12.5px] font-bold", d.sizes.includes(s) ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)]")}>{s}</button>)}</div></Field>
             </>}
             {sec === "media" && <>
               <div>
@@ -437,6 +466,7 @@ export function ProductStudio({ flash }: { flash: F }) {
       <Drawer open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""} wide>
         {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={async (c) => { if (!isDemo) { try { const existing = ((products.find((x) => x.id === cutFor.id) as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {}); await productsApi.update(cutFor.id, { metadata: { ...existing, cutout: c } }); flash("تصویر استایل‌بیلدر ذخیره شد"); await reload(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } updateProduct(cutFor.id, { cutout: c }); }} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
       </Drawer>
+      <Drawer open={typesOpen} onClose={() => setTypesOpen(false)} title="انواع محصول، سایزها و قالب مشخصات" wide><ProductTypesManager flash={flash} onChanged={loadTypes} /></Drawer>
       <Drawer open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه" wide><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></Drawer>
       <Drawer open={!!inventoryFor} onClose={() => setInventoryFor(null)} title={inventoryFor ? `موجودی · ${inventoryFor.name}` : ""} wide>
         <ProductInventoryDrawer product={inventoryFor} warehouses={warehouses ?? []} onClose={() => setInventoryFor(null)} onFlash={flash} />

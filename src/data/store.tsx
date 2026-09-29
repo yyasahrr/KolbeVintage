@@ -1,6 +1,7 @@
 /* Shared marketplace store — now thin client cache over server API.
    Business source of truth is PostgreSQL via /api/v1 (Fastify). localStorage is kept
    only for ephemeral UI cache and offline fallback, never as authoritative store. */
+import { adaptCatalogProduct } from "./catalog-adapter";
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PRODUCTS, IMG, COLORS, nextSku, type Product, type ProductStatus } from "./catalog";
 import { apiClient, isAuthenticated, publicApi } from "./api";
@@ -153,9 +154,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setLoading(true); setError(null);
     try {
       // Public catalog (no auth) + authenticated orders/plans (canonical client refreshes on 401)
-      const prodRes = await publicApi.get<{ items: (Product & { available?: number })[] }>("/products").catch(() => ({ items: [] as (Product & { available?: number })[] }));
+      const prodRes = await publicApi.get<{ items: Parameters<typeof adaptCatalogProduct>[0][] }>("/products?limit=100").catch(() => ({ items: [] as Parameters<typeof adaptCatalogProduct>[0][] }));
       // WMS is the availability source of truth: the catalogue derives `available` from stock_balances.
-      const catalogProducts = (prodRes.items ?? []).map((item) => ({ ...item, stock: Number(item.available ?? 0) }) as Product);
+      const catalogProducts = (prodRes.items ?? []).map((item) => adaptCatalogProduct(item) as Product);
       const [orderRes, planRes] = await Promise.all([
         apiClient.get<{ items: ParentOrder[] }>("/orders").catch(() => ({ items: [] as ParentOrder[] })),
         apiClient.get<{ items: VipPlan[] }>("/plans").catch(() => ({ items: [] as VipPlan[] })),

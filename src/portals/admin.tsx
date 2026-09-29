@@ -27,6 +27,7 @@ import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
 import { PromoPanel } from "../components/promo-panel";
 import { CmsCenter } from "./admin-cms";
+import { SupplierChangeReview } from "./supplier-profile-settings";
 import { authApi } from "../data/api";
 import { IntegrationsPanel } from "../components/integrations-panel";
 import { ServerConnectionState } from "../components/server-connection";
@@ -444,6 +445,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           )}
 
           {/* ---------- Suppliers ---------- */}
+          {tab === "suppliers" && <div className="mb-4">{moduleBoundary("تغییرات حساس تأمین‌کنندگان", <SupplierChangeReview flash={flash} />)}</div>}
           {tab === "suppliers" && (
             <div className="grid gap-4 animate-[fadeUp_0.35s_ease] sm:grid-cols-2">
               {SUPPLIERS.map((s) => {

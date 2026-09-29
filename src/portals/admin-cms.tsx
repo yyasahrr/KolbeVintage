@@ -6,6 +6,8 @@ import type { CmsBlock, HeroConfig } from "../data/ops";
 import { Btn, Card, Drawer, Empty, ErrorState, Field, Input, LoadingState, Segmented, Select, Switch, Textarea } from "../components/primitives";
 import { cmsApi, filesApi, publicApi } from "../data/api";
 import { CmsPanel } from "../components/cms-panel";
+import { CmsStudio } from "./admin-cms-studio";
+import { studioApi } from "../data/experience-api";
 import { cn } from "../utils/cn";
 
 type F = (m: string) => void;
@@ -82,7 +84,7 @@ export function CmsCenter({ flash }: { flash: F }) {
   const [sections, setSections] = useState<Section[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"hero" | "blocks" | "pages" | "support">("hero");
+  const [tab, setTab] = useState<"studio" | "hero" | "blocks" | "pages" | "support">("studio");
   const [h, setH] = useState<HeroConfig | null>(null);
   const [edit, setEdit] = useState<Section | null>(null);
   const [adding, setAdding] = useState(false);
@@ -140,6 +142,8 @@ export function CmsCenter({ flash }: { flash: F }) {
       if (heroSection) await cmsApi.updateSection(heroSection.id, { title: "هیرو صفحه اصلی", payload: h, visible: true });
       else await cmsApi.createSection(homePage.id, { componentCode: "hero", title: "هیرو صفحه اصلی", payload: h, visible: true });
       await loadSections(homePage.id);
+      // Home is served from its published snapshot; publishing makes the edit live (Req 215).
+      await studioApi.publish(homePage.id, { changeSummary: "به‌روزرسانی هیرو" });
       flash("هیرو روی سرور منتشر شد");
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در انتشار هیرو"); }
     setBusy(false);
@@ -150,25 +154,26 @@ export function CmsCenter({ flash }: { flash: F }) {
     const meta = BLOCK_LIBRARY.find((b) => b.code === code)!;
     try {
       await cmsApi.createSection(homePage.id, { componentCode: code, title: meta.label, payload: meta.payload, visible: true });
-      await loadSections(homePage.id); setAdding(false);
+      await studioApi.publish(homePage.id, { changeSummary: "افزودن بخش" }); await loadSections(homePage.id); setAdding(false);
       flash(`«${meta.label}» ساخته شد (شناسه از سرور)`);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ساخت بخش"); }
   };
   const saveBlock = async (s: Section) => {
     try {
       await cmsApi.updateSection(s.id, { title: s.title, payload: s.payload, visible: s.visible });
-      await loadSections(homePage!.id); setEdit(null);
+      await studioApi.publish(homePage!.id, { changeSummary: "ویرایش بخش" }); await loadSections(homePage!.id); setEdit(null);
       flash(`«${s.title}» روی سرور ذخیره شد`);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره بخش"); }
   };
   const toggleBlock = async (s: Section) => {
     try {
       await cmsApi.updateSection(s.id, { visible: !s.visible });
+      await studioApi.publish(homePage!.id, { changeSummary: "تغییر نمایش بخش" });
       await loadSections(homePage!.id);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا"); }
   };
   const removeBlock = async (s: Section) => {
-    try { await cmsApi.deleteSection(s.id); await loadSections(homePage!.id); flash("بخش حذف شد"); }
+    try { await cmsApi.deleteSection(s.id); await studioApi.publish(homePage!.id, { changeSummary: "حذف بخش" }); await loadSections(homePage!.id); flash("بخش حذف شد"); }
     catch (e) { flash(e instanceof Error ? e.message : "خطا در حذف"); }
   };
   const moveBlock = async (i: number, d: -1 | 1) => {
@@ -179,6 +184,7 @@ export function CmsCenter({ flash }: { flash: F }) {
     setSections([...(heroSection ? [heroSection] : []), ...list]);
     try {
       await cmsApi.reorderSections(homePage.id, list.map((s) => s.id));
+      await studioApi.publish(homePage.id, { changeSummary: "تغییر ترتیب" });
       await loadSections(homePage.id);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر ترتیب"); await loadSections(homePage.id); }
   };
@@ -218,8 +224,8 @@ export function CmsCenter({ flash }: { flash: F }) {
           صفحه اصلی هیرو ندارد؛ با زدن «انتشار هیرو روی سرور» در همین تب، بخش هیرو ساخته می‌شود.
         </p>
       )}
-      <Segmented<"hero" | "blocks" | "pages" | "support">
-        options={[{ v: "hero", label: "هیرو صفحه اصلی" }, { v: "blocks", label: `کامپوننت‌ها (${blocks.filter((b) => b.visible).length.toLocaleString("fa-IR")} فعال)` }, { v: "pages", label: "صفحات و پالت" }, { v: "support", label: "پشتیبانی سریع" }]}
+      <Segmented<"studio" | "hero" | "blocks" | "pages" | "support">
+        options={[{ v: "studio", label: "استودیو CMS" }, { v: "hero", label: "هیرو صفحه اصلی" }, { v: "blocks", label: `کامپوننت‌ها (${blocks.filter((b) => b.visible).length.toLocaleString("fa-IR")} فعال)` }, { v: "pages", label: "صفحات و پالت" }, { v: "support", label: "پشتیبانی سریع" }]}
         value={tab} onChange={setTab}
       />
 
@@ -287,6 +293,7 @@ export function CmsCenter({ flash }: { flash: F }) {
       )}
 
       {tab === "pages" && <CmsPanel />}
+      {tab === "studio" && <CmsStudio flash={flash} />}
 
       {tab === "support" && widget && (
         <Card className="max-w-[720px] p-5">

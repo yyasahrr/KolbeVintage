@@ -115,7 +115,13 @@ export const authApi = {
   register: (payload: { email?: string; phone?: string; password: string; displayName: string }) =>
     publicApi.post<{ id: string }>("/auth/register", payload),
   login: async (payload: { identity: string; password: string }) => {
-    const res = await publicApi.post<{ accessToken: string }>("/auth/login", payload);
+    const res = await publicApi.post<{ accessToken?: string; twoFactorRequired?: boolean; challengeId?: string; devCode?: string }>("/auth/login", payload);
+    if (res.accessToken) setAccessToken(res.accessToken);
+    return res;
+  },
+  /** Second step of two-factor login: exchanges the SMS code for the session. */
+  loginTwoFactor: async (challengeId: string, code: string) => {
+    const res = await publicApi.post<{ accessToken: string }>("/auth/login/2fa", { challengeId, code });
     setAccessToken(res.accessToken);
     return res;
   },

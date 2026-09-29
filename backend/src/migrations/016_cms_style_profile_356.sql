@@ -523,6 +523,27 @@ INSERT INTO cms_pages(id, code, title, path, page_type, status, description, seo
    '{"title":"باشگاه مشتریان ویژه | کلبه وینتیج"}'::jsonb, true)
 ON CONFLICT (code) DO NOTHING;
 
+-- Seed sections for the CMS-built About / Vibe / Lead pages (Req 205, 274, 283) — no hardcoded JSX pages.
+INSERT INTO cms_sections(id, page_id, component_id, title, payload, visible, position)
+SELECT gen_random_uuid(), p.id, c.id, v.title, v.payload::jsonb, true, v.position
+FROM (VALUES
+  ('about', 'story_hero', 'هیرو داستان ما', '{"eyebrow":"از ۱۳۹۸","title":"کلبه وینتیج؛ پوشاکی برای سال‌ها","subtitle":"از یک کارگاه کوچک در تهران شروع کردیم تا پارچه خوب، دوخت دقیق و طراحی ماندگار را به کمد لباس شما بیاوریم.","yearFounded":"۱۳۹۸","location":"تهران"}', 1),
+  ('about', 'text_section', 'روایت برند', '{"eyebrow":"داستان برند","title":"اصالت، دوخت و ماندگاری","body":"هر محصول کلبه مسیر مشخصی دارد: انتخاب پارچه از بافندگان معتبر، الگوسازی دقیق، دوخت تمیز و کنترل کیفیت سه‌مرحله‌ای.\nما باور داریم لباس خوب باید سال‌ها بماند؛ نه یک فصل.","alignment":"center"}', 2),
+  ('about', 'timeline', 'مسیر کلبه', '{"title":"مسیر کلبه","milestones":"۱۳۹۸|آغاز کارگاه کوچک کلبه در تهران\n۱۴۰۰|راه‌اندازی فروشگاه آنلاین و ارسال سراسری\n۱۴۰۲|بازارچه عمده و شبکه تأمین‌کنندگان منتخب\n۱۴۰۵|استایل‌بیلدر هوشمند و پرو مجازی"}', 3),
+  ('about', 'values_grid', 'ارزش‌های ما', '{"title":"ارزش‌های ما","values":"اصالت|پارچه طبیعی، دوخت دقیق و ضمانت اصالت کالا\nماندگاری|طراحی فراتر از فصل و مد زودگذر\nشفافیت|قیمت، موجودی و ارسال واقعی و قابل پیگیری"}', 4),
+  ('about', 'stats_strip', 'کلبه در یک نگاه', '{"stats":"۱۲هزار+|مشتری وفادار\n۱۲۰+|تأمین‌کننده منتخب\n۴.۹|امتیاز رضایت\n۴۸ ساعت|ارسال سریع"}', 5),
+  ('about', 'cta', 'دعوت به خرید', '{"title":"کالکشن کلبه را ببینید","cta":"ورود به فروشگاه","target":"shop"}', 6),
+  ('vibe-old-money', 'hero', 'هیرو Old Money', '{"template":"minimal","eyebrow":"Vibe","title":"Old Money · اصالت اشرافی","subtitle":"پالت کرم، سرمه‌ای و شتری با پشم، کشمیر و کتان طبیعی.","ctaLabel":"خرید این استایل","ctaTarget":"shop"}', 1),
+  ('vibe-old-money', 'product_grid', 'منتخب Old Money', '{"title":"منتخب Old Money","collectionCode":"old-money-edit","limit":8}', 2),
+  ('vibe-dark-academia', 'hero', 'هیرو Dark Academia', '{"template":"minimal","eyebrow":"Vibe","title":"Dark Academia · آکادمیا تیره","subtitle":"قهوه‌ای تیره، زرشکی و چهارخانه پشمی الهام‌گرفته از کتابخانه‌های کلاسیک.","ctaLabel":"خرید این استایل","ctaTarget":"shop"}', 1),
+  ('vibe-dark-academia', 'product_grid', 'پالتو و کت زمستانی', '{"title":"پالتو و کت پاییز و زمستان","collectionCode":"winter-coats","limit":8}', 2),
+  ('vip-lead', 'hero', 'هیرو باشگاه ویژه', '{"template":"minimal","eyebrow":"دسترسی زودهنگام","title":"اولین نفر از کالکشن‌های محدود باخبر شوید","subtitle":"اعضای باشگاه ویژه کلبه ۲۴ ساعت زودتر به کالکشن‌های جدید دسترسی دارند.","ctaLabel":"","ctaTarget":"shop"}', 1),
+  ('vip-lead', 'lead_form', 'فرم عضویت', '{"title":"عضو باشگاه ویژه شوید","subtitle":"شماره همراه خود را ثبت کنید؛ پیش از انتشار عمومی خبرتان می‌کنیم.","campaignSource":"vip-club","ctaLabel":"ثبت‌نام","consentText":"با ارسال فرم، دریافت پیامک اطلاع‌رسانی کلبه را می‌پذیرم.","collectEmail":true,"collectName":true}', 2)
+) AS v(page_code, component_code, title, payload, position)
+JOIN cms_pages p ON p.code = v.page_code
+JOIN cms_components c ON c.code = v.component_code
+WHERE NOT EXISTS (SELECT 1 FROM cms_sections s WHERE s.page_id = p.id);
+
 -- 7. Product Types & Adaptive Specification Templates (Req 4-9, 122-128, 325-326)
 CREATE TABLE IF NOT EXISTS product_types (
   id uuid PRIMARY KEY,

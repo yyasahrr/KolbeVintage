@@ -17,6 +17,9 @@ import { StoreProvider, useStore } from "./data/store";
 import { authApi } from "./data/api";
 import { OpsProvider, useOps } from "./data/ops";
 import { AnnouncementBar, type NavTarget } from "./components/cms-render";
+import { ServerAnnouncementBar, ServerFooter, useSiteExperience, useThemeTokens } from "./components/site-chrome";
+import { CmsPageView } from "./components/cms-blocks";
+import { ToastProvider, useToast } from "./components/toast";
 import { FloatingSupport } from "./components/support";
 import type { AccountTab } from "./portals/account";
 import { cn } from "./utils/cn";
@@ -54,17 +57,19 @@ export default function App() {
   return (
     <StoreProvider>
       <OpsProvider>
+      <ToastProvider>
         {isDemo && <div className="sticky top-0 z-[100] w-full bg-amber-100 py-1.5 text-center text-xs font-bold text-amber-900">DEMO MODE — داده‌ها نمایشی هستند (?demo=1)</div>}
         {site === "supplier" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><SupplierApp dark={dark} setDark={setDark} onExit={() => { window.location.hash = "#/"; }} /></Suspense>}
         {site === "admin" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><AdminApp dark={dark} setDark={setDark} /></Suspense>}
         {site === "public" && <Storefront dark={dark} setDark={setDark} />}
+      </ToastProvider>
       </OpsProvider>
     </StoreProvider>
   );
 }
 
 /* ====================== kolbe.ir storefront ====================== */
-type Section = "retail" | "vip" | "studio" | "auth";
+type Section = "retail" | "vip" | "studio" | "auth" | "page";
 
 function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
   const { products, plans } = useStore();
@@ -104,7 +109,17 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [studioTab, setStudioTab] = useState("tryon");
   const menuRef = useRef<HTMLDivElement>(null);
+  const [pageCode, setPageCode] = useState("about");
+  const [megaOpen, setMegaOpen] = useState(false);
+  const [twoFactor, setTwoFactor] = useState<{ challengeId: string; devCode?: string; code: string; error: string } | null>(null);
+  const { layout, theme } = useSiteExperience();
+  useThemeTokens(theme, dark);
+  const toast = useToast();
 
+  // Shared style links (#/style/CODE) open the Style Builder directly (Req 269).
+  useEffect(() => {
+    if (window.location.hash.startsWith("#/style/")) { setStudioTab("builder"); setSection("studio"); }
+  }, []);
   // No kolbe-session — business identity comes only from /auth/me (accessToken + refresh cookie). Guest cart is kept transient in memory + localStorage guest-cart if needed.
   useEffect(() => {
     const close = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false); };
@@ -130,6 +145,22 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
     setReturnTo(back ?? null);
     go("auth");
   };
+  /** Resolves CMS navigation targets (validated server-side) to storefront routes (Req 276-278, 281). */
+  const siteNav = (target: string) => {
+    if (target.startsWith("https://")) { window.open(target, "_blank", "noopener,noreferrer"); return; }
+    if (target === "home") return go("retail", "home");
+    if (target === "shop" || target.startsWith("collection:")) return go("retail", "shop");
+    if (target === "journal") return go("retail", "journal");
+    if (target === "vip") return go("vip");
+    if (target === "tryon") { setStudioTab("tryon"); return go("studio"); }
+    if (target === "builder") { setStudioTab("builder"); return go("studio"); }
+    if (target === "supplier") { window.location.hash = "#/supplier"; return; }
+    if (target === "account") return go("retail", "account");
+    if (target === "about") { setPageCode("about"); return go("page"); }
+    if (target.startsWith("page:")) { setPageCode(target.slice(5)); return go("page"); }
+    if (target.startsWith("vibe:")) { setPageCode(`vibe-${target.slice(5)}`); return go("page"); }
+    go("retail", "shop");
+  };
   const logout = async () => {
     try { await authApi.logout(); } catch {}
     setAuthUser(null);
@@ -145,34 +176,47 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const cartCount = cart.reduce((s, l) => s + l.qty, 0);
   const cartTotal = cart.reduce((s, l) => s + (products.find((p) => p.id === l.id)?.retailPrice ?? 0) * l.qty, 0);
 
-  const links: { label: string; active: boolean; onClick: () => void; vip?: boolean }[] = [
+  const header = layout?.header ?? null;
+  const serverLinks = header?.menus.filter((m) => m.active).sort((a, b) => a.order - b.order).map((m) => ({
+    label: m.label, vip: m.vip, mega: Boolean(m.hasMegaMenu && header.megaMenu.length),
+    active: (m.target === "home" && section === "retail" && view === "home" && !selectedId) || (m.target === "shop" && section === "retail" && (view === "shop" || !!selectedId))
+      || (m.target === "vip" && section === "vip") || (m.target === "tryon" && section === "studio") || (m.target === "journal" && section === "retail" && view === "journal")
+      || ((m.target === "about" || m.target.startsWith("page:")) && section === "page" && pageCode === (m.target === "about" ? "about" : m.target.slice(5))),
+    onClick: () => siteNav(m.target),
+  }));
+  const legacyLinks: { label: string; active: boolean; onClick: () => void; vip?: boolean; mega?: boolean }[] = [
     { label: "خانه", active: section === "retail" && view === "home" && !selectedId, onClick: () => go("retail", "home") },
     { label: "فروشگاه", active: section === "retail" && (view === "shop" || !!selectedId), onClick: () => go("retail", "shop") },
     { label: "پرو مجازی", active: section === "studio", onClick: () => { setStudioTab("tryon"); go("studio"); } },
     { label: "مجله", active: section === "retail" && view === "journal", onClick: () => go("retail", "journal") },
     { label: "بازارچه عمده", active: section === "vip", onClick: () => go("vip"), vip: true },
   ];
+  const links = serverLinks?.length ? serverLinks : legacyLinks;
+  const headerTone = header?.variant === "dark" ? "dark" : header?.variant === "campaign" ? "campaign" : null;
 
   return (
     <div className="min-h-screen">
-      <AnnouncementBar block={ops.blocks.find((b) => b.type === "announcement")} onNav={(t: NavTarget) => t === "vip" ? go("vip") : t === "tryon" ? (setStudioTab("tryon"), go("studio")) : go("retail", t === "journal" ? "journal" : "shop")} />
+      {layout?.announcements?.length
+        ? <ServerAnnouncementBar announcements={layout.announcements} onNav={siteNav} />
+        : <AnnouncementBar block={ops.blocks.find((b) => b.type === "announcement")} onNav={(t: NavTarget) => t === "vip" ? go("vip") : t === "tryon" ? (setStudioTab("tryon"), go("studio")) : go("retail", t === "journal" ? "journal" : "shop")} />}
       {/* ======= STOREFRONT HEADER ======= */}
-      <header className="sticky top-0 z-50">
-        <div className="kv-glass !rounded-none !border-x-0 !border-t-0">
+      <header className={cn("sticky top-0 z-50", headerTone === "dark" && "dark")} onKeyDown={(e) => { if (e.key === "Escape") setMegaOpen(false); }}>
+        <div className={cn("kv-glass !rounded-none !border-x-0 !border-t-0", headerTone === "campaign" && "!bg-[var(--kv-accent)]/10")}>
           <div className="mx-auto flex h-[68px] w-full max-w-[1480px] items-center gap-3 px-4 md:px-8">
             <button className="lg:hidden" onClick={() => setMobileNav(true)} aria-label="منو"><Menu size={21} /></button>
             <button onClick={() => go("retail", "home")} className="flex items-center gap-3 text-right" aria-label="کلبه وینتج — خانه">
               <span className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#1B2A4A] text-[17px] font-bold text-[#E8D9C3] dark:bg-[#E8D9C3] dark:text-[#0E1527]" style={{ fontFamily: "Marcellus, serif" }}>K</span>
               <span className="leading-tight">
-                <span className="kv-latin block text-[14px] font-bold">KOLBE</span>
-                <span className="block text-[10.5px] font-semibold tracking-[0.28em] text-[var(--kv-muted)]">VINTAGE</span>
+                <span className="kv-latin block text-[14px] font-bold">{header?.logoText || "KOLBE"}</span>
+                <span className="block text-[10.5px] font-semibold tracking-[0.28em] text-[var(--kv-muted)]">{header?.logoSubtext || "VINTAGE"}</span>
               </span>
             </button>
 
             <nav className="mr-6 hidden items-center gap-1 lg:flex" aria-label="ناوبری اصلی">
               {links.map((l) => (
                 <button
-                  key={l.label} onClick={l.onClick} aria-current={l.active ? "page" : undefined}
+                  key={l.label} onClick={() => { if (l.mega) { setMegaOpen(!megaOpen); return; } setMegaOpen(false); l.onClick(); }} aria-current={l.active ? "page" : undefined}
+                  aria-expanded={l.mega ? megaOpen : undefined} aria-haspopup={l.mega ? "true" : undefined}
                   className={cn(
                     "kv-press relative flex items-center gap-1.5 rounded-[10px] px-3.5 py-2 text-[13.5px] font-bold transition-colors",
                     l.vip && "text-[var(--kv-accent)]",
@@ -184,21 +228,35 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
                 </button>
               ))}
             </nav>
+            {megaOpen && header && header.megaMenu.length > 0 && (
+              <div role="menu" aria-label="منوی دسته‌بندی‌ها" className="kv-glass absolute inset-x-4 top-[68px] z-50 mx-auto grid max-w-[1100px] gap-6 rounded-[18px] p-6 md:grid-cols-[repeat(auto-fit,minmax(200px,1fr))] animate-[scaleIn_0.18s_ease]">
+                {header.megaMenu.map((col) => (
+                  <div key={col.id}>
+                    <p className="mb-3 text-[14px] font-extrabold">{col.title}</p>
+                    <ul className="space-y-2 text-[13px]">
+                      {col.items.map((item) => <li key={item.label}><button role="menuitem" onClick={() => { setMegaOpen(false); siteNav(item.target ?? "shop"); }} className="text-[var(--kv-muted)] hover:text-[var(--kv-accent)]">{item.label}</button></li>)}
+                    </ul>
+                    {col.promoTitle && <button onClick={() => { setMegaOpen(false); siteNav(col.featuredVibe ? `vibe:${col.featuredVibe}` : "shop"); }} className="mt-4 w-full rounded-[12px] bg-[var(--kv-surface-2)] px-3 py-2.5 text-right text-[12.5px] font-bold text-[var(--kv-accent)]">{col.promoTitle} ←</button>}
+                  </div>
+                ))}
+                <button onClick={() => setMegaOpen(false)} className="absolute left-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن منو"><X size={15} /></button>
+              </div>
+            )}
 
             <div className="mr-auto flex items-center gap-1">
               <button onClick={() => setDemoOpen(true)} aria-label="پیش‌نمایش آزمایشی پنل‌ها" title="پیش‌نمایش آزمایشی پنل‌ها" className="kv-press hidden h-10 items-center gap-1.5 rounded-[11px] px-2 text-[11px] font-semibold text-[var(--kv-muted)] hover:bg-[var(--kv-surface-2)] hover:text-[var(--kv-accent)] sm:flex sm:px-3">
                 <ShieldCheck size={16} /><span className="hidden xl:inline">تست پنل‌ها</span>
               </button>
-              <button onClick={() => setDark(!dark)} className="kv-press flex h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)]" aria-label={dark ? "حالت روشن" : "حالت تیره"}>
+              {header?.showThemeToggle !== false && <button onClick={() => setDark(!dark)} className="kv-press flex h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)]" aria-label={dark ? "حالت روشن" : "حالت تیره"}>
                 {dark ? <Sun size={18} /> : <Moon size={18} />}
-              </button>
-              <button onClick={() => go("retail", "wishlist")} className="kv-press relative hidden h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)] sm:flex" aria-label="علاقه‌مندی‌ها">
+              </button>}
+              {header?.showWishlist !== false && <button onClick={() => go("retail", "wishlist")} className="kv-press relative hidden h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)] sm:flex" aria-label="علاقه‌مندی‌ها">
                 <Heart size={18} />
                 {wishlist.length > 0 && <span className="absolute left-1 top-1 h-2 w-2 rounded-full bg-[var(--kv-accent)]" />}
-              </button>
-              <button onClick={() => setCartOpen(true)} className="kv-press relative flex h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)]" aria-label="سبد خرید">
+              </button>}
+              <button onClick={() => setCartOpen(true)} className="kv-press relative flex h-10 w-10 items-center justify-center rounded-[11px] hover:bg-[var(--kv-surface-2)]" aria-label={`سبد خرید، ${fmtNum(cartCount)} کالا`}>
                 <ShoppingBag size={18} />
-                {cartCount > 0 && <span className="absolute -left-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--kv-accent)] px-1 text-[10.5px] font-bold text-white tabular-nums">{fmtNum(cartCount)}</span>}
+                {cartCount > 0 && <span key={toast.cartPulse} className="kv-badge-bump absolute -left-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--kv-accent)] px-1 text-[10.5px] font-bold text-white tabular-nums">{fmtNum(cartCount)}</span>}
               </button>
 
               {role === "guest" ? (
@@ -296,14 +354,37 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             }}
           /></Suspense>
         )}
-        {section === "studio" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} onLogin={() => openAuth({ section: "studio", view })} /></Suspense>}
+        {section === "page" && (
+          <CmsPageView code={pageCode} onNav={siteNav} onOpenProduct={(id) => { go("retail", "shop"); setSelectedId(id); }}
+            onQuickAdd={(cp) => {
+              const variant = cp.variants.find((v) => v.available > 0);
+              if (!variant) return false;
+              const existing = cart.find((l) => l.id === cp.id && l.size === (variant.size ?? "") && l.color === (variant.color ?? ""));
+              setCart(existing ? cart.map((l) => (l === existing ? { ...l, qty: l.qty + 1 } : l)) : [...cart, { id: cp.id, qty: 1, size: variant.size ?? "", color: variant.color ?? "" }]);
+              return true;
+            }} />
+        )}
+        {section === "studio" && <Suspense fallback={<div className="p-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری…</div>}><StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} onLogin={() => openAuth({ section: "studio", view })}
+          onAddItems={(lines) => {
+            let next = [...cart];
+            for (const line of lines) {
+              const existing = next.find((l) => l.id === line.id && l.size === line.size && l.color === line.color);
+              next = existing ? next.map((l) => (l === existing ? { ...l, qty: l.qty + 1 } : l)) : [...next, { ...line, qty: 1 }];
+            }
+            setCart(next);
+          }} /></Suspense>}
         {section === "auth" && (
           <AuthScreens portal="retail" onDone={async (phone) => {
             // Real backend auth: try register then login. For demo, password is fixed dev value; in production SMS OTP is verified server-side.
             try {
               // Attempt register (idempotent if already exists)
               await authApi.register({ phone: digitsOnly(phone), password: "KolbeDemo123456!", displayName: "مشتری کلبه" }).catch(()=>undefined);
-              await authApi.login({ identity: digitsOnly(phone), password: "KolbeDemo123456!" });
+              const res = await authApi.login({ identity: digitsOnly(phone), password: "KolbeDemo123456!" });
+              if (res.twoFactorRequired && res.challengeId) {
+                // Second factor (Req 351): the session is only issued after the SMS code is verified.
+                setTwoFactor({ challengeId: res.challengeId, devCode: res.devCode, code: "", error: "" });
+                return;
+              }
               const me = await authApi.me() as { id: string; displayName: string; roles: string[]; phone?: string };
               setAuthUser(me);
             } catch {
@@ -324,7 +405,8 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
       </main>
 
       {/* ======= FOOTER ======= */}
-      {section !== "auth" && (
+      {section !== "auth" && layout?.footer && <ServerFooter footer={layout.footer} onNav={siteNav} />}
+      {section !== "auth" && !layout?.footer && (
         <footer className="border-t border-[var(--kv-line)] bg-[var(--kv-surface)]">
           <div className="mx-auto grid w-full max-w-[1480px] gap-10 px-4 py-12 md:grid-cols-[1.3fr_1fr_1fr_1fr] md:px-8">
             <div>
@@ -382,6 +464,30 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             <button onClick={() => { sessionStorage.setItem("kolbe-preview", "1"); setDemoOpen(false); window.location.hash = "#/admin"; }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><ShieldCheck size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">پنل مدیریت</b><span className="text-xs text-[var(--kv-muted)]">ورود با حساب مدیر و مشاهده سفارش‌های واقعی</span></span><ArrowLeft size={16} className="mr-auto" /></button>
           </div>
         </div>
+      </Modal>
+
+      <Modal open={!!twoFactor} onClose={() => setTwoFactor(null)} max="max-w-[420px]" title="ورود دومرحله‌ای">
+        {twoFactor && (
+          <form className="space-y-4 pl-10" onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              await authApi.loginTwoFactor(twoFactor.challengeId, twoFactor.code);
+              const me = await authApi.me() as { id: string; displayName: string; roles: string[]; phone?: string };
+              setAuthUser(me); setTwoFactor(null); toast.push("ورود دومرحله‌ای تأیید شد.");
+              setSection(returnTo?.section ?? "retail"); setView(returnTo?.view ?? "account"); setReturnTo(null);
+            } catch { setTwoFactor({ ...twoFactor, error: "کد واردشده صحیح نیست یا منقضی شده است." }); }
+          }}>
+            <p className="text-[17px] font-extrabold">کد تأیید ورود</p>
+            <p className="text-[13px] leading-7 text-[var(--kv-muted)]">ورود دومرحله‌ای برای این حساب فعال است. کد ۶ رقمی پیامک‌شده را وارد کنید.</p>
+            {twoFactor.devCode && <p className="rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه — کد: <b dir="ltr">{twoFactor.devCode}</b></p>}
+            <label className="block text-[13px] font-semibold">کد تأیید
+              <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={twoFactor.code} onChange={(e) => setTwoFactor({ ...twoFactor, code: e.target.value.replace(/\D/g, ""), error: "" })}
+                className="mt-2 h-12 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] text-center text-lg font-bold tracking-[0.3em] outline-none focus:border-[var(--kv-accent)]" dir="ltr" />
+            </label>
+            {twoFactor.error && <p role="alert" className="text-[12px] text-[var(--kv-danger)]">{twoFactor.error}</p>}
+            <Btn variant="accent" className="w-full" disabled={twoFactor.code.length !== 6}>تأیید و ورود</Btn>
+          </form>
+        )}
       </Modal>
 
       {section !== "auth" && <FloatingSupport onTicket={() => { setAccountTab("support"); if (account) go("retail", "account"); else openAuth({ section: "retail", view: "account" }); }} />}
