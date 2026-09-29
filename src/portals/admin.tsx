@@ -18,7 +18,8 @@ import { SeriesTemplateManager } from "./series-templates";
 import { useOps } from "../data/ops";
 import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent, Boxes, FileText, ScrollText } from "lucide-react";
 import { cn } from "../utils/cn";
-import { AdminApiError, apiClient, isAuthenticated, onAuthExpired, type ApiRequest } from "../data/api";
+import { AdminApiError, apiClient, isAuthenticated, inventoryApi, onAuthExpired, shippingApi, type ApiRequest } from "../data/api";
+import { normalizeWarehouses } from "../data/contracts";
 import { AdminServerOrders } from "./admin-server-orders";
 import { AdminWmsPanel } from "./admin-wms-panel";
 import { FinanceLedgerPanel } from "../components/finance-ledger";
@@ -52,6 +53,7 @@ export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v
   }, []);
   // Console requests go through the shared authenticated client (one place for token + single refresh + retry).
   useEffect(() => onAuthExpired(() => { setSignedIn(false); sessionStorage.removeItem("kolbe-admin-auth"); }), []);
+
   const request = useCallback(<T,>(path: string, init?: RequestInit) => {
     if (!isAuthenticated()) return Promise.reject(new AdminApiError("نشست مدیریت منقضی شده است.", 401));
     return apiClient.request<T>(path, init).catch((error: unknown) => {
@@ -115,6 +117,21 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const ops = useOps();
   const customerTickets = accounts.flatMap((account) => account.tickets.map((ticket) => ({ account, ticket })));
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  // Settings reads the real warehouses and the configured default fulfillment warehouse.
+  const [settingsWarehouses, setSettingsWarehouses] = useState<{ id: string; code: string; name: string }[] | null>(null);
+  const [shippingSettings, setShippingSettings] = useState<{ defaultWarehouseId: string | null } | null>(null);
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const [list, settings] = await Promise.all([inventoryApi.warehouses(), shippingApi.settings()]);
+        if (!active) return;
+        setSettingsWarehouses(normalizeWarehouses(list));
+        setShippingSettings(settings);
+      } catch { if (active) setSettingsWarehouses([]); }
+    })();
+    return () => { active = false; };
+  }, []);
   // Server-backed dashboard summary — canonical source for sidebar badges (item 12)
   const [summary, setSummary] = useState<{ pendingProducts: number; activeOrders: number; pendingSupplierActions: number; pendingMemberships: number; openTickets: number; pendingReturns: number; pendingWithdrawals: number } | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -636,8 +653,26 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
               <div className="space-y-4">
                 <Card className="p-5">
                   <p className="text-sm font-bold">انبارها</p>
-                  {[["انبار مرکزی — تهران", "جاده قدیم کرج · پیش‌فرض"], ["انبار اصفهان", "شهرک صنعتی جی"]].map(([n, a]) => <div key={n} className="mt-2 flex items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2.5 text-[12.5px]"><Warehouse size={15} className="text-[var(--kv-muted)]" /><span><b>{n}</b><span className="block text-[11px] text-[var(--kv-muted)]">{a}</span></span></div>)}
-                  <Btn variant="ghost" size="sm" className="mt-2" onClick={() => flash("انبار جدید افزوده شد")}>+ انبار جدید</Btn>
+                  <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">فهرست واقعی انبارهای ثبت‌شده روی سرور؛ تعریف و موجودی در بخش «انبار و موجودی» انجام می‌شود.</p>
+                  {settingsWarehouses === null ? (
+                    <p className="mt-3 text-[12.5px] text-[var(--kv-muted)]">در حال خواندن انبارها از سرور…</p>
+                  ) : settingsWarehouses.length === 0 ? (
+                    <p className="mt-3 text-[12.5px] text-[var(--kv-muted)]">هنوز انباری ثبت نشده است.</p>
+                  ) : (
+                    settingsWarehouses.map((warehouse) => (
+                      <div key={warehouse.id} className="mt-2 flex items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2.5 text-[12.5px]">
+                        <Warehouse size={15} className="text-[var(--kv-muted)]" />
+                        <span>
+                          <b>{warehouse.name}</b>
+                          <span className="block text-[11px] text-[var(--kv-muted)]" dir="ltr">{warehouse.code}</span>
+                        </span>
+                        {shippingSettings?.defaultWarehouseId === warehouse.id && (
+                          <span className="mr-auto rounded-full bg-[var(--kv-accent)]/12 px-2 py-0.5 text-[10.5px] font-bold text-[var(--kv-accent)]">انبار پیش‌فرض ارسال</span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                  <Btn variant="ghost" size="sm" className="mt-2" onClick={() => setTab("wms")}>مدیریت انبارها</Btn>
                 </Card>
                 <Card className="p-5">
                   <p className="text-sm font-bold">اطلاعات فروشگاه</p>

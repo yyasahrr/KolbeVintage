@@ -113,7 +113,13 @@ const check = (name, ok, detail = '') => {
   results.push({ name, ok, detail });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
+/** Fresh-database assertions are only meaningful when the smoke owns an as-migrated database. */
+const checkFresh = (fresh, name, fn) => {
+  if (fresh) { check(name, fn()); return; }
+  console.log(`N/A   ${name} — needs a fresh database (running against an existing stack)`);
+};
 
+const freshDb = !useExternalStack;
 const browser = await puppeteer.launch({
   executablePath: '/tmp/chromium',
   headless: 'shell',
@@ -247,18 +253,33 @@ try {
 
   await openTab('انبار و موجودی');
   body = await text();
-  check('WMS first-run card offers «ایجاد اولین انبار»', body.includes('ایجاد اولین انبار'));
+  checkFresh(freshDb, 'WMS first-run card offers «ایجاد اولین انبار»', () => body.includes('ایجاد اولین انبار'));
   check('WMS copy is Persian (no Low Stock / Movement History leftovers)',
     !/Low Stock|Movement History|Warehouse ID|Variant ID|Delta|Reference|Adjustment|Transfer/.test(body));
-  const createdWarehouse = await setInput('کد انبار', 'KV-MAIN') && await setInput('نام انبار', 'انبار مرکزی');
-  check('WMS warehouse form accepts code + Persian name', createdWarehouse);
-  await clickByText('ایجاد اولین انبار');
-  await sleep(2500);
-  body = await text();
-  check('WMS «ایجاد اولین انبار» really creates it and reloads the module',
-    body.includes('KV-MAIN') && body.includes('انبار مرکزی'), body.split('\n').slice(0, 5).join(' | ').slice(0, 120));
-  check('WMS first-warehouse button performs a real POST /warehouses',
-    sawCall('POST', '/warehouses') && sawCall('GET', '/warehouses'), apiCalls.filter((c) => c.includes('/warehouses')).slice(-3).join(' , '));
+  if (freshDb) {
+    const createdWarehouse = await setInput('کد انبار', 'KV-MAIN') && await setInput('نام انبار', 'انبار مرکزی');
+    check('WMS warehouse form accepts code + Persian name', createdWarehouse);
+    await clickByText('ایجاد اولین انبار');
+    await sleep(2500);
+    body = await text();
+    check('WMS «ایجاد اولین انبار» really creates it and reloads the module',
+      body.includes('KV-MAIN') && body.includes('انبار مرکزی'), body.split('\n').slice(0, 5).join(' | ').slice(0, 120));
+    check('WMS first-warehouse button performs a real POST /warehouses',
+      sawCall('POST', '/warehouses') && sawCall('GET', '/warehouses'), apiCalls.filter((c) => c.includes('/warehouses')).slice(-3).join(' , '));
+  } else {
+    const switched = await page.evaluate(() => {
+      const select = document.querySelector('select[aria-label="انتخاب انبار"]');
+      if (!select) return false;
+      const option = [...select.options].find((candidate) => candidate.text.includes('KV-TEH-01'));
+      if (!option) return false;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, option.value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    });
+    await sleep(1500);
+    body = await text();
+    check('WMS lists the real warehouses from the server', switched, body.replace(/\n+/g, ' | ').slice(0, 90));
+  }
   await shot('03-wms-first-warehouse');
 
   await openTab('کوپن و جشنواره');
@@ -283,8 +304,13 @@ try {
 
   await openTab('محتوا');
   body = await text();
-  check('CMS empty state offers «راه‌اندازی صفحه اصلی» (server-side bootstrap)',
-    body.includes('راه‌اندازی صفحه اصلی'));
+  if (!freshDb) {
+    check('CMS shows the persisted home structure on an existing stack',
+      body.includes('صفحه اصلی') || body.includes('هیرو'), body.replace(/\n+/g, ' | ').slice(0, 80));
+  } else {
+    check('CMS empty state offers «راه‌اندازی صفحه اصلی» (server-side bootstrap)',
+      body.includes('راه‌اندازی صفحه اصلی'));
+  }
   await clickByText('راه‌اندازی صفحه اصلی');
   await sleep(2500);
   body = await text();
@@ -294,10 +320,15 @@ try {
 
   await openTab('دفتر کل');
   body = await text();
-  check('ledger empty state is the real one (no fabricated entries)',
-    body.includes('هنوز رویداد مالی واقعی ایجاد نشده است.'));
-  check('ledger explains automatic entries + offers real navigation',
-    body.includes('پرداخت سفارش') && body.includes('می‌شود'), '');
+  if (!freshDb) {
+    check('ledger renders real rows when the stack already carries finance events',
+      !body.includes('هنوز رویداد مالی واقعی ایجاد نشده است.') || body.includes('فاکتور'), body.replace(/\n+/g, ' | ').slice(0, 80));
+  } else {
+    check('ledger empty state is the real one (no fabricated entries)',
+      body.includes('هنوز رویداد مالی واقعی ایجاد نشده است.'));
+    check('ledger explains automatic entries + offers real navigation',
+      body.includes('پرداخت سفارش') && body.includes('می‌شود'), '');
+  }
   await shot('06-ledger-empty');
 
   await openTab('یکپارچه‌سازی‌ها');
@@ -359,8 +390,9 @@ try {
   if (seedRun.code !== 0) console.error('--- seed output ---\n' + seedOutput.split('\n').slice(-12).join('\n'));
   check('npm run seed:local exits 0 and applies real steps', seedRun.code === 0, seedOutput.trim().split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 90));
   api = useExternalStack ? { pid: null } : await startApi();
-  check('seed census reports real rows (warehouses, products, balances)',
-    /انبار|محصول|موجودی/.test(seedOutput), (seedOutput.match(/انبار[^\n]{0,40}/) ?? ['—'])[0].slice(0, 60));
+  check('seed reports an idempotent run and its census',
+    /steps applied|idempotent/.test(seedOutput) && (freshDb ? /انبار|محصول|موجودی/.test(seedOutput) : true),
+    (seedOutput.match(/seed:local finished[^\n]{0,40}/) ?? ['—'])[0]);
 
   // Reload so every module re-fetches from the freshly seeded database instead of stale state.
   await page.reload({ waitUntil: 'networkidle2' });
@@ -390,13 +422,14 @@ try {
   const switched = await page.evaluate(() => {
     const select = document.querySelector('select[aria-label="انتخاب انبار"]');
     if (!select) return false;
-    const option = [...select.options].find((candidate) => candidate.text.includes('KV-TEH-01'));
+    // Prefer the seeded main warehouse; otherwise whatever warehouse the stack carries.
+    const option = [...select.options].find((candidate) => candidate.text.includes('KV-TEH-01')) ?? select.options[0];
     if (!option) return false;
     Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, option.value);
     select.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   });
-  await sleep(1500);
+  await waitForText('موجودی فیزیکی');
   body = await text();
   check('seeded WMS balances render (on-hand/reserved/damaged/available in Persian)',
     switched && body.includes('موجودی فیزیکی') && body.includes('قابل فروش') && body.includes('رزرو شده'),
@@ -493,7 +526,7 @@ try {
   const sweep = [...new Set(seenBodies.join('\n').split('\n').map((line) => line.trim()))]
     .filter((line) => /^[A-Za-z][A-Za-z0-9 _/-]{3,}$/.test(line))
     .filter((line) => !/^\/(admin|api|site|products|orders|invoices|warehouses|inventory)/.test(line))
-    .filter((line) => !/^KV-\d+$/.test(line))                       // order/invoice references
+    .filter((line) => !/^KV-[A-Z0-9-]+$/.test(line))                // order, invoice and warehouse codes
     .filter((line) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/.test(line)); // UUIDs
   check('no standalone English UI labels across every visited module', sweep.length === 0, sweep.slice(0, 4).join(' | '));
   writeFileSync(`${shotDir}/api-calls.json`, JSON.stringify(apiCalls, null, 2));
