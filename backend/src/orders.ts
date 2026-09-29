@@ -6,7 +6,11 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { addRial, asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
+import { assertNotRestricted } from './console.js';
+import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
+import { postSupplierEarnings } from './wallet.js';
+import { recordRedemption, resolveCouponDiscount, resolveFestivalDiscount, type DiscountContext } from './coupons.js';
 
 const checkout = z.object({
   orderType: z.enum(['retail', 'wholesale']),
@@ -18,6 +22,8 @@ const checkout = z.object({
     province: z.string().trim().min(2).max(120), city: z.string().trim().min(2).max(120),
     line: z.string().trim().min(10).max(500), postalCode: z.string().regex(/^\d{10}$/),
   }),
+  couponCode: z.string().trim().max(40).optional(),
+  shippingMethodId: z.uuid().optional(),
 });
 const orderStatus = z.enum(['pending_payment', 'paid', 'processing', 'preparing', 'ready_to_ship', 'in_transit', 'shipped', 'delivered', 'cancelled', 'returned']);
 type OrderStatus = z.infer<typeof orderStatus>;
@@ -28,7 +34,7 @@ const allowed: Record<OrderStatus, OrderStatus[]> = {
 };
 
 type VariantRow = {
-  variant_id: string; sku: string; product_id: string; product_name: string; supplier_id: string | null;
+  variant_id: string; sku: string; product_id: string; product_name: string; product_category: string; supplier_id: string | null;
   cash_price_rial: string; installment_price_rial: string | null; wholesale_price_rial: string | null;
   status: string; active: boolean;
 };
@@ -37,9 +43,30 @@ type OrderRow = { id: string; reference: string; buyer_id: string; status: Order
 export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: Config, availableProviders = new Set<string>()) {
   app.post('/api/v1/orders', async (request, reply) => {
     const user = await principal(request, pool, config);
+    await assertNotRestricted(pool, user.id, 'purchase');
     const body = checkout.parse(request.body);
     const key = request.headers['idempotency-key'];
     if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');
+    // Status/restriction gates run before the order transaction: a rejected order
+    // must leave the audit trail behind (items 11-13), which a rollback would erase.
+    const priced = await pool.query<{ id: string; supplier_id: string | null; cash_price_rial: string;
+      installment_price_rial: string | null; wholesale_price_rial: string | null }>(
+      `SELECT v.id, p.supplier_id, p.cash_price_rial::text, p.installment_price_rial::text, p.wholesale_price_rial::text
+         FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = ANY($1::uuid[])`,
+      [body.items.map((item) => item.variantId)]);
+    const incomingBySupplier = new Map<string, bigint>();
+    for (const item of body.items) {
+      const row = priced.rows.find((candidate) => candidate.id === item.variantId);
+      if (!row?.supplier_id) continue;
+      const unit = rial((body.orderType === 'wholesale' ? row.wholesale_price_rial : row.cash_price_rial) ?? '0');
+      incomingBySupplier.set(row.supplier_id,
+        (incomingBySupplier.get(row.supplier_id) ?? 0n) + unit * BigInt(item.quantity));
+    }
+    for (const [supplierId, incoming] of incomingBySupplier) {
+      await assertSupplierMay(pool, supplierId, 'order_intake', { resource: 'order', ip: request.ip });
+      const violation = await transaction(pool, (client) => supplierCapViolation(client, supplierId, 'sales_limit', incoming));
+      if (violation) throw forbidden(violation);
+    }
     const result = await transaction(pool, async (client) => {
       const claim = await claimIdempotency(client, user.id, 'order.create', key, requestHash(body));
       if (claim.previous) return claim.previous;
@@ -51,6 +78,13 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
            LIMIT 1`, [user.id]);
         if (!membership) throw forbidden();
         limits = membership.limits;
+        if (body.paymentMode === 'four_installments' && limits.installmentAccess === false)
+          throw conflict('خرید اقساطی در پلن عضویت شما فعال نیست.');
+        const maxQuantityPerLine = limits.maxQuantityPerLine;
+        if (typeof limits.maxOrderLines === 'number' && body.items.length > limits.maxOrderLines)
+          throw conflict('تعداد اقلام سفارش از سقف پلن بالاتر است.');
+        if (typeof maxQuantityPerLine === 'number' && body.items.some((item) => item.quantity > maxQuantityPerLine))
+          throw conflict('تعداد یک قلم از سقف پلن بالاتر است.');
         if (typeof limits.maxOrdersPerMonth === 'number' && limits.maxOrdersPerMonth >= 0) {
           const count = await one<{ count: string }>(client,
             `SELECT count(*)::text AS count FROM orders WHERE buyer_id = $1 AND order_type = 'wholesale'
@@ -66,6 +100,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       for (const item of body.items) {
         const variant = await one<VariantRow>(client,
           `SELECT v.id AS variant_id, v.sku, v.active, p.id AS product_id, p.name AS product_name,
+                  p.category AS product_category,
                   p.supplier_id, p.cash_price_rial, p.installment_price_rial, p.wholesale_price_rial, p.status
            FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = $1`, [item.variantId]);
         if (!variant || !variant.active || variant.status !== 'published') throw notFound();
@@ -81,18 +116,45 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       const subtotal = addRial(lines.map((line) => line.total));
       if (body.orderType === 'wholesale') {
         if (typeof limits.maxOrderValueRial === 'string' && subtotal > rial(limits.maxOrderValueRial)) throw conflict('مبلغ سفارش از سقف پلن بالاتر است.');
+        if (typeof limits.minOrderValueRial === 'string' && subtotal < rial(limits.minOrderValueRial)) throw conflict('مبلغ سفارش از کف خرید این پلن کمتر است.');
         const suppliers = new Set(lines.map((line) => line.variant.supplier_id ?? 'kolbe'));
         if (typeof limits.maxSuppliersPerOrder === 'number' && suppliers.size > limits.maxSuppliersPerOrder) throw conflict('تعداد تأمین‌کنندگان سفارش از سقف پلن بالاتر است.');
       }
       const percent = body.orderType === 'wholesale' && typeof limits.discountPercent === 'number'
         && Number.isInteger(limits.discountPercent) && limits.discountPercent >= 0 && limits.discountPercent <= 90
         ? BigInt(limits.discountPercent) : 0n;
-      const discount = subtotal * percent / 100n;
-      const total = subtotal - discount;
+      const planDiscount = subtotal * percent / 100n;
+      const context: DiscountContext = {
+        userId: user.id,
+        orderType: body.orderType,
+        isVip: user.roles.includes('vip'),
+        lines: lines.map((line) => ({ productId: line.variant.product_id, category: line.variant.product_category, total: line.total })),
+      };
+      const promo = body.couponCode
+        ? await resolveCouponDiscount(client, context, body.couponCode)
+        : await resolveFestivalDiscount(client, context);
+      if (body.couponCode && promo.source === 'none') throw badRequest(promo.note ?? 'کد تخفیف معتبر نیست.');
+      let discount = planDiscount + promo.discountRial;
+      if (discount > subtotal) discount = subtotal;
+      // Shipping: server-side authoritative — never trust client fee
+      let shippingRial = 0n;
+      let shippingMethodId: string | null = null;
+      if (body.shippingMethodId) {
+        const method = await one<{ id: string; active: boolean; base_fee_rial: string; free_above_rial: string | null }>(client,
+          'SELECT id, active, base_fee_rial, free_above_rial FROM shipping_methods WHERE id = $1', [body.shippingMethodId]);
+        if (!method) throw notFound();
+        if (!method.active) throw badRequest('روش ارسال انتخاب‌شده غیرفعال است.');
+        shippingMethodId = method.id;
+        const base = rial(method.base_fee_rial);
+        const freeAbove = method.free_above_rial ? rial(method.free_above_rial) : null;
+        if (freeAbove !== null && subtotal >= freeAbove) shippingRial = 0n;
+        else shippingRial = base;
+      }
+      const total = subtotal - discount + shippingRial;
       await client.query(
-        `INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,subtotal_rial,discount_rial,total_rial,shipping_address)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [orderId, reference, user.id, body.orderType, body.paymentMode, subtotal.toString(), discount.toString(), total.toString(), JSON.stringify(body.shippingAddress)]);
+        `INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,subtotal_rial,discount_rial,shipping_rial,shipping_method_id,total_rial,shipping_address)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [orderId, reference, user.id, body.orderType, body.paymentMode, subtotal.toString(), discount.toString(), shippingRial.toString(), shippingMethodId, total.toString(), JSON.stringify(body.shippingAddress)]);
       for (const line of lines) {
         await client.query(
           `INSERT INTO order_lines(id,order_id,product_id,variant_id,supplier_id,product_name,sku,quantity,unit_price_rial,line_total_rial)
@@ -129,7 +191,10 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         [paymentIntentId, `PAY-${sequence!.number}`, orderId, provider, total.toString()]);
       await audit(client, user.id, 'order.created', 'order', orderId, undefined, { reference, totalRial: total.toString() }, request.ip);
       await outbox(client, 'order.created', 'order', orderId, { orderId, reference });
-      const response = { id: orderId, reference, status: 'pending_payment', subtotalRial: asRial(subtotal), discountRial: asRial(discount), totalRial: asRial(total), paymentIntentId,
+      if (promo.couponId && promo.discountRial > 0n) {
+        await recordRedemption(client, promo.couponId, user.id, orderId, promo.discountRial);
+      }
+      const response = { id: orderId, reference, status: 'pending_payment', subtotalRial: asRial(subtotal), discountRial: asRial(discount), shippingRial: asRial(shippingRial), shippingMethodId, totalRial: asRial(total), paymentIntentId,
         paymentAvailable: availableProviders.has(provider) };
       await completeIdempotency(client, user.id, 'order.create', key, response);
       return response;
@@ -189,6 +254,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         }
       }
       await client.query('UPDATE orders SET status = $2, updated_at = now() WHERE id = $1', [id, body.status]);
+      if (body.status === 'delivered') await postSupplierEarnings(client, id);
       if (body.status === 'cancelled') await client.query("UPDATE payment_intents SET status = 'failed' WHERE order_id = $1 AND status = 'pending'", [id]);
       await client.query('INSERT INTO order_events(id,order_id,from_status,to_status,actor_id,note) VALUES ($1,$2,$3,$4,$5,$6)',
         [randomUUID(), id, order.status, body.status, user.id, body.note ?? null]);
