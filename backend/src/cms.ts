@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
+import type { PoolClient } from 'pg';
 import { one, transaction, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { badRequest, notFound } from './errors.js';
@@ -59,6 +60,59 @@ const supportWidget = z.object({
   }).strict(),
 }).strict();
 
+/** Deterministic default palette — the admin CTA «ایجاد پالت اصلی» and the CMS bootstrap both use it. */
+const DEFAULT_PALETTE = {
+  code: 'kolbe-default',
+  name: 'پالت اصلی کلبه',
+  occasion: null as string | null,
+  colors: { primary: '#1B2A4A', secondary: '#C1613B', accent: '#C1613B', background: '#F9F6F1', surface: '#FFFFFF', text: '#0E1527' },
+};
+
+/** Base hero payload — the storefront `HeroRenderer` reads exactly these keys. */
+const DEFAULT_HERO = {
+  eyebrow: 'کلبه وینتیج',
+  title: 'پوشاک انتخابی، برای سال‌ها',
+  subtitle: 'کالکشن کلبه وینتیج با تمرکز بر پارچه، دوخت و ماندگاری؛ برای خرید خرده و تأمین عمده.',
+  ctaLabel: 'مشاهده کالکشن',
+  ctaTarget: 'shop',
+  image: null,
+  visible: true,
+};
+
+/** Base sections created by the one-click bootstrap (hero is always position 0). */
+const BASE_SECTIONS: { componentCode: string; title: string; payload: Record<string, unknown>; position: number }[] = [
+  { componentCode: 'hero', title: 'هیرو صفحه اصلی', payload: DEFAULT_HERO, position: 0 },
+  { componentCode: 'product_slider', title: 'محصولات منتخب', payload: { heading: 'منتخب کلبه', limit: 8 }, position: 1 },
+  { componentCode: 'cta', title: 'دعوت به خرید عمده', payload: { text: 'تأمین عمده پوشاک با شرایط ویژه', ctaLabel: 'درخواست همکاری', ctaTarget: 'wholesale' }, position: 2 },
+];
+
+/** Creates (or returns) the default palette and makes it the active manual palette. Idempotent. */
+async function ensureDefaultPalette(client: PoolClient, actorId: string, ip: string) {
+  const existing = await one<{ id: string }>(client, 'SELECT id FROM color_palettes WHERE code = $1', [DEFAULT_PALETTE.code]);
+  let paletteId = existing?.id;
+  let created = false;
+  if (!paletteId) {
+    paletteId = randomUUID();
+    await client.query('INSERT INTO color_palettes(id,code,name,occasion,colors,created_by) VALUES ($1,$2,$3,$4,$5,$6)',
+      [paletteId, DEFAULT_PALETTE.code, DEFAULT_PALETTE.name, DEFAULT_PALETTE.occasion, JSON.stringify(DEFAULT_PALETTE.colors), actorId]);
+    await audit(client, actorId, 'cms.palette_created', 'color_palette', paletteId, undefined, { code: DEFAULT_PALETTE.code }, ip);
+    created = true;
+  }
+  const activation = await one<{ id: string }>(client,
+    `SELECT id FROM palette_activations WHERE palette_id = $1 AND mode = 'manual' AND active LIMIT 1`, [paletteId]);
+  let activated = false;
+  if (!activation) {
+    await client.query(
+      `UPDATE palette_activations SET active = false WHERE mode = 'manual' AND active`);
+    await client.query(
+      `INSERT INTO palette_activations(id,palette_id,mode,starts_at,ends_at,created_by) VALUES ($1,$2,'manual',now(),NULL,$3)`,
+      [randomUUID(), paletteId, actorId]);
+    await audit(client, actorId, 'cms.palette_activated', 'color_palette', paletteId, undefined, { mode: 'manual' }, ip);
+    activated = true;
+  }
+  return { paletteId, created, activated };
+}
+
 export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   /* ---------- Public site surface ---------- */
 
@@ -97,6 +151,64 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
   });
 
   /* ---------- Admin management ---------- */
+
+  /**
+   * One-click CMS bootstrap for a fresh database: home page + hero + base sections + default palette.
+   * Idempotent — running it twice never duplicates rows and never resets edited content.
+   */
+  app.post('/api/v1/admin/cms/bootstrap', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'cms:manage');
+    return transaction(pool, async (client) => {
+      const existingPage = await one<{ id: string }>(client, `SELECT id FROM cms_pages WHERE code = 'home'`);
+      let pageId = existingPage?.id;
+      let pageCreated = false;
+      if (!pageId) {
+        pageId = randomUUID();
+        await client.query(
+          `INSERT INTO cms_pages(id,code,title,path,description,seo,active)
+           VALUES ($1,'home','صفحه اصلی','/','صفحه اصلی فروشگاه کلبه وینتیج',$2,true)`,
+          [pageId, JSON.stringify({ title: 'کلبه وینتیج', description: 'پوشاک انتخابی کلبه وینتیج' })]);
+        await audit(client, user.id, 'cms.page_created', 'cms_page', pageId, undefined, { code: 'home', source: 'bootstrap' }, request.ip);
+        pageCreated = true;
+      }
+
+      const createdSections: string[] = [];
+      for (const section of BASE_SECTIONS) {
+        const component = await one<{ id: string }>(client, 'SELECT id FROM cms_components WHERE code = $1', [section.componentCode]);
+        if (!component) continue; // registry is seeded by migration 010; skip gracefully if missing
+        const already = await one<{ id: string }>(client,
+          'SELECT id FROM cms_sections WHERE page_id = $1 AND component_id = $2', [pageId, component.id]);
+        if (already) continue;
+        const sectionId = randomUUID();
+        await client.query(
+          `INSERT INTO cms_sections(id,page_id,component_id,title,payload,visible,position) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [sectionId, pageId, component.id, section.title, JSON.stringify(section.payload), true, section.position]);
+        createdSections.push(sectionId);
+      }
+      if (createdSections.length) {
+        await audit(client, user.id, 'cms.sections_seeded', 'cms_page', pageId, undefined,
+          { sections: createdSections.length, source: 'bootstrap' }, request.ip);
+      }
+
+      const palette = await ensureDefaultPalette(client, user.id, request.ip);
+      const hero = await one(client,
+        `SELECT s.id, s.title, s.payload FROM cms_sections s JOIN cms_components c ON c.id = s.component_id
+         WHERE s.page_id = $1 AND c.code = 'hero' ORDER BY s.position LIMIT 1`, [pageId]);
+      return {
+        pageId, pageCreated, sectionsCreated: createdSections.length,
+        paletteId: palette.paletteId, paletteCreated: palette.created, paletteActivated: palette.activated,
+        hero,
+      };
+    });
+  });
+
+  /** Idempotent default-palette creation used by the palettes CTA. */
+  app.post('/api/v1/admin/cms/palettes/default', async (request, reply) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'cms:manage');
+    const result = await transaction(pool, (client) => ensureDefaultPalette(client, user.id, request.ip));
+    const row = await one(pool, 'SELECT * FROM color_palettes WHERE id = $1', [result.paletteId]);
+    return reply.code(result.created ? 201 : 200).send({ palette: row, created: result.created, activated: result.activated });
+  });
 
   app.get('/api/v1/admin/cms/components', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'cms:read');

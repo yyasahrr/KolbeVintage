@@ -27,20 +27,67 @@ const categoryCode = (category: string) => /کفش|کتانی|بوت/.test(categ
 export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.get('/api/v1/products', async (request) => {
     const query = z.object({ category: z.string().max(120).optional(), limit: z.coerce.number().int().min(1).max(100).default(30), before: z.iso.datetime().optional() }).parse(request.query);
+    // Availability is derived from the WMS ledger (stock_balances), never from product.metadata.
     const result = await pool.query(
       `SELECT p.id, p.brand, p.name, p.category, p.description, p.cash_price_rial,
               p.installment_price_rial, p.metadata, p.created_at,
-              COALESCE(jsonb_agg(jsonb_build_object('id', v.id, 'sku', v.sku, 'size', v.size_label, 'color', v.color_label)
+              COALESCE(jsonb_agg(jsonb_build_object('id', v.id, 'sku', v.sku, 'size', v.size_label, 'color', v.color_label,
+                'available', COALESCE(b.available, 0), 'reserved', COALESCE(b.reserved, 0),
+                'incoming', COALESCE(b.incoming, 0), 'damaged', COALESCE(b.damaged, 0))
                 ORDER BY v.sku) FILTER (WHERE v.id IS NOT NULL), '[]'::jsonb) AS variants
-       FROM products p LEFT JOIN product_variants v ON v.product_id = p.id AND v.active
+       FROM products p
+       LEFT JOIN product_variants v ON v.product_id = p.id AND v.active
+       LEFT JOIN (
+         SELECT sb.variant_id,
+                SUM(sb.on_hand - sb.reserved - sb.damaged)::int AS available,
+                SUM(sb.reserved)::int AS reserved, SUM(sb.incoming)::int AS incoming, SUM(sb.damaged)::int AS damaged
+         FROM stock_balances sb JOIN warehouses w ON w.id = sb.warehouse_id AND w.active
+         GROUP BY sb.variant_id
+       ) b ON b.variant_id = v.id
        WHERE p.status = 'published' AND ($1::text IS NULL OR p.category = $1)
          AND ($2::timestamptz IS NULL OR p.created_at < $2)
        GROUP BY p.id ORDER BY p.created_at DESC LIMIT $3`, [query.category ?? null, query.before ?? null, query.limit]);
-    return { items: result.rows.map((row) => ({
-      id: row.id, brand: row.brand, name: row.name, category: row.category, description: row.description,
-      cashPriceRial: asRial(row.cash_price_rial), installmentPriceRial: row.installment_price_rial === null ? null : asRial(row.installment_price_rial),
-      metadata: row.metadata, variants: row.variants, createdAt: row.created_at,
-    })) };
+    return { items: result.rows.map((row) => {
+      const variants = row.variants as { available?: number; reserved?: number; incoming?: number; damaged?: number }[];
+      const sum = (key: 'available' | 'reserved' | 'incoming' | 'damaged') => variants.reduce((total, variant) => total + Number(variant[key] ?? 0), 0);
+      return {
+        id: row.id, brand: row.brand, name: row.name, category: row.category, description: row.description,
+        cashPriceRial: asRial(row.cash_price_rial), installmentPriceRial: row.installment_price_rial === null ? null : asRial(row.installment_price_rial),
+        metadata: row.metadata, variants, createdAt: row.created_at,
+        available: sum('available'), reserved: sum('reserved'), incoming: sum('incoming'), damaged: sum('damaged'),
+      };
+    }) };
+  });
+
+  /** Per-variant WMS inventory for one product — drives the ProductStudio inventory view. */
+  app.get('/api/v1/admin/products/:id/inventory', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:read');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const product = await one<{ id: string; name: string }>(pool, 'SELECT id, name FROM products WHERE id = $1', [id]);
+    if (!product) throw notFound();
+    const rows = await pool.query(
+      `SELECT v.id AS variant_id, v.sku, v.color_label AS color, v.size_label AS size,
+              w.id AS warehouse_id, w.code AS warehouse_code, w.name AS warehouse_name,
+              COALESCE(b.on_hand, 0)::int AS on_hand, COALESCE(b.reserved, 0)::int AS reserved,
+              COALESCE(b.incoming, 0)::int AS incoming, COALESCE(b.damaged, 0)::int AS damaged,
+              COALESCE(b.on_hand - b.reserved - b.damaged, 0)::int AS available
+       FROM product_variants v
+       LEFT JOIN stock_balances b ON b.variant_id = v.id
+       LEFT JOIN warehouses w ON w.id = b.warehouse_id
+       WHERE v.product_id = $1 AND v.active
+       ORDER BY v.sku, w.code`, [id]);
+    const variants = await pool.query(
+      `SELECT v.id AS variant_id, v.sku, v.color_label AS color, v.size_label AS size,
+              COALESCE(SUM(b.on_hand - b.reserved - b.damaged), 0)::int AS available
+       FROM product_variants v LEFT JOIN stock_balances b ON b.variant_id = v.id
+       WHERE v.product_id = $1 AND v.active GROUP BY v.id ORDER BY v.sku`, [id]);
+    const totals = { available: 0, reserved: 0, incoming: 0, damaged: 0 };
+    for (const row of rows.rows) {
+      totals.available += Number(row.available); totals.reserved += Number(row.reserved);
+      totals.incoming += Number(row.incoming); totals.damaged += Number(row.damaged);
+    }
+    return { productId: product.id, productName: product.name, variants: variants.rows, items: rows.rows, totals };
   });
 
   app.get('/api/v1/wholesale/products', async (request) => {
@@ -87,7 +134,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         const id = randomUUID();
         await client.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,attributes) VALUES ($1,$2,$3,$4,$5,$6)',
           [id, productId, sku, variant.size ?? null, variant.color ?? null, JSON.stringify(variant.attributes)]);
-        variants.push({ id, sku });
+        // Color/size travel with the ids so the client can bind per-variant inventory input
+        // without relying on array order.
+        variants.push({ id, sku, color: variant.color ?? null, size: variant.size ?? null });
       }
       await audit(client, user.id, 'product.created', 'product', productId, undefined, { name: body.name, variants }, request.ip);
       await outbox(client, 'product.created', 'product', productId, { productId });

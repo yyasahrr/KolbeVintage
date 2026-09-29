@@ -282,7 +282,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const otherList = filtered.filter((p) => p.supplierId !== KOLBE.id);
 
   const myOrders = orders.filter((o) => o.accountId ? o.accountId === accountId : o.buyer === buyer);
-  const actionCount = myOrders.reduce((a, o) => a + o.subOrders.filter((s) => s.status === "approved").length, 0);
+  const actionCount = myOrders.reduce((a, o) => a + (o.subOrders ?? []).filter((s) => s.status === "approved").length, 0);
   const wholesaleShipping = shipping.filter((s) => s.active && s.scope !== "خرده");
   const chosenShip = wholesaleShipping.find((s) => s.id === shipId) ?? wholesaleShipping[0];
 

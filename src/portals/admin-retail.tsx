@@ -1,14 +1,16 @@
 import { useState } from "react";
 import {
-  Plus, Pencil, Trash2, RefreshCw, Key, Send, Download, Percent, MessageSquare, Megaphone,
+  Plus, RefreshCw, Key, Send, Download, Percent, MessageSquare, Megaphone,
   Mail, Smartphone, BellRing, Search, Truck, Eye, Image as ImageIcon, Globe,
 } from "lucide-react";
 import { IMG, fmtMoney, fmtNum } from "../data/catalog";
+import { formatPersianDateTime } from "../data/persian-date";
+import { orderStatusLabel } from "../data/contracts";
 import { useStore } from "../data/store";
-import { KOLBE, type ShippingMethod, type CmsItem, type Customer } from "../data/platform";
+import { KOLBE, type CmsItem, type Customer } from "../data/platform";
 import { ProductStudio } from "./admin-product";
 import { useEffect } from "react";
-import { crmApi, shippingApi } from "../data/api";
+import { crmApi } from "../data/api";
 import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
 import { cn } from "../utils/cn";
 
@@ -19,7 +21,8 @@ export function RetailOrders({ flash }: { flash: F }) {
   const { retailOrders, accounts, setRetailOrderStatus, setReturnStatus } = useStore();
   const rows = retailOrders.map((order) => ({ ...order,
     customer: accounts.find((account) => account.id === order.accountId)?.name ?? "مشتری کلبه",
-    items: order.lines.reduce((sum, line) => sum + line.qty, 0),
+    // Server rows may omit lines; an order is a valid row either way.
+    items: (order.lines ?? []).reduce((sum, line) => sum + (line.qty ?? 0), 0),
   }));
   const [sel, setSel] = useState<string | null>(rows[0]?.id ?? null);
   const [filter, setFilter] = useState<"all" | "open" | "done">("all");
@@ -44,7 +47,7 @@ export function RetailOrders({ flash }: { flash: F }) {
                 {list.map((o) => (
                   <tr key={o.id} className={cn(sel === o.id && "bg-[var(--kv-accent)]/[0.05]")}>
                     <td className="font-bold tabular-nums">{o.id}</td><td>{o.customer}</td><td className="tabular-nums">{fmtNum(o.items)}</td>
-                    <td className="font-bold tabular-nums">{fmtMoney(o.total)}</td><td><Status value={o.status} /></td><td className="text-[var(--kv-muted)]">{o.createdAt}</td>
+                    <td className="font-bold tabular-nums">{fmtMoney(o.total)}</td><td><Status value={orderStatusLabel(o.status)} /></td><td className="tabular-nums text-[var(--kv-muted)]">{formatPersianDateTime(o.createdAt)}</td>
                     <td><button onClick={() => setSel(o.id)} className="inline-flex items-center gap-1 text-[12.5px] font-bold text-[var(--kv-accent)] hover:underline"><Eye size={13} />جزئیات</button></td>
                   </tr>
                 ))}
@@ -59,11 +62,14 @@ export function RetailOrders({ flash }: { flash: F }) {
           <div>
             <p className="text-xs text-[var(--kv-muted)] tabular-nums">{cur.id}</p>
             <h3 className="mt-1 text-[16px] font-extrabold">{cur.customer}</h3>
-            <p className="text-[12.5px] text-[var(--kv-muted)]">{fmtNum(cur.items)} قلم · {fmtMoney(cur.total)} · {cur.createdAt}</p>
-            <div className="mt-3"><Status value={cur.status} /></div>
-            <div className="mt-3 space-y-2 border-y border-[var(--kv-line)] py-3">{cur.lines.map((line, i) => <div key={`${line.productId}-${i}`} className="flex items-center gap-2"><img src={line.image} alt="" className="h-10 w-9 rounded-[7px] object-cover" /><span className="min-w-0 flex-1 truncate text-[12px] font-semibold">{line.name} · {line.color} / {line.size} ×{fmtNum(line.qty)}</span><b className="text-[11px] tabular-nums">{fmtMoney(line.qty * line.unitPrice)}</b></div>)}</div>
-            <p className="mt-3 text-[12px] text-[var(--kv-muted)]">ارسال با {cur.shippingMethod} به {cur.address.city} · {cur.address.line}</p>
-            <div className="mt-4"><Timeline items={cur.events.map((event) => ({ t: event.title, d: [event.by, event.note].filter(Boolean).join(" · "), time: event.time, done: true }))} /></div>
+            <p className="text-[12.5px] text-[var(--kv-muted)]">{fmtNum(cur.items)} قلم · {fmtMoney(cur.total)} · {formatPersianDateTime(cur.createdAt)}</p>
+            <div className="mt-3"><Status value={orderStatusLabel(cur.status)} /></div>
+            <div className="mt-3 space-y-2 border-y border-[var(--kv-line)] py-3">{(cur.lines ?? []).map((line, i) => <div key={`${line.productId}-${i}`} className="flex items-center gap-2"><img src={line.image ?? undefined} alt="" className="h-10 w-9 rounded-[7px] object-cover" /><span className="min-w-0 flex-1 truncate text-[12px] font-semibold">{line.name} · {line.color} / {line.size} ×{fmtNum(line.qty)}</span><b className="text-[11px] tabular-nums">{fmtMoney(line.qty * line.unitPrice)}</b></div>)}</div>
+            <p className="mt-3 text-[12px] text-[var(--kv-muted)]">
+              ارسال با {cur.shippingMethod ?? "—"}
+              {cur.address ? ` به ${cur.address.city} · ${cur.address.line}` : ""}
+            </p>
+            <div className="mt-4"><Timeline items={(cur.events ?? []).map((event) => ({ t: event.title, d: [event.by, event.note].filter(Boolean).join(" · "), time: event.time, done: true }))} /></div>
             {cur.returnRequest && <div className="mt-4 rounded-[11px] bg-[var(--kv-surface-2)]/60 p-3 text-[12px]"><p className="font-bold">درخواست بازگشت: {cur.returnRequest.status}</p><p className="mt-1 text-[var(--kv-muted)]">{cur.returnRequest.reason}</p>{cur.returnRequest.status === "در انتظار بررسی" && <div className="mt-3 flex gap-2"><Btn variant="accent" size="sm" onClick={() => { setReturnStatus(cur.id, "تأیید شد"); flash("بازگشت تأیید شد"); }}>تأیید بازگشت</Btn><Btn variant="soft" size="sm" onClick={() => { setReturnStatus(cur.id, "رد شد"); flash("بازگشت رد شد"); }}>رد درخواست</Btn></div>}</div>}
             <div className="mt-4 grid grid-cols-2 gap-2">
               <div className="col-span-2"><Field label="یادداشت تغییر وضعیت (اختیاری)"><Input value={note} onChange={setNote} placeholder="مثلاً زمان تحویل به پست" /></Field></div>
@@ -87,71 +93,7 @@ export function ProductDefinition({ flash }: { flash: F }) {
   return <ProductStudio flash={flash} />;
 }
 
-/* ================= Shipping ================= */
-export function ShippingAdmin({ flash }: { flash: F }) {
-  const storeShip = useStore() as any;
-  const [serverShipping, setServerShipping] = useState<any[] | null>(null);
-  const isDemoShip = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
-  useEffect(()=>{ if(isDemoShip) return; shippingApi.adminList().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemoShip]);
-  const shipping = serverShipping ?? storeShip.shipping;
-  const upsertShipping = async (m: any)=> { if(isDemoShip) return storeShip.upsertShipping(m); const exists = Boolean(m.id && serverShipping?.some((x:any)=>x.id===m.id)); if (exists) await shippingApi.update(m.id, m); else await shippingApi.create(m); const r = await shippingApi.adminList(); setServerShipping(r.items??[]); };
-  const removeShipping = async (id:string)=> { if(isDemoShip) return storeShip.removeShipping(id); await shippingApi.remove(id); const r = await shippingApi.adminList(); setServerShipping(r.items??[]); };
-  const [edit, setEdit] = useState<ShippingMethod | null>(null);
-  const blank: ShippingMethod = { id: "", name: "", carrier: "", scope: "خرده", price: 0, freeAbove: null, eta: "", zones: "سراسر کشور", active: true };
-  return (
-    <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_320px]">
-      <div>
-        <div className="mb-4 flex items-center justify-between">
-          <p className="text-[13px] text-[var(--kv-muted)]">روش‌های فعال در تسویه‌حساب خرده و ثبت سفارش عمده نمایش داده می‌شوند.</p>
-          <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => setEdit({ ...blank, id: `ship-${Date.now()}` })}>روش ارسال جدید</Btn>
-        </div>
-        <Card className="overflow-hidden">
-          <div className="kv-scroll overflow-x-auto">
-            <table className="kv-table min-w-[760px]">
-              <thead><tr><th>روش</th><th>حامل</th><th>کانال</th><th>هزینه</th><th>رایگان از</th><th>زمان</th><th>پوشش</th><th>فعال</th><th></th></tr></thead>
-              <tbody>
-                {shipping.map((m: any) => (
-                  <tr key={m.id}>
-                    <td><b>{m.name}</b></td><td>{m.carrier}</td><td><span className="rounded-full bg-[var(--kv-surface-2)] px-2.5 py-1 text-[11px] font-bold">{m.scope}</span></td>
-                    <td className="tabular-nums">{m.price === 0 ? "پس‌کرایه" : fmtMoney(m.price)}</td><td className="tabular-nums">{m.freeAbove ? fmtMoney(m.freeAbove) : "—"}</td>
-                    <td>{m.eta}</td><td className="text-[var(--kv-muted)]">{m.zones}</td>
-                    <td><Switch on={m.active} onToggle={() => { upsertShipping({ ...m, active: !m.active }); flash(`${m.name} ${m.active ? "غیرفعال" : "فعال"} شد`); }} /></td>
-                    <td><span className="flex gap-2"><button onClick={() => setEdit(m)} className="text-[var(--kv-muted)] hover:text-[var(--kv-ink)]" aria-label="ویرایش"><Pencil size={15} /></button><button onClick={() => { removeShipping(m.id); flash("روش ارسال حذف شد"); }} className="text-[var(--kv-faint)] hover:text-[var(--kv-danger)]" aria-label="حذف"><Trash2 size={15} /></button></span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      </div>
-      <Card className="h-fit p-5">
-        <p className="text-sm font-bold">قوانین سراسری</p>
-        <div className="mt-3 space-y-3">
-          <Field label="ارسال رایگان خرده از مبلغ"><Input placeholder="۵٬۰۰۰٬۰۰۰" /></Field>
-          <Field label="انبار پیش‌فرض ارسال"><Select options={["انبار مرکزی — تهران", "انبار اصفهان"]} /></Field>
-          <label className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-[13px] font-bold">رهگیری خودکار از API حامل<Switch on onToggle={() => {}} /></label>
-          <Btn variant="soft" size="sm" onClick={() => flash("قوانین ارسال ذخیره شد")}>ذخیره</Btn>
-        </div>
-      </Card>
-      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.name ? `ویرایش ${edit.name}` : "روش ارسال جدید"}>
-        {edit && (
-          <div className="space-y-4">
-            <Field label="نام روش"><Input value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="مثلاً پست پیشتاز" /></Field>
-            <Field label="حامل"><Input value={edit.carrier} onChange={(v) => setEdit({ ...edit, carrier: v })} /></Field>
-            <Field label="کانال"><Select options={["خرده", "عمده", "هر دو"]} value={edit.scope} onChange={(v) => setEdit({ ...edit, scope: v as ShippingMethod["scope"] })} /></Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="هزینه (تومان)" hint="۰ = پس‌کرایه"><Input value={String(edit.price)} onChange={(v) => setEdit({ ...edit, price: Number(v.replace(/\D/g, "")) || 0 })} /></Field>
-              <Field label="رایگان از مبلغ"><Input value={edit.freeAbove ? String(edit.freeAbove) : ""} onChange={(v) => setEdit({ ...edit, freeAbove: Number(v.replace(/\D/g, "")) || null })} placeholder="—" /></Field>
-            </div>
-            <Field label="زمان تحویل"><Input value={edit.eta} onChange={(v) => setEdit({ ...edit, eta: v })} placeholder="۲ تا ۴ روز کاری" /></Field>
-            <Field label="پوشش جغرافیایی"><Input value={edit.zones} onChange={(v) => setEdit({ ...edit, zones: v })} /></Field>
-            <Btn variant="accent" className="w-full" disabled={!edit.name.trim()} onClick={() => { upsertShipping(edit); setEdit(null); flash(`${edit.name} ذخیره شد`); }}>ذخیره روش ارسال</Btn>
-          </div>
-        )}
-      </Drawer>
-    </div>
-  );
-}
+export { ShippingAdmin } from "../components/shipping-admin";
 
 /* ================= CRM ================= */
 export function CrmAdmin({ flash }: { flash: F }) {
@@ -341,9 +283,9 @@ export function NotifAdmin({ flash }: { flash: F }) {
 export function FinanceAdmin({ flash }: { flash: F }) {
   const { orders, retailOrders, accounts } = useStore();
   const [tab, setTab] = useState<"tx" | "settle" | "inv">("tx");
-  const paidSubs = orders.flatMap((o) => o.subOrders.filter((s) => ["paid", "preparing", "shipped", "delivered"].includes(s.status)).map((s) => ({ o, s })));
+  const paidSubs = orders.flatMap((o) => (o.subOrders ?? []).filter((s) => ["paid", "preparing", "shipped", "delivered"].includes(s.status)).map((s) => ({ o, s })));
   const wholesaleGmv = paidSubs.reduce((a, x) => a + x.s.total, 0);
-  const retailGmv = retailOrders.filter((o) => o.status !== "در انتظار پرداخت").reduce((a, o) => a + o.total, 0);
+  const retailGmv = retailOrders.filter((o) => o.status !== "در انتظار پرداخت").reduce((a, o) => a + (Number(o.total) || 0), 0);
   const thirdParty = paidSubs.filter((x) => x.s.supplierId !== KOLBE.id);
   const commission = Math.round(thirdParty.reduce((a, x) => a + x.s.total, 0) * 0.08);
   const payable = thirdParty.filter((x) => x.s.status === "delivered" || x.s.status === "shipped").reduce((a, x) => a + Math.round(x.s.total * 0.92), 0);
@@ -384,8 +326,8 @@ export function FinanceAdmin({ flash }: { flash: F }) {
             <table className="kv-table min-w-[680px]">
               <thead><tr><th>فاکتور</th><th>خریدار</th><th>بابت</th><th>مبلغ</th><th>وضعیت</th><th></th></tr></thead>
               <tbody>
-                {orders.flatMap((o) => o.subOrders.filter((s) => !["pending_supplier", "rejected", "cancelled"].includes(s.status)).map((s) => (
-                  <tr key={s.id}><td className="font-bold tabular-nums">INV-{s.id}</td><td>{o.buyer}</td><td>{s.supplierName} · {s.lines.length} قلم</td><td className="font-bold tabular-nums">{fmtMoney(s.total)}</td><td><Status value={s.status === "approved" ? "در انتظار پرداخت" : "پرداخت شد"} /></td><td><button onClick={() => flash(`فاکتور INV-${s.id} دانلود شد`)} className="text-[12.5px] font-bold text-[var(--kv-accent)]">PDF</button></td></tr>
+                {orders.flatMap((o) => (o.subOrders ?? []).filter((s) => !["pending_supplier", "rejected", "cancelled"].includes(s.status)).map((s) => (
+                  <tr key={s.id}><td className="font-bold tabular-nums">INV-{s.id}</td><td>{o.buyer}</td><td>{s.supplierName} · {(s.lines ?? []).length} قلم</td><td className="font-bold tabular-nums">{fmtMoney(s.total)}</td><td><Status value={s.status === "approved" ? "در انتظار پرداخت" : "پرداخت شد"} /></td><td><button onClick={() => flash(`فاکتور INV-${s.id} دانلود شد`)} className="text-[12.5px] font-bold text-[var(--kv-accent)]">دانلود فاکتور</button></td></tr>
                 )))}
               </tbody>
             </table>

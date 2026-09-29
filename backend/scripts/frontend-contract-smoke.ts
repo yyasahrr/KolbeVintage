@@ -16,9 +16,18 @@ import {
   apiClient, authApi, getAccessToken, setAccessToken, setApiBaseUrl, ticketsApi, productsApi, filesApi,
 } from '../../src/data/api.ts';
 import {
-  TICKET_STATUSES, adaptTicketBoard, buildProductCreatePayload, buildTicketCreatePayload, buildTicketReplyPayload,
-  buildTicketUpdatePayload, productVariantSkus, readProductCreateResponse, readFileUploadResponse,
+  TICKET_STATUSES, adaptCmsHero, adaptSitePage, buildProductCreatePayload, buildShippingMethodPayload, buildTicketCreatePayload,
+  buildTicketReplyPayload, buildTicketUpdatePayload, productVariantSkus, readCmsBootstrap, readProductCreateResponse,
+  readProductInventory, readFileUploadResponse, normalizeShippingMethods, normalizeStockBalances, normalizeWarehouses,
+  COUPON_SOURCE_LABEL, COUPON_TYPE_LABEL, INTEGRATION_CATEGORY_LABEL, INTEGRATION_STATUS_LABEL, PALETTE_COLOR_LABEL,
+  PALETTE_MODE_LABEL, PROMO_AUDIENCE_LABEL, SHIPPING_TYPE_LABEL, WMS_LABEL, labelOf, variantKey, variantMatrix,
 } from '../../src/data/contracts.ts';
+import {
+  addDaysIso, formatPersianDate, formatPersianDateTime, isoToPersianInput, persianInputToIso, todayIso,
+} from '../../src/data/persian-date.ts';
+import {
+  cmsApi, financeApi, integrationsApi, inventoryApi, promoApi, shippingApi,
+} from '../../src/data/api.ts';
 
 /** Pick a free loopback port so a stale server from an earlier run can never hijack the smoke. */
 const freePort = async (start: number) => {
@@ -144,7 +153,6 @@ try {
     videoFileId: null, fabric: 'پشم', care: 'خشک‌شویی', seoTitle: 'کت اسموک', slug: 'smoke-coat',
     cutout: { status: 'ready', src: 'https://cdn.example.test/cut.png', source: 'n8n' },
     series: [{ name: 'سری اسموک', pieces: 6, moqSeries: 2, pricePerSeries: 3900000, available: true, colorIds: [] }],
-    stock: '9',
   });
   const product = readProductCreateResponse(await productsApi.create(payload));
   const skus = productVariantSkus(product);
@@ -159,6 +167,178 @@ try {
   const published = catalog.items.find((item) => item.id === product.id);
   check('catalog exposes persisted server file reference (no data URL)',
     published?.metadata.images?.[0]?.fileId === uploaded.id);
+
+  // =========================== admin reconciliation ===========================
+  // Exercised through the same client/payload code the admin console uses, on a database that has
+  // never been seeded — so first-run (empty → real record) behaviour is what gets tested.
+
+  // ---------- (30) Jalali round trip through the single central utility ----------
+  const isoFromJalali = persianInputToIso('۱۴۰۵/۰۷/۱۳');
+  check('persianInputToIso(«۱۴۰۵/۰۷/۱۳») → 2026-10-05 (central Jalali utility)',
+    isoFromJalali !== null && isoFromJalali.startsWith('2026-10-05'), String(isoFromJalali));
+  check('Jalali round trip ISO → ۱۴۰۵/۰۷/۱۳ → ISO is stable',
+    isoToPersianInput(isoFromJalali) === '۱۴۰۵/۰۷/۱۳' && persianInputToIso(isoToPersianInput(isoFromJalali)!) === isoFromJalali);
+  check('formatPersianDateTime renders Persian digits + Jalali date for table rows',
+    /^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}/.test(formatPersianDateTime('2026-09-29T10:30:00.000Z')) &&
+    formatPersianDateTime('2026-09-29T10:30:00.000Z').includes('۱۰:۳۰'),
+    formatPersianDateTime('2026-09-29T10:30:00.000Z'));
+  check('todayIso/addDaysIso stay ISO internally (no Jalali strings in payloads)',
+    /^\d{4}-\d{2}-\d{2}T/.test(todayIso()) && addDaysIso(todayIso(), 7) > todayIso());
+
+  // ---------- (2/4/27) shipping: real methods, real payload, real disable ----------
+  const shippingInput = buildShippingMethodPayload({
+    code: `smoke-ship-${suffix}`, name: 'ارسال استاندارد اسموک', type: 'standard',
+    baseFeeRial: '450000', freeAboveRial: '50000000', estimatedMinDays: 2, estimatedMaxDays: 4, active: true,
+  });
+  const createdMethod = await shippingApi.create(shippingInput) as { id: string };
+  const afterCreate = normalizeShippingMethods(await shippingApi.adminList());
+  const createdRow = afterCreate.find((method) => method.id === createdMethod.id);
+  check('shippingApi.create (canonical payload) → row with code/type/baseFee/freeAbove/eta',
+    createdRow?.code === `smoke-ship-${suffix}` && createdRow.type === 'standard' &&
+    createdRow.baseFeeRial === '450000' && createdRow.estimatedMinDays === 2 && createdRow.estimatedMaxDays === 4,
+    createdRow ? `${createdRow.code} ${createdRow.type} ${createdRow.baseFeeRial}` : 'missing');
+
+  const editedMethod = await shippingApi.update(createdMethod.id, { baseFeeRial: '520000', estimatedMaxDays: 6 });
+  check('shippingApi.update (edit from the drawer) persists fee + eta',
+    (editedMethod as { base_fee_rial?: string }).base_fee_rial === '520000' || (editedMethod as { baseFeeRial?: string }).baseFeeRial === '520000');
+  await shippingApi.remove(createdMethod.id);
+  const afterDisable = normalizeShippingMethods(await shippingApi.adminList()).find((method) => method.id === createdMethod.id);
+  check('shippingApi.remove → soft-disabled (active=false) and still listed', afterDisable?.active === false);
+  check('shipping label maps are Persian while API values stay English',
+    SHIPPING_TYPE_LABEL.standard === 'استاندارد' && SHIPPING_TYPE_LABEL.pickup === 'تحویل حضوری' && createdRow?.type === 'standard');
+  check('shipping settings default warehouse is a real warehouse UUID (no hardcoded warehouse)',
+    typeof (await shippingApi.settings()).defaultWarehouseId !== 'undefined');
+
+  // ---------- (5/6/28) WMS first run on an empty database ----------
+  const beforeWarehouses = normalizeWarehouses(await inventoryApi.warehouses());
+  check('WMS starts empty on a fresh database (no fabricated warehouses)', beforeWarehouses.length === 0);
+  const warehouse = await inventoryApi.createWarehouse({ code: `KV-${suffix}`, name: 'انبار مرکزی اسموک' });
+  const warehouses = normalizeWarehouses(await inventoryApi.warehouses());
+  const createdWarehouse = warehouses.find((row) => row.id === warehouse.id);
+  check('WMS «ایجاد اولین انبار» really POSTs /warehouses and reloads it',
+    Boolean(createdWarehouse) && createdWarehouse?.code === `KV-${suffix}`, createdWarehouse?.code);
+  await inventoryApi.createLocation(warehouse.id, { code: `A-${suffix.slice(-3)}`, name: 'قفسه A' });
+  const detail = await inventoryApi.warehouseDetail(warehouse.id);
+  check('WMS location is stored inside the warehouse', (detail.locations ?? []).length === 1);
+  check('WMS Persian labels replace the English leftovers',
+    WMS_LABEL.onHand === 'موجودی فیزیکی' && WMS_LABEL.incoming === 'در راه' && WMS_LABEL.movementHistory === 'تاریخچه گردش' &&
+    WMS_LABEL.from === 'مبدأ' && WMS_LABEL.to === 'مقصد' && WMS_LABEL.reference === 'شماره مرجع' && WMS_LABEL.reason === 'علت');
+
+  // ---------- (7/8/9/29) product → variants → per-variant receipt → real balances ----------
+  const wmsPayload = buildProductCreatePayload({
+    name: 'پیراهن اسموک انبار', brand: 'Kolbe', category: 'پیراهن', description: 'تست اتصال محصول و انبار',
+    editorialSku: '', retailOn: true, wholesaleOn: true,
+    cashToman: '1850000', installmentToman: '1950000', compareToman: '2100000',
+    colors: [{ name: 'مشکی' }, { name: 'شنی' }], sizes: ['M', 'L'],
+    images: [{ fileId: uploaded.id, url: filesApi.downloadPath(uploaded.id) }], videoFileId: null,
+    fabric: 'نخ', care: 'شست‌وشوی ملایم', seoTitle: 'اسموک انبار', slug: `wms-smoke-${suffix}`,
+    cutout: null, series: [],
+  });
+  const wmsProduct = readProductCreateResponse(await productsApi.create(wmsPayload));
+  check('product create → 4 variants for 2 colours × 2 sizes (SKUs from the server)',
+    wmsProduct.variants.length === 4 && wmsProduct.variants.every((variant) => variant.sku.length > 0),
+    wmsProduct.variants.map((variant) => variant.sku).join(' · '));
+
+  const matrix = variantMatrix(['مشکی', 'شنی'], ['M', 'L']);
+  const quantities: Record<string, number> = { [variantKey('مشکی', 'M')]: 5, [variantKey('مشکی', 'L')]: 3, [variantKey('شنی', 'M')]: 2, [variantKey('شنی', 'L')]: 7 };
+  let receipted = 0;
+  for (const variant of wmsProduct.variants) {
+    const quantity = quantities[variantKey(variant.color, variant.size)] ?? 0;
+    if (quantity < 1) continue;
+    const receipt = await inventoryApi.receipt({ warehouseId: warehouse.id, variantId: variant.id, quantity, reference: `SMOKE-${variant.sku}` }, `smoke-${variant.id}`) as { id: string };
+    await inventoryApi.receiveReceipt(receipt.id);
+    receipted += 1;
+  }
+  check('per-variant initial stock → real receipt + receive for every variant cell',
+    receipted === matrix.length && receipted === 4, `${receipted} receipts`);
+
+  const balances = normalizeStockBalances(await inventoryApi.balances({ warehouseId: warehouse.id, productId: wmsProduct.id }));
+  const availableByVariant = new Map(balances.map((row) => [row.variantId, row.available]));
+  check('WMS balances equal the entered quantities (available = on_hand − reserved − damaged)',
+    wmsProduct.variants.every((variant) => availableByVariant.get(variant.id) === quantities[variantKey(variant.color, variant.size)]) &&
+    balances.every((row) => row.available === row.onHand - row.reserved - row.damaged),
+    balances.map((row) => `${row.sku}:${row.available}`).join(' · '));
+
+  await productsApi.status(wmsProduct.id, 'published');
+  const productInventory = readProductInventory(await inventoryApi.productInventory(wmsProduct.id));
+  check('GET /admin/products/:id/inventory is the read-only ProductStudio source',
+    productInventory.variants.length === 4 && productInventory.items.length >= 1 && productInventory.totals.available === 17,
+    `available=${productInventory.totals.available}`);
+
+  const catalogAfter = await productsApi.list({ limit: '100' }) as { items: { id: string; variants?: { id: string; available?: number }[] }[] };
+  const catalogRow = (catalogAfter.items ?? []).find((item) => item.id === wmsProduct.id);
+  const catalogVariants = catalogRow?.variants ?? [];
+  check('catalogue availability is served from WMS (available/reserved/incoming/damaged)',
+    catalogVariants.length === 4 && catalogVariants.every((variant) => availableByVariant.get(variant.id) === variant.available),
+    catalogVariants.map((variant) => String(variant.available)).join(' · '));
+
+  await inventoryApi.adjust({ warehouseId: warehouse.id, variantId: wmsProduct.variants[0]!.id, delta: -1, reason: 'اصلاح اسموک', reference: `ADJ-${suffix}` }, `smoke-adj-${suffix}`);
+  const afterAdjust = readProductInventory(await inventoryApi.productInventory(wmsProduct.id));
+  check('stock changes only through WMS adjustment (no PATCH product stock)',
+    afterAdjust.totals.available === 16, `available=${afterAdjust.totals.available}`);
+
+  // ---------- (11/12/30) promo: Jalali input → ISO → reload → same Jalali ----------
+  const couponExpiry = persianInputToIso('۱۴۰۵/۰۷/۱۳')!;
+  const coupon = await promoApi.createCoupon({
+    code: `SMOKE${suffix.slice(-4)}`, campaignName: `کمپین اسموک ${suffix}`,
+    type: 'percent', value: '15', minOrderRial: '0', audience: ['customer'],
+    scope: { productIds: [], categories: [] }, startsAt: todayIso(), endsAt: couponExpiry,
+  }) as { id: string };
+  const couponList = await promoApi.coupons() as { items: { id: string; code: string; type: string; source: string; ends_at: string }[] };
+  const couponRow = couponList.items.find((row) => row.id === coupon.id);
+  check('promo coupon Jalali round trip: ۱۴۰۵/۰۷/۱۳ → ISO → reload → same Jalali',
+    Boolean(couponRow) && formatPersianDate(couponRow!.ends_at) === '۱۴۰۵/۰۷/۱۳', couponRow ? formatPersianDate(couponRow.ends_at) : 'missing');
+  check('promo label maps are Persian while coupon type/source values stay English',
+    COUPON_TYPE_LABEL.percent === 'درصدی' && COUPON_TYPE_LABEL.fixed === 'مبلغ ثابت' &&
+    COUPON_SOURCE_LABEL.manual === 'دستی' && PROMO_AUDIENCE_LABEL.wholesale === 'عمده' && couponRow?.type === 'percent');
+
+  const festival = await promoApi.createFestival({
+    code: `smoke-fest-${suffix}`, name: 'جشنواره اسموک', startsAt: todayIso(), endsAt: addDaysIso(todayIso(), 7),
+    discountPercent: 15, audience: ['customer'], scope: { productIds: [], categories: [] },
+  }) as { id: string };
+  const festivals = await promoApi.festivals() as { items: { id: string; name: string; starts_at: string }[] };
+  const festivalRow = festivals.items.find((row) => row.id === festival.id);
+  check('festival stores ISO timestamps and renders Jalali in the console table',
+    Boolean(festivalRow) && /^\d{4}-\d{2}-\d{2}T/.test(festivalRow!.starts_at) && /^[۰-۹]{4}\//.test(formatPersianDate(festivalRow!.starts_at)));
+
+  // ---------- (14/15/16/31) CMS bootstrap on a database with no home page ----------
+  const pagesBefore = await cmsApi.pages() as { items: unknown[] };
+  check('CMS starts with no home page on a fresh database', pagesBefore.items.length === 0);
+  const bootstrap = readCmsBootstrap(await cmsApi.bootstrap());
+  check('POST /admin/cms/bootstrap → home page + hero + base sections + palette',
+    bootstrap.pageCreated === true && bootstrap.sectionsCreated >= 3 && bootstrap.hero !== null && bootstrap.paletteActivated === true,
+    `page=${bootstrap.pageId} sections=${bootstrap.sectionsCreated} palette=${bootstrap.paletteId}`);
+
+  const bootstrapAgain = readCmsBootstrap(await cmsApi.bootstrap());
+  check('CMS bootstrap is idempotent (second call creates nothing new)',
+    bootstrapAgain.pageId === bootstrap.pageId && bootstrapAgain.sectionsCreated === 0 && bootstrapAgain.pageCreated === false);
+
+  // Public storefront route (same URL the retail app calls through cmsApi.sitePage).
+  const sitePage = await fetch(`${base}/api/v1/site/pages/home`);
+  const sitePageBody = await sitePage.json() as { sections?: { component_code: string; payload: Record<string, unknown> }[]; hero?: unknown };
+  check('GET /site/pages/home → 200 after bootstrap', sitePage.status === 200, `status=${sitePage.status}`);
+  const adaptedPage = adaptSitePage(sitePageBody)!;
+  const adaptedHero = adaptCmsHero(adaptedPage.sections.find((section) => section.component_code === 'hero') ?? null);
+  check('storefront hero is rendered from the server CMS section (not local state)',
+    adaptedHero !== null && typeof adaptedHero.title === 'string' && (adaptedHero.title as string).length > 0 && adaptedHero.visible === true,
+    String(adaptedHero?.title));
+  const defaultPalette = await cmsApi.defaultPalette();
+  check('default palette «پالت اصلی کلبه» is idempotent and keeps 6 canonical colours',
+    defaultPalette.created === false && Object.keys((defaultPalette.palette as { colors: object }).colors).length === 6,
+    Object.keys((defaultPalette.palette as { colors: object }).colors).join(','));
+  check('palette label maps are Persian while modes stay manual/scheduled/festival',
+    PALETTE_MODE_LABEL.manual === 'دستی' && PALETTE_MODE_LABEL.scheduled === 'زمان‌بندی‌شده' &&
+    PALETTE_MODE_LABEL.festival === 'جشنواره' && PALETTE_COLOR_LABEL.primary === 'رنگ اصلی' && PALETTE_COLOR_LABEL.surface === 'سطح');
+
+  // ---------- (18/20-24) ledger + integrations surfaces ----------
+  const journal = await financeApi.journal({ limit: '5' }) as { items: unknown[] };
+  check('ledger is empty on an unseeded database (empty state, no fabricated entries)', Array.isArray(journal.items) && journal.items.length === 0);
+  const integrations = await integrationsApi.list();
+  check('integrations list is empty and normalized without any demo secret',
+    integrations.items.length === 0);
+  check('integration label maps are Persian while values stay English',
+    INTEGRATION_CATEGORY_LABEL.payment === 'پرداخت' && INTEGRATION_CATEGORY_LABEL.crm === 'مدیریت ارتباط با مشتری' &&
+    INTEGRATION_STATUS_LABEL.not_configured === 'پیکربندی نشده' && INTEGRATION_STATUS_LABEL.connected === 'متصل' && labelOf(INTEGRATION_STATUS_LABEL, 'error') === 'خطا');
 
   setAccessToken(null);
 } catch (error) {

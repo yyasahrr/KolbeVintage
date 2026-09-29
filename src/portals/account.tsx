@@ -424,7 +424,7 @@ export default function AccountExperience({
           if (restrict.block || restrict.noReturn) { flash(`ثبت مرجوعی برای حساب شما محدود شده است${restrict.reason ? `: ${restrict.reason}` : ""}.`); return; }
           if (isDemo) {
             const o = store.retailOrders.find((x) => x.id === returnOrder);
-            const sub = !o ? store.orders.flatMap((po) => po.subOrders).find((s) => s.id === returnOrder) as any : undefined;
+            const sub = !o ? store.orders.flatMap((po) => po.subOrders ?? []).find((s) => s.id === returnOrder) as any : undefined;
             if (o) store.requestRetailReturn(account.id, returnOrder, returnReason);
             ops.upsert("returns", {
               id: `RT-${Date.now().toString().slice(-4)}`, channel: o ? "retail" : "wholesale", orderId: returnOrder, ownerId: account.id, ownerName: buyer?.status === "فعال" && !o ? buyer.name : account.name,

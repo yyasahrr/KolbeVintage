@@ -141,8 +141,8 @@ export function registerConsoleRoutes(app: FastifyInstance, pool: DbPool, config
 
       if (body.status === 'active') {
         if (membership.status !== 'pending_payment') throw badRequest('فقط درخواست‌های در انتظار پرداخت قابل تأیید دستی هستند.');
-        const plan = await client.query('SELECT duration_days FROM membership_plans WHERE id = $1', [membership.plan_id]);
-        const days = Number((plan.rows[0] as { duration_days?: number } | undefined)?.duration_days ?? 365);
+        // membership_plans has no duration column — plans are annual, so an approved membership runs 365 days.
+        const days = 365;
         await client.query("UPDATE memberships SET status = 'expired' WHERE user_id = $1 AND status = 'active'", [membership.user_id]);
         await client.query(
           `UPDATE memberships SET status = 'active', starts_at = now(), ends_at = now() + ($2 || ' days')::interval WHERE id = $1`,

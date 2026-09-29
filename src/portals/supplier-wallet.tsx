@@ -15,7 +15,7 @@ export function useWallet(supplierId: string) {
   const { orders } = useStore();
   const ops = useOps();
   const rate = ops.commissions[supplierId] ?? 8;
-  const subs = orders.flatMap((o) => o.subOrders.filter((s) => s.supplierId === supplierId).map((s) => ({ o, s })));
+  const subs = orders.flatMap((o) => (o.subOrders ?? []).filter((s) => s.supplierId === supplierId).map((s) => ({ o, s })));
   const settled = subs.filter((x) => x.s.status === "delivered");
   const escrow = subs.filter((x) => ["paid", "preparing", "ready_to_ship", "in_transit", "shipped"].includes(x.s.status));
   const gross = settled.reduce((a, x) => a + x.s.total, 0);

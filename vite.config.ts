@@ -17,6 +17,10 @@ export default defineConfig({
     },
   },
   server: {
-    proxy: { "/api": "http://127.0.0.1:4000" },
+    // Any host: the sandbox preview proxy serves the dev server under its own hostname.
+    allowedHosts: true,
+    host: true,
+    // Default local API; override with KV_API_PROXY_TARGET when the smoke stack uses another port.
+    proxy: { "/api": process.env.KV_API_PROXY_TARGET ?? "http://127.0.0.1:4000" },
   },
 });

@@ -18,6 +18,10 @@ import {
 } from "./admin-api";
 import type {
   TicketCreate, TicketReply, TicketUpdate, Ticket, TicketBoard,
+  ShippingMethodInput, ShippingSettings,
+} from "./contracts";
+import {
+  normalizeIntegrationLogs, normalizeIntegrations, normalizeShippingMethods, normalizeShippingSettings, readCmsBootstrap,
 } from "./contracts";
 
 export { AdminApiError, getApiBaseUrl, setApiBaseUrl };
@@ -149,6 +153,12 @@ export const catalogApi = {
 
 /** Product editor (ProductStudio) contract. */
 export const productsApi = {
+  /** Admin/product pickers need the full catalogue view (variants incl. ids). */
+  list: async (params?: Record<string, string>) => {
+    const query = new URLSearchParams(params);
+    const raw = await publicApi.get<{ items: CatalogItem[] }>(`/products?${query.toString()}`);
+    return { items: raw.items };
+  },
   create: (payload: unknown) => apiClient.post<{ id: string; status: string; variants: { id: string; sku: string }[] }>("/products", payload),
   update: (id: string, payload: unknown) => apiClient.patch<{ id: string; updated: string[] }>(`/products/${id}`, payload),
   status: (id: string, status: "published" | "draft" | "rejected" | "archived") =>
@@ -199,6 +209,8 @@ export const inventoryApi = {
     authFetch<unknown>("/inventory/transfers", { method: "POST", body: JSON.stringify(payload) }),
   completeTransfer: (id: string) => authFetch<unknown>(`/inventory/transfers/${id}/complete`, { method: "POST" }),
   transfers: () => authFetch<{ items: unknown[] }>("/inventory/transfers"),
+  /** Per-variant WMS inventory of one product (read-only view inside ProductStudio). */
+  productInventory: (productId: string) => authFetch<unknown>(`/admin/products/${productId}/inventory`),
 };
 
 /* -------------------------------- orders -------------------------------- */
@@ -353,6 +365,10 @@ export const cmsApi = {
     authFetch<unknown>("/admin/cms/palettes", { method: "POST", body: JSON.stringify(payload) }),
   activatePalette: (paletteId: string, payload: { mode: string; startsAt: string; festivalId?: string }) =>
     authFetch<unknown>(`/admin/cms/palettes/${paletteId}/activations`, { method: "POST", body: JSON.stringify(payload) }),
+  /** One-click, idempotent CMS bootstrap: home page + hero + base sections + default palette. */
+  bootstrap: () => authFetch<unknown>("/admin/cms/bootstrap", { method: "POST" }).then(readCmsBootstrap),
+  /** Idempotent creation of the default palette (used by the «ایجاد پالت اصلی» CTA). */
+  defaultPalette: () => authFetch<{ palette: unknown; created: boolean; activated: boolean }>("/admin/cms/palettes/default", { method: "POST" }),
   supportWidget: () => authFetch<{ widget: unknown }>("/admin/site-settings/support-widget"),
   saveSupportWidget: (widget: unknown) => authFetch<unknown>("/admin/site-settings/support-widget", { method: "PUT", body: JSON.stringify(widget) }),
   /* public site rendering (no token) */
@@ -431,11 +447,12 @@ export const promoApi = {
 /* ------------------------------ integrations ------------------------------ */
 
 export const integrationsApi = {
-  list: () => authFetch<{ items: { id: string; code: string; title: string; enabled: boolean; config: Record<string, unknown> }[] }>("/admin/integrations"),
+  list: () => authFetch<unknown>("/admin/integrations").then((raw) => ({ items: normalizeIntegrations(raw) })),
   create: (payload: unknown) => authFetch<unknown>("/admin/integrations", { method: "POST", body: JSON.stringify(payload) }),
   update: (id: string, payload: unknown) => authFetch<unknown>(`/admin/integrations/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  test: (id: string) => authFetch<unknown>(`/admin/integrations/${id}/test`, { method: "POST" }),
-  logs: (id: string) => authFetch<{ items: unknown[] }>(`/admin/integrations/${id}/logs`),
+  test: (id: string) => authFetch<{ status: string; httpStatus: number | null; error: string | null; attempt: number }>(
+    `/admin/integrations/${id}/test`, { method: "POST" }),
+  logs: (id: string) => authFetch<unknown>(`/admin/integrations/${id}/logs`).then((raw) => ({ items: normalizeIntegrationLogs(raw) })),
 };
 
 /* -------------------------------- shipping -------------------------------- */
@@ -443,10 +460,17 @@ export const integrationsApi = {
 export const shippingApi = {
   /** Public checkout methods (no token). */
   list: () => publicApi.get<{ items: Record<string, unknown>[] }>("/shipping-methods"),
-  adminList: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/shipping-methods"),
-  create: (payload: unknown) => authFetch<unknown>("/admin/shipping-methods", { method: "POST", body: JSON.stringify(payload) }),
-  update: (id: string, payload: unknown) => authFetch<unknown>(`/admin/shipping-methods/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  adminList: () => authFetch<{ items: unknown[] }>("/admin/shipping-methods").then((res) => ({ items: normalizeShippingMethods(res) })),
+  create: (payload: ShippingMethodInput) => authFetch<unknown>("/admin/shipping-methods", { method: "POST", body: JSON.stringify(payload) }),
+  update: (id: string, payload: Partial<ShippingMethodInput>) =>
+    authFetch<unknown>(`/admin/shipping-methods/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   remove: (id: string) => authFetch<unknown>(`/admin/shipping-methods/${id}`, { method: "DELETE" }),
+  /** Global shipping rules: the default fulfillment warehouse must be a real warehouse UUID. */
+  settings: () => authFetch<unknown>("/admin/site-settings/shipping").then(normalizeShippingSettings),
+  saveSettings: (payload: ShippingSettings) =>
+    authFetch<unknown>("/admin/site-settings/shipping", { method: "PUT", body: JSON.stringify(payload) })
+      .then(normalizeShippingSettings),
+  publicSettings: () => publicApi.get<unknown>("/site/shipping-settings").then(normalizeShippingSettings),
 };
 
 /* --------------------------- console admin surface --------------------------- */

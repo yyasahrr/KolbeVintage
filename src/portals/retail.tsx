@@ -10,6 +10,7 @@ import { useStore } from "../data/store";
 import { promoApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
+import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage } from "../data/contracts";
 import { cmsApi, ordersApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
 void Hero; void TrustBar;
@@ -271,11 +272,15 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [cmsError, setCmsError] = useState<string | null>(null);
   useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; let cancelled=false; (async()=>{ setCmsLoading(true); setCmsError(null);
     try{
-      const page = await cmsApi.sitePage("home") as { blocks?: any[]; hero?: any; palette?: any };
+      const page = adaptSitePage(await cmsApi.sitePage("home"));
       if(cancelled) return;
-      if(page && (page as any).blocks) setCmsBlocks((page as any).blocks);
-      if(page && (page as any).hero) setCmsHero((page as any).hero);
-      if(page && (page as any).palette) setCmsPalette((page as any).palette);
+      if(page){
+        // Server CMS is the source of truth: hero = the «hero» section, blocks = the other sections.
+        const heroSection = page.sections.find((section) => section.component_code === "hero" && section.visible) ?? null;
+        const hero = adaptCmsHero(heroSection);
+        if(hero) setCmsHero(hero);
+        setCmsBlocks(page.sections.filter((section) => section.component_code !== "hero").map(adaptCmsSectionToBlock));
+      }
       const pal = await cmsApi.activePalette().catch(()=>null);
       if(!cancelled && pal) setCmsPalette(pal);
     } catch(e){ if(!cancelled) setCmsError(e instanceof Error ? e.message : "خطا در بارگذاری محتوا"); }

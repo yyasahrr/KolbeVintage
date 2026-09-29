@@ -29,6 +29,10 @@ const BLOCK_LIBRARY: { code: string; label: string; desc: string; payload: Recor
 ];
 
 const HERO_TEMPLATES: HeroConfig["template"][] = ["split", "fullbleed", "video", "carousel", "minimal", "mosaic"];
+/** Persian labels for the hero templates (the stored value stays the English template code). */
+const HERO_TEMPLATE_LABEL: Record<HeroConfig["template"], string> = {
+  split: "دو ستونه", fullbleed: "تمام‌عرض", video: "ویدیویی", carousel: "اسلایدری", minimal: "مینیمال", mosaic: "موزاییک",
+};
 const TARGETS = [{ v: "shop", l: "فروشگاه" }, { v: "vip", l: "بازارچه عمده" }, { v: "tryon", l: "پرو مجازی" }, { v: "journal", l: "مجله" }] as const;
 
 const defaultHero = (): HeroConfig => ({
@@ -116,6 +120,19 @@ export function CmsCenter({ flash }: { flash: F }) {
     else if (sections) setH((prev) => prev ?? defaultHero());
   }, [heroSection?.id, sections?.length]);
 
+  /** Real, idempotent server bootstrap; reloads pages so the UI reflects PostgreSQL state. */
+  const bootstrapHome = async () => {
+    setBusy(true); setError(null);
+    try {
+      const result = await cmsApi.bootstrap();
+      flash(result.pageCreated
+        ? `صفحه اصلی با ${result.sectionsCreated.toLocaleString("fa-IR")} بخش ساخته شد`
+        : "صفحه اصلی از قبل موجود بود؛ ساختار و پالت تکمیل شد");
+      await loadPages();
+    } catch (e) { setError(e instanceof Error ? e.message : "خطا در راه‌اندازی صفحه اصلی"); }
+    setBusy(false);
+  };
+
   const persistHero = async () => {
     if (!homePage || !h) return;
     setBusy(true);
@@ -184,6 +201,23 @@ export function CmsCenter({ flash }: { flash: F }) {
       <p className="text-[12px] leading-6 text-[var(--kv-muted)]">
         محتوای منتشرشده فقط در PostgreSQL (CMS API) ذخیره می‌شود؛ پیش‌نمایش و فرم در حال ویرایش محلی است. رسانه‌ها از دامنه فایل (POST /files) بارگذاری و شناسه سرور ذخیره می‌شود.
       </p>
+      {pages.length === 0 && (
+        <Card className="flex flex-wrap items-center justify-between gap-3 border-[var(--kv-accent)]/40 p-4">
+          <div>
+            <p className="text-[13.5px] font-extrabold">صفحه‌ای در سرور ثبت نشده است</p>
+            <p className="mt-1 max-w-[620px] text-[12px] leading-6 text-[var(--kv-muted)]">
+              با «راه‌اندازی صفحه اصلی» یک عملیات اتمی و تکرارپذیر روی سرور اجرا می‌شود: صفحه home، بخش هیرو،
+              بخش‌های پایه (اسلایدر محصولات و دعوت به اقدام) و پالت اصلی کلبه ساخته و فعال می‌شوند.
+            </p>
+          </div>
+          <Btn variant="accent" size="sm" disabled={busy} icon={<Plus size={14} />} onClick={() => void bootstrapHome()}>راه‌اندازی صفحه اصلی</Btn>
+        </Card>
+      )}
+      {pages.length > 0 && !heroSection && (
+        <p className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-2.5 text-[12px] text-[var(--kv-muted)]">
+          صفحه اصلی هیرو ندارد؛ با زدن «انتشار هیرو روی سرور» در همین تب، بخش هیرو ساخته می‌شود.
+        </p>
+      )}
       <Segmented<"hero" | "blocks" | "pages" | "support">
         options={[{ v: "hero", label: "هیرو صفحه اصلی" }, { v: "blocks", label: `کامپوننت‌ها (${blocks.filter((b) => b.visible).length.toLocaleString("fa-IR")} فعال)` }, { v: "pages", label: "صفحات و پالت" }, { v: "support", label: "پشتیبانی سریع" }]}
         value={tab} onChange={setTab}
@@ -193,7 +227,7 @@ export function CmsCenter({ flash }: { flash: F }) {
         <div className="grid gap-5 2xl:grid-cols-[440px_minmax(0,1fr)]">
           <Card className="h-fit p-5">
             <p className="mb-3 flex items-center gap-2 text-[15px] font-extrabold"><LayoutTemplate size={17} className="text-[var(--kv-accent)]" />قالب هیرو (بخش سرور {heroSection ? "· موجود" : "· ساخته می‌شود"})</p>
-            <div className="grid grid-cols-2 gap-2">{HERO_TEMPLATES.map((t) => <button key={t} onClick={() => setH({ ...h, template: t })} aria-pressed={h.template === t} className={cn("rounded-[12px] border p-3 text-right text-[12.5px] font-semibold", h.template === t ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>{t}</button>)}</div>
+            <div className="grid grid-cols-2 gap-2">{HERO_TEMPLATES.map((t) => <button key={t} onClick={() => setH({ ...h, template: t })} aria-pressed={h.template === t} className={cn("rounded-[12px] border p-3 text-right text-[12.5px] font-semibold", h.template === t ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>{HERO_TEMPLATE_LABEL[t]}</button>)}</div>
             <div className="mt-5 space-y-4">
               <Field label="روتیتر"><Input value={h.eyebrow} onChange={(v) => setH({ ...h, eyebrow: v })} /></Field>
               <Field label="تیتر"><Textarea rows={2} value={h.title} onChange={(v) => setH({ ...h, title: v })} /></Field>

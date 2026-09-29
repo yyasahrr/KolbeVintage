@@ -42,10 +42,10 @@ export function NotificationsPanel() {
       </Card>
 
       <Card className="overflow-hidden">
-        <div className="px-4 py-3"><p className="text-[13px] font-bold">مسیرهای اعلان (notification_routes) — کدام نقش‌ها با کدام کانال (in_app/sms/email) و priority</p></div>
+        <div className="px-4 py-3"><p className="text-[13px] font-bold">مسیرهای اعلان — هر رویداد برای کدام نقش‌ها، از کدام کانال و با چه اولویتی ارسال شود</p></div>
         <div className="overflow-x-auto">
           <table className="kv-table min-w-[700px] text-xs">
-            <thead><tr><th>event_type</th><th>roles</th><th>channels</th><th>priority</th><th>active</th></tr></thead>
+            <thead><tr><th>رویداد</th><th>نقش‌ها</th><th>کانال‌های ارسال</th><th>اولویت</th><th>فعال</th></tr></thead>
             <tbody>
               {(routes ?? []).length ? (routes as {id:string; event_type:string; roles:string[]; channels:string[]; priority:string; active:boolean}[]).map(r=>(
                 <tr key={r.id}><td className="font-mono">{r.event_type}</td><td>{r.roles.join("، ")}</td><td>{r.channels.join("، ")}</td><td>{r.priority}</td><td>{r.active ? "بله" : "خیر"}</td></tr>

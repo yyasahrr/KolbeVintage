@@ -13,3 +13,6 @@ coverage/
 # CI workflow kept local: GitHub App in this sandbox has no workflows permission
 .github/
 backend/storage/
+
+# local smoke evidence (screenshots, stack state)
+artifacts/

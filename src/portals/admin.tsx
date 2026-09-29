@@ -28,6 +28,8 @@ import { PromoPanel } from "../components/promo-panel";
 import { CmsCenter } from "./admin-cms";
 import { authApi } from "../data/api";
 import { IntegrationsPanel } from "../components/integrations-panel";
+import { ServerConnectionState } from "../components/server-connection";
+import { ModuleBoundary, moduleBoundary } from "../components/boundary";
 import { NotificationsPanel } from "../components/notifications-panel";
 import { TicketBoardPanel } from "../components/ticket-board-panel";
 
@@ -104,7 +106,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const store = useStore();
   const { products, orders, buyers, plans, accounts, setStatus, transitionSub, setBuyer, upsertPlan, removePlan, setTicketStatus } = store;
   const pending = products.filter((p) => p.status === "pending");
-  const allSubs = orders.flatMap((o) => o.subOrders.map((sub) => ({ parent: o, sub })));
+  const allSubs = orders.flatMap((o) => (o.subOrders ?? []).map((sub) => ({ parent: o, sub })));
   const kolbeSubs = allSubs.filter((i) => i.sub.supplierId === KOLBE.id);
   const kolbePending = kolbeSubs.filter((i) => i.sub.status === "pending_supplier" || i.sub.status === "paid" || i.sub.status === "preparing");
   const activeSubs = allSubs.filter((i) => !isTerminal(i.sub.status));
@@ -165,7 +167,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "sms", label: "پنل پیامک", icon: <MessageSquareText size={17} /> },
     { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
     { v: "finance", label: "مالی و تسویه", icon: <Wallet size={17} />, badge: badge(summary?.pendingWithdrawals, ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length) },
-    { v: "finance-ledger", label: "دفتر کل (Ledger)", icon: <ScrollText size={17} /> },
+    { v: "finance-ledger", label: "دفتر کل", icon: <ScrollText size={17} /> },
     { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
     { g: "سیستم" },
     { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
@@ -190,7 +192,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     cms: ["مدیریت محتوا", "صفحات، بنرها و مجله"],
     notifs: ["سیستم اعلان", "قالب‌های رویدادی و ارسال دستی"],
     finance: ["سیستم مالی", "تراکنش‌ها، کارمزد و تسویه تأمین‌کنندگان"],
-    "finance-ledger": ["دفتر کل (Ledger)", "روزنامه، حساب‌ها، بدهکار/بستانکار و مغایرت"],
+    "finance-ledger": ["دفتر کل", "روزنامه، حساب‌ها، بدهکار/بستانکار و مغایرت"],
     integrations: ["یکپارچه‌سازی‌ها", "CRM، حسابداری، پیامک، پرداخت و لجستیک"],
     support: ["پشتیبانی و تیکت‌ها", "SLA و صف پاسخ‌گویی"],
     audit: ["گزارش حسابرسی", "تمام عملیات حساس با actor, IP, مقدار قبلی/جدید"],
@@ -249,13 +251,13 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     ochre: "bg-[#B98A2F]/10 text-[#8A6420] dark:text-[#D6A94E]",
     brick: "bg-[#A8483C]/10 text-[#8A3B30] dark:text-[#D07A6A]",
   };
-  const feed = allSubs.flatMap((i) => i.sub.events.map((e) => ({ ...e, sub: i.sub.id, buyer: i.parent.buyer }))).slice(-7).reverse();
+  const feed = allSubs.flatMap((i) => (i.sub.events ?? []).map((e) => ({ ...e, sub: i.sub.id, buyer: i.parent.buyer }))).slice(-7).reverse();
 
   const filteredOrders = orders.filter((o) => {
     const q = oq.trim();
-    if (q && !o.id.includes(q) && !o.buyer.includes(q) && !o.subOrders.some((s) => s.supplierName.includes(q))) return false;
-    if (of === "active") return o.subOrders.some((s) => !isTerminal(s.status));
-    if (of === "done") return o.subOrders.every((s) => isTerminal(s.status));
+    if (q && !o.id.includes(q) && !o.buyer?.includes(q) && !(o.subOrders ?? []).some((s) => s.supplierName.includes(q))) return false;
+    if (of === "active") return (o.subOrders ?? []).some((s) => !isTerminal(s.status));
+    if (of === "done") return (o.subOrders ?? []).length > 0 && (o.subOrders ?? []).every((s) => isTerminal(s.status));
     return true;
   });
 
@@ -280,7 +282,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             </div>
           </div>
 
-          {tab !== "server-orders" && <div role="note" className="mb-4 rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-2 text-xs font-semibold text-[var(--kv-muted)]">پیش‌نمایش رابط: اطلاعات این بخش هنوز به سرور متصل نیست.</div>}
+          {moduleBoundary("وضعیت اتصال", <ServerConnectionState tab={tab} key={tab} />)}
+          <ModuleBoundary name={t} key={tab}>
           {tab === "server-orders" && <AdminServerOrders request={request} />}
 
           {/* ---------- Tower ---------- */}
@@ -301,7 +304,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                     {kolbePending.map(({ parent, sub }) => (
                       <button key={sub.id} onClick={() => setTab("kolbe")} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
                         <span className="h-8 w-1 shrink-0 rounded-full bg-[var(--kv-accent)]" />
-                        <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">{sub.id} · {parent.buyer}</p><p className="truncate text-xs text-[var(--kv-muted)]">{sub.lines.map((l) => l.name).join("، ")} · {fmtMoney(sub.total)}</p></div>
+                        <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">{sub.id} · {parent.buyer}</p><p className="truncate text-xs text-[var(--kv-muted)]">{(sub.lines ?? []).map((l) => l.name).join("، ")} · {fmtMoney(sub.total)}</p></div>
                         <Status value={SUB_STATUS[sub.status].label} />
                       </button>
                     ))}
@@ -372,7 +375,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                     <tbody>
                       {[...pending, ...products.filter((p) => p.status !== "pending")].map((p) => (
                         <tr key={p.id} className={cn(side === p.id && "bg-[var(--kv-accent)]/[0.05]")}>
-                          <td><span className="flex items-center gap-2.5"><img src={p.images[0]} alt="" className="h-10 w-9 rounded-lg object-cover" /><b className="whitespace-nowrap">{p.name}</b></span></td>
+                          <td><span className="flex items-center gap-2.5"><img src={p.images?.[0] ?? undefined} alt="" className="h-10 w-9 rounded-lg object-cover" /><b className="whitespace-nowrap">{p.name}</b></span></td>
                           <td><SupplierChip id={p.supplierId} name={p.supplier} /></td>
                           <td className="font-bold tabular-nums">{fmtMoney(p.wholesaleFrom)}</td>
                           <td className="tabular-nums">{fmtNum(p.moq)} سری</td>
@@ -395,7 +398,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                   if (!p) return <Empty title="محصولی انتخاب نشده" desc="روی «بازبینی» هر سطر بزنید." />;
                   return (
                     <div>
-                      <img src={p.images[0]} alt="" className="aspect-[16/10] w-full rounded-[12px] object-cover" />
+                      <img src={p.images?.[0] ?? undefined} alt="" className="aspect-[16/10] w-full rounded-[12px] object-cover" />
                       <h3 className="mt-3 text-[15px] font-extrabold">{p.name}</h3>
                       <p className="text-xs text-[var(--kv-muted)]">{p.sku} · {p.supplier}</p>
                       <div className="mt-3 space-y-1.5 text-[12.5px]">
@@ -434,8 +437,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                   <Card key={s.id} className="p-5">
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-3">
-                        <span className="flex h-11 w-11 items-center justify-center rounded-[12px] bg-[#1B2A4A] text-[15px] font-bold text-[#E8D9C3]">{s.name[0]}</span>
-                        <div><p className="text-[15px] font-extrabold">{s.name}</p><p className="text-xs text-[var(--kv-muted)]">{s.city} · از {s.since} · امتیاز {s.rating.toLocaleString("fa-IR")}</p></div>
+                        <span className="flex h-11 w-11 items-center justify-center rounded-[12px] bg-[#1B2A4A] text-[15px] font-bold text-[#E8D9C3]">{(s.name ?? "?").charAt(0)}</span>
+                        <div><p className="text-[15px] font-extrabold">{s.name}</p><p className="text-xs text-[var(--kv-muted)]">{s.city} · از {s.since} · امتیاز {fmtNum(s.rating)}</p></div>
                       </div>
                       <Status value={st} />
                     </div>
@@ -499,7 +502,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                       <div className="mt-4 space-y-3">
                         <Field label="پلن عضویت"><Select options={plans.map((p) => p.name)} value={plans.find((p) => p.id === b.planId)?.name} onChange={(v) => { const p = plans.find((x) => x.name === v); if (p) { setBuyer(b.id, { planId: p.id }); flash(`پلن ${b.name} به ${p.name} تغییر کرد`); } }} /></Field>
                         {b.tradeCode && <p className="text-[12px] text-[var(--kv-muted)]">شناسه صنفی: <b className="text-[var(--kv-ink)]">{b.tradeCode}</b> · ثبت: {b.submittedAt}</p>}
-                        <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-3.5 py-3 text-[12.5px]"><p className="flex justify-between"><span className="text-[var(--kv-muted)]">سفارش‌ها</span><b className="tabular-nums">{fmtNum(bo.length)}</b></p><p className="mt-1 flex justify-between"><span className="text-[var(--kv-muted)]">زیرسفارش باز</span><b className="tabular-nums">{fmtNum(bo.flatMap((o) => o.subOrders).filter((s) => !isTerminal(s.status)).length)}</b></p></div>
+                        <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-3.5 py-3 text-[12.5px]"><p className="flex justify-between"><span className="text-[var(--kv-muted)]">سفارش‌ها</span><b className="tabular-nums">{fmtNum(bo.length)}</b></p><p className="mt-1 flex justify-between"><span className="text-[var(--kv-muted)]">زیرسفارش باز</span><b className="tabular-nums">{fmtNum(bo.flatMap((o) => o.subOrders ?? []).filter((s) => !isTerminal(s.status)).length)}</b></p></div>
                         {b.status === "در انتظار تأیید" ? (
                           <div className="grid grid-cols-2 gap-2">
                             <Btn variant="accent" size="sm" icon={<Check size={14} />} onClick={() => { setBuyer(b.id, { status: "فعال" }); flash(`عضویت عمده ${b.name} تأیید شد؛ قیمت‌ها برایش فعال است`); }}>تأیید عضویت</Btn>
@@ -520,8 +523,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "plans" && <PlansCenter flash={flash} />}
           {tab === "series" && <div className="animate-[fadeUp_0.35s_ease]"><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></div>}
           {tab === "applications" && <ApplicationsCenter flash={flash} />}
-          {tab === "promo" && <PromoPanel />}
-          {tab === "sms" && <SmsCenter flash={flash} />}
           {tab === "restrictions" && <RestrictionsCenter flash={flash} />}
           {tab === "support" && <TicketBoardPanel />}
           {tab === "plans-legacy" && (
@@ -559,16 +560,18 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           )}
 
           {/* ---------- Retail modules ---------- */}
-          {tab === "rorders" && <RetailOrders flash={flash} />}
-          {tab === "rproducts" && <ProductStudio flash={flash} />}
-          {tab === "shipping" && <ShippingAdmin flash={flash} />}
-          {tab === "wms" && <AdminWmsPanel />}
-          {tab === "crm" && <CrmPanel />}
-          {tab === "cms" && <CmsCenter flash={flash} />}
-          {tab === "notifs" && <NotificationsPanel />}
-          {tab === "finance" && <FinanceCenter flash={flash} />}
-          {tab === "finance-ledger" && <FinanceLedgerPanel />}
-          {tab === "integrations" && <IntegrationsPanel />}
+          {tab === "rorders" && moduleBoundary("سفارش‌های خرده", <RetailOrders flash={flash} />)}
+          {tab === "rproducts" && moduleBoundary("تعریف محصول", <ProductStudio flash={flash} />)}
+          {tab === "shipping" && moduleBoundary("حمل‌ونقل", <ShippingAdmin flash={flash} />)}
+          {tab === "wms" && moduleBoundary("انبار و موجودی", <AdminWmsPanel />)}
+          {tab === "crm" && moduleBoundary("مشتریان", <CrmPanel />)}
+          {tab === "cms" && moduleBoundary("محتوا", <CmsCenter flash={flash} />)}
+          {tab === "notifs" && moduleBoundary("اعلان‌ها", <NotificationsPanel />)}
+          {tab === "finance" && moduleBoundary("مالی و تسویه", <FinanceCenter flash={flash} />)}
+          {tab === "finance-ledger" && moduleBoundary("دفتر کل", <FinanceLedgerPanel />)}
+          {tab === "integrations" && moduleBoundary("یکپارچه‌سازی‌ها", <IntegrationsPanel />)}
+          {tab === "promo" && moduleBoundary("کوپن و جشنواره", <PromoPanel />)}
+          {tab === "sms" && moduleBoundary("پنل پیامک", <SmsCenter flash={flash} />)}
 
           {/* ---------- Support ---------- */}
           {tab === "audit" && <AuditLogPanel />}
@@ -648,6 +651,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
               </div>
             </div>
           )}
+          </ModuleBoundary>
         </div>
       </div>
 

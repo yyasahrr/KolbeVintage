@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Card, LoadingState, ErrorState, Empty, SearchBox, Input, Btn } from "../components/primitives";
 import { financeApi } from "../data/api";
+import { formatPersianDateTime } from "../data/persian-date";
 
 export function AuditLogPanel() {
   const [items, setItems] = useState<unknown[] | null>(null);
@@ -29,11 +30,11 @@ export function AuditLogPanel() {
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="kv-table min-w-[1000px] text-xs">
-              <thead><tr><th>زمان</th><th>actor</th><th>action</th><th>resource</th><th>IP</th><th>old → new</th></tr></thead>
+              <thead><tr><th>زمان</th><th>کاربر</th><th>اقدام</th><th>منبع</th><th>نشانی شبکه</th><th>مقدار قبلی ← جدید</th></tr></thead>
               <tbody>
                 {(items as { id: string; actor_name: string | null; actor_id: string | null; action: string; resource_type: string; resource_id: string; ip: string | null; created_at: string; old_value: unknown; new_value: unknown }[]).map((a) => (
                   <tr key={a.id}>
-                    <td className="tabular-nums whitespace-nowrap">{new Date(a.created_at).toLocaleString("fa-IR")}</td>
+                    <td className="tabular-nums whitespace-nowrap">{formatPersianDateTime(a.created_at)}</td>
                     <td>{a.actor_name ?? a.actor_id?.slice(0,8) ?? "system"}</td>
                     <td className="font-mono text-[11px]">{a.action}</td>
                     <td className="font-mono text-[11px]">{a.resource_type}:{a.resource_id.slice(0,8)}</td>

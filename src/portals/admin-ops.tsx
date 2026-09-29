@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Ban, Check, Crown, Eye, Landmark, Pencil, Plus, ShieldAlert, Trash2, X } from "lucide-react";
 import { SUPPLIERS, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
+import { planFeatureLabel } from "../data/contracts";
 import { KOLBE, describeLimits, limitsOf, DEFAULT_LIMITS, type VipPlan, type PlanLimits } from "../data/platform";
 import { useOps, opsNow, NO_FLAGS, type Application, type FieldType, type FormField, type Restriction, type RestrictionFlags } from "../data/ops";
 import { AreaChart, BarList, Columns, DonutChart, Kpi } from "../components/charts";
@@ -15,7 +16,13 @@ import { adminApi } from "../data/api";
 type F = (m: string) => void;
 const faDigits = (s: string) => s.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
 /** Maps relative Persian timestamps ("امروز", "۲ هفته پیش") to a week index, 0 = this week. */
-const weekIndex = (label: string) => {
+/** Accepts the local Persian labels AND real ISO timestamps coming from the server. */
+const weekIndex = (label: string | null | undefined) => {
+  if (!label) return 0;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(label)) {
+    const days = Math.floor((Date.now() - new Date(label).getTime()) / 86_400_000);
+    return Number.isFinite(days) && days > 0 ? Math.floor(days / 7) : 0;
+  }
   const t = faDigits(label); const n = Number(t.match(/\d+/)?.[0] ?? 1);
   if (t.includes("ماه")) return 4 * n; if (t.includes("هفته")) return n; if (t.includes("روز")) return Math.floor(n / 7); return 0;
 };
@@ -33,20 +40,20 @@ export function FinanceCenter({ flash }: { flash: F }) {
   const ops = useOps();
   const [tab, setTab] = useState<"overview" | "payouts" | "banks" | "commission">("overview");
   const [refs, setRefs] = useState<Record<string, string>>({});
-  const paidSubs = orders.flatMap((o) => o.subOrders.filter((s) => ["paid", "preparing", "shipped", "delivered"].includes(s.status)).map((s) => ({ o, s })));
+  const paidSubs = orders.flatMap((o) => (o.subOrders ?? []).filter((s) => ["paid", "preparing", "shipped", "delivered"].includes(s.status)).map((s) => ({ o, s })));
   const retailPaid = retailOrders.filter((o) => o.status !== "در انتظار پرداخت");
   const retailByWeek = Array(WEEKS).fill(0), wholesaleByWeek = Array(WEEKS).fill(0), commissionByWeek = Array(WEEKS).fill(0);
-  retailPaid.forEach((o) => { const i = WEEKS - 1 - Math.min(WEEKS - 1, weekIndex(o.createdAt)); retailByWeek[i] += o.total; });
+  retailPaid.forEach((o) => { const i = WEEKS - 1 - Math.min(WEEKS - 1, weekIndex(o.createdAt)); retailByWeek[i] += Number(o.total) || 0; });
   paidSubs.forEach(({ o, s }) => {
     const i = WEEKS - 1 - Math.min(WEEKS - 1, weekIndex(o.createdAt));
     wholesaleByWeek[i] += s.total;
     if (s.supplierId !== KOLBE.id) commissionByWeek[i] += Math.round(s.total * (ops.commissions[s.supplierId] ?? 8) / 100);
   });
-  const retailGmv = retailPaid.reduce((a, o) => a + o.total, 0);
+  const retailGmv = retailPaid.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const wholesaleGmv = paidSubs.reduce((a, x) => a + x.s.total, 0);
   const kolbeOwn = paidSubs.filter((x) => x.s.supplierId === KOLBE.id).reduce((a, x) => a + x.s.total, 0);
   const commission = commissionByWeek.reduce((a, b) => a + b, 0);
-  const awaiting = orders.flatMap((o) => o.subOrders).filter((s) => s.status === "approved").reduce((a, s) => a + s.total, 0);
+  const awaiting = orders.flatMap((o) => o.subOrders ?? []).filter((s) => s.status === "approved").reduce((a, s) => a + s.total, 0);
   const pendingPayouts = ops.withdrawals.filter((w) => w.status === "requested" || w.status === "approved");
   const bySupplier = Array.from(paidSubs.filter((x) => x.s.supplierId !== KOLBE.id).reduce((m, x) => m.set(x.s.supplierName, (m.get(x.s.supplierName) ?? 0) + x.s.total), new Map<string, number>()).entries()).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
   const allSuppliers = [...SUPPLIERS.map((s) => ({ id: s.id, name: s.name })), ...ops.extraSuppliers.map((s) => ({ id: s.id, name: s.name }))];
@@ -206,7 +213,7 @@ export function PlansCenter({ flash }: { flash: F }) {
             <div className="flex items-center justify-between"><p className="flex items-center gap-2 text-[16px] font-extrabold"><Crown size={16} className="text-[var(--kv-accent)]" />{p.name}</p><Switch on={p.active} onToggle={async () => { if (await savePlan({ ...p, active: !p.active }, false)) flash(`پلن ${p.name} ${p.active ? "غیرفعال" : "فعال"} شد`); }} /></div>
             <p className="mt-2 text-[18px] font-extrabold tabular-nums">{p.yearly === 0 ? "رایگان" : fmtMoney(p.yearly)}{p.yearly > 0 && <span className="text-[11px] font-medium text-[var(--kv-muted)]"> / سال</span>}</p>
             <p className="text-xs text-[var(--kv-muted)]">{fmtNum(buyers.filter((b) => b.planId === p.id).length)} عضو{serverPlans ? " · سرور" : ""}</p>
-            <ul className="mt-3 flex-1 space-y-1.5 text-[12.5px]">{describeLimits(p).map((f) => <li key={f} className="flex items-start gap-1.5"><Check size={13} className="mt-1 shrink-0 text-[var(--kv-success)]" />{f}</li>)}{p.features.map((f) => <li key={f} className="flex items-start gap-1.5 text-[var(--kv-muted)]"><Check size={13} className="mt-1 shrink-0" />{f}</li>)}</ul>
+            <ul className="mt-3 flex-1 space-y-1.5 text-[12.5px]">{describeLimits(p).map((f) => <li key={f} className="flex items-start gap-1.5"><Check size={13} className="mt-1 shrink-0 text-[var(--kv-success)]" />{f}</li>)}{p.features.map((f) => <li key={f} className="flex items-start gap-1.5 text-[var(--kv-muted)]"><Check size={13} className="mt-1 shrink-0" />{planFeatureLabel(f)}</li>)}</ul>
             <div className="mt-4 flex gap-2"><Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setEdit({ ...p, limits: limitsOf(p) })}>ویرایش محدودیت‌ها</Btn><Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} disabled={buyers.some((b) => b.planId === p.id)} onClick={async () => { if (isDemo) { removePlan(p.id); flash("پلن حذف شد (demo)"); return; } try { await adminApi.updatePlan(p.id, { active: false }); setServerPlans((prev) => prev ? prev.map((x) => x.id === p.id ? { ...x, active: false } : x) : prev); flash("پلن غیرفعال شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>حذف</Btn></div>
           </Card>
         ))}

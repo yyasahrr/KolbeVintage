@@ -153,16 +153,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setLoading(true); setError(null);
     try {
       // Public catalog (no auth) + authenticated orders/plans (canonical client refreshes on 401)
-      const prodRes = await publicApi.get<{ items: Product[] }>("/products").catch(() => ({ items: [] as Product[] }));
+      const prodRes = await publicApi.get<{ items: (Product & { available?: number })[] }>("/products").catch(() => ({ items: [] as (Product & { available?: number })[] }));
+      // WMS is the availability source of truth: the catalogue derives `available` from stock_balances.
+      const catalogProducts = (prodRes.items ?? []).map((item) => ({ ...item, stock: Number(item.available ?? 0) }) as Product);
       const [orderRes, planRes] = await Promise.all([
         apiClient.get<{ items: ParentOrder[] }>("/orders").catch(() => ({ items: [] as ParentOrder[] })),
         apiClient.get<{ items: VipPlan[] }>("/plans").catch(() => ({ items: [] as VipPlan[] })),
       ]);
       if (ticket.cancelled) return;
+      // Server order rows are flat summaries; the local store model expects `subOrders`.
+      // Hydrating the raw rows crashed every console view that maps over them (white screen),
+      // so the shape is normalized once, here, and unknown rows simply carry no sub-orders.
+      const serverOrders = ((orderRes.items ?? []) as (ParentOrder & { sub_orders?: unknown })[]).map((order) => ({
+        ...order,
+        subOrders: Array.isArray(order.subOrders) ? order.subOrders : [],
+      }));
       setState((s) => ({
         ...s,
-        products: (prodRes.items as Product[]).length ? (prodRes.items as Product[]) : s.products,
-        orders: (orderRes.items as ParentOrder[]).length ? (orderRes.items as ParentOrder[]) : s.orders,
+        products: catalogProducts.length ? catalogProducts : s.products,
+        orders: serverOrders.length ? serverOrders : s.orders,
         retailOrders: ((orderRes.items as unknown as RetailOrder[]).filter((o: any) => o.order_type === 'retail' || o.channel === 'retail') as RetailOrder[]) ?? s.retailOrders,
         plans: (planRes.items as VipPlan[]).length ? (planRes.items as VipPlan[]) : s.plans,
       }));

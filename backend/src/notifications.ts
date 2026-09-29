@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal } from './auth.js';
-import { type DbPool } from './db.js';
+import { transaction, type DbPool } from './db.js';
+import { audit } from './operations.js';
 
 export function registerNotificationRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.get('/api/v1/notifications', async (request) => {
@@ -46,20 +47,39 @@ export function registerNotificationRoutes(app: FastifyInstance, pool: DbPool, c
       role: z.string().max(40).optional(),
       title: z.string().trim().min(2).max(200),
       body: z.string().trim().min(2).max(2000),
-      priority: z.enum(['low','normal','high','critical']).default('normal'),
+      priority: z.enum(['low','normal','high']).default('normal'),
       channel: z.enum(['in_app','sms','email','webhook']).default('in_app'),
     }).parse(request.body);
     const { randomUUID } = await import('node:crypto');
     if (body.userId) {
+      // A notification always hangs off an outbox event (notifications.event_id is NOT NULL):
+      // the event is the audit-able trigger, the row is the per-user delivery record.
       const id = randomUUID();
-      await pool.query(`INSERT INTO notifications(id,user_id,title,body,priority) VALUES ($1,$2,$3,$4,$5)`, [id, body.userId, body.title, body.body, body.priority]);
-      return reply.code(201).send({ id, userId: body.userId });
+      const created = await transaction(pool, async (client) => {
+        const eventId = randomUUID();
+        await client.query('INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload) VALUES ($1,$2,$3,$4,$5)',
+          [eventId, 'notification.admin', 'user', body.userId, JSON.stringify({ title: body.title })]);
+        await client.query(`INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [id, body.userId, eventId, body.title, body.body, body.priority]);
+        await audit(client, user.id, 'notification.created', 'notification', id, undefined,
+          { userId: body.userId, channel: body.channel }, request.ip);
+        return { id, userId: body.userId, eventId };
+      });
+      return reply.code(201).send(created);
     }
     if (body.role) {
       const users = await pool.query(`SELECT user_id FROM user_roles WHERE role_code = $1`, [body.role]);
-      for (const u of users.rows) {
-        await pool.query(`INSERT INTO notifications(id,user_id,title,body,priority) VALUES ($1,$2,$3,$4,$5)`, [randomUUID(), u.user_id, body.title, body.body, body.priority]);
-      }
+      await transaction(pool, async (client) => {
+        for (const u of users.rows) {
+          const eventId = randomUUID();
+          await client.query('INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload) VALUES ($1,$2,$3,$4,$5)',
+            [eventId, 'notification.admin', 'user', u.user_id, JSON.stringify({ title: body.title })]);
+          await client.query(`INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)`,
+            [randomUUID(), u.user_id, eventId, body.title, body.body, body.priority]);
+        }
+        await audit(client, user.id, 'notification.broadcast', 'notification_route', randomUUID(),
+          undefined, { role: body.role, recipients: users.rows.length }, request.ip);
+      });
       return reply.code(201).send({ role: body.role, count: users.rows.length });
     }
     const { badRequest } = await import('./errors.js');
