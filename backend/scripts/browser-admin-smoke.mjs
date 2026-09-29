@@ -429,11 +429,19 @@ try {
     select.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   });
-  await waitForText('موجودی فیزیکی');
+  // Wait for a real balance row (not just the table header) to appear for the selected warehouse.
+  let balanceRows = 0;
+  for (let attempt = 0; attempt < 25 && balanceRows === 0; attempt += 1) {
+    await sleep(400);
+    balanceRows = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr')];
+      return rows.filter((row) => /KV-[A-Z]+-\d+/.test(row.innerText)).length;
+    });
+  }
   body = await text();
   check('seeded WMS balances render (on-hand/reserved/damaged/available in Persian)',
-    switched && body.includes('موجودی فیزیکی') && body.includes('قابل فروش') && body.includes('رزرو شده'),
-    body.replace(/\n+/g, ' | ').slice(0, 140));
+    switched && balanceRows > 0 && body.includes('موجودی فیزیکی') && body.includes('قابل فروش') && body.includes('رزرو شده'),
+    `${balanceRows} balance row(s) — ${body.replace(/\n+/g, ' | ').slice(0, 110)}`);
   await shot('09-wms-seeded');
 
   await openTab('تعریف محصول');
