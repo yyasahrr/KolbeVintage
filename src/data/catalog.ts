@@ -45,10 +45,13 @@ export type Product = {
   soldNote?: string;
   fabric: string;
   desc: string;
+  /** Items 245-247: audience + seasons ride the server catalog rows (absent in demo seed). */
+  genderCode?: string | null;
+  seasons?: string[];
 };
 
-export const fmtMoney = (n: number) =>
-  n.toLocaleString("fa-IR") + " تومان";
+export const fmtMoney = (n: number | null | undefined) =>
+  Number.isFinite(Number(n)) ? Number(n).toLocaleString("fa-IR") + " تومان" : "—";
 
 export const fourPaymentAmount = (product: Product) => Math.ceil((product.installmentPrice ?? product.retailPrice) / 4);
 
@@ -64,7 +67,10 @@ export const nextSku = (products: Product[], supplierId: string, category: strin
   return `${prefix}${String(highest + 1).padStart(4, "0")}`;
 };
 
-export const fmtNum = (n: number) => n.toLocaleString("fa-IR");
+// Null-safe: rows coming from the server may not carry every optional numeric field, and a
+// missing field must render as «—» instead of crashing the module that displays it.
+export const fmtNum = (n: number | null | undefined) =>
+  Number.isFinite(Number(n)) ? Number(n).toLocaleString("fa-IR") : "—";
 
 export const IMG = {
   trenchHero:

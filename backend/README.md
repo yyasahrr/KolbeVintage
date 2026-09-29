@@ -27,6 +27,12 @@ All routes have prefix `/api/v1` except `/health/live` and `/health/ready`.
 | Catalog | `GET /products`, `/wholesale/products`; `POST /products`, `PATCH /products/:id/status` |
 | Warehouse/stock | `POST /warehouses`, `/inventory/adjustments`; `GET /inventory` |
 | Orders | `POST /orders`, `/orders/:id/transitions`; `GET /orders`, `/orders/:id` |
+| Invoices | `POST /invoices`, `/invoices/:id/payments`, `/invoices/:id/cancel`, `/invoices/:id/revisions`; `GET /invoices`, `/invoices/:id` |
+| Wallet/withdrawals | `GET /wallet`, `/wallet/entries`, `/wallet/withdrawals`; `POST /wallet/withdrawals`; admin `GET /admin/withdrawals`, `POST /admin/withdrawals/:id/status` |
+| Settlements | `GET /settlements`; `POST /settlements`, `/settlements/:id/settle` |
+| Suppliers | `GET/PATCH /supplier-profile`, `/supplier-profile/versions`, `POST /supplier-profile/documents`; public `GET /cooperation-form`, `POST /cooperation-requests`; admin supplier list/status, cooperation review, form management |
+| Coupons/festivals | `POST /coupons/validate`; admin coupon and festival CRUD with audiences, scopes, windows and usage limits |
+| CRM | admin contacts, activities, automations (birthday SMS with generated coupon), automation runs |
 | Plans/membership | `GET /plans`; `POST /plans`, `/memberships` |
 | Payments | `POST /payments/:id/checkout` and `GET /payments/callback` when Zibal is configured |
 | Support | `POST /tickets`, `/tickets/:id/messages`; `GET /tickets`, `/tickets/:id`; status management |

@@ -7,6 +7,8 @@ const schema = z.object({
   DATABASE_URL: z.url(),
   REDIS_URL: z.url().optional(),
   JWT_SECRET: z.string().min(32),
+  SECRETS_KEY: z.string().min(32).optional(),
+  PG_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
   PUBLIC_ORIGIN: z.url(),
   PAYMENT_WEBHOOK_SECRET: z.string().min(32).optional(),
   COOKIE_SECURE: z.enum(['true', 'false']).default('false'),
