@@ -16,7 +16,16 @@ const schema = z.object({
   MELIPAYAMAK_USERNAME: z.string().min(1).optional(),
   MELIPAYAMAK_PASSWORD: z.string().min(1).optional(),
   MELIPAYAMAK_SENDER: z.string().min(1).optional(),
-});
+  S3_ENDPOINT: z.url().optional(),
+  S3_REGION: z.string().min(1).optional(),
+  S3_BUCKET: z.string().min(1).optional(),
+  S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+  S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  S3_PUBLIC_BASE_URL: z.url().optional(),
+}).refine((env) => {
+  const storage = [env.S3_ENDPOINT, env.S3_REGION, env.S3_BUCKET, env.S3_ACCESS_KEY_ID, env.S3_SECRET_ACCESS_KEY, env.S3_PUBLIC_BASE_URL];
+  return storage.every((value) => !value) || storage.every(Boolean);
+}, { message: 'S3 storage configuration must be provided as a complete set.' });
 
 export type Config = z.infer<typeof schema>;
 export const loadConfig = (): Config => schema.parse(process.env);

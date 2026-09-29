@@ -66,6 +66,9 @@ const pump = async () => {
   }
 };
 const timer = setInterval(() => void pump().catch((error) => console.error('Outbox pump failed', error)), 2000);
+const retentionCleanup = async () => { await pool.query('DELETE FROM search_metrics WHERE expires_at <= now()'); await pool.query('DELETE FROM media_upload_intents WHERE completed_at IS NULL AND expires_at <= now()'); };
+const retentionTimer = setInterval(() => void retentionCleanup().catch((error) => console.error('Retention cleanup failed', error)), 60 * 60 * 1000);
+await retentionCleanup();
 await pump();
 const smsPump = async () => {
   if (!sms) return;
@@ -90,7 +93,7 @@ const smsPump = async () => {
 const smsTimer = setInterval(() => void smsPump().catch((error) => console.error('SMS pump failed', error)), 2000);
 await smsPump();
 const shutdown = async () => {
-  clearInterval(timer); clearInterval(smsTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
+  clearInterval(timer); clearInterval(smsTimer); clearInterval(retentionTimer); await worker.close(); await queue.close(); redis.disconnect(); await pool.end(); process.exit(0);
 };
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);

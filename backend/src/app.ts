@@ -16,6 +16,7 @@ import { registerPaymentRoutes, type PaymentProviderAdapter } from './payments.j
 import { registerTicketRoutes } from './tickets.js';
 import { registerNotificationRoutes } from './notifications.js';
 import { registerAdminRoutes } from './admin.js';
+import { registerSeoRoutes } from './seo.js';
 
 export async function buildApp(config: Config, paymentAdapters: Record<string, PaymentProviderAdapter> = {}) {
   const app = Fastify({ logger: config.NODE_ENV === 'test' ? false : { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie'] },
@@ -25,7 +26,7 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   if (config.NODE_ENV === 'production' && !redis) throw new Error('REDIS_URL is required in production.');
   if (redis) await redis.connect();
   await app.register(cookie);
-  await app.register(cors, { origin: config.PUBLIC_ORIGIN, credentials: true, methods: ['GET', 'POST', 'PATCH', 'OPTIONS'] });
+  await app.register(cors, { origin: config.PUBLIC_ORIGIN, credentials: true, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] });
   await app.register(rateLimit, { global: false, redis: redis ?? undefined, skipOnError: false });
   await app.register(rawBody, { global: false, encoding: false, runFirst: true });
 
@@ -51,6 +52,7 @@ export async function buildApp(config: Config, paymentAdapters: Record<string, P
   registerTicketRoutes(app, pool, config);
   registerNotificationRoutes(app, pool, config);
   registerAdminRoutes(app, pool, config);
+  registerSeoRoutes(app, pool, config);
   app.addHook('onClose', async () => {
     if (redis) redis.disconnect();
     await pool.end();

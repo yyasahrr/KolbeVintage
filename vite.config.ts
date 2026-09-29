@@ -17,6 +17,12 @@ export default defineConfig({
     },
   },
   server: {
-    proxy: { "/api": "http://127.0.0.1:4000" },
+    host: "0.0.0.0",
+    allowedHosts: true,
+    proxy: {
+      "/api": "http://127.0.0.1:4000",
+      "/sitemap.xml": "http://127.0.0.1:4000",
+      "/robots.txt": "http://127.0.0.1:4000",
+    },
   },
 });

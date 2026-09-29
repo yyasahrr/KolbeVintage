@@ -16,10 +16,12 @@ import { SmsCenter, CrmCenter, PromoCenter } from "./admin-growth";
 import { CmsCenter } from "./admin-cms";
 import { SeriesTemplateManager } from "./series-templates";
 import { useOps } from "../data/ops";
-import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent } from "lucide-react";
+import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent, Globe2, FileVideo2 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { AdminApiError, apiCall, refreshAdminToken, type ApiRequest } from "../data/admin-api";
 import { AdminServerOrders } from "./admin-server-orders";
+import SEOCenter from "./seo-center";
+import ContentMediaCenter from "./content-media";
 
 /* ====== Standalone app: KOLBE Admin Console (internal; never linked from the public site) ====== */
 export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
@@ -144,6 +146,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "crm", label: "مشتریان (CRM)", icon: <Contact size={17} /> },
     { v: "promo", label: "کوپن و جشنواره", icon: <TicketPercent size={17} /> },
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
+    { v: "seo", label: "مرکز SEO", icon: <Globe2 size={17} /> },
+    { v: "media", label: "مجله و رسانه‌ها", icon: <FileVideo2 size={17} /> },
     { v: "sms", label: "پنل پیامک", icon: <MessageSquareText size={17} /> },
     { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
     { v: "finance", label: "مالی و تسویه", icon: <Wallet size={17} />, badge: ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length || undefined },
@@ -167,6 +171,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     shipping: ["حمل‌ونقل", "روش‌های ارسال خرده و عمده"],
     crm: ["مدیریت ارتباط با مشتری", "بخش‌بندی، پروفایل ۳۶۰ و کمپین"],
     cms: ["مدیریت محتوا", "صفحات، بنرها و مجله"],
+    seo: ["مرکز SEO", "متادیتا، ساختار سایت، ریدایرکت و ممیزی فنی"],
+    media: ["مجله و Media Library", "مدیریت مقاله، ویدیو و رسانه‌های محصولات"],
     notifs: ["سیستم اعلان", "قالب‌های رویدادی و ارسال دستی"],
     finance: ["سیستم مالی", "تراکنش‌ها، کارمزد و تسویه تأمین‌کنندگان"],
     integrations: ["یکپارچه‌سازی‌ها", "CRM، حسابداری، پیامک، پرداخت و لجستیک"],
@@ -540,6 +546,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "shipping" && <ShippingAdmin flash={flash} />}
           {tab === "crm" && <CrmCenter flash={flash} />}
           {tab === "cms" && <CmsCenter flash={flash} />}
+          {tab === "seo" && <SEOCenter flash={flash} request={request} />}
+          {tab === "media" && <ContentMediaCenter flash={flash} request={request} />}
           {tab === "notifs" && <NotifAdmin flash={flash} />}
           {tab === "finance" && <FinanceCenter flash={flash} />}
           {tab === "integrations" && <IntegrationsAdmin flash={flash} />}

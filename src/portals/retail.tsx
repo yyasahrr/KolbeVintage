@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, BadgeCheck, Truck, RotateCcw, ShieldCheck, Heart, Star, ShoppingBag,
   SlidersHorizontal, Eye, Sparkles, Ruler, Check, ChevronLeft, Minus, Plus, Trash2, CreditCard, MapPin,
@@ -13,8 +13,13 @@ import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-r
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
 import { cn } from "../utils/cn";
+import { recordSearchEvent } from "../data/search-analytics";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
+type JournalPost = { id: string; kind: "article" | "video"; status: "published"; title: string; description: string; image: string; url: string; category: string; author: string; duration: string; publishDate: string };
+type RetailSEORecord = { title?: string; description?: string; slug?: string; canonical?: string; index?: boolean; follow?: boolean; socialTitle?: string; socialDescription?: string; socialImage?: string };
+type RetailSEOState = { records?: Record<string, RetailSEORecord>; templateTitle?: string; templateDescription?: string };
+function getPublishedPosts(kind: JournalPost["kind"]): JournalPost[] { try { const raw = JSON.parse(localStorage.getItem("kolbe-editorial-media-v1") || "[]"); return Array.isArray(raw) ? raw.filter((p): p is JournalPost => p?.kind === kind && p?.status === "published" && typeof p.title === "string") : []; } catch { return []; } }
 
 /* ============ Retail product card — image-first, 70% visual ============ */
 export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
@@ -36,7 +41,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
       <div className="kv-img-zoom relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
         <button onClick={onOpen} className="block w-full text-right" aria-label={p.name}>
           <div className="kv-img aspect-[3/4] w-full overflow-hidden">
-            <img src={p.images[0]} alt={p.name} loading="lazy" className="h-full w-full object-cover" />
+            <img src={p.images[0]} alt={p.imageMeta?.[0]?.alt || p.name} loading="lazy" className="h-full w-full object-cover" />
           </div>
         </button>
         {p.badge && (
@@ -158,6 +163,8 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
   p: Product; onBack: () => void; onAdd: (size: string, color: string) => void; wished: boolean; onWish: () => void;
 }) {
   const [img, setImg] = useState(0);
+  const gallery: { kind: "image" | "video"; src: string; title: string; thumbnail?: string }[] = [...p.images.map((src, i) => ({ kind: "image" as const, src, title: p.imageMeta?.[i]?.alt || p.name })), ...(p.videos ?? []).map((video) => ({ kind: "video" as const, src: video.src, title: video.title || p.name, thumbnail: video.thumbnail })), ...(!p.videos?.length && p.video ? [{ kind: "video" as const, src: p.video, title: `${p.name} · ویدیو`, thumbnail: undefined }] : [])];
+  const selectedMedia = gallery[img] ?? gallery[0];
   const [color, setColor] = useState(p.colors[0]);
   const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
@@ -170,14 +177,14 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
         {/* gallery 55% */}
         <div className="flex gap-3">
           <div className="flex w-[76px] shrink-0 flex-col gap-2.5">
-            {p.images.map((im, i) => (
-              <button key={i} onClick={() => setImg(i)} className={cn("overflow-hidden rounded-[12px] border-2 transition-all", img === i ? "border-[var(--kv-accent)]" : "border-[var(--kv-line)] opacity-70 hover:opacity-100")}>
-                <img src={im} alt="" className="aspect-[3/4] w-full object-cover" />
+            {gallery.map((media, i) => (
+              <button key={`${media.kind}-${i}`} onClick={() => setImg(i)} aria-label={media.title} className={cn("relative overflow-hidden rounded-[12px] border-2 transition-all", img === i ? "border-[var(--kv-accent)]" : "border-[var(--kv-line)] opacity-70 hover:opacity-100")}>
+                {media.kind === "image" ? <img src={media.src} alt={media.title} loading="lazy" className="aspect-[3/4] w-full object-cover" /> : <><img src={media.thumbnail || p.images[0]} alt={media.title} className="aspect-[3/4] w-full object-cover"/><span className="absolute inset-0 grid place-items-center bg-black/20 text-white">▶</span></>}
               </button>
             ))}
           </div>
           <div className="kv-img relative flex-1 overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
-            <img key={img} src={p.images[img]} alt={p.name} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
+            {selectedMedia?.kind === "video" ? (selectedMedia.src.includes("youtube") || selectedMedia.src.includes("youtu.be") ? <iframe key={img} src={selectedMedia.src} title={selectedMedia.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen className="aspect-[3/4] w-full bg-black" /> : <video key={img} src={selectedMedia.src} poster={selectedMedia.thumbnail} controls playsInline preload="metadata" className="aspect-[3/4] w-full bg-black object-contain" />) : <img key={img} src={selectedMedia?.src || p.images[0]} alt={selectedMedia?.title || p.name} fetchPriority={img === 0 ? "high" : "auto"} loading={img === 0 ? "eager" : "lazy"} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />}
             {p.badge && <span className="absolute right-4 top-4"><Status value={p.badge} dot={false} /></span>}
           </div>
         </div>
@@ -248,9 +255,22 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   onWholesale: () => void; onLogout: () => void; onLogin: () => void;
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
-  const [cat, setCat] = useState("همه");
-  const [q, setQ] = useState("");
+  const [cat, setCat] = useState(() => new URLSearchParams(window.location.search).get("category") || "همه");
+  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get("q") || "");
   const [sort, setSort] = useState("پیشنهاد کلبه");
+  const [brandFilter, setBrandFilter] = useState(() => new URLSearchParams(window.location.search).get("brand") || "");
+  const [genderFilter, setGenderFilter] = useState(() => new URLSearchParams(window.location.search).get("gender") || "");
+  const [seasonFilter, setSeasonFilter] = useState(() => new URLSearchParams(window.location.search).get("season") || "");
+  const [vibeFilter, setVibeFilter] = useState(() => new URLSearchParams(window.location.search).get("vibe") || "");
+  const [attributeFilter, setAttributeFilter] = useState(() => new URLSearchParams(window.location.search).get("attribute") || "");
+  const [ratingFilter, setRatingFilter] = useState(() => new URLSearchParams(window.location.search).get("rating") || "");
+  const [discountOnly, setDiscountOnly] = useState(() => new URLSearchParams(window.location.search).get("discount") === "1");
+  const [colorFilter, setColorFilter] = useState(() => new URLSearchParams(window.location.search).get("color") || "");
+  const [sizeFilter, setSizeFilter] = useState(() => new URLSearchParams(window.location.search).get("size") || "");
+  const [stockOnly, setStockOnly] = useState(() => new URLSearchParams(window.location.search).get("stock") === "1");
+  const [installmentOnly, setInstallmentOnly] = useState(() => new URLSearchParams(window.location.search).get("installment") === "1");
+  const [maxPrice, setMaxPrice] = useState(() => new URLSearchParams(window.location.search).get("maxPrice") || "");
+  const committedSearch = useRef(window.location.search);
   const [checkStep, setCheckStep] = useState(0);
   const [checkoutAddressId, setCheckoutAddressId] = useState("");
   const [checkoutAddress, setCheckoutAddress] = useState<CustomerAddress>({ id: "", title: "خانه", recipient: "", phone: "", province: "", city: "", line: "", postalCode: "", isDefault: false });
@@ -265,18 +285,75 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [couponMsg, setCouponMsg] = useState("");
+  const [journalMode, setJournalMode] = useState<"article" | "video">("article");
+  const [publishedVideoPosts, setPublishedVideoPosts] = useState<JournalPost[]>(() => getPublishedPosts("video"));
+  const [publishedArticles, setPublishedArticles] = useState<JournalPost[]>(() => getPublishedPosts("article"));
+  useEffect(() => { const refreshEditorial = () => { setPublishedVideoPosts(getPublishedPosts("video")); setPublishedArticles(getPublishedPosts("article")); }; window.addEventListener("storage", refreshEditorial); return () => window.removeEventListener("storage", refreshEditorial); }, []);
 
   const selected = useMemo(() => retailProducts.find((p) => p.id === selectedId) ?? null, [selectedId, retailProducts]);
+  useEffect(() => {
+    const originalTitle = document.title;
+    const old: { element: HTMLMetaElement | HTMLLinkElement; content: string | null }[] = [];
+    const addOrSet = (selector: string, tag: "meta" | "link", attrs: Record<string, string>, value: string) => {
+      let element = document.head.querySelector(selector) as HTMLMetaElement | HTMLLinkElement | null;
+      if (!element) { element = document.createElement(tag); Object.entries(attrs).forEach(([key, val]) => element!.setAttribute(key, val)); document.head.appendChild(element); old.push({ element, content: null }); }
+      else { old.push({ element, content: tag === "meta" ? (element as HTMLMetaElement).content : element.getAttribute("href") }); }
+      if (tag === "meta") (element as HTMLMetaElement).content = value; else element.setAttribute("href", value);
+    };
+    let savedSEO: RetailSEOState = {};
+    try { savedSEO = JSON.parse(localStorage.getItem("kolbe-seo-center-v1") || "{}"); } catch { /* default templates */ }
+    const key = selected ? `product:${selected.id}` : view === "shop" && cat !== "همه" ? `category:${cat}` : view === "home" ? "site" : view === "journal" ? "blog" : "site";
+    const record = savedSEO.records?.[key] ?? {};
+    const product = selected;
+    const titleTemplate = savedSEO.templateTitle || "{{product.name}} | خرید از کلبه وینتیج";
+    const descriptionTemplate = savedSEO.templateDescription || "خرید {{product.name}} با قیمت {{product.price}} و ارسال به سراسر ایران";
+    const pageTitle = record.title || (product ? titleTemplate.replace(/\\{\\{product\\.name\\}\\}/g, product.name).replace(/\\{\\{product\\.price\\}\\}/g, fmtMoney(product.retailPrice)) : `${cat !== "همه" && view === "shop" ? cat : view === "journal" ? "مجله کلبه" : "کلبه وینتیج"} | KOLBE`);
+    const pageDescription = record.description || (product ? descriptionTemplate.replace(/\\{\\{product\\.name\\}\\}/g, product.name).replace(/\\{\\{product\\.price\\}\\}/g, fmtMoney(product.retailPrice)) : "پوشاک کلاسیک و مدرن کلبه وینتیج؛ خرید مستقیم از فروشگاه.");
+    const path = record.slug || (product ? `/product/${product.sku.toLowerCase()}` : view === "shop" ? "/shop" : view === "journal" ? "/journal" : "/");
+    const canonical = record.canonical || `https://kolbe.ir${path.startsWith("/") ? path : `/${path}`}`;
+    document.title = pageTitle;
+    addOrSet('meta[name="description"]', "meta", { name: "description" }, pageDescription);
+    addOrSet('meta[name="robots"]', "meta", { name: "robots" }, `${record.index === false ? "noindex" : "index"},${record.follow === false ? "nofollow" : "follow"}`);
+    addOrSet('link[rel="canonical"]', "link", { rel: "canonical" }, canonical);
+    addOrSet('meta[property="og:title"]', "meta", { property: "og:title" }, record.socialTitle || pageTitle);
+    addOrSet('meta[property="og:description"]', "meta", { property: "og:description" }, record.socialDescription || pageDescription);
+    addOrSet('meta[property="og:image"]', "meta", { property: "og:image" }, record.socialImage || product?.images[0] || "");
+    addOrSet('meta[name="twitter:card"]', "meta", { name: "twitter:card" }, "summary_large_image");
+    addOrSet('meta[name="twitter:title"]', "meta", { name: "twitter:title" }, record.socialTitle || pageTitle);
+    addOrSet('meta[name="twitter:description"]', "meta", { name: "twitter:description" }, record.socialDescription || pageDescription);
+    const priorSchema = document.head.querySelector('script[data-kolbe-jsonld="1"]'); const previousSchema = priorSchema?.textContent ?? null;
+    if (product) { let script = priorSchema as HTMLScriptElement | null; if (!script) { script = document.createElement("script"); script.type = "application/ld+json"; script.dataset.kolbeJsonld = "1"; document.head.appendChild(script); } script.textContent = JSON.stringify({ "@context": "https://schema.org", "@graph": [{ "@type": "Product", name: product.name, sku: product.sku, brand: { "@type": "Brand", name: product.brand }, description: product.desc, image: product.images, offers: { "@type": "Offer", priceCurrency: "IRR", price: Math.round(product.retailPrice * 10), availability: product.stock > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock", url: canonical } }, { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem", position: 1, name: "خانه", item: "https://kolbe.ir/" }, { "@type": "ListItem", position: 2, name: product.category, item: `https://kolbe.ir/category/${encodeURIComponent(product.category)}` }, { "@type": "ListItem", position: 3, name: product.name, item: canonical }] }] }); }
+    else if (priorSchema) priorSchema.remove();
+    return () => { document.title = originalTitle; old.forEach(({ element, content }) => { if (content === null) element.remove(); else if (element.tagName === "META") (element as HTMLMetaElement).content = content; else element.setAttribute("href", content); }); if (priorSchema && previousSchema !== null) priorSchema.textContent = previousSchema; else if (product) document.head.querySelector('script[data-kolbe-jsonld="1"]')?.remove(); };
+  }, [selected, view, cat]);
 
   const filtered = useMemo(() => {
     let list = [...retailProducts];
     if (cat !== "همه") list = list.filter((p) => p.category === cat);
-    if (q.trim()) list = list.filter((p) => p.name.includes(q.trim()) || p.supplier.includes(q.trim()));
+    if (brandFilter) list = list.filter((p) => p.brand === brandFilter);
+    if (genderFilter) list = list.filter((p) => p.gender === genderFilter);
+    if (seasonFilter) list = list.filter((p) => p.seasons?.includes(seasonFilter));
+    if (vibeFilter) list = list.filter((p) => p.vibes?.includes(vibeFilter));
+    if (attributeFilter) { const [key, value] = attributeFilter.split(":"); list = list.filter((p) => { const item = p.attributes?.[key]; return Array.isArray(item) ? item.includes(value) : item === value; }); }
+    if (ratingFilter) list = list.filter((p) => p.rating >= Number(ratingFilter));
+    if (discountOnly) list = list.filter((p) => (p.discountPercent ?? 0) > 0);
+    if (colorFilter) list = list.filter((p) => p.colors.some((c) => c.id === colorFilter || c.name === colorFilter));
+    if (sizeFilter) list = list.filter((p) => p.series.some((s) => Object.keys(s.composition).includes(sizeFilter)));
+    if (stockOnly) list = list.filter((p) => p.stock > 0);
+    if (installmentOnly) list = list.filter((p) => p.installmentPrice != null);
+    if (maxPrice && Number(maxPrice) > 0) list = list.filter((p) => p.retailPrice <= Number(maxPrice));
+    const query = normalizeSearch(q.trim());
+    if (query) list = list.filter((p) => {
+      const fields = [p.name, p.sku, p.brand, p.category, p.supplier, p.desc, p.fabric, ...p.colors.map((c) => c.name), ...(p.seasons ?? []), ...(p.vibes ?? []), ...Object.entries(p.attributes ?? {}).flatMap(([k, v]) => [k, ...(Array.isArray(v) ? v : [v])]), ...p.series.flatMap((s) => Object.keys(s.composition))];
+      return fields.some((field) => normalizeSearch(field).includes(query) || fuzzyMatch(query, normalizeSearch(field)));
+    });
     if (sort === "ارزان‌ترین") list.sort((a, b) => a.retailPrice - b.retailPrice);
-    if (sort === "گران‌ترین") list.sort((a, b) => b.retailPrice - a.retailPrice);
-    if (sort === "پربازدیدترین") list.sort((a, b) => b.reviews - a.reviews);
+    else if (sort === "گران‌ترین") list.sort((a, b) => b.retailPrice - a.retailPrice);
+    else if (sort === "پربازدیدترین") list.sort((a, b) => b.reviews - a.reviews);
+    else if (q.trim()) list.sort((a, b) => relevanceScore(b, q) - relevanceScore(a, q) || Number(b.stock > 0) - Number(a.stock > 0) || b.reviews - a.reviews);
+    else list.sort((a, b) => Number(b.stock > 0) - Number(a.stock > 0) || b.reviews - a.reviews);
     return list;
-  }, [cat, q, sort, retailProducts]);
+  }, [cat, brandFilter, genderFilter, seasonFilter, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice, q, sort, retailProducts]);
 
   const addToCart = (id: string, size: string, color: string): boolean => {
     const product = retailProducts.find((p) => p.id === id);
@@ -294,6 +371,34 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return s + (product?.installmentPrice ?? product?.retailPrice ?? 0) * l.qty;
   }, 0);
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
+  const brands = Array.from(new Set(retailProducts.map((p) => p.brand)));
+  const genders = Array.from(new Set(retailProducts.map((p) => p.gender).filter((v): v is string => Boolean(v))));
+  const seasons = Array.from(new Set(retailProducts.flatMap((p) => p.seasons ?? [])));
+  const vibes = Array.from(new Set(retailProducts.flatMap((p) => p.vibes ?? [])));
+  const attributes = Array.from(new Set(retailProducts.flatMap((p) => Object.entries(p.attributes ?? {}).flatMap(([key, value]) => (Array.isArray(value) ? value : [value]).map((v) => `${key}:${v}`)))));
+  const filterColors = Array.from(new Map(retailProducts.flatMap((p) => p.colors).map((c) => [c.id, c])).values());
+  const filterSizes = Array.from(new Set(retailProducts.flatMap((p) => p.series.flatMap((s) => Object.keys(s.composition)))));
+  useEffect(() => {
+    if (view !== "shop") return;
+    const params = new URLSearchParams();
+    if (q.trim()) params.set("q", q.trim()); if (cat !== "همه") params.set("category", cat);
+    if (brandFilter) params.set("brand", brandFilter); if (genderFilter) params.set("gender", genderFilter); if (seasonFilter) params.set("season", seasonFilter); if (vibeFilter) params.set("vibe", vibeFilter); if (attributeFilter) params.set("attribute", attributeFilter); if (ratingFilter) params.set("rating", ratingFilter); if (discountOnly) params.set("discount", "1"); if (colorFilter) params.set("color", colorFilter); if (sizeFilter) params.set("size", sizeFilter);
+    if (stockOnly) params.set("stock", "1"); if (installmentOnly) params.set("installment", "1"); if (maxPrice) params.set("maxPrice", maxPrice);
+    const suffix = params.toString(); const nextSearch = suffix ? `?${suffix}` : ""; const next = `${window.location.pathname}${nextSearch}${window.location.hash}`;
+    if (nextSearch === committedSearch.current) return;
+    const timer = window.setTimeout(() => { window.history.pushState({}, "", next); committedSearch.current = nextSearch; }, 350);
+    return () => window.clearTimeout(timer);
+  }, [view, q, cat, brandFilter, genderFilter, seasonFilter, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice]);
+  useEffect(() => {
+    const restore = () => { committedSearch.current = window.location.search; const p = new URLSearchParams(window.location.search); setQ(p.get("q") || ""); setCat(p.get("category") || "همه"); setBrandFilter(p.get("brand") || ""); setGenderFilter(p.get("gender") || ""); setSeasonFilter(p.get("season") || ""); setVibeFilter(p.get("vibe") || ""); setAttributeFilter(p.get("attribute") || ""); setRatingFilter(p.get("rating") || ""); setDiscountOnly(p.get("discount") === "1"); setColorFilter(p.get("color") || ""); setSizeFilter(p.get("size") || ""); setStockOnly(p.get("stock") === "1"); setInstallmentOnly(p.get("installment") === "1"); setMaxPrice(p.get("maxPrice") || ""); };
+    window.addEventListener("popstate", restore); return () => window.removeEventListener("popstate", restore);
+  }, []);
+  useEffect(() => {
+    if (!q.trim()) return;
+    const timer = window.setTimeout(() => recordSearchEvent(q, "search", filtered.length), 700);
+    return () => window.clearTimeout(timer);
+  }, [q, filtered.length]);
+  useEffect(() => { if (selectedId && q.trim()) recordSearchEvent(q, "click"); }, [selectedId]);
   const { shipping } = store;
   const retailShipping = shipping.filter((s) => s.active && s.scope !== "عمده");
   const [shipId, setShipId] = useState("");
@@ -349,6 +454,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
     if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
     if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
+    if (q.trim()) recordSearchEvent(q, "conversion");
     setPlacedOrderId(orderId);
     setCheckStep(0);
     setView("success");
@@ -416,7 +522,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
                     if (!p) return null;
                     return (
                       <div key={i} className="flex gap-4 rounded-[14px] border border-[var(--kv-line)] p-3">
-                        <img src={p.images[0]} alt={p.name} className="h-24 w-20 shrink-0 rounded-[10px] object-cover" />
+                        <img src={p.images[0]} alt={p.imageMeta?.[0]?.alt || p.name} className="h-24 w-20 shrink-0 rounded-[10px] object-cover" />
                         <div className="flex flex-1 flex-col">
                           <div className="flex items-start justify-between gap-2">
                             <div><p className="text-sm font-bold">{p.name}</p><p className="mt-1 text-xs text-[var(--kv-muted)]">سایز {l.size} · {l.color}</p></div>
@@ -516,19 +622,14 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   if (view === "journal") {
     return (
       <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-8 md:px-8">
-        <SectionHead title="مجله کلبه" desc="درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
-        <div className="grid gap-5 md:grid-cols-3">
-          {JOURNAL.map((j) => (
-            <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-              <div className="kv-img aspect-[16/10] overflow-hidden"><img src={j.img} alt={j.title} className="h-full w-full object-cover" /></div>
-              <div className="p-5">
-                <p className="text-xs font-bold text-[var(--kv-accent)]">{j.cat} · {j.read}</p>
-                <h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3>
-                <button className="mt-3 inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-ink)]">خواندن <ArrowLeft size={14} /></button>
-              </div>
-            </article>
-          ))}
+        <SectionHead title="مجله کلبه" desc="مقالات و محتوای ویدیویی درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
+        <div className="mb-6 flex gap-2" role="tablist" aria-label="نوع محتوای مجله">
+          <button role="tab" aria-selected={journalMode === "article"} onClick={() => setJournalMode("article")} className={cn("rounded-full px-4 py-2 text-sm font-bold", journalMode === "article" ? "bg-[var(--kv-action)] text-white" : "border border-[var(--kv-line)]")}>مقالات</button>
+          <button role="tab" aria-selected={journalMode === "video"} onClick={() => setJournalMode("video")} className={cn("rounded-full px-4 py-2 text-sm font-bold", journalMode === "video" ? "bg-[var(--kv-action)] text-white" : "border border-[var(--kv-line)]")}>ویدیوها <span className="mr-1 text-xs opacity-70">({fmtNum(publishedVideoPosts.length)})</span></button>
         </div>
+        {journalMode === "article" ? <div className="grid gap-5 md:grid-cols-3">
+          {[...JOURNAL.map((j) => ({ id: j.id, title: j.title, image: j.img, category: j.cat, detail: j.read, description: "" })), ...publishedArticles.map((j) => ({ id: j.id, title: j.title, image: j.image, category: j.category, detail: j.author, description: j.description }))].map((j) => <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm"><div className="kv-img aspect-[16/10] overflow-hidden">{j.image ? <img src={j.image} alt={j.title} loading="lazy" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-[var(--kv-muted)]">مجله کلبه</div>}</div><div className="p-5"><p className="text-xs font-bold text-[var(--kv-accent)]">{j.category} · {j.detail}</p><h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-6 text-[var(--kv-muted)]">{j.description}</p><button className="mt-3 inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-ink)]">خواندن <ArrowLeft size={14} /></button></div></article>)}
+        </div> : publishedVideoPosts.length ? <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{publishedVideoPosts.map((item) => <article key={item.id} className="overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)]"><div className="aspect-video bg-black">{item.url.includes("youtube-nocookie.com/embed") ? <iframe src={item.url} title={item.title} loading="lazy" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowFullScreen className="h-full w-full"/> : item.url ? <video src={item.url} poster={item.image || undefined} controls playsInline preload="metadata" className="h-full w-full"/> : <img src={item.image} alt={item.title} loading="lazy" className="h-full w-full object-cover"/>}</div><div className="p-5"><p className="text-xs font-bold text-[var(--kv-accent)]">{item.category}{item.duration ? ` · ${fmtNum(Number(item.duration))} ثانیه` : ""}</p><h3 className="mt-2 text-base font-extrabold">{item.title}</h3><p className="mt-2 line-clamp-3 text-sm leading-7 text-[var(--kv-muted)]">{item.description}</p><p className="mt-3 text-xs text-[var(--kv-muted)]">{item.author} {item.publishDate && `· ${item.publishDate}`}</p></div></article>)}</div> : <Empty title="هنوز ویدیویی منتشر نشده است" desc="ویدیوهای منتشرشده از مرکز مدیریت محتوا در این بخش نمایش داده می‌شوند." />}
       </div>
     );
   }
@@ -548,9 +649,30 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           </div>
         </div>
         <div className="kv-no-scrollbar mt-5 flex gap-2 overflow-x-auto pb-1">
-          {cats.map((c) => <Tag key={c} active={cat === c} onClick={() => setCat(c)}>{c}</Tag>)}
-          <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-2 text-[13px] font-medium"><SlidersHorizontal size={14} /> فیلتر پیشرفته</button>
+          {cats.map((c) => <Tag key={c} active={cat === c} onClick={() => setCat(c)}>{c}{c !== "همه" && <span className="mr-1 opacity-60">({fmtNum(retailProducts.filter((p) => p.category === c).length)})</span>}</Tag>)}
         </div>
+        <details className="mt-3 rounded-2xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4">
+          <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-bold"><SlidersHorizontal size={16}/>فیلترهای پیشرفته <span className="text-xs font-normal text-[var(--kv-muted)]">· نتایج: {fmtNum(filtered.length)}</span></summary>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="text-xs font-bold">برند<Select className="mt-1.5 w-full" options={["همه برندها", ...brands]} value={brandFilter || "همه برندها"} onChange={(v) => setBrandFilter(v === "همه برندها" ? "" : v)}/></label>
+            {genders.length > 0 && <label className="text-xs font-bold">جنسیت<Select className="mt-1.5 w-full" options={["همه", ...genders]} value={genderFilter || "همه"} onChange={(v) => setGenderFilter(v === "همه" ? "" : v)}/></label>}
+            {seasons.length > 0 && <label className="text-xs font-bold">فصل<Select className="mt-1.5 w-full" options={["همه فصل‌ها", ...seasons]} value={seasonFilter || "همه فصل‌ها"} onChange={(v) => setSeasonFilter(v === "همه فصل‌ها" ? "" : v)}/></label>}
+            {vibes.length > 0 && <label className="text-xs font-bold">استایل / Vibe<Select className="mt-1.5 w-full" options={["همه استایل‌ها", ...vibes]} value={vibeFilter || "همه استایل‌ها"} onChange={(v) => setVibeFilter(v === "همه استایل‌ها" ? "" : v)}/></label>}
+            {attributes.length > 0 && <label className="text-xs font-bold">ویژگی پویا<Select className="mt-1.5 w-full" options={["همه ویژگی‌ها", ...attributes]} value={attributeFilter || "همه ویژگی‌ها"} onChange={(v) => setAttributeFilter(v === "همه ویژگی‌ها" ? "" : v)}/></label>}
+            <label className="text-xs font-bold">حداقل امتیاز<Select className="mt-1.5 w-full" options={["هر امتیازی", "3.5", "4", "4.5"]} value={ratingFilter || "هر امتیازی"} onChange={(v) => setRatingFilter(v === "هر امتیازی" ? "" : v)}/></label>
+            <label className="text-xs font-bold">رنگ<Select className="mt-1.5 w-full" options={["همه رنگ‌ها", ...filterColors.map((c) => `${c.name} (${fmtNum(retailProducts.filter((p) => p.colors.some((x) => x.id === c.id)).length)})`)]} value={filterColors.find((c) => c.id === colorFilter)?.name ? `${filterColors.find((c) => c.id === colorFilter)!.name} (${fmtNum(retailProducts.filter((p) => p.colors.some((x) => x.id === colorFilter)).length)})` : "همه رنگ‌ها"} onChange={(v) => setColorFilter(filterColors.find((c) => v.startsWith(c.name))?.id ?? "")}/></label>
+            <label className="text-xs font-bold">سایز<Select className="mt-1.5 w-full" options={["همه سایزها", ...filterSizes.map((s) => `${s} (${fmtNum(retailProducts.filter((p) => p.series.some((x) => Object.keys(x.composition).includes(s))).length)})`)]} value={sizeFilter ? `${sizeFilter} (${fmtNum(retailProducts.filter((p) => p.series.some((x) => Object.keys(x.composition).includes(sizeFilter))).length)})` : "همه سایزها"} onChange={(v) => setSizeFilter(filterSizes.find((s) => v.startsWith(`${s} (`) || v === s) ?? "")}/></label>
+            <label className="text-xs font-bold">حداکثر قیمت (تومان)<input inputMode="numeric" type="number" min="0" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="بدون محدودیت" className="mt-1.5 w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-bg)] px-3 py-2.5 text-sm"/></label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={stockOnly} onChange={(e) => setStockOnly(e.target.checked)} className="accent-[#1B2A4A]"/>فقط موجود</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={discountOnly} onChange={(e) => setDiscountOnly(e.target.checked)} className="accent-[#1B2A4A]"/>فقط تخفیف‌دار</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={installmentOnly} onChange={(e) => setInstallmentOnly(e.target.checked)} className="accent-[#1B2A4A]"/>قابل خرید اقساطی</label>
+            <button className="text-right text-xs font-bold text-[var(--kv-accent)]" onClick={() => { setBrandFilter(""); setGenderFilter(""); setSeasonFilter(""); setVibeFilter(""); setAttributeFilter(""); setRatingFilter(""); setDiscountOnly(false); setColorFilter(""); setSizeFilter(""); setStockOnly(false); setInstallmentOnly(false); setMaxPrice(""); }}>پاک‌کردن فیلترها</button>
+          </div>
+        </details>
+        {(q || cat !== "همه" || brandFilter || genderFilter || seasonFilter || vibeFilter || attributeFilter || ratingFilter || discountOnly || colorFilter || sizeFilter || stockOnly || installmentOnly || maxPrice) && <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="فیلترهای فعال">{[
+          ...(q ? [[`جست‌وجو: ${q}`, () => setQ("") ] as const] : []), ...(cat !== "همه" ? [[cat, () => setCat("همه")] as const] : []), ...(brandFilter ? [[brandFilter, () => setBrandFilter("")] as const] : []), ...(genderFilter ? [[genderFilter, () => setGenderFilter("")] as const] : []), ...(seasonFilter ? [[seasonFilter, () => setSeasonFilter("")] as const] : []), ...(vibeFilter ? [[vibeFilter, () => setVibeFilter("")] as const] : []), ...(attributeFilter ? [[attributeFilter.split(":").slice(1).join(":"), () => setAttributeFilter("")] as const] : []), ...(ratingFilter ? [[`امتیاز ${ratingFilter}+`, () => setRatingFilter("")] as const] : []), ...(discountOnly ? [["تخفیف‌دار", () => setDiscountOnly(false)] as const] : []), ...(colorFilter ? [[filterColors.find((c) => c.id === colorFilter)?.name || colorFilter, () => setColorFilter("")] as const] : []), ...(sizeFilter ? [[`سایز ${sizeFilter}`, () => setSizeFilter("")] as const] : []), ...(stockOnly ? [["موجود", () => setStockOnly(false)] as const] : []), ...(installmentOnly ? [["اقساطی", () => setInstallmentOnly(false)] as const] : []), ...(maxPrice ? [[`تا ${fmtNum(Number(maxPrice))} تومان`, () => setMaxPrice("")] as const] : [])
+        ].map(([label, remove]) => <button key={label} onClick={remove} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-bold">{label} ×</button>)}</div>}
+        {q.trim() && filtered.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--kv-muted)]"><span>پیشنهادهای جست‌وجو:</span>{filtered.slice(0, 4).map((p) => <button key={p.id} className="rounded-full border border-[var(--kv-line)] px-2.5 py-1" onClick={() => setSelectedId(p.id)}>{p.name}</button>)}</div>}
         {filtered.length === 0 ? (
           <div className="mt-8"><Empty title="محصولی پیدا نشد" desc="عبارت دیگری را امتحان کنید یا فیلترها را بردارید." action={<Btn variant="soft" size="sm" onClick={() => { setQ(""); setCat("همه"); }}>حذف فیلترها</Btn>} /></div>
         ) : (
@@ -650,4 +772,25 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
 
     </div>
   );
+}
+
+function normalizeSearch(value: string) {
+  return value.toLowerCase().replace(/[يى]/g, "ی").replace(/ك/g, "ک").replace(/[\u064B-\u065F\u0670]/g, "").replace(/\s+/g, " ").trim();
+}
+function fuzzyMatch(query: string, field: string) {
+  const q = normalizeSearch(query);
+  if (q.length < 3) return false;
+  return field.split(/[\s،,/_-]+/).some((word) => word.length >= 3 && editDistance(q, word) <= Math.max(1, Math.floor(q.length * 0.22)));
+}
+function editDistance(a: string, b: string) {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]; row[0] = i;
+    for (let j = 1; j <= b.length; j++) { const old = row[j]; row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = old; }
+  }
+  return row[b.length];
+}
+function relevanceScore(product: Product, term: string) {
+  const q = normalizeSearch(term); const name = normalizeSearch(product.name); const sku = normalizeSearch(product.sku); const brand = normalizeSearch(product.brand);
+  return (name === q ? 100 : name.startsWith(q) ? 60 : name.includes(q) ? 40 : 0) + (sku === q ? 50 : sku.includes(q) ? 25 : 0) + (brand.includes(q) ? 15 : 0) + Math.min(product.reviews, 100) / 100;
 }

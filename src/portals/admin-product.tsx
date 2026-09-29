@@ -106,8 +106,9 @@ type Draft = {
   name: string; brand: string; category: string; sku: string; desc: string; fabric: string; care: string;
   retail: string; installment: string; compare: string; stock: string; seoTitle: string; slug: string; retailOn: boolean; wholesaleOn: boolean;
   colors: Colorway[]; sizes: string[]; images: string[]; video: string; series: SeriesDef[]; cutout: Cutout;
+  gender: string; seasons: string; vibes: string; attributes: string;
 };
-const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", stock: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", series: [], cutout: { status: "none" } });
+const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", stock: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", series: [], cutout: { status: "none" }, gender: "", seasons: "", vibes: "", attributes: "" });
 
 export function ProductStudio({ flash }: { flash: F }) {
   const { products, addProduct, setStatus, updateProduct } = useStore();
@@ -139,6 +140,9 @@ export function ProductStudio({ flash }: { flash: F }) {
       installmentPrice: d.retailOn ? Number(d.installment || d.retail) : 0,
       wholesaleFrom: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.pricePerSeries)) : 0, rating: 0, reviews: 0,
       colors: d.colors, images: d.images, video: d.video || undefined, cutout: d.cutout,
+      gender: d.gender || undefined, seasons: d.seasons.split(/[،,]/).map((x) => x.trim()).filter(Boolean), vibes: d.vibes.split(/[،,]/).map((x) => x.trim()).filter(Boolean),
+      attributes: Object.fromEntries(d.attributes.split(/[،,]/).map((part) => part.split(":")).filter((pair) => pair.length >= 2 && pair[0].trim() && pair.slice(1).join(":").trim()).map(([key, ...value]) => [key.trim(), value.join(":").trim()])),
+      discountPercent: Number(d.compare) > Number(d.retail) && Number(d.compare) > 0 ? Math.round((1 - Number(d.retail) / Number(d.compare)) * 100) : undefined,
       series: d.wholesaleOn ? d.series : [], seriesCount: d.wholesaleOn ? d.series.length : 0,
       moq: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.moqSeries)) : 1,
       stock: Number(d.stock) || 0, fabric: d.fabric || "—", desc: d.desc || "توضیحات این محصول در حال تکمیل است.",
@@ -242,6 +246,8 @@ export function ProductStudio({ flash }: { flash: F }) {
             {sec === "seo" && <>
               <Field label="عنوان سئو"><Input value={d.seoTitle} onChange={(v) => setD({ ...d, seoTitle: v })} placeholder={d.name || "عنوان صفحه"} /></Field>
               <Field label="نامک"><Input value={d.slug} onChange={(v) => setD({ ...d, slug: v })} placeholder="/product/…" /></Field>
+              <div className="grid gap-3 sm:grid-cols-2"><Field label="جنسیت"><Input value={d.gender} onChange={(v) => setD({ ...d, gender: v })} placeholder="زنانه، مردانه یا بدون محدودیت" /></Field><Field label="فصل‌ها (با ویرگول جدا شود)"><Input value={d.seasons} onChange={(v) => setD({ ...d, seasons: v })} placeholder="بهار، پاییز" /></Field><Field label="Vibe / استایل (با ویرگول جدا شود)"><Input value={d.vibes} onChange={(v) => setD({ ...d, vibes: v })} placeholder="کلاسیک، Old Money" /></Field><Field label="ویژگی‌های پویا (کلید:مقدار)"><Input value={d.attributes} onChange={(v) => setD({ ...d, attributes: v })} placeholder="Material:لینن، Pattern:چهارخانه" /></Field></div>
+              <p className="text-[12px] text-[var(--kv-muted)]">ویژگی‌ها با کلید و مقدار ذخیره می‌شوند و در Filter Engine به‌صورت facet پویا دیده می‌شوند. برای محصول‌های قدیمی که این داده را ندارند گزینه فیلتر نشان داده نمی‌شود.</p>
               <p className="text-[12px] text-[var(--kv-muted)]">کانال‌ها: {[d.retailOn && "فروشگاه خرده", d.wholesaleOn && "بازارچه عمده", d.cutout.status === "ready" && "استایل‌بیلدر"].filter(Boolean).join("، ") || "هیچ‌کدام"}</p>
             </>}
             <div className="space-y-2 border-t border-[var(--kv-line)] pt-4">
