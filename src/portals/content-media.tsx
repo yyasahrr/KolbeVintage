@@ -35,6 +35,9 @@ export default function ContentMediaCenter({ flash, request }: { flash: (message
   const [attachAssetId, setAttachAssetId] = useState("");
   const [uploading, setUploading] = useState(false);
   useEffect(() => {
+    if (products.length && !products.some((product) => product.id === productId)) setProductId(products[0].id);
+  }, [products, productId]);
+  useEffect(() => {
     if (!productId || isDemo) return;
     let live = true;
     setVideoLoading(true); setVideoError("");

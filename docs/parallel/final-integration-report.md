@@ -146,7 +146,7 @@ The following external services remain **NOT_CONFIGURED**: production PostgreSQL
 | Frontend typecheck and production build | PASS |
 | Frontend/backend contract | PASS, 60/60 |
 | Official admin browser smoke | PASS, 47/47 on installed Chrome |
-| Official experience browser smoke | PASS, 30/30 on installed Chrome; includes server search UI check |
+| Official experience browser smoke | PASS, 31/31 on installed Chrome; includes server search and product-video save/reload/public-read UI checks |
 | Whitespace hygiene | `git diff --check` and `git diff origin/main --check` both PASS; PR-introduced whitespace cleaned without SQL semantic changes |
 
-The initial experience smoke rerun failed at the newly added search check because the main navigation button opens a mega menu. The test was corrected to use the existing footer shop action; its second run passed 30/30. The initial seed attempt lacked the local stack environment variables and was rerun successfully with the stack's database URL and development configuration. These failed setup attempts are retained here to avoid presenting an uninterrupted green history.
+The initial experience smoke rerun failed at the newly added search check because the main navigation button opens a mega menu. The test was corrected to use the existing footer shop action; its second run passed 30/30. The final run added a product-video UI persistence check and passed 31/31. The initial seed attempt lacked the local stack environment variables and was rerun successfully with the stack's database URL and development configuration. These failed setup attempts are retained here to avoid presenting an uninterrupted green history.

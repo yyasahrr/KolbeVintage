@@ -276,6 +276,27 @@ try {
   check('CMS header builder: CTA label/target/enabled/variant inputs with live preview of the same config', !!editor && editor.inputs >= 2 && editor.preview === 'outline' && editor.label === 'بازارچه عمده', JSON.stringify(editor));
   await shot('17-admin-header-cta', true);
 
+  /* ---------- Product video: UI write, database read, admin reload, public read ---------- */
+  await clickText('button', 'مجله و رسانه‌ها');
+  await page.waitForFunction(() => document.body.innerText.includes('محتوا و Media Library'), { timeout: 15000 });
+  await clickText('button', 'ویدیوی محصول');
+  await page.waitForSelector('input[placeholder="عنوان رسانه"]', { timeout: 10000 });
+  const videoTitle = `Browser video ${Date.now()}`;
+  await page.type('input[placeholder="عنوان رسانه"]', videoTitle);
+  await page.type('input[placeholder="URL ویدیو / YouTube"]', 'https://youtu.be/dQw4w9WgXcQ');
+  await clickText('button', 'افزودن به گالری محصول');
+  await page.waitForFunction((title) => document.body.innerText.includes(title), { timeout: 15000 }, videoTitle);
+  const videoProduct = (await (await fetch(`${BASE}/api/v1/products?limit=1`)).json()).items[0];
+  const savedVideo = await api(admin, 'GET', `/admin/products/${videoProduct.id}/media`);
+  const persisted = savedVideo.json?.items?.some((row) => row.metadata?.title === videoTitle && row.role === 'video');
+  await page.reload({ waitUntil: 'networkidle2' });
+  await clickText('button', 'مجله و رسانه‌ها');
+  await clickText('button', 'ویدیوی محصول');
+  await page.waitForFunction((title) => document.body.innerText.includes(title), { timeout: 15000 }, videoTitle).catch(() => undefined);
+  const publicVideo = await api(admin, 'GET', `/products/${videoProduct.id}/media`);
+  check('Product video UI persists through admin reload and public product media',
+    persisted && (await text()).includes(videoTitle) && publicVideo.json?.items?.some((row) => row.metadata?.title === videoTitle), videoTitle);
+
   /* ---------- Supplier product form taxonomy (gap closure) ---------- */
   const supplier = await token('seed.supplier@kolbe.ir', 'Seed-Supplier-123456');
   const canonicalCats = (await (await fetch(`${BASE}/api/v1/site/categories`)).json()).items.map((c) => c.name);

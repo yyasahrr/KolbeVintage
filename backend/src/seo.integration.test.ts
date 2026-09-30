@@ -55,6 +55,11 @@ test('SEO/Search/Media PostgreSQL integration smoke', { skip: !databaseUrl }, as
     } });
     assert.equal(settings.statusCode, 200, settings.body);
     assert.match((await app.inject({ method: 'GET', url: '/robots.txt' })).body, /Disallow: \/private/);
+    const savedSettings = await app.inject({ method: 'GET', url: '/api/v1/admin/seo/settings', headers });
+    assert.equal(savedSettings.json().scheduledCrawlExecution, 'inactive');
+    assert.equal(savedSettings.json().facetPolicyExecution, 'inactive');
+    const savedFacets = await app.inject({ method: 'GET', url: '/api/v1/admin/seo/facets', headers });
+    assert.equal(savedFacets.json().executionStatus, 'inactive');
 
     // DB-backed retail and supplier products; sitemap must use canonical/indexable retail URLs only.
     await pool.query(`INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,metadata) VALUES
