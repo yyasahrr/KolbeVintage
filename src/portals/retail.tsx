@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ResponsiveImg } from "../components/responsive-img";
+import { useEntitySeo } from "../components/seo-head";
 import {
   ArrowLeft, BadgeCheck, Truck, RotateCcw, ShieldCheck, Heart, Star, ShoppingBag,
   SlidersHorizontal, Eye, Sparkles, Ruler, Check, ChevronLeft, Minus, Plus, Trash2, CreditCard, MapPin,
@@ -7,28 +9,50 @@ import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, type Product } from "../da
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
+import { promoApi, publicApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
+import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage, normalizeTaxonomies, readPricingSnapshot, readShippingQuote, type PricingSnapshot, type Taxonomy } from "../data/contracts";
+import { cmsApi, ordersApi, productStructureApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
+import { CmsSections } from "../components/cms-blocks";
+import { ProductReviews } from "../components/product-reviews";
+import { useToast } from "../components/toast";
+import { accountApi, siteApi, type CommerceProduct, type SitePage } from "../data/experience-api";
+import { isAuthenticated } from "../data/api";
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
 import { cn } from "../utils/cn";
 
+import { ProductReviewsBlock, ProductVideo, RecommendationStrip } from "../components/product-social";
+import { recordSearchEvent } from "../data/search-analytics";
+
 export type CartLine = { id: string; qty: number; size: string; color: string };
+type JournalPost = { id: string; slug?: string; kind: "article" | "video"; status: "published"; title: string; description: string; image: string; url: string; category: string; author: string; duration: string; publishDate: string };
+function getPublishedPosts(kind: JournalPost["kind"]): JournalPost[] { try { const raw = JSON.parse(localStorage.getItem("kolbe-editorial-media-v1") || "[]"); return Array.isArray(raw) ? raw.filter((p): p is JournalPost => p?.kind === kind && p?.status === "published" && typeof p.title === "string") : []; } catch { return []; } }
+
+/** Retail sizes come from real server variants; legacy demo products fall back to series composition. */
+export const productSizes = (p: Product) => (p.sizes?.length ? p.sizes : Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition ?? {})))));
 
 /* ============ Retail product card — image-first, 70% visual ============ */
 export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
   p: Product; wished: boolean; onWish: () => void; onOpen: () => void; onAdd: (size: string, color: string) => boolean;
 }) {
   const [colorId, setColorId] = useState(p.colors[0]?.id ?? "");
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
+  const sizes = productSizes(p);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
   const [message, setMessage] = useState("");
+  const [added, setAdded] = useState(false);
+  const toast = useToast();
   const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
   const quickAdd = () => {
     if (!chosenColor) { setMessage("رنگی برای این محصول تعریف نشده است"); return; }
-    const added = onAdd(size, chosenColor.name);
-    setMessage(added ? "به سبد اضافه شد" : "موجودی کافی نیست");
+    const ok = onAdd(size, chosenColor.name);
+    if (ok) {
+      setAdded(true); toast.bumpCart(); toast.push(`«${p.name}» به سبد خرید اضافه شد.`);
+      window.setTimeout(() => setAdded(false), 1400);
+    } else toast.push(`سایز ${size} از «${p.name}» دیگر موجود نیست.`, "error");
+    setMessage(ok ? "به سبد اضافه شد" : "این سایز دیگر موجود نیست");
     window.setTimeout(() => setMessage(""), 2200);
   };
   return (
@@ -36,7 +60,8 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
       <div className="kv-img-zoom relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
         <button onClick={onOpen} className="block w-full text-right" aria-label={p.name}>
           <div className="kv-img aspect-[3/4] w-full overflow-hidden">
-            <img src={p.images[0]} alt={p.name} loading="lazy" className="h-full w-full object-cover" />
+
+            <img src={p.images[0]} alt={p.imageMeta?.[0]?.alt || p.name} loading="lazy" className="h-full w-full object-cover" />
           </div>
         </button>
         {p.badge && (
@@ -76,7 +101,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
             {sizes.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <button onClick={quickAdd} disabled={p.stock < 1 || !chosenColor} aria-label={`افزودن ${p.name} رنگ ${chosenColor?.name ?? ""} سایز ${size} به سبد خرید`} className="kv-press flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-[var(--kv-action)] px-2 text-[12px] font-semibold text-[var(--kv-bg)] disabled:opacity-40 dark:text-[#0E1527]">
-            <ShoppingBag size={15} className="shrink-0" /><span className="hidden sm:inline">افزودن</span>
+            {added ? <Check size={15} className="kv-check-pop shrink-0" /> : <ShoppingBag size={15} className="shrink-0" />}<span className="hidden sm:inline">{added ? "اضافه شد" : "افزودن"}</span>
           </button>
         </div>
         <p role="status" aria-live="polite" className="h-5 pt-1 text-[11px] font-semibold text-[var(--kv-success)]">{message || (p.stock < 1 ? "ناموجود" : "")}</p>
@@ -119,7 +144,7 @@ function Hero({ onShop, onLook }: { onShop: () => void; onLook: () => void }) {
           </div>
         </div>
         <div className="kv-img relative min-h-[340px] md:min-h-[560px]">
-          <img src={IMG.trenchHero} alt="ترنچ‌کت شنی کلبه" className="absolute inset-0 h-full w-full object-cover" />
+          <ResponsiveImg src={IMG.trenchHero} alt="ترنچ‌کت شنی کلبه" priority sizes="(min-width: 768px) 50vw, 100vw" className="absolute inset-0 h-full w-full object-cover" />
           <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/35 to-transparent" />
           <div className="kv-glass absolute bottom-5 right-5 left-5 flex items-center justify-between rounded-[14px] px-4 py-3">
             <div>
@@ -154,12 +179,16 @@ function TrustBar() {
 }
 
 /* ============ PDP (Retail) ============ */
-export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
+export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
   p: Product; onBack: () => void; onAdd: (size: string, color: string) => void; wished: boolean; onWish: () => void;
+  taxonomyLabel?: (kind: string, code: string) => string;
 }) {
   const [img, setImg] = useState(0);
+  const gallery: { kind: "image" | "video"; src: string; title: string; thumbnail?: string }[] = [...p.images.map((src, i) => ({ kind: "image" as const, src, title: p.imageMeta?.[i]?.alt || p.name })), ...(p.videos ?? []).map((video) => ({ kind: "video" as const, src: video.src, title: video.title || p.name, thumbnail: video.thumbnail })), ...(!p.videos?.length && p.video ? [{ kind: "video" as const, src: p.video, title: `${p.name} · ویدیو`, thumbnail: undefined }] : [])];
+  const selectedMedia = gallery[img] ?? gallery[0];
   const [color, setColor] = useState(p.colors[0]);
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
+  const sizes = productSizes(p);
+  useEffect(() => { if (isAuthenticated()) accountApi.view(p.id); }, [p.id]);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
   return (
     <div className="animate-[fadeUp_0.4s_ease]">
@@ -170,14 +199,16 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
         {/* gallery 55% */}
         <div className="flex gap-3">
           <div className="flex w-[76px] shrink-0 flex-col gap-2.5">
-            {p.images.map((im, i) => (
-              <button key={i} onClick={() => setImg(i)} className={cn("overflow-hidden rounded-[12px] border-2 transition-all", img === i ? "border-[var(--kv-accent)]" : "border-[var(--kv-line)] opacity-70 hover:opacity-100")}>
-                <img src={im} alt="" className="aspect-[3/4] w-full object-cover" />
+
+            {gallery.map((media, i) => (
+              <button key={`${media.kind}-${i}`} onClick={() => setImg(i)} aria-label={media.title} className={cn("relative overflow-hidden rounded-[12px] border-2 transition-all", img === i ? "border-[var(--kv-accent)]" : "border-[var(--kv-line)] opacity-70 hover:opacity-100")}>
+                {media.kind === "image" ? <ResponsiveImg src={media.src} alt={media.title} className="aspect-[3/4] w-full object-cover" /> : <><ResponsiveImg src={media.thumbnail || p.images[0]} alt={media.title} className="aspect-[3/4] w-full object-cover"/><span className="absolute inset-0 grid place-items-center bg-black/20 text-white">▶</span></>}
               </button>
             ))}
           </div>
           <div className="kv-img relative flex-1 overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
-            <img key={img} src={p.images[img]} alt={p.name} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
+
+            {selectedMedia?.kind === "video" ? (selectedMedia.src.includes("youtube") || selectedMedia.src.includes("youtu.be") ? <iframe key={img} src={selectedMedia.src} title={selectedMedia.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen className="aspect-[3/4] w-full bg-black" /> : <video key={img} src={selectedMedia.src} poster={selectedMedia.thumbnail} controls playsInline preload="metadata" className="aspect-[3/4] w-full bg-black object-contain" />) : <ResponsiveImg key={img} src={selectedMedia?.src || p.images[0]} alt={selectedMedia?.title || p.name} priority={img === 0} fetchPriority={img === 0 ? "high" : "auto"} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />}
             {p.badge && <span className="absolute right-4 top-4"><Status value={p.badge} dot={false} /></span>}
           </div>
         </div>
@@ -221,6 +252,13 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
           <div className="mt-5 space-y-3 border-t border-[var(--kv-line)] pt-5 text-[13px] leading-7 text-[var(--kv-muted)]">
             <p><span className="font-bold text-[var(--kv-ink)]">درباره این محصول — </span>{p.desc}</p>
             <p><span className="font-bold text-[var(--kv-ink)]">جنس پارچه: </span>{p.fabric}</p>
+            {((p.genderCode ?? "") !== "" || (p.seasons ?? []).length > 0) && (
+              <p>
+                <span className="font-bold text-[var(--kv-ink)]">مناسب: </span>
+                {[p.genderCode ? (taxonomyLabel?.("gender", p.genderCode) ?? p.genderCode) : null,
+                  ...((p.seasons ?? []).map((s) => taxonomyLabel?.("season", s) ?? s))].filter(Boolean).join(" · ")}
+              </p>
+            )}
             <div className="flex flex-wrap gap-2 pt-1">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-semibold"><Truck size={13} /> ارسال رایگان بالای ۵ میلیون</span>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-semibold"><RotateCcw size={13} /> ۷ روز مهلت برگشت</span>
@@ -229,6 +267,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
           </div>
         </div>
       </div>
+      <ProductReviews productId={p.id} />
     </div>
   );
 }
@@ -236,7 +275,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
 /* ============ MAIN RETAIL ============ */
 export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success";
 
-export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin }: {
+export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopCategory }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
@@ -246,11 +285,44 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   account: CustomerAccount | null; buyer?: Buyer;
   accountTab: AccountTab; setAccountTab: (v: AccountTab) => void;
   onWholesale: () => void; onLogout: () => void; onLogin: () => void;
+  /** CMS `category:<slug>` targets preselect the shop category (resolved to its display name by the shell). */
+  shopCategory?: { name: string; nonce: number } | null;
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
-  const [cat, setCat] = useState("همه");
-  const [q, setQ] = useState("");
+
+  const [cat, setCat] = useState(() => new URLSearchParams(window.location.search).get("category") || "همه");
+  useEffect(() => { if (shopCategory) setCat(shopCategory.name); }, [shopCategory]);
+  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get("q") || "");
   const [sort, setSort] = useState("پیشنهاد کلبه");
+  const [brandFilter, setBrandFilter] = useState(() => new URLSearchParams(window.location.search).get("brand") || "");
+  const [genderFilter, setGenderFilter] = useState(() => new URLSearchParams(window.location.search).get("gender") || "");
+  const [seasonFilter, setSeasonFilter] = useState(() => new URLSearchParams(window.location.search).get("season") || "");
+  const [vibeFilter, setVibeFilter] = useState(() => new URLSearchParams(window.location.search).get("vibe") || "");
+  const [attributeFilter, setAttributeFilter] = useState(() => new URLSearchParams(window.location.search).get("attribute") || "");
+  const [ratingFilter, setRatingFilter] = useState(() => new URLSearchParams(window.location.search).get("rating") || "");
+  const [discountOnly, setDiscountOnly] = useState(() => new URLSearchParams(window.location.search).get("discount") === "1");
+  const [colorFilter, setColorFilter] = useState(() => new URLSearchParams(window.location.search).get("color") || "");
+  const [sizeFilter, setSizeFilter] = useState(() => new URLSearchParams(window.location.search).get("size") || "");
+  const [stockOnly, setStockOnly] = useState(() => new URLSearchParams(window.location.search).get("stock") === "1");
+  const [installmentOnly, setInstallmentOnly] = useState(() => new URLSearchParams(window.location.search).get("installment") === "1");
+  const [maxPrice, setMaxPrice] = useState(() => new URLSearchParams(window.location.search).get("maxPrice") || "");
+  const committedSearch = useRef(window.location.search);
+  const [filterGender, setFilterGender] = useState("");
+  const [filterSeasons, setFilterSeasons] = useState<string[]>([]);
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverResultIds, setServerResultIds] = useState<string[] | null>(null);
+  const [serverSearchLoading, setServerSearchLoading] = useState(!isDemo);
+  const [serverSearchError, setServerSearchError] = useState("");
+  const [searchRetry, setSearchRetry] = useState(0);
+  const [shopTaxonomies, setShopTaxonomies] = useState<Taxonomy[]>([]);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has("demo")) return;
+    let live = true;
+    productStructureApi.taxonomies().then(normalizeTaxonomies)
+      .then((list) => { if (live) setShopTaxonomies(list.filter((t) => t.active)); })
+      .catch(() => { if (live) setShopTaxonomies([]); });
+    return () => { live = false; };
+  }, []);
   const [checkStep, setCheckStep] = useState(0);
   const [checkoutAddressId, setCheckoutAddressId] = useState("");
   const [checkoutAddress, setCheckoutAddress] = useState<CustomerAddress>({ id: "", title: "خانه", recipient: "", phone: "", province: "", city: "", line: "", postalCode: "", isDefault: false });
@@ -258,25 +330,141 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [checkoutError, setCheckoutError] = useState("");
   const [paymentMode, setPaymentMode] = useState<"cash" | "four_installments">("cash");
   const [placedOrderId, setPlacedOrderId] = useState("");
+  const [placedSnapshot, setPlacedSnapshot] = useState<PricingSnapshot | null>(null);
   const store = useStore();
   const ops = useOps();
+  const toast = useToast();
+  const [homePage, setHomePage] = useState<SitePage | null>(null);
+  // Hardcoded home is only a fallback once the CMS request finished without a composed page (no flash).
+  const [homeResolved, setHomeResolved] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo"));
   const retailProducts = store.products.filter((p) => p.status === "published" && p.retailPrice > 0);
   const cmsNav = (t: NavTarget) => (t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop"));
+  const [cmsHero, setCmsHero] = useState<any | null>(null);
+  const [cmsBlocks, setCmsBlocks] = useState<any[] | null>(null);
+  const [cmsPalette, setCmsPalette] = useState<any | null>(null);
+  const [cmsLoading, setCmsLoading] = useState(false);
+  const [cmsError, setCmsError] = useState<string | null>(null);
+  useEffect(()=>{ if(new URLSearchParams(window.location.search).has("demo")) return; let cancelled=false; (async()=>{ setCmsLoading(true); setCmsError(null);
+    try{
+      const rawHome = await siteApi.page("home");
+      if(!cancelled && rawHome.sections?.length) setHomePage(rawHome);
+      const page = adaptSitePage(rawHome);
+      if(cancelled) return;
+      if(page){
+        // Server CMS is the source of truth: hero = the «hero» section, blocks = the other sections.
+        const heroSection = page.sections.find((section) => section.component_code === "hero" && section.visible) ?? null;
+        const hero = adaptCmsHero(heroSection);
+        if(hero) setCmsHero(hero);
+        setCmsBlocks(page.sections.filter((section) => section.component_code !== "hero").map(adaptCmsSectionToBlock));
+      }
+      const pal = await cmsApi.activePalette().catch(()=>null);
+      if(!cancelled && pal) setCmsPalette(pal);
+    } catch(e){ if(!cancelled) setCmsError(e instanceof Error ? e.message : "خطا در بارگذاری محتوا"); }
+    finally{ if(!cancelled) { setCmsLoading(false); setHomeResolved(true); } }
+  })(); return()=>{ cancelled=true; }; },[]);
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [couponMsg, setCouponMsg] = useState("");
+  const [journalMode, setJournalMode] = useState<"article" | "video">("article");
+  const [publishedVideoPosts, setPublishedVideoPosts] = useState<JournalPost[]>(() => isDemo ? getPublishedPosts("video") : []);
+  const [publishedArticles, setPublishedArticles] = useState<JournalPost[]>(() => isDemo ? getPublishedPosts("article") : []);
+  const [journalLoading, setJournalLoading] = useState(!isDemo);
+  const [journalError, setJournalError] = useState("");
+  const [journalRetry, setJournalRetry] = useState(0);
+  const [activeArticle, setActiveArticle] = useState<{ title: string; body: string; image: string; category: string } | null>(null);
+  useEffect(() => {
+    if (isDemo) { const refreshEditorial = () => { setPublishedVideoPosts(getPublishedPosts("video")); setPublishedArticles(getPublishedPosts("article")); }; window.addEventListener("storage", refreshEditorial); return () => window.removeEventListener("storage", refreshEditorial); }
+    let live = true;
+    setJournalLoading(true); setJournalError("");
+    publicApi.get<{ items: Array<{ id: string; post_type: "article" | "video"; slug: string; title: string; excerpt: string; cover_url: string; source_url: string; category: string; author: string; duration_seconds: number | null; published_at: string | null }> }>("/public/editorial?limit=100")
+      .then(({ items }) => { if (!live) return; const posts: JournalPost[] = items.map((row) => ({ id: row.id, slug: row.slug, kind: row.post_type, status: "published", title: row.title, description: row.excerpt, image: row.cover_url, url: row.source_url, category: row.category, author: row.author, duration: row.duration_seconds == null ? "" : String(row.duration_seconds), publishDate: row.published_at ?? "" })); setPublishedArticles(posts.filter((post) => post.kind === "article")); setPublishedVideoPosts(posts.filter((post) => post.kind === "video")); })
+      .catch((error) => { if (live) setJournalError(error instanceof Error ? error.message : "بارگذاری مجله ناموفق بود."); })
+      .finally(() => { if (live) setJournalLoading(false); });
+    return () => { live = false; };
+  }, [isDemo, journalRetry]);
+  const openArticle = async (post: JournalPost) => {
+    if (!post.slug) { setActiveArticle({ title: post.title, body: post.description, image: post.image, category: post.category }); return; }
+    try {
+      const detail = await publicApi.get<{ title: string; body: string; cover_url: string; category: string }>(`/public/editorial/${encodeURIComponent(post.slug)}`);
+      setActiveArticle({ title: detail.title, body: detail.body, image: detail.cover_url, category: detail.category });
+    } catch (error) { setJournalError(error instanceof Error ? error.message : "باز کردن مقاله ناموفق بود."); }
+  };
 
   const selected = useMemo(() => retailProducts.find((p) => p.id === selectedId) ?? null, [selectedId, retailProducts]);
 
+  useEffect(() => {
+    if (isDemo || view !== "shop") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setServerSearchLoading(true); setServerSearchError("");
+      const params = new URLSearchParams();
+      const filters: Record<string, string | undefined> = {
+        q: q.trim() || undefined, category: cat === "همه" ? undefined : cat,
+        brand: brandFilter || undefined, gender: filterGender || genderFilter || undefined,
+        season: seasonFilter || undefined, seasons: filterSeasons.join(",") || undefined,
+        vibe: vibeFilter || undefined, color: colorFilter || undefined, size: sizeFilter || undefined,
+        minRating: ratingFilter || undefined, discountOnly: discountOnly ? "true" : undefined,
+        available: stockOnly ? "true" : undefined, installment: installmentOnly ? "true" : undefined,
+        maxPriceRial: Number(maxPrice) > 0 ? String(Math.round(Number(maxPrice) * 10)) : undefined,
+        sort: sort === "ارزان‌ترین" ? "price_low" : sort === "گران‌ترین" ? "price_high" : sort === "پربازدیدترین" ? "popular" : "relevance",
+      };
+      if (attributeFilter) { const [key, value] = attributeFilter.split(":"); if (key && value) filters.attributes = JSON.stringify({ [key]: value }); }
+      for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
+      try {
+        const ids: string[] = [];
+        let total = 0;
+        do {
+          params.set("limit", "100"); params.set("offset", String(ids.length));
+          const response = await publicApi.get<{ items: { id: string }[]; total: number }>(`/search?${params}`, { signal: controller.signal });
+          ids.push(...response.items.map((item) => item.id)); total = response.total;
+          if (response.items.length === 0) break;
+        } while (ids.length < total && ids.length < 100000);
+        if (!controller.signal.aborted) setServerResultIds(ids);
+      } catch (error) {
+        if (!controller.signal.aborted) { setServerSearchError(error instanceof Error ? error.message : "جست‌وجو در دسترس نیست."); setServerResultIds(null); }
+      } finally { if (!controller.signal.aborted) setServerSearchLoading(false); }
+    }, 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [isDemo, view, q, cat, brandFilter, genderFilter, filterGender, seasonFilter, filterSeasons, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice, sort, searchRetry]);
+
+  // Req 235: product detail head (title, canonical, Product JSON-LD) comes from the SEO Domain.
+  useEntitySeo("product", selected && /^[0-9a-f-]{36}$/i.test(selected.id) ? selected.id : null);
+
   const filtered = useMemo(() => {
+    if (!isDemo) {
+      const byId = new Map(retailProducts.map((product) => [product.id, product]));
+      return (serverResultIds ?? []).flatMap((id) => byId.get(id) ? [byId.get(id)!] : []);
+    }
     let list = [...retailProducts];
     if (cat !== "همه") list = list.filter((p) => p.category === cat);
-    if (q.trim()) list = list.filter((p) => p.name.includes(q.trim()) || p.supplier.includes(q.trim()));
+
+    if (brandFilter) list = list.filter((p) => p.brand === brandFilter);
+    if (genderFilter) list = list.filter((p) => p.gender === genderFilter);
+    if (seasonFilter) list = list.filter((p) => p.seasons?.includes(seasonFilter));
+    if (vibeFilter) list = list.filter((p) => p.vibes?.includes(vibeFilter));
+    if (attributeFilter) { const [key, value] = attributeFilter.split(":"); list = list.filter((p) => { const item = p.attributes?.[key]; return Array.isArray(item) ? item.includes(value) : item === value; }); }
+    if (ratingFilter) list = list.filter((p) => p.rating >= Number(ratingFilter));
+    if (discountOnly) list = list.filter((p) => (p.discountPercent ?? 0) > 0);
+    if (colorFilter) list = list.filter((p) => p.colors.some((c) => c.id === colorFilter || c.name === colorFilter));
+    if (sizeFilter) list = list.filter((p) => p.series.some((s) => Object.keys(s.composition).includes(sizeFilter)));
+    if (stockOnly) list = list.filter((p) => p.stock > 0);
+    if (installmentOnly) list = list.filter((p) => p.installmentPrice != null);
+    if (maxPrice && Number(maxPrice) > 0) list = list.filter((p) => p.retailPrice <= Number(maxPrice));
+    const query = normalizeSearch(q.trim());
+    if (query) list = list.filter((p) => {
+      const fields = [p.name, p.sku, p.brand, p.category, p.supplier, p.desc, p.fabric, ...p.colors.map((c) => c.name), ...(p.seasons ?? []), ...(p.vibes ?? []), ...Object.entries(p.attributes ?? {}).flatMap(([k, v]) => [k, ...(Array.isArray(v) ? v : [v])]), ...p.series.flatMap((s) => Object.keys(s.composition))];
+      return fields.some((field) => normalizeSearch(field).includes(query) || fuzzyMatch(query, normalizeSearch(field)));
+    });
+    if (filterGender) list = list.filter((p) => (p.genderCode ?? "") === filterGender);
+    if (filterSeasons.length) list = list.filter((p) => (p.seasons ?? []).some((s) => filterSeasons.includes(s)));
     if (sort === "ارزان‌ترین") list.sort((a, b) => a.retailPrice - b.retailPrice);
-    if (sort === "گران‌ترین") list.sort((a, b) => b.retailPrice - a.retailPrice);
-    if (sort === "پربازدیدترین") list.sort((a, b) => b.reviews - a.reviews);
+    else if (sort === "گران‌ترین") list.sort((a, b) => b.retailPrice - a.retailPrice);
+    else if (sort === "پربازدیدترین") list.sort((a, b) => b.reviews - a.reviews);
+    else if (q.trim()) list.sort((a, b) => relevanceScore(b, q) - relevanceScore(a, q) || Number(b.stock > 0) - Number(a.stock > 0) || b.reviews - a.reviews);
+    else list.sort((a, b) => Number(b.stock > 0) - Number(a.stock > 0) || b.reviews - a.reviews);
     return list;
-  }, [cat, q, sort, retailProducts]);
+
+  }, [isDemo, serverResultIds, cat, brandFilter, genderFilter, seasonFilter, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice, q, sort, retailProducts, filterGender, filterSeasons]);
 
   const addToCart = (id: string, size: string, color: string): boolean => {
     const product = retailProducts.find((p) => p.id === id);
@@ -288,14 +476,80 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return true;
   };
   const quickAdd = (p: Product) => (size: string, color: string) => addToCart(p.id, size, color);
+  /** CMS product cards carry the canonical variant list; pick the first sellable variant. */
+  const commerceQuickAdd = (cp: CommerceProduct) => {
+    const variant = cp.variants.find((v) => v.available > 0);
+    if (!variant) return false;
+    return addToCart(cp.id, variant.size ?? "", variant.color ?? "");
+  };
   const cartTotal = cart.reduce((s, l) => s + (retailProducts.find((p) => p.id === l.id)?.retailPrice ?? 0) * l.qty, 0);
   const installmentCartTotal = cart.reduce((s, l) => {
     const product = retailProducts.find((p) => p.id === l.id);
     return s + (product?.installmentPrice ?? product?.retailPrice ?? 0) * l.qty;
   }, 0);
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
+
+  const [serverShipping, setServerShipping] = useState<any[] | null>(null);
+  const [methodQuotes, setMethodQuotes] = useState<Record<string, { feeRial: string; weightGrams: number }>>({});
+  useEffect(()=>{ if(isDemo) return; shippingApi.list().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemo]);
+  const resolveVariantId = (line: CartLine): string => {
+    const variants = retailProducts.find((pp) => pp.id === line.id)?.variants ?? [];
+    return variants.find((variant) => (variant.size ?? "") === line.size && (variant.color ?? "") === line.color)?.id
+      ?? variants.find((variant) => (variant.size ?? "") === line.size)?.id
+      ?? variants[0]?.id ?? line.id;
+  };
+  const quoteItems = useMemo(() => cart.map((l) => ({ variantId: resolveVariantId(l), quantity: l.qty })), [cart, retailProducts]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (isDemo || view !== "checkout" || !serverShipping?.length || !quoteItems.length) return;
+    let live = true;
+    void (async () => {
+      const next: Record<string, { feeRial: string; weightGrams: number }> = {};
+      await Promise.all(serverShipping.map(async (method: any) => {
+        try {
+          const quote = readShippingQuote(await shippingApi.quote({
+            methodId: method.id, items: quoteItems,
+            subtotalRial: String(Math.round(cartTotal * 10)),
+            ...(checkoutAddress.province.trim() ? { province: checkoutAddress.province.trim() } : {}),
+          }));
+          next[method.id] = { feeRial: quote.feeRial, weightGrams: quote.totalWeightGrams };
+        } catch { /* keep the base fee fallback */ }
+      }));
+      if (live) setMethodQuotes(next);
+    })();
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDemo, view, serverShipping, quoteItems, cartTotal, checkoutAddress.province]);
+  const brands = Array.from(new Set(retailProducts.map((p) => p.brand)));
+  const genders = Array.from(new Set(retailProducts.map((p) => p.gender).filter((v): v is string => Boolean(v))));
+  const seasons = Array.from(new Set(retailProducts.flatMap((p) => p.seasons ?? [])));
+  const vibes = Array.from(new Set(retailProducts.flatMap((p) => p.vibes ?? [])));
+  const attributes = Array.from(new Set(retailProducts.flatMap((p) => Object.entries(p.attributes ?? {}).flatMap(([key, value]) => (Array.isArray(value) ? value : [value]).map((v) => `${key}:${v}`)))));
+  const filterColors = Array.from(new Map(retailProducts.flatMap((p) => p.colors).map((c) => [c.id, c])).values());
+  const filterSizes = Array.from(new Set(retailProducts.flatMap((p) => p.series.flatMap((s) => Object.keys(s.composition)))));
+  useEffect(() => {
+    if (view !== "shop") return;
+    const params = new URLSearchParams();
+    if (q.trim()) params.set("q", q.trim()); if (cat !== "همه") params.set("category", cat);
+    if (brandFilter) params.set("brand", brandFilter); if (genderFilter) params.set("gender", genderFilter); if (seasonFilter) params.set("season", seasonFilter); if (vibeFilter) params.set("vibe", vibeFilter); if (attributeFilter) params.set("attribute", attributeFilter); if (ratingFilter) params.set("rating", ratingFilter); if (discountOnly) params.set("discount", "1"); if (colorFilter) params.set("color", colorFilter); if (sizeFilter) params.set("size", sizeFilter);
+    if (stockOnly) params.set("stock", "1"); if (installmentOnly) params.set("installment", "1"); if (maxPrice) params.set("maxPrice", maxPrice);
+    const suffix = params.toString(); const nextSearch = suffix ? `?${suffix}` : ""; const next = `${window.location.pathname}${nextSearch}${window.location.hash}`;
+    if (nextSearch === committedSearch.current) return;
+    const timer = window.setTimeout(() => { window.history.pushState({}, "", next); committedSearch.current = nextSearch; }, 350);
+    return () => window.clearTimeout(timer);
+  }, [view, q, cat, brandFilter, genderFilter, seasonFilter, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice]);
+  useEffect(() => {
+    const restore = () => { committedSearch.current = window.location.search; const p = new URLSearchParams(window.location.search); setQ(p.get("q") || ""); setCat(p.get("category") || "همه"); setBrandFilter(p.get("brand") || ""); setGenderFilter(p.get("gender") || ""); setSeasonFilter(p.get("season") || ""); setVibeFilter(p.get("vibe") || ""); setAttributeFilter(p.get("attribute") || ""); setRatingFilter(p.get("rating") || ""); setDiscountOnly(p.get("discount") === "1"); setColorFilter(p.get("color") || ""); setSizeFilter(p.get("size") || ""); setStockOnly(p.get("stock") === "1"); setInstallmentOnly(p.get("installment") === "1"); setMaxPrice(p.get("maxPrice") || ""); };
+    window.addEventListener("popstate", restore); return () => window.removeEventListener("popstate", restore);
+  }, []);
+  useEffect(() => {
+    if (!q.trim()) return;
+    const timer = window.setTimeout(() => recordSearchEvent(q, "search", filtered.length), 700);
+    return () => window.clearTimeout(timer);
+  }, [q, filtered.length]);
+  useEffect(() => { if (selectedId && q.trim()) recordSearchEvent(q, "click"); }, [selectedId]);
   const { shipping } = store;
-  const retailShipping = shipping.filter((s) => s.active && s.scope !== "عمده");
+  const sourceShipping = serverShipping ? serverShipping.map((s:any)=> ({ id:s.id, name:s.name, carrier:s.type ?? s.carrier ?? "", scope: s.type==='pickup'?"خرده":"خرده", price: Number(s.baseFeeRial ?? s.base_fee_rial ?? 0), freeAbove: s.freeAboveRial ? Number(s.freeAboveRial) : (s.free_above_rial? Number(s.free_above_rial): null), eta: s.estimatedMinDays ? `${s.estimatedMinDays}-${s.estimatedMaxDays} روز` : "", zones: s.zones ?? "سراسر کشور", active: s.active })) : shipping.filter((s) => s.active && s.scope !== "عمده");
+  const retailShipping = sourceShipping;
   const [shipId, setShipId] = useState("");
   const ship = retailShipping.find((s) => s.id === shipId) ?? retailShipping[0];
   const today = new Date().toISOString().slice(0, 10);
@@ -310,12 +564,23 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const validCoupon = coupon && !couponError ? coupon : undefined;
   const afterFestival = Math.max(0, cartTotal - festivalDiscount);
   const couponDiscount = !validCoupon ? 0 : validCoupon.type === "percent" ? Math.round(afterFestival * validCoupon.value / 100) : validCoupon.type === "fixed" ? Math.min(afterFestival, validCoupon.value) : 0;
-  const baseShip = !ship || cart.length === 0 ? 0 : ship.freeAbove !== null && cartTotal >= ship.freeAbove ? 0 : ship.price;
+  const quotedShip = ship && methodQuotes[ship.id] ? Number(methodQuotes[ship.id].feeRial) / 10 : null;
+  const quotedWeight = ship && methodQuotes[ship.id] ? methodQuotes[ship.id].weightGrams : null;
+  const baseShip = !ship || cart.length === 0 ? 0 : quotedShip !== null ? quotedShip : ship.freeAbove !== null && cartTotal >= ship.freeAbove ? 0 : ship.price;
   const shipCost = validCoupon?.type === "freeShip" ? 0 : baseShip;
   const totalDiscount = festivalDiscount + couponDiscount;
   const custRestrict = account ? ops.restrictionFor("customer", account.id) : null;
-  const applyCoupon = () => {
+  const applyCoupon = async () => {
     const code = couponInput.trim().toUpperCase();
+    // Try server validation first (PostgreSQL coupons, audience/scope/time window)
+    try {
+      const items = cart.map((c)=> { const prod = retailProducts.find((pp)=> pp.id===c.id); return { productId: c.id, category: (prod as unknown as {category?:string})?.category ?? "general", totalRial: String(Math.round((prod?.retailPrice ?? 0) * c.qty * 10)) }; });
+      if (items.length) {
+        const res = await promoApi.validate({ code, orderType: "retail", items }) as { valid: boolean; message?: string };
+        if (res.valid) { setCouponCode(code); setCouponMsg(""); return; }
+        if (res.message) { setCouponCode(""); setCouponMsg(res.message); return; }
+      }
+    } catch { /* fallback to local */ }
     const c = ops.coupons.find((x) => x.code === code);
     if (!c) { setCouponCode(""); setCouponMsg("کوپنی با این کد پیدا نشد."); return; }
     if (c.channel !== "retail") { setCouponCode(""); setCouponMsg("این کوپن مخصوص خرید عمده است."); return; }
@@ -324,7 +589,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const savedAddress = account?.addresses.find((a) => a.id === checkoutAddressId)
     ?? (checkoutAddressId === "new" ? undefined : account?.addresses.find((a) => a.isDefault) ?? account?.addresses[0]);
   const deliveryAddress = savedAddress ?? checkoutAddress;
-  const finishCheckout = () => {
+  const finishCheckout = async () => {
     setCheckoutError("");
     if (checkStep === 0) {
       if (requireLogin && !requireLogin()) return;
@@ -343,15 +608,46 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     }
     if (!account || !ship) { setCheckoutError("برای ثبت سفارش وارد حساب شوید و روش ارسال را انتخاب کنید."); return; }
     if (custRestrict?.block || custRestrict?.noOrder) { setCheckoutError(`ثبت سفارش برای حساب شما محدود شده است${custRestrict.reason ? `: ${custRestrict.reason}` : ""}. از پشتیبانی پیگیری کنید.`); return; }
-    const normalized = { ...deliveryAddress, id: deliveryAddress.id || `addr-${Date.now()}`, phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
-    const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
-    const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
-    if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
-    if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
-    if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
-    setPlacedOrderId(orderId);
-    setCheckStep(0);
-    setView("success");
+
+    // Server mode keeps the server address UUID; only the demo path may mint a local id.
+    const normalized = { ...deliveryAddress, id: isDemo ? (deliveryAddress.id || `addr-${Date.now()}`) : (deliveryAddress.id ?? ""), phone: digitsOnly(deliveryAddress.phone), postalCode: digitsOnly(deliveryAddress.postalCode), isDefault: !account.addresses.length };
+    if (isDemo) {
+      const note = [festivalDiscount && `تخفیف جشنواره ${fmtMoney(festivalDiscount)}`, validCoupon && `کوپن ${validCoupon.code}`].filter(Boolean).join(" · ");
+      const orderId = store.placeRetailOrder(account.id, cart, normalized, ship.name, shipCost, totalDiscount, note || undefined, paymentMode);
+      if (orderId && validCoupon) ops.upsert("coupons", { ...validCoupon, used: validCoupon.used + 1 });
+      if (!orderId) { setCheckoutError("موجودی یکی از محصولات تغییر کرده است. سبد خرید را بررسی کنید."); return; }
+      if (!savedAddress && saveCheckoutAddress) store.updateAccount(account.id, { addresses: [...account.addresses, normalized] });
+      if (q.trim()) recordSearchEvent(q, "conversion");
+      setPlacedSnapshot(null);
+      setPlacedOrderId(orderId);
+      setCheckStep(0);
+      setView("success");
+      return;
+    }
+    // Server checkout: only authoritative fields — variantId/quantity/paymentMode/shippingMethodId/couponCode/shippingAddress
+    try {
+      // Variant ids come from the hydrated catalog cache (GET /products returns variants per product).
+      const items = cart.map((l) => ({ variantId: resolveVariantId(l), quantity: l.qty }));
+      const body: any = {
+        orderType: "retail",
+        paymentMode,
+        items,
+        shippingAddress: { recipient: normalized.recipient, phone: normalized.phone, province: normalized.province, city: normalized.city, line: normalized.line, postalCode: normalized.postalCode },
+        shippingMethodId: ship?.id,
+      };
+      if (validCoupon) body.couponCode = validCoupon.code;
+      else if (couponCode) body.couponCode = couponCode;
+      const res = await ordersApi.create(body, `retail-${crypto.randomUUID().replace(/-/g, "")}`) as { id: string; reference: string; pricingSnapshot?: unknown; shippingRial?: string; totalRial?: string };
+      if (!res.reference && !(res as any).id) throw new Error("خطا در ثبت سفارش");
+      setPlacedOrderId(res.reference ?? (res as any).id);
+      try { setPlacedSnapshot(res.pricingSnapshot ? readPricingSnapshot(res.pricingSnapshot) : null); } catch { setPlacedSnapshot(null); }
+      if (q.trim()) recordSearchEvent(q, "conversion");
+    setCart([]); // order placed → empty the cart (signed in: PUT /profile/saved-cart with no items)
+      setCheckStep(0);
+      setView("success");
+    } catch (e) {
+      setCheckoutError(e instanceof Error ? e.message : "خطا در ثبت سفارش");
+    }
   };
 
   /* ----- PDP overlay ----- */
@@ -360,10 +656,19 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-6 md:px-8">
         <RetailPDP
           p={selected} wished={wishlist.includes(selected.id)}
+          taxonomyLabel={(kind, code) => shopTaxonomies.find((t) => t.kind === kind && t.code === code)?.label ?? code}
           onWish={() => toggleWish(selected.id)}
           onBack={() => setSelectedId(null)}
-          onAdd={(size, color) => { if (addToCart(selected.id, size, color)) { setSelectedId(null); setView("shop"); } }}
+          onAdd={(size, color) => {
+            if (addToCart(selected.id, size, color)) { toast.bumpCart(); toast.push(`«${selected.name}» به سبد خرید اضافه شد.`, "success", { label: "مشاهده سبد", onClick: () => setView("checkout") }); }
+            else toast.push(`سایز ${size} دیگر موجود نیست.`, "error");
+          }}
         />
+        <ProductVideo productId={selected.id} title={selected.name} />
+        <RecommendationStrip slot="product.similar" productId={selected.id} title="محصولات مشابه"
+          localProducts={retailProducts}
+          onOpen={(id) => setSelectedId(id)}
+          onAdd={(item) => { const p = retailProducts.find((x) => x.id === item.id); if (p) quickAdd(p)("M", p.colors[0]?.name ?? ""); }} />
         <div className="mt-14">
           <SectionHead title="شاید بپسندید" />
           <div className="grid grid-cols-2 gap-5 md:grid-cols-4">
@@ -372,6 +677,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
             ))}
           </div>
         </div>
+        <ProductReviewsBlock productId={selected.id} canReview={!!account} />
       </div>
     );
   }
@@ -384,6 +690,20 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[#E7F0E6] text-[#3E6B4A]"><Check size={28} /></div>
           <h2 className="kv-editorial-title text-[26px]">سفارش آزمایشی شما ثبت شد</h2>
           <p className="mt-3 text-sm leading-7 text-[var(--kv-muted)]">شماره سفارش: <span className="font-bold text-[var(--kv-ink)] tabular-nums">{placedOrderId}</span>. در این نسخه پرداخت شبیه‌سازی شده و تراکنش بانکی یا پیامک واقعی انجام نشده است. جزئیات در پنل حساب شما قرار دارد.</p>
+          {placedSnapshot && (
+            <div className="mx-auto mt-6 max-w-[420px] space-y-1.5 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 text-right text-[13px]">
+              <p className="mb-2 font-extrabold">صورت‌حساب ثبت‌شده در سرور</p>
+              <div className="flex justify-between"><span className="text-[var(--kv-muted)]">جمع اقلام</span><b className="tabular-nums">{fmtMoney(Number(placedSnapshot.baseSubtotalRial) / 10)}</b></div>
+              {BigInt(placedSnapshot.promoDiscountRial) > 0n && <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تخفیف</span><b className="tabular-nums">−{fmtMoney(Number(placedSnapshot.promoDiscountRial) / 10)}</b></div>}
+              <div className="flex justify-between"><span className="text-[var(--kv-muted)]">هزینه ارسال</span><b className="tabular-nums">{placedSnapshot.shippingRial === "0" ? "رایگان" : fmtMoney(Number(placedSnapshot.shippingRial) / 10)}</b></div>
+              <div className="flex justify-between border-t border-[var(--kv-line)] pt-2 text-[15px] font-extrabold"><span>جمع کل</span><span className="tabular-nums">{fmtMoney(Number(placedSnapshot.totalRial) / 10)}</span></div>
+              {placedSnapshot.installment && (
+                <p className="pt-1 text-[12px] text-[var(--kv-muted)]">{placedSnapshot.installment.eligible
+                  ? placedSnapshot.installment.perInstallmentRial ? `۴ قسط ${fmtMoney(Number(placedSnapshot.installment.perInstallmentRial) / 10)}` : "پرداخت قسطی مجاز است"
+                  : `قسط غیرمجاز: ${placedSnapshot.installment.reason ?? "—"}`}</p>
+              )}
+            </div>
+          )}
           <div className="mt-7 flex justify-center gap-3">
             <Btn variant="accent" onClick={() => setView("home")}>بازگشت به فروشگاه</Btn>
             <Btn variant="soft" onClick={() => { setAccountTab("orders"); setView("account"); }}>دیدن سفارش در حساب</Btn>
@@ -416,7 +736,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
                     if (!p) return null;
                     return (
                       <div key={i} className="flex gap-4 rounded-[14px] border border-[var(--kv-line)] p-3">
-                        <img src={p.images[0]} alt={p.name} className="h-24 w-20 shrink-0 rounded-[10px] object-cover" />
+                        <img src={p.images[0]} alt={p.imageMeta?.[0]?.alt || p.name} className="h-24 w-20 shrink-0 rounded-[10px] object-cover" />
                         <div className="flex flex-1 flex-col">
                           <div className="flex items-start justify-between gap-2">
                             <div><p className="text-sm font-bold">{p.name}</p><p className="mt-1 text-xs text-[var(--kv-muted)]">سایز {l.size} · {l.color}</p></div>
@@ -453,12 +773,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
                   <p className="mb-2 text-[13px] font-semibold text-[var(--kv-ink-2)]">روش ارسال</p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     {retailShipping.map((m) => {
-                      const free = m.freeAbove !== null && cartTotal >= m.freeAbove;
+                      const quote = methodQuotes[m.id];
+                      const fee = quote ? Number(quote.feeRial) / 10 : (m.freeAbove !== null && cartTotal >= m.freeAbove ? 0 : m.price);
                       return (
                         <button key={m.id} onClick={() => setShipId(m.id)} className={cn("flex items-center gap-3 rounded-[12px] border px-4 py-3 text-right transition-all", ship?.id === m.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.05]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]")}>
                           <Truck size={17} className="shrink-0 text-[var(--kv-muted)]" />
-                          <span className="flex-1"><b className="text-[13px]">{m.name}</b><span className="block text-xs text-[var(--kv-muted)]">{m.eta} · {m.zones}</span></span>
-                          <span className="text-[12.5px] font-bold">{free ? "رایگان" : fmtMoney(m.price)}</span>
+                          <span className="flex-1"><b className="text-[13px]">{m.name}</b><span className="block text-xs text-[var(--kv-muted)]">{m.eta} · {m.zones}{quote ? ` · ${quote.weightGrams.toLocaleString("fa-IR")} گرم` : ""}</span></span>
+                          <span className="text-[12.5px] font-bold">{fee === 0 ? "رایگان" : fmtMoney(fee)}</span>
                         </button>
                       );
                     })}
@@ -476,7 +797,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
               <div className="flex justify-between text-[var(--kv-muted)]"><span>جمع اقلام ({fmtNum(cart.reduce((s, l) => s + l.qty, 0))})</span><span className="tabular-nums">{fmtMoney(paymentMode === "cash" ? cartTotal : installmentCartTotal)}</span></div>
               {festivalDiscount > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>تخفیف {liveFestivals.map((f) => f.name).join("، ")}</span><span className="tabular-nums">−{fmtMoney(festivalDiscount)}</span></div>}
               {couponDiscount > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>کوپن {validCoupon?.code}</span><span className="tabular-nums">−{fmtMoney(couponDiscount)}</span></div>}
-              <div className="flex justify-between text-[var(--kv-muted)]"><span>هزینه ارسال{ship ? ` (${ship.name})` : ""}</span><span>{shipCost === 0 ? "رایگان" : fmtMoney(shipCost)}</span></div>
+              <div className="flex justify-between text-[var(--kv-muted)]"><span>هزینه ارسال{ship ? ` (${ship.name})` : ""}{quotedWeight !== null && quotedWeight > 0 ? ` · ${quotedWeight.toLocaleString("fa-IR")} گرم` : ""}</span><span>{shipCost === 0 ? "رایگان" : fmtMoney(shipCost)}</span></div>
               <div className="flex justify-between border-t border-[var(--kv-line)] pt-3 text-[15px] font-extrabold"><span>مبلغ نهایی</span><span className="tabular-nums">{fmtMoney(Math.max(0, (paymentMode === "cash" ? cartTotal : installmentCartTotal) - totalDiscount) + shipCost)}</span></div>
               {paymentMode === "four_installments" && <p className="text-[12px] text-[var(--kv-muted)]">۴ قسطِ {fmtMoney(Math.ceil((Math.max(0, installmentCartTotal - totalDiscount) + shipCost) / 4))} بر پایه قیمت چهارقسطه محصولات</p>}
               <div className="pt-2">
@@ -511,24 +832,24 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   }
   if (view === "account") {
     if (!account) return <div className="mx-auto max-w-[600px] px-4 py-12"><Empty title="برای دیدن حساب وارد شوید" desc="سفارش‌ها و نشانی‌های شما بعد از ورود در دسترس‌اند." action={<Btn variant="accent" onClick={onLogin}>ورود به حساب</Btn>} /></div>;
-    return <AccountExperience key={account.id} account={account} buyer={buyer} tab={accountTab} setTab={setAccountTab} onShop={() => setView("shop")} onWholesale={onWholesale} onOpenProduct={setSelectedId} onCheckout={() => setView("checkout")} onStudio={() => onStudio("builder")} onLogout={onLogout} />;
+    return <AccountExperience key={account.id} account={account} buyer={buyer} tab={accountTab} setTab={setAccountTab} onShop={() => setView("shop")} onWholesale={onWholesale} onOpenProduct={setSelectedId} onCheckout={() => setView("checkout")} onStudio={() => onStudio("builder")} onLogout={onLogout} cartCount={cart.reduce((n, l) => n + l.qty, 0)}
+      onAddItems={(lines) => { let next = [...cart]; for (const line of lines) { const ex = next.find((l) => l.id === line.id && l.size === line.size && l.color === line.color); next = ex ? next.map((l) => (l === ex ? { ...l, qty: l.qty + 1 } : l)) : [...next, { ...line, qty: 1 }]; } setCart(next); }} />;
   }
   if (view === "journal") {
+    if (activeArticle) return <article className="mx-auto max-w-[840px] px-4 pb-20 pt-8 md:px-8"><button className="mb-6 text-sm font-bold text-[var(--kv-accent)]" onClick={() => setActiveArticle(null)}>بازگشت به مجله</button><p className="text-sm text-[var(--kv-accent)]">{activeArticle.category}</p><h1 className="mt-3 text-3xl font-extrabold leading-tight">{activeArticle.title}</h1>{activeArticle.image && <img src={activeArticle.image} alt={activeArticle.title} className="mt-7 aspect-[16/9] w-full rounded-2xl object-cover"/>}<div className="mt-8 whitespace-pre-line text-base leading-9 text-[var(--kv-ink)]">{activeArticle.body}</div></article>;
     return (
       <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-8 md:px-8">
-        <SectionHead title="مجله کلبه" desc="درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
-        <div className="grid gap-5 md:grid-cols-3">
-          {JOURNAL.map((j) => (
-            <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-              <div className="kv-img aspect-[16/10] overflow-hidden"><img src={j.img} alt={j.title} className="h-full w-full object-cover" /></div>
-              <div className="p-5">
-                <p className="text-xs font-bold text-[var(--kv-accent)]">{j.cat} · {j.read}</p>
-                <h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3>
-                <button className="mt-3 inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-ink)]">خواندن <ArrowLeft size={14} /></button>
-              </div>
-            </article>
-          ))}
+        <SectionHead title="مجله کلبه" desc="مقالات و محتوای ویدیویی درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
+        {!isDemo && journalLoading && <p role="status" className="mb-5 text-sm text-[var(--kv-muted)]">در حال بارگذاری مجله…</p>}
+        {!isDemo && journalError && <div role="alert" className="mb-5 text-sm text-red-700">{journalError} <button className="mr-3 underline" onClick={() => setJournalRetry((value) => value + 1)}>تلاش دوباره</button></div>}
+        <div className="mb-6 flex gap-2" role="tablist" aria-label="نوع محتوای مجله">
+          <button role="tab" aria-selected={journalMode === "article"} onClick={() => setJournalMode("article")} className={cn("rounded-full px-4 py-2 text-sm font-bold", journalMode === "article" ? "bg-[var(--kv-action)] text-white" : "border border-[var(--kv-line)]")}>مقالات</button>
+          <button role="tab" aria-selected={journalMode === "video"} onClick={() => setJournalMode("video")} className={cn("rounded-full px-4 py-2 text-sm font-bold", journalMode === "video" ? "bg-[var(--kv-action)] text-white" : "border border-[var(--kv-line)]")}>ویدیوها <span className="mr-1 text-xs opacity-70">({fmtNum(publishedVideoPosts.length)})</span></button>
         </div>
+        {journalMode === "article" ? <div className="grid gap-5 md:grid-cols-3">
+          {!journalLoading && !isDemo && publishedArticles.length === 0 && <p className="text-sm text-[var(--kv-muted)]">هنوز مقاله‌ای منتشر نشده است.</p>}
+          {(isDemo ? [...JOURNAL.map((j) => ({ id: j.id, slug: undefined, title: j.title, image: j.img, category: j.cat, author: j.read, description: j.title, kind: "article" as const, status: "published" as const, url: "", duration: "", publishDate: "" })), ...publishedArticles] : publishedArticles).map((j) => <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm"><div className="kv-img aspect-[16/10] overflow-hidden">{j.image ? <img src={j.image} alt={j.title} loading="lazy" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-[var(--kv-muted)]">مجله کلبه</div>}</div><div className="p-5"><p className="text-xs font-bold text-[var(--kv-accent)]">{j.category} · {j.author}</p><h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-6 text-[var(--kv-muted)]">{j.description}</p><button className="mt-3 inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-ink)]" onClick={() => void openArticle(j)}>خواندن <ArrowLeft size={14} /></button></div></article>)}
+        </div> : publishedVideoPosts.length ? <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{publishedVideoPosts.map((item) => <article key={item.id} className="overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)]"><div className="aspect-video bg-black">{item.url.includes("youtube-nocookie.com/embed") ? <iframe src={item.url} title={item.title} loading="lazy" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowFullScreen className="h-full w-full"/> : item.url ? <video src={item.url} poster={item.image || undefined} controls playsInline preload="metadata" className="h-full w-full"/> : <img src={item.image} alt={item.title} loading="lazy" className="h-full w-full object-cover"/>}</div><div className="p-5"><p className="text-xs font-bold text-[var(--kv-accent)]">{item.category}{item.duration ? ` · ${fmtNum(Number(item.duration))} ثانیه` : ""}</p><h3 className="mt-2 text-base font-extrabold">{item.title}</h3><p className="mt-2 line-clamp-3 text-sm leading-7 text-[var(--kv-muted)]">{item.description}</p><p className="mt-3 text-xs text-[var(--kv-muted)]">{item.author} {item.publishDate && `· ${item.publishDate}`}</p></div></article>)}</div> : <Empty title="هنوز ویدیویی منتشر نشده است" desc="ویدیوهای منتشرشده از مرکز مدیریت محتوا در این بخش نمایش داده می‌شوند." />}
       </div>
     );
   }
@@ -548,11 +869,59 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           </div>
         </div>
         <div className="kv-no-scrollbar mt-5 flex gap-2 overflow-x-auto pb-1">
-          {cats.map((c) => <Tag key={c} active={cat === c} onClick={() => setCat(c)}>{c}</Tag>)}
-          <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-2 text-[13px] font-medium"><SlidersHorizontal size={14} /> فیلتر پیشرفته</button>
+          {cats.map((c) => <Tag key={c} active={cat === c} onClick={() => setCat(c)}>{c}{c !== "همه" && <span className="mr-1 opacity-60">({fmtNum(retailProducts.filter((p) => p.category === c).length)})</span>}</Tag>)}
         </div>
-        {filtered.length === 0 ? (
-          <div className="mt-8"><Empty title="محصولی پیدا نشد" desc="عبارت دیگری را امتحان کنید یا فیلترها را بردارید." action={<Btn variant="soft" size="sm" onClick={() => { setQ(""); setCat("همه"); }}>حذف فیلترها</Btn>} /></div>
+
+        {(shopTaxonomies.some((t) => t.kind === "gender") || shopTaxonomies.some((t) => t.kind === "season")) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {shopTaxonomies.filter((t) => t.kind === "gender").length > 0 && (
+              <span className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[12px] font-bold text-[var(--kv-muted)]">جنسیت:</span>
+                <Tag active={filterGender === ""} onClick={() => setFilterGender("")}>همه</Tag>
+                {shopTaxonomies.filter((t) => t.kind === "gender").map((t) => (
+                  <Tag key={t.id} active={filterGender === t.code} onClick={() => setFilterGender(filterGender === t.code ? "" : t.code)}>{t.label}</Tag>
+                ))}
+              </span>
+            )}
+            {shopTaxonomies.filter((t) => t.kind === "season").length > 0 && (
+              <span className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[12px] font-bold text-[var(--kv-muted)]">فصل:</span>
+                {shopTaxonomies.filter((t) => t.kind === "season").map((t) => {
+                  const on = filterSeasons.includes(t.code);
+                  return <Tag key={t.id} active={on} onClick={() => setFilterSeasons(on ? filterSeasons.filter((s) => s !== t.code) : [...filterSeasons, t.code])}>{t.label}</Tag>;
+                })}
+              </span>
+            )}
+          </div>
+        )}
+        <details className="mt-3 rounded-2xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4">
+          <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-bold"><SlidersHorizontal size={16}/>فیلترهای پیشرفته <span className="text-xs font-normal text-[var(--kv-muted)]">· نتایج: {fmtNum(filtered.length)}</span></summary>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="text-xs font-bold">برند<Select className="mt-1.5 w-full" options={["همه برندها", ...brands]} value={brandFilter || "همه برندها"} onChange={(v) => setBrandFilter(v === "همه برندها" ? "" : v)}/></label>
+            {genders.length > 0 && <label className="text-xs font-bold">جنسیت<Select className="mt-1.5 w-full" options={["همه", ...genders]} value={genderFilter || "همه"} onChange={(v) => setGenderFilter(v === "همه" ? "" : v)}/></label>}
+            {seasons.length > 0 && <label className="text-xs font-bold">فصل<Select className="mt-1.5 w-full" options={["همه فصل‌ها", ...seasons]} value={seasonFilter || "همه فصل‌ها"} onChange={(v) => setSeasonFilter(v === "همه فصل‌ها" ? "" : v)}/></label>}
+            {vibes.length > 0 && <label className="text-xs font-bold">استایل / Vibe<Select className="mt-1.5 w-full" options={["همه استایل‌ها", ...vibes]} value={vibeFilter || "همه استایل‌ها"} onChange={(v) => setVibeFilter(v === "همه استایل‌ها" ? "" : v)}/></label>}
+            {attributes.length > 0 && <label className="text-xs font-bold">ویژگی پویا<Select className="mt-1.5 w-full" options={["همه ویژگی‌ها", ...attributes]} value={attributeFilter || "همه ویژگی‌ها"} onChange={(v) => setAttributeFilter(v === "همه ویژگی‌ها" ? "" : v)}/></label>}
+            <label className="text-xs font-bold">حداقل امتیاز<Select className="mt-1.5 w-full" options={["هر امتیازی", "3.5", "4", "4.5"]} value={ratingFilter || "هر امتیازی"} onChange={(v) => setRatingFilter(v === "هر امتیازی" ? "" : v)}/></label>
+            <label className="text-xs font-bold">رنگ<Select className="mt-1.5 w-full" options={["همه رنگ‌ها", ...filterColors.map((c) => `${c.name} (${fmtNum(retailProducts.filter((p) => p.colors.some((x) => x.id === c.id)).length)})`)]} value={filterColors.find((c) => c.id === colorFilter)?.name ? `${filterColors.find((c) => c.id === colorFilter)!.name} (${fmtNum(retailProducts.filter((p) => p.colors.some((x) => x.id === colorFilter)).length)})` : "همه رنگ‌ها"} onChange={(v) => setColorFilter(filterColors.find((c) => v.startsWith(c.name))?.id ?? "")}/></label>
+            <label className="text-xs font-bold">سایز<Select className="mt-1.5 w-full" options={["همه سایزها", ...filterSizes.map((s) => `${s} (${fmtNum(retailProducts.filter((p) => p.series.some((x) => Object.keys(x.composition).includes(s))).length)})`)]} value={sizeFilter ? `${sizeFilter} (${fmtNum(retailProducts.filter((p) => p.series.some((x) => Object.keys(x.composition).includes(sizeFilter))).length)})` : "همه سایزها"} onChange={(v) => setSizeFilter(filterSizes.find((s) => v.startsWith(`${s} (`) || v === s) ?? "")}/></label>
+            <label className="text-xs font-bold">حداکثر قیمت (تومان)<input inputMode="numeric" type="number" min="0" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="بدون محدودیت" className="mt-1.5 w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-bg)] px-3 py-2.5 text-sm"/></label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={stockOnly} onChange={(e) => setStockOnly(e.target.checked)} className="accent-[#1B2A4A]"/>فقط موجود</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={discountOnly} onChange={(e) => setDiscountOnly(e.target.checked)} className="accent-[#1B2A4A]"/>فقط تخفیف‌دار</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={installmentOnly} onChange={(e) => setInstallmentOnly(e.target.checked)} className="accent-[#1B2A4A]"/>قابل خرید اقساطی</label>
+            <button className="text-right text-xs font-bold text-[var(--kv-accent)]" onClick={() => { setBrandFilter(""); setGenderFilter(""); setSeasonFilter(""); setVibeFilter(""); setAttributeFilter(""); setRatingFilter(""); setDiscountOnly(false); setColorFilter(""); setSizeFilter(""); setStockOnly(false); setInstallmentOnly(false); setMaxPrice(""); }}>پاک‌کردن فیلترها</button>
+          </div>
+        </details>
+        {(q || cat !== "همه" || brandFilter || genderFilter || seasonFilter || vibeFilter || attributeFilter || ratingFilter || discountOnly || colorFilter || sizeFilter || stockOnly || installmentOnly || maxPrice) && <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="فیلترهای فعال">{[
+          ...(q ? [[`جست‌وجو: ${q}`, () => setQ("") ] as const] : []), ...(cat !== "همه" ? [[cat, () => setCat("همه")] as const] : []), ...(brandFilter ? [[brandFilter, () => setBrandFilter("")] as const] : []), ...(genderFilter ? [[genderFilter, () => setGenderFilter("")] as const] : []), ...(seasonFilter ? [[seasonFilter, () => setSeasonFilter("")] as const] : []), ...(vibeFilter ? [[vibeFilter, () => setVibeFilter("")] as const] : []), ...(attributeFilter ? [[attributeFilter.split(":").slice(1).join(":"), () => setAttributeFilter("")] as const] : []), ...(ratingFilter ? [[`امتیاز ${ratingFilter}+`, () => setRatingFilter("")] as const] : []), ...(discountOnly ? [["تخفیف‌دار", () => setDiscountOnly(false)] as const] : []), ...(colorFilter ? [[filterColors.find((c) => c.id === colorFilter)?.name || colorFilter, () => setColorFilter("")] as const] : []), ...(sizeFilter ? [[`سایز ${sizeFilter}`, () => setSizeFilter("")] as const] : []), ...(stockOnly ? [["موجود", () => setStockOnly(false)] as const] : []), ...(installmentOnly ? [["اقساطی", () => setInstallmentOnly(false)] as const] : []), ...(maxPrice ? [[`تا ${fmtNum(Number(maxPrice))} تومان`, () => setMaxPrice("")] as const] : [])
+        ].map(([label, remove]) => <button key={label} onClick={remove} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-bold">{label} ×</button>)}</div>}
+        {q.trim() && filtered.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--kv-muted)]"><span>پیشنهادهای جست‌وجو:</span>{filtered.slice(0, 4).map((p) => <button key={p.id} className="rounded-full border border-[var(--kv-line)] px-2.5 py-1" onClick={() => setSelectedId(p.id)}>{p.name}</button>)}</div>}
+        {!isDemo && serverSearchLoading ? (
+          <div className="mt-8 py-12 text-center text-sm text-[var(--kv-muted)]" role="status">در حال جست‌وجوی محصولات…</div>
+        ) : !isDemo && serverSearchError ? (
+          <div className="mt-8 py-12 text-center" role="alert"><p className="text-sm text-[var(--kv-muted)]">{serverSearchError}</p><Btn variant="soft" size="sm" onClick={() => setSearchRetry((value) => value + 1)}>تلاش دوباره</Btn></div>
+        ) : filtered.length === 0 ? (
+          <div className="mt-8"><Empty title="محصولی پیدا نشد" desc="عبارت دیگری را امتحان کنید یا فیلترها را بردارید." action={<Btn variant="soft" size="sm" onClick={() => { setQ(""); setCat("همه"); setFilterGender(""); setFilterSeasons([]); }}>حذف فیلترها</Btn>} /></div>
         ) : (
           <div className="mt-7 grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">
             {filtered.map((p) => <RetailCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />)}
@@ -565,16 +934,26 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   /* ----- HOME ----- */
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-12 px-4 pb-20 pt-6 md:px-8">
-      <HeroRenderer h={ops.hero} onNav={cmsNav} />
-      {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").map((b) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}
+      {cmsLoading ? <div className="py-8 text-center text-sm text-[var(--kv-muted)]">در حال بارگذاری محتوا…</div> : cmsError ? <div className="py-6 text-center"><p className="text-sm text-red-600">{cmsError}</p><button onClick={()=>window.location.reload()} className="mt-2 text-xs underline">تلاش دوباره</button></div> : null}
+      {homePage ? <CmsSections page={homePage} onNav={(t) => t === "vip" ? onWholesale() : t === "tryon" ? onStudio("tryon") : setView(t === "journal" ? "journal" : "shop")} onOpenProduct={setSelectedId} onQuickAdd={commerceQuickAdd} /> : null}
+      {!homePage && !homeResolved && <div className="space-y-4" aria-busy="true"><div className="h-[420px] animate-pulse rounded-[24px] bg-[var(--kv-surface-2)]" /><div className="grid grid-cols-2 gap-4 md:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="aspect-[3/4] animate-pulse rounded-[18px] bg-[var(--kv-surface-2)]" />)}</div></div>}
+      {!homePage && homeResolved && (() => {
+        const hero = cmsHero ?? ops.hero;
+        const blocks = cmsBlocks ?? ops.blocks;
+        // Palette is applied via CSS vars elsewhere; fetched palette stored in cmsPalette
+        void cmsPalette;
+        return (<><HeroRenderer h={hero} onNav={cmsNav} />{blocks.filter((b: any) => b.enabled && b.type !== "announcement").map((b: any) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}</>);
+      })()}
 
+      {/* Hardcoded fallback — only when the CMS home page has not been composed yet (Req 241). */}
+      {!homePage && homeResolved && (<>
       {/* curated collections */}
       <section>
         <SectionHead title="کالکشن‌های ویژه" desc="دسته‌بندی‌های منتخب فصل؛ هر کدام با وسواس از میان صدها مدل انتخاب شده‌اند." action={<Btn variant="ghost" size="sm" onClick={() => setView("shop")} icon={<ArrowLeft size={15} />}>همه محصولات</Btn>} />
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {COLLECTIONS.map((c) => (
             <button key={c.name} onClick={() => { setCat(c.name === "بارانی و مانتو" ? "مانتو و بارانی" : c.name === "پیراهن‌ها" ? "پیراهن" : c.name === "کت و بلیزر" ? "کت و بلیزر" : "شومیز"); setView("shop"); }} className="kv-card-hover group relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] text-right">
-              <div className="kv-img aspect-[4/5]"><img src={c.img} alt={c.name} loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" /></div>
+              <div className="kv-img aspect-[4/5]"><ResponsiveImg src={c.img} alt={c.name} sizes="(min-width: 768px) 33vw, 50vw" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" /></div>
               <div className="absolute inset-0 bg-gradient-to-t from-[#0E1527]/70 via-transparent to-transparent" />
               <div className="absolute inset-x-0 bottom-0 p-4 text-[#FAF6EF]">
                 <p className="text-[15px] font-extrabold">{c.name}</p>
@@ -638,7 +1017,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         <div className="grid gap-5 md:grid-cols-3">
           {JOURNAL.map((j) => (
             <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-              <div className="kv-img aspect-[16/10] overflow-hidden"><img src={j.img} alt={j.title} loading="lazy" className="h-full w-full object-cover" /></div>
+              <div className="kv-img aspect-[16/10] overflow-hidden"><ResponsiveImg src={j.img} alt={j.title} sizes="(min-width: 768px) 33vw, 100vw" className="h-full w-full object-cover" /></div>
               <div className="p-5">
                 <p className="text-xs font-bold text-[var(--kv-accent)]">{j.cat} · {j.read}</p>
                 <h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3>
@@ -648,6 +1027,28 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         </div>
       </section>
 
+      </>)}
     </div>
   );
+}
+
+function normalizeSearch(value: string) {
+  return value.toLowerCase().replace(/[يى]/g, "ی").replace(/ك/g, "ک").replace(/[\u064B-\u065F\u0670]/g, "").replace(/\s+/g, " ").trim();
+}
+function fuzzyMatch(query: string, field: string) {
+  const q = normalizeSearch(query);
+  if (q.length < 3) return false;
+  return field.split(/[\s،,/_-]+/).some((word) => word.length >= 3 && editDistance(q, word) <= Math.max(1, Math.floor(q.length * 0.22)));
+}
+function editDistance(a: string, b: string) {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]; row[0] = i;
+    for (let j = 1; j <= b.length; j++) { const old = row[j]; row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = old; }
+  }
+  return row[b.length];
+}
+function relevanceScore(product: Product, term: string) {
+  const q = normalizeSearch(term); const name = normalizeSearch(product.name); const sku = normalizeSearch(product.sku); const brand = normalizeSearch(product.brand);
+  return (name === q ? 100 : name.startsWith(q) ? 60 : name.includes(q) ? 40 : 0) + (sku === q ? 50 : sku.includes(q) ? 25 : 0) + (brand.includes(q) ? 15 : 0) + Math.min(product.reviews, 100) / 100;
 }

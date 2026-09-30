@@ -68,7 +68,7 @@ test('MeliPayamak SMS uses the official form endpoint', async () => {
 test('checkout reserves stock once, payment is idempotent, and shipment consumes stock', { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const config: Config = {
     NODE_ENV: 'test', PORT: 4001, DATABASE_URL: process.env.TEST_DATABASE_URL!, REDIS_URL: undefined,
-    JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters', PUBLIC_ORIGIN: 'http://127.0.0.1:5173',
+    JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters', PG_POOL_MAX: 1, PUBLIC_ORIGIN: 'http://127.0.0.1:5173',
     PAYMENT_WEBHOOK_SECRET: undefined, COOKIE_SECURE: 'false',
   };
   const app = await buildApp(config);
@@ -140,6 +140,11 @@ test('checkout reserves stock once, payment is idempotent, and shipment consumes
       [payment.intentId]);
     assert.equal(ledger.rows[0].debit, ledger.rows[0].credit);
     assert.equal(ledger.rows[0].entries, 1);
+    const invoice = await pool.query('SELECT reference,total_rial,paid_rial,status FROM invoices WHERE order_id = $1', [order.json().id]);
+    assert.equal(invoice.rows.length, 1);
+    assert.match(invoice.rows[0].reference, /^INV-\d{4}-\d{6}$/);
+    assert.equal(invoice.rows[0].total_rial, '52000000');
+    assert.equal(invoice.rows[0].status, 'paid');
     for (const status of ['processing', 'preparing', 'ready_to_ship', 'in_transit'] as const) {
       const response = await app.inject({ method: 'POST', url: `/api/v1/orders/${order.json().id}/transitions`,
         headers: adminHeaders, payload: { status } });

@@ -5,6 +5,7 @@ import type { Product } from "../data/catalog";
 import { fmtMoney } from "../data/catalog";
 import { Btn } from "./primitives";
 import { cn } from "../utils/cn";
+import { ResponsiveImg } from "./responsive-img";
 
 export type NavTarget = NonNullable<BlockProps["target"]>;
 const TONE: Record<string, string> = {
@@ -31,7 +32,9 @@ function Ctas({ h, onNav, light }: { h: HeroConfig; onNav: (t: NavTarget) => voi
 }
 
 /* ================= Hero templates ================= */
-export function HeroRenderer({ h, onNav, preview }: { h: HeroConfig; onNav: (t: NavTarget) => void; preview?: boolean }) {
+export function HeroRenderer({ h, onNav, preview, priority = true }: { h: HeroConfig; onNav: (t: NavTarget) => void; preview?: boolean; priority?: boolean }) {
+  // Req 234: the main hero is the LCP element — never lazy-loaded (unless it is only a preview).
+  const eager = priority && !preview;
   const [slide, setSlide] = useState(0);
   const [playing, setPlaying] = useState(true);
   useEffect(() => {
@@ -55,7 +58,7 @@ export function HeroRenderer({ h, onNav, preview }: { h: HeroConfig; onNav: (t: 
           <p className="mt-4 max-w-[46ch] text-[14.5px] leading-8 text-[var(--kv-muted)]">{h.subtitle}</p>
           <Ctas h={h} onNav={onNav} />
         </div>
-        <div className={cn("kv-img relative", preview ? "min-h-[240px]" : "min-h-[340px] md:min-h-[560px]")}><img src={h.image} alt="" className="absolute inset-0 h-full w-full object-cover" /></div>
+        <div className={cn("kv-img relative", preview ? "min-h-[240px]" : "min-h-[340px] md:min-h-[560px]")}><ResponsiveImg src={h.image} alt="" priority={eager} sizes="(min-width: 768px) 50vw, 100vw" className="absolute inset-0 h-full w-full object-cover" /></div>
       </div>
     </section>
   );
@@ -78,7 +81,7 @@ export function HeroRenderer({ h, onNav, preview }: { h: HeroConfig; onNav: (t: 
         <Ctas h={h} onNav={onNav} />
       </div>
       <div className={cn("grid grid-cols-2 gap-3", preview ? "h-[280px]" : "h-[360px] md:h-[560px]")}>
-        {h.mosaic.slice(0, 4).map((m, i) => <div key={i} className={cn("kv-img overflow-hidden rounded-[18px]", i === 0 && "row-span-2")}><img src={m} alt="" className="h-full w-full object-cover" /></div>)}
+        {h.mosaic.slice(0, 4).map((m, i) => <div key={i} className={cn("kv-img overflow-hidden rounded-[18px]", i === 0 && "row-span-2")}><ResponsiveImg src={m} alt="" priority={eager && i === 0} sizes="(min-width: 768px) 25vw, 50vw" className="h-full w-full object-cover" /></div>)}
       </div>
     </section>
   );
@@ -87,7 +90,7 @@ export function HeroRenderer({ h, onNav, preview }: { h: HeroConfig; onNav: (t: 
     const s = h.slides[slide] ?? h.slides[0];
     return (
       <section className={cn("relative overflow-hidden rounded-[24px] kv-shadow-md", minH)} aria-roledescription="اسلایدر" aria-label="اسلایدهای هیرو">
-        {h.slides.map((sl, i) => <img key={i} src={sl.image} alt="" className={cn("absolute inset-0 h-full w-full object-cover transition-opacity duration-700", i === slide ? "opacity-100" : "opacity-0")} />)}
+        {h.slides.map((sl, i) => <ResponsiveImg key={i} src={sl.image} alt="" priority={eager && i === 0} sizes="100vw" className={cn("absolute inset-0 h-full w-full object-cover transition-opacity duration-700", i === slide ? "opacity-100" : "opacity-0")} />)}
         <div className="absolute inset-0" style={{ background: overlay }} />
         <div className={cn("relative flex h-full flex-col justify-center p-8 text-white md:p-14", minH, center && "items-center text-center")}>
           {h.eyebrow && <p className="text-[13px] font-bold text-[#E8D9C3]">{h.eyebrow}</p>}
@@ -110,7 +113,7 @@ export function HeroRenderer({ h, onNav, preview }: { h: HeroConfig; onNav: (t: 
     <section className={cn("relative overflow-hidden rounded-[24px] kv-shadow-md", minH)}>
       {h.template === "video" && h.video
         ? <VideoBg src={h.video} poster={h.poster || h.image} />
-        : <img src={h.image} alt="" className="absolute inset-0 h-full w-full object-cover" />}
+        : <ResponsiveImg src={h.image} alt="" priority={eager} sizes="100vw" className="absolute inset-0 h-full w-full object-cover" />}
       <div className="absolute inset-0" style={{ background: overlay }} />
       <div className={cn("relative flex h-full flex-col justify-center p-8 text-white md:p-14", minH, center && "items-center text-center")}>
         {h.eyebrow && <p className="text-[13px] font-bold text-[#E8D9C3]">{h.eyebrow}</p>}
@@ -128,7 +131,7 @@ function VideoBg({ src, poster }: { src: string; poster: string }) {
   useEffect(() => { if (!ref) return; if (paused) ref.pause(); else ref.play().catch(() => setPaused(true)); }, [paused, ref]);
   return (
     <>
-      <video ref={setRef} src={src} poster={poster} muted loop playsInline autoPlay={!paused} className="absolute inset-0 h-full w-full object-cover" aria-hidden />
+      <video ref={setRef} src={src} poster={poster} muted loop playsInline preload={paused ? "none" : "metadata"} autoPlay={!paused} className="absolute inset-0 h-full w-full object-cover" aria-hidden />
       <button onClick={() => setPaused(!paused)} aria-label={paused ? "پخش ویدیو" : "توقف ویدیو"} className="absolute bottom-5 left-5 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-white backdrop-blur-md hover:bg-white/25">{paused ? <Play size={16} /> : <Pause size={16} />}</button>
     </>
   );
@@ -182,7 +185,7 @@ export function BlockRenderer({ block, onNav, products = [], onOpenProduct }: { 
     case "countdown": return <Countdown p={p} onNav={onNav} />;
     case "banner": return (
       <section className="relative overflow-hidden rounded-[20px] kv-shadow-md">
-        {p.image && <img src={p.image} alt="" className="absolute inset-0 h-full w-full object-cover" />}
+        {p.image && <ResponsiveImg src={p.image} alt="" sizes="100vw" className="absolute inset-0 h-full w-full object-cover" />}
         <div className="absolute inset-0 bg-gradient-to-l from-[#0E1527]/90 via-[#0E1527]/65 to-[#0E1527]/20" />
         <div className="relative max-w-[560px] p-8 text-white md:p-10">
           <h2 className="text-[22px] font-extrabold md:text-[28px]">{p.title}</h2>
@@ -204,7 +207,7 @@ export function BlockRenderer({ block, onNav, products = [], onOpenProduct }: { 
         <section>
           <div className="mb-4 flex items-end justify-between"><h2 className="kv-editorial-title text-[22px] md:text-[26px]">{p.title}</h2><button onClick={() => onNav("shop")} className="text-[13px] font-bold text-[var(--kv-accent)]">همه محصولات</button></div>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            {list.map((x) => <button key={x.id} onClick={() => onOpenProduct?.(x.id)} className="group text-right"><div className="kv-img overflow-hidden rounded-[16px]"><img src={x.images[0]} alt={x.name} className="aspect-[3/4] w-full object-cover transition-transform duration-500 group-hover:scale-105" /></div><p className="mt-2 text-[13.5px] font-bold">{x.name}</p><p className="text-[13px] font-semibold tabular-nums text-[var(--kv-muted)]">{fmtMoney(x.retailPrice)}</p></button>)}
+            {list.map((x) => <button key={x.id} onClick={() => onOpenProduct?.(x.id)} className="group text-right"><div className="kv-img overflow-hidden rounded-[16px]"><ResponsiveImg src={x.images[0]} alt={x.name} sizes="(min-width: 768px) 25vw, 50vw" className="aspect-[3/4] w-full object-cover transition-transform duration-500 group-hover:scale-105" /></div><p className="mt-2 text-[13.5px] font-bold">{x.name}</p><p className="text-[13px] font-semibold tabular-nums text-[var(--kv-muted)]">{fmtMoney(x.retailPrice)}</p></button>)}
           </div>
         </section>
       );
