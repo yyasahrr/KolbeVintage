@@ -2,8 +2,8 @@
    real migrations) + the real API server on a fixed port.
 
    Nothing here fabricates domain data — an empty database stays empty so the console's real
-   empty states can be verified; `npm run seed:local` (NODE_ENV=development) is the only thing
-   that inserts sample rows, and it is never automatic.
+   empty states can be verified; `npm run seed:local` (NODE_ENV=development) inserts sample rows
+   only when explicitly run or when `npm run demo:stack` opts in with KV_SEED_LOCAL=1.
 
    Writes /tmp/kv-local-stack.json so other scripts (browser smoke, seed runner) reuse the same
    database instead of booting their own. */
@@ -48,3 +48,15 @@ const shutdown = () => { try { app.kill('SIGTERM'); } catch { /* gone */ } void 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 app.on('exit', (code) => { console.log(`[local-stack] api exited ${code}`); void server.stop().finally(() => process.exit(code ?? 0)); });
+
+if (process.env.KV_SEED_LOCAL === '1') {
+  let ready = false;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try { ready = (await fetch(`http://127.0.0.1:${apiPort}/health/live`)).ok; } catch { /* starting */ }
+    if (ready) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  if (!ready) throw new Error('Local API did not become ready for demo seed');
+  await run('npm', ['run', '--silent', 'seed:local']);
+  console.log('[local-stack] demo catalog, accounts, suppliers and editorial content ready');
+}

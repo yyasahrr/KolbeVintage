@@ -308,7 +308,7 @@ async function enrichSections(db: DbPool | PoolClient, sections: SectionRow[]) {
       }
       if (code === 'category_card' || code === 'category_section') {
         resolved.categories = (await db.query(`SELECT c.id, c.name, c.slug, c.description, c.image_url, c.cover_url, c.icon, c.card_template, c.card_style, c.parent_id,
-          (SELECT count(*)::int FROM products p WHERE p.category = c.name AND p.status = 'published') AS product_count
+          (SELECT count(*)::int FROM products p WHERE p.category = c.name AND p.status = 'published' AND p.owner_type = 'kolbe' AND p.retail_enabled) AS product_count
           FROM cms_categories c WHERE c.active ORDER BY c.position, c.name`)).rows;
       }
       if (code === 'collection_showcase') {

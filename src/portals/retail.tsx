@@ -28,7 +28,7 @@ import { ProductReviewsBlock, ProductVideo, RecommendationStrip } from "../compo
 import { recordSearchEvent } from "../data/search-analytics";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
-type JournalPost = { id: string; kind: "article" | "video"; status: "published"; title: string; description: string; image: string; url: string; category: string; author: string; duration: string; publishDate: string };
+type JournalPost = { id: string; slug?: string; kind: "article" | "video"; status: "published"; title: string; description: string; image: string; url: string; category: string; author: string; duration: string; publishDate: string };
 function getPublishedPosts(kind: JournalPost["kind"]): JournalPost[] { try { const raw = JSON.parse(localStorage.getItem("kolbe-editorial-media-v1") || "[]"); return Array.isArray(raw) ? raw.filter((p): p is JournalPost => p?.kind === kind && p?.status === "published" && typeof p.title === "string") : []; } catch { return []; } }
 
 /** Retail sizes come from real server variants; legacy demo products fall back to series composition. */
@@ -366,9 +366,29 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [couponCode, setCouponCode] = useState("");
   const [couponMsg, setCouponMsg] = useState("");
   const [journalMode, setJournalMode] = useState<"article" | "video">("article");
-  const [publishedVideoPosts, setPublishedVideoPosts] = useState<JournalPost[]>(() => getPublishedPosts("video"));
-  const [publishedArticles, setPublishedArticles] = useState<JournalPost[]>(() => getPublishedPosts("article"));
-  useEffect(() => { const refreshEditorial = () => { setPublishedVideoPosts(getPublishedPosts("video")); setPublishedArticles(getPublishedPosts("article")); }; window.addEventListener("storage", refreshEditorial); return () => window.removeEventListener("storage", refreshEditorial); }, []);
+  const [publishedVideoPosts, setPublishedVideoPosts] = useState<JournalPost[]>(() => isDemo ? getPublishedPosts("video") : []);
+  const [publishedArticles, setPublishedArticles] = useState<JournalPost[]>(() => isDemo ? getPublishedPosts("article") : []);
+  const [journalLoading, setJournalLoading] = useState(!isDemo);
+  const [journalError, setJournalError] = useState("");
+  const [journalRetry, setJournalRetry] = useState(0);
+  const [activeArticle, setActiveArticle] = useState<{ title: string; body: string; image: string; category: string } | null>(null);
+  useEffect(() => {
+    if (isDemo) { const refreshEditorial = () => { setPublishedVideoPosts(getPublishedPosts("video")); setPublishedArticles(getPublishedPosts("article")); }; window.addEventListener("storage", refreshEditorial); return () => window.removeEventListener("storage", refreshEditorial); }
+    let live = true;
+    setJournalLoading(true); setJournalError("");
+    publicApi.get<{ items: Array<{ id: string; post_type: "article" | "video"; slug: string; title: string; excerpt: string; cover_url: string; source_url: string; category: string; author: string; duration_seconds: number | null; published_at: string | null }> }>("/public/editorial?limit=100")
+      .then(({ items }) => { if (!live) return; const posts: JournalPost[] = items.map((row) => ({ id: row.id, slug: row.slug, kind: row.post_type, status: "published", title: row.title, description: row.excerpt, image: row.cover_url, url: row.source_url, category: row.category, author: row.author, duration: row.duration_seconds == null ? "" : String(row.duration_seconds), publishDate: row.published_at ?? "" })); setPublishedArticles(posts.filter((post) => post.kind === "article")); setPublishedVideoPosts(posts.filter((post) => post.kind === "video")); })
+      .catch((error) => { if (live) setJournalError(error instanceof Error ? error.message : "بارگذاری مجله ناموفق بود."); })
+      .finally(() => { if (live) setJournalLoading(false); });
+    return () => { live = false; };
+  }, [isDemo, journalRetry]);
+  const openArticle = async (post: JournalPost) => {
+    if (!post.slug) { setActiveArticle({ title: post.title, body: post.description, image: post.image, category: post.category }); return; }
+    try {
+      const detail = await publicApi.get<{ title: string; body: string; cover_url: string; category: string }>(`/public/editorial/${encodeURIComponent(post.slug)}`);
+      setActiveArticle({ title: detail.title, body: detail.body, image: detail.cover_url, category: detail.category });
+    } catch (error) { setJournalError(error instanceof Error ? error.message : "باز کردن مقاله ناموفق بود."); }
+  };
 
   const selected = useMemo(() => retailProducts.find((p) => p.id === selectedId) ?? null, [selectedId, retailProducts]);
 
@@ -816,15 +836,19 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       onAddItems={(lines) => { let next = [...cart]; for (const line of lines) { const ex = next.find((l) => l.id === line.id && l.size === line.size && l.color === line.color); next = ex ? next.map((l) => (l === ex ? { ...l, qty: l.qty + 1 } : l)) : [...next, { ...line, qty: 1 }]; } setCart(next); }} />;
   }
   if (view === "journal") {
+    if (activeArticle) return <article className="mx-auto max-w-[840px] px-4 pb-20 pt-8 md:px-8"><button className="mb-6 text-sm font-bold text-[var(--kv-accent)]" onClick={() => setActiveArticle(null)}>بازگشت به مجله</button><p className="text-sm text-[var(--kv-accent)]">{activeArticle.category}</p><h1 className="mt-3 text-3xl font-extrabold leading-tight">{activeArticle.title}</h1>{activeArticle.image && <img src={activeArticle.image} alt={activeArticle.title} className="mt-7 aspect-[16/9] w-full rounded-2xl object-cover"/>}<div className="mt-8 whitespace-pre-line text-base leading-9 text-[var(--kv-ink)]">{activeArticle.body}</div></article>;
     return (
       <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-8 md:px-8">
         <SectionHead title="مجله کلبه" desc="مقالات و محتوای ویدیویی درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
+        {!isDemo && journalLoading && <p role="status" className="mb-5 text-sm text-[var(--kv-muted)]">در حال بارگذاری مجله…</p>}
+        {!isDemo && journalError && <div role="alert" className="mb-5 text-sm text-red-700">{journalError} <button className="mr-3 underline" onClick={() => setJournalRetry((value) => value + 1)}>تلاش دوباره</button></div>}
         <div className="mb-6 flex gap-2" role="tablist" aria-label="نوع محتوای مجله">
           <button role="tab" aria-selected={journalMode === "article"} onClick={() => setJournalMode("article")} className={cn("rounded-full px-4 py-2 text-sm font-bold", journalMode === "article" ? "bg-[var(--kv-action)] text-white" : "border border-[var(--kv-line)]")}>مقالات</button>
           <button role="tab" aria-selected={journalMode === "video"} onClick={() => setJournalMode("video")} className={cn("rounded-full px-4 py-2 text-sm font-bold", journalMode === "video" ? "bg-[var(--kv-action)] text-white" : "border border-[var(--kv-line)]")}>ویدیوها <span className="mr-1 text-xs opacity-70">({fmtNum(publishedVideoPosts.length)})</span></button>
         </div>
         {journalMode === "article" ? <div className="grid gap-5 md:grid-cols-3">
-          {[...JOURNAL.map((j) => ({ id: j.id, title: j.title, image: j.img, category: j.cat, detail: j.read, description: "" })), ...publishedArticles.map((j) => ({ id: j.id, title: j.title, image: j.image, category: j.category, detail: j.author, description: j.description }))].map((j) => <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm"><div className="kv-img aspect-[16/10] overflow-hidden">{j.image ? <img src={j.image} alt={j.title} loading="lazy" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-[var(--kv-muted)]">مجله کلبه</div>}</div><div className="p-5"><p className="text-xs font-bold text-[var(--kv-accent)]">{j.category} · {j.detail}</p><h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-6 text-[var(--kv-muted)]">{j.description}</p><button className="mt-3 inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-ink)]">خواندن <ArrowLeft size={14} /></button></div></article>)}
+          {!journalLoading && !isDemo && publishedArticles.length === 0 && <p className="text-sm text-[var(--kv-muted)]">هنوز مقاله‌ای منتشر نشده است.</p>}
+          {(isDemo ? [...JOURNAL.map((j) => ({ id: j.id, slug: undefined, title: j.title, image: j.img, category: j.cat, author: j.read, description: j.title, kind: "article" as const, status: "published" as const, url: "", duration: "", publishDate: "" })), ...publishedArticles] : publishedArticles).map((j) => <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm"><div className="kv-img aspect-[16/10] overflow-hidden">{j.image ? <img src={j.image} alt={j.title} loading="lazy" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-[var(--kv-muted)]">مجله کلبه</div>}</div><div className="p-5"><p className="text-xs font-bold text-[var(--kv-accent)]">{j.category} · {j.author}</p><h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-6 text-[var(--kv-muted)]">{j.description}</p><button className="mt-3 inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-ink)]" onClick={() => void openArticle(j)}>خواندن <ArrowLeft size={14} /></button></div></article>)}
         </div> : publishedVideoPosts.length ? <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{publishedVideoPosts.map((item) => <article key={item.id} className="overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)]"><div className="aspect-video bg-black">{item.url.includes("youtube-nocookie.com/embed") ? <iframe src={item.url} title={item.title} loading="lazy" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowFullScreen className="h-full w-full"/> : item.url ? <video src={item.url} poster={item.image || undefined} controls playsInline preload="metadata" className="h-full w-full"/> : <img src={item.image} alt={item.title} loading="lazy" className="h-full w-full object-cover"/>}</div><div className="p-5"><p className="text-xs font-bold text-[var(--kv-accent)]">{item.category}{item.duration ? ` · ${fmtNum(Number(item.duration))} ثانیه` : ""}</p><h3 className="mt-2 text-base font-extrabold">{item.title}</h3><p className="mt-2 line-clamp-3 text-sm leading-7 text-[var(--kv-muted)]">{item.description}</p><p className="mt-3 text-xs text-[var(--kv-muted)]">{item.author} {item.publishDate && `· ${item.publishDate}`}</p></div></article>)}</div> : <Empty title="هنوز ویدیویی منتشر نشده است" desc="ویدیوهای منتشرشده از مرکز مدیریت محتوا در این بخش نمایش داده می‌شوند." />}
       </div>
     );

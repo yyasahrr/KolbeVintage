@@ -53,7 +53,9 @@ export type CollectionRules = {
 
 /** Pure: collection rules → parameterised WHERE/ORDER (Req 206-207). Never interpolates user values. */
 export function buildCollectionQuery(rules: CollectionRules) {
-  const where: string[] = [`p.status = 'published'`];
+  // CMS storefront collections and recommendations must respect the retail channel.
+  // Supplier-owned products are exposed by the separate wholesale catalog.
+  const where: string[] = [`p.status = 'published'`, `p.owner_type = 'kolbe'`, `p.retail_enabled`];
   const params: unknown[] = [];
   const push = (value: unknown) => { params.push(value); return `$${params.length}`; };
   if (rules.productIds?.length) where.push(`p.id = ANY(${push(rules.productIds)}::uuid[])`);

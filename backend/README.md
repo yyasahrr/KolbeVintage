@@ -6,6 +6,8 @@ TypeScript, Node.js, Fastify, PostgreSQL, Redis/BullMQ. The API is a modular mon
 
 ## Local startup
 
+For a populated development preview, run `npm run demo:stack` in `backend` and `npm run dev -- --host 127.0.0.1` at the repository root. See [the Persian demo-data guide](../docs/DEMO_DATA_FA.md). This creates fictional sample data in an ephemeral local database; it never runs in production.
+
 1. Install Node.js 22+ and PostgreSQL 16+. Redis is needed for the worker and for production rate limiting.
 2. `cd backend && npm ci`
 3. Copy `.env.example` to `.env` and set `DATABASE_URL`, a random 32+ character `JWT_SECRET`, and `PUBLIC_ORIGIN`. Set `REDIS_URL` when running the worker. Set `API_PUBLIC_URL` to the public HTTPS API origin for gateway callbacks.

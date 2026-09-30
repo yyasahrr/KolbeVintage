@@ -16,6 +16,7 @@
     "test:embedded": "node scripts/run-embedded-tests.mjs",
     "test:contract": "tsx scripts/frontend-contract-smoke.ts",
     "seed:local": "tsx src/seed-local.ts",
+    "demo:stack": "node scripts/demo-stack.mjs",
     "test:browser": "node scripts/browser-admin-smoke.mjs"
   },
   "dependencies": {
