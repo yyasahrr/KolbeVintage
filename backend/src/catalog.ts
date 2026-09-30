@@ -96,6 +96,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const query = z.object({
       category: z.string().max(120).optional(),
       limit: z.coerce.number().int().min(1).max(100).default(30),
+      offset: z.coerce.number().int().min(0).max(100000).default(0),
       before: z.iso.datetime().optional(),
       // Item 35: query isolation. Retail is the storefront-safe default.
       channel: z.enum(['retail', 'wholesale', 'all']).default('retail'),
@@ -131,9 +132,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
          AND ($4::uuid IS NULL OR p.product_type_id = $4)
          AND ($5::text IS NULL OR p.gender_code = $5)
          AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM product_seasons ps WHERE ps.product_id = p.id AND ps.season_code = $6))
-       GROUP BY p.id ORDER BY p.created_at DESC LIMIT $7`,
+       GROUP BY p.id ORDER BY p.created_at DESC, p.id DESC LIMIT $7 OFFSET $8`,
       [query.category ?? null, query.before ?? null, query.channel, query.productTypeId ?? null,
-        query.gender ?? null, query.season ?? null, query.limit]);
+        query.gender ?? null, query.season ?? null, query.limit, query.offset]);
     return { items: (result.rows as ProductListRow[]).map((row) => {
       const variants = row.variants as { available?: number; reserved?: number; incoming?: number; damaged?: number }[];
       const sum = (key: 'available' | 'reserved' | 'incoming' | 'damaged') => variants.reduce((total, variant) => total + Number(variant[key] ?? 0), 0);
@@ -190,7 +191,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
   app.get('/api/v1/search', async (request) => {
     const query=z.object({
       q:z.string().trim().max(200).optional(),category:z.string().max(120).optional(),brand:z.string().max(120).optional(),gender:z.string().max(80).optional(),
-      season:z.string().max(80).optional(),vibe:z.string().max(100).optional(),color:z.string().max(100).optional(),size:z.string().max(50).optional(),
+      season:z.string().max(80).optional(),seasons:z.string().max(400).optional(),vibe:z.string().max(100).optional(),color:z.string().max(100).optional(),size:z.string().max(50).optional(),
       minPriceRial:z.string().regex(/^\d+$/).optional(),maxPriceRial:z.string().regex(/^\d+$/).optional(),available:z.coerce.boolean().optional(),installment:z.coerce.boolean().optional(),
       discountOnly:z.coerce.boolean().optional(),minRating:z.coerce.number().min(0).max(5).optional(),attributes:z.string().max(4000).optional(),
       sort:z.enum(['relevance','newest','price_low','price_high','popular']).default('relevance'),limit:z.coerce.number().int().min(1).max(100).default(30),offset:z.coerce.number().int().min(0).max(100000).default(0),
@@ -200,11 +201,12 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const synonym=q?await pool.query<{replacement:string}>('SELECT replacement FROM search_synonyms WHERE phrase=$1 AND active',[q.toLowerCase()]):{rows:[] as {replacement:string}[]};
     const synonymText=synonym.rows[0]?.replacement??null;
     const sortSql={relevance:'score DESC, created_at DESC',newest:'created_at DESC',price_low:'cash_price_rial ASC, created_at DESC',price_high:'cash_price_rial DESC, created_at DESC',popular:'purchase_count DESC, score DESC'}[query.sort];
-    const filterSql=`p.status='published'
+    const filterSql=`p.status='published' AND p.owner_type='kolbe' AND p.retail_enabled
       AND ($2::text IS NULL OR p.category=$2) AND ($3::text IS NULL OR p.brand=$3)
-      AND ($4::text IS NULL OR p.metadata->>'gender'=$4)
-      AND ($5::text IS NULL OR COALESCE(p.metadata->'seasons','[]'::jsonb) ? $5)
-      AND ($6::text IS NULL OR COALESCE(p.metadata->'vibes','[]'::jsonb) ? $6)
+      AND ($4::text IS NULL OR p.gender=$4 OR p.gender_code=$4)
+      AND ($5::text IS NULL OR $5=ANY(p.seasons))
+      AND ($6::text IS NULL OR $6=ANY(p.vibes))
+      AND ($17::text IS NULL OR p.seasons && string_to_array($17, ','))
       AND ($7::text IS NULL OR EXISTS(SELECT 1 FROM product_variants v WHERE v.product_id=p.id AND v.active AND v.color_label=$7))
       AND ($8::text IS NULL OR EXISTS(SELECT 1 FROM product_variants v WHERE v.product_id=p.id AND v.active AND v.size_label=$8))
       AND ($9::numeric IS NULL OR p.cash_price_rial >= $9::numeric) AND ($10::numeric IS NULL OR p.cash_price_rial <= $10::numeric)
@@ -215,7 +217,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       AND (COALESCE(p.metadata->'attributes','{}'::jsonb) @> $15::jsonb)
       AND ($1::text IS NULL OR to_tsvector('simple',concat_ws(' ',p.name,p.brand,p.category,p.description,p.metadata::text)) @@ plainto_tsquery('simple',$1)
          OR p.name ILIKE '%'||$1||'%' OR p.brand ILIKE '%'||$1||'%' OR EXISTS(SELECT 1 FROM product_variants sv WHERE sv.product_id=p.id AND sv.active AND sv.sku ILIKE '%'||$1||'%') OR ($16::text IS NOT NULL AND (to_tsvector('simple',concat_ws(' ',p.name,p.brand,p.category,p.description,p.metadata::text)) @@ plainto_tsquery('simple',$16) OR p.name ILIKE '%'||$16||'%' OR p.brand ILIKE '%'||$16||'%')))`;
-    const params=[q,query.category??null,query.brand??null,query.gender??null,query.season??null,query.vibe??null,query.color??null,query.size??null,query.minPriceRial??null,query.maxPriceRial??null,query.available??null,query.installment??null,query.discountOnly??null,query.minRating??null,JSON.stringify(attrs),synonymText];
+    const params=[q,query.category??null,query.brand??null,query.gender??null,query.season??null,query.vibe??null,query.color??null,query.size??null,query.minPriceRial??null,query.maxPriceRial??null,query.available??null,query.installment??null,query.discountOnly??null,query.minRating??null,JSON.stringify(attrs),synonymText,query.seasons??null];
     const count=await pool.query(`SELECT count(*)::int AS total FROM products p WHERE ${filterSql}`,params);
     const rows=await pool.query(`WITH matches AS (SELECT p.id,p.brand,p.name,p.category,p.description,p.cash_price_rial,p.installment_price_rial,p.metadata,p.created_at,
       COALESCE((SELECT sum(sb.on_hand-sb.reserved-sb.damaged) FROM product_variants iv JOIN stock_balances sb ON sb.variant_id=iv.id WHERE iv.product_id=p.id AND iv.active),0)::int AS available_stock,
@@ -224,7 +226,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         + CASE WHEN lower(p.name)=lower($1) THEN 10 ELSE 0 END + CASE WHEN lower(p.name) LIKE lower($1)||'%' THEN 3 ELSE 0 END END AS score
       FROM products p WHERE ${filterSql})
       SELECT m.*,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',v.id,'sku',v.sku,'size',v.size_label,'color',v.color_label,'attributes',v.attributes) ORDER BY v.sku) FROM product_variants v WHERE v.product_id=m.id AND v.active),'[]'::jsonb) AS variants
-      FROM matches m ORDER BY ${sortSql} LIMIT $17 OFFSET $18`,[...params,query.limit,query.offset]);
+      FROM matches m ORDER BY ${sortSql} LIMIT $18 OFFSET $19`,[...params,query.limit,query.offset]);
     const facets=await pool.query(`SELECT
       (SELECT COALESCE(jsonb_object_agg(category,n),'{}'::jsonb) FROM (SELECT category,count(*)::int n FROM products WHERE status='published' GROUP BY category) c) AS categories,
       (SELECT COALESCE(jsonb_object_agg(brand,n),'{}'::jsonb) FROM (SELECT brand,count(*)::int n FROM products WHERE status='published' GROUP BY brand) b) AS brands,

@@ -9,7 +9,7 @@ import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, type Product } from "../da
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
-import { promoApi } from "../data/api";
+import { promoApi, publicApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
 import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage, normalizeTaxonomies, readPricingSnapshot, readShippingQuote, type PricingSnapshot, type Taxonomy } from "../data/contracts";
@@ -309,6 +309,11 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const committedSearch = useRef(window.location.search);
   const [filterGender, setFilterGender] = useState("");
   const [filterSeasons, setFilterSeasons] = useState<string[]>([]);
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [serverResultIds, setServerResultIds] = useState<string[] | null>(null);
+  const [serverSearchLoading, setServerSearchLoading] = useState(!isDemo);
+  const [serverSearchError, setServerSearchError] = useState("");
+  const [searchRetry, setSearchRetry] = useState(0);
   const [shopTaxonomies, setShopTaxonomies] = useState<Taxonomy[]>([]);
   useEffect(() => {
     if (new URLSearchParams(window.location.search).has("demo")) return;
@@ -367,10 +372,49 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
 
   const selected = useMemo(() => retailProducts.find((p) => p.id === selectedId) ?? null, [selectedId, retailProducts]);
 
+  useEffect(() => {
+    if (isDemo || view !== "shop") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setServerSearchLoading(true); setServerSearchError("");
+      const params = new URLSearchParams();
+      const filters: Record<string, string | undefined> = {
+        q: q.trim() || undefined, category: cat === "همه" ? undefined : cat,
+        brand: brandFilter || undefined, gender: filterGender || genderFilter || undefined,
+        season: seasonFilter || undefined, seasons: filterSeasons.join(",") || undefined,
+        vibe: vibeFilter || undefined, color: colorFilter || undefined, size: sizeFilter || undefined,
+        minRating: ratingFilter || undefined, discountOnly: discountOnly ? "true" : undefined,
+        available: stockOnly ? "true" : undefined, installment: installmentOnly ? "true" : undefined,
+        maxPriceRial: Number(maxPrice) > 0 ? String(Math.round(Number(maxPrice) * 10)) : undefined,
+        sort: sort === "ارزان‌ترین" ? "price_low" : sort === "گران‌ترین" ? "price_high" : sort === "پربازدیدترین" ? "popular" : "relevance",
+      };
+      if (attributeFilter) { const [key, value] = attributeFilter.split(":"); if (key && value) filters.attributes = JSON.stringify({ [key]: value }); }
+      for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
+      try {
+        const ids: string[] = [];
+        let total = 0;
+        do {
+          params.set("limit", "100"); params.set("offset", String(ids.length));
+          const response = await publicApi.get<{ items: { id: string }[]; total: number }>(`/search?${params}`, { signal: controller.signal });
+          ids.push(...response.items.map((item) => item.id)); total = response.total;
+          if (response.items.length === 0) break;
+        } while (ids.length < total && ids.length < 100000);
+        if (!controller.signal.aborted) setServerResultIds(ids);
+      } catch (error) {
+        if (!controller.signal.aborted) { setServerSearchError(error instanceof Error ? error.message : "جست‌وجو در دسترس نیست."); setServerResultIds(null); }
+      } finally { if (!controller.signal.aborted) setServerSearchLoading(false); }
+    }, 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [isDemo, view, q, cat, brandFilter, genderFilter, filterGender, seasonFilter, filterSeasons, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice, sort, searchRetry]);
+
   // Req 235: product detail head (title, canonical, Product JSON-LD) comes from the SEO Domain.
   useEntitySeo("product", selected && /^[0-9a-f-]{36}$/i.test(selected.id) ? selected.id : null);
 
   const filtered = useMemo(() => {
+    if (!isDemo) {
+      const byId = new Map(retailProducts.map((product) => [product.id, product]));
+      return (serverResultIds ?? []).flatMap((id) => byId.get(id) ? [byId.get(id)!] : []);
+    }
     let list = [...retailProducts];
     if (cat !== "همه") list = list.filter((p) => p.category === cat);
 
@@ -400,7 +444,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     else list.sort((a, b) => Number(b.stock > 0) - Number(a.stock > 0) || b.reviews - a.reviews);
     return list;
 
-  }, [cat, brandFilter, genderFilter, seasonFilter, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice, q, sort, retailProducts, filterGender, filterSeasons]);
+  }, [isDemo, serverResultIds, cat, brandFilter, genderFilter, seasonFilter, vibeFilter, attributeFilter, ratingFilter, discountOnly, colorFilter, sizeFilter, stockOnly, installmentOnly, maxPrice, q, sort, retailProducts, filterGender, filterSeasons]);
 
   const addToCart = (id: string, size: string, color: string): boolean => {
     const product = retailProducts.find((p) => p.id === id);
@@ -425,7 +469,6 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   }, 0);
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
 
-  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const [serverShipping, setServerShipping] = useState<any[] | null>(null);
   const [methodQuotes, setMethodQuotes] = useState<Record<string, { feeRial: string; weightGrams: number }>>({});
   useEffect(()=>{ if(isDemo) return; shippingApi.list().then(r=> setServerShipping(r.items??[])).catch(()=> setServerShipping([])); },[isDemo]);
@@ -849,7 +892,11 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           ...(q ? [[`جست‌وجو: ${q}`, () => setQ("") ] as const] : []), ...(cat !== "همه" ? [[cat, () => setCat("همه")] as const] : []), ...(brandFilter ? [[brandFilter, () => setBrandFilter("")] as const] : []), ...(genderFilter ? [[genderFilter, () => setGenderFilter("")] as const] : []), ...(seasonFilter ? [[seasonFilter, () => setSeasonFilter("")] as const] : []), ...(vibeFilter ? [[vibeFilter, () => setVibeFilter("")] as const] : []), ...(attributeFilter ? [[attributeFilter.split(":").slice(1).join(":"), () => setAttributeFilter("")] as const] : []), ...(ratingFilter ? [[`امتیاز ${ratingFilter}+`, () => setRatingFilter("")] as const] : []), ...(discountOnly ? [["تخفیف‌دار", () => setDiscountOnly(false)] as const] : []), ...(colorFilter ? [[filterColors.find((c) => c.id === colorFilter)?.name || colorFilter, () => setColorFilter("")] as const] : []), ...(sizeFilter ? [[`سایز ${sizeFilter}`, () => setSizeFilter("")] as const] : []), ...(stockOnly ? [["موجود", () => setStockOnly(false)] as const] : []), ...(installmentOnly ? [["اقساطی", () => setInstallmentOnly(false)] as const] : []), ...(maxPrice ? [[`تا ${fmtNum(Number(maxPrice))} تومان`, () => setMaxPrice("")] as const] : [])
         ].map(([label, remove]) => <button key={label} onClick={remove} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-bold">{label} ×</button>)}</div>}
         {q.trim() && filtered.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--kv-muted)]"><span>پیشنهادهای جست‌وجو:</span>{filtered.slice(0, 4).map((p) => <button key={p.id} className="rounded-full border border-[var(--kv-line)] px-2.5 py-1" onClick={() => setSelectedId(p.id)}>{p.name}</button>)}</div>}
-        {filtered.length === 0 ? (
+        {!isDemo && serverSearchLoading ? (
+          <div className="mt-8 py-12 text-center text-sm text-[var(--kv-muted)]" role="status">در حال جست‌وجوی محصولات…</div>
+        ) : !isDemo && serverSearchError ? (
+          <div className="mt-8 py-12 text-center" role="alert"><p className="text-sm text-[var(--kv-muted)]">{serverSearchError}</p><Btn variant="soft" size="sm" onClick={() => setSearchRetry((value) => value + 1)}>تلاش دوباره</Btn></div>
+        ) : filtered.length === 0 ? (
           <div className="mt-8"><Empty title="محصولی پیدا نشد" desc="عبارت دیگری را امتحان کنید یا فیلترها را بردارید." action={<Btn variant="soft" size="sm" onClick={() => { setQ(""); setCat("همه"); setFilterGender(""); setFilterSeasons([]); }}>حذف فیلترها</Btn>} /></div>
         ) : (
           <div className="mt-7 grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">

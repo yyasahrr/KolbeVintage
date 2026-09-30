@@ -47,7 +47,7 @@ type State = {
   cms: CmsItem[];
 };
 
-type Store = State & { loading: boolean; error: string | null; clearError: () => void; 
+type Store = State & { loading: boolean; error: string | null; clearError: () => void;
   setStatus: (id: string, s: ProductStatus) => void;
   addProduct: (p: Product) => void;
   updateProductSeries: (id: string, series: Product["series"]) => void;
@@ -154,9 +154,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setLoading(true); setError(null);
     try {
       // Public catalog (no auth) + authenticated orders/plans (canonical client refreshes on 401)
-      const prodRes = await publicApi.get<{ items: Parameters<typeof adaptCatalogProduct>[0][] }>("/products?limit=100").catch(() => ({ items: [] as Parameters<typeof adaptCatalogProduct>[0][] }));
+      type CatalogRow = Parameters<typeof adaptCatalogProduct>[0];
+      const catalogRows: CatalogRow[] = [];
+      try {
+        while (catalogRows.length <= 100000) {
+          const page = await publicApi.get<{ items: CatalogRow[] }>(`/products?limit=100&offset=${catalogRows.length}`);
+          catalogRows.push(...page.items);
+          if (page.items.length < 100) break;
+        }
+      } catch (catalogError) {
+        // Keep the previous complete cache if any page fails; a partial catalogue hides products in search and cart.
+        throw catalogError;
+      }
       // WMS is the availability source of truth: the catalogue derives `available` from stock_balances.
-      const catalogProducts = (prodRes.items ?? []).map((item) => adaptCatalogProduct(item) as Product);
+      const catalogProducts = catalogRows.map((item) => adaptCatalogProduct(item) as Product);
       const [orderRes, planRes] = await Promise.all([
         apiClient.get<{ items: ParentOrder[] }>("/orders").catch(() => ({ items: [] as ParentOrder[] })),
         apiClient.get<{ items: VipPlan[] }>("/plans").catch(() => ({ items: [] as VipPlan[] })),
