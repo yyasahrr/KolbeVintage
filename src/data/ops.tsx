@@ -250,7 +250,7 @@ const seed = (): OpsState => USE_DEMO_SEED_OPS ? ({
 type ListKey = { [K in keyof OpsState]: OpsState[K] extends { id: string }[] ? K : never }[keyof OpsState];
 type ItemOf<K extends ListKey> = OpsState[K] extends (infer U)[] ? U : never;
 
-type Ops = OpsState & { loading: boolean; error: string | null; clearError: () => void; 
+type Ops = OpsState & { loading: boolean; error: string | null; clearError: () => void;
   set: <K extends keyof OpsState>(key: K, value: OpsState[K]) => void;
   upsert: <K extends ListKey>(key: K, item: ItemOf<K>, prepend?: boolean) => void;
   remove: <K extends ListKey>(key: K, id: string) => void;

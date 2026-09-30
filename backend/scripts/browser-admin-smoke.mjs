@@ -8,12 +8,22 @@
    Pass 2 runs `npm run seed:local` (NODE_ENV=development) and re-checks the data-driven UI.
 
    Run with: LD_LIBRARY_PATH=/tmp/chromedeps/lib:/tmp/chromedeps node scripts/browser-admin-smoke.mjs */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import puppeteer from 'puppeteer-core';
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
+const chromePath = process.env.KV_CHROME_PATH ?? '/tmp/chromium';
+const stopProcessTree = (child, signal = 'SIGTERM') => {
+  if (!child?.pid) return;
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+  else { try { process.kill(-child.pid, signal); } catch { /* gone */ } }
+};
 
 /** The smoke owns its stack so every run starts from an as-migrated (empty) database. */
 const freePort = async (start) => {
@@ -50,7 +60,7 @@ const env = {
   PUBLIC_ORIGIN: base, PG_POOL_MAX: '4', PORT: String(apiPort),
 };
 const runStep = (command, args, extraEnv = {}) => new Promise((resolve, reject) => {
-  const child = spawn(command, args, { env: { ...env, ...extraEnv }, stdio: 'inherit' });
+  const child = spawn(command, args, { env: { ...env, ...extraEnv }, stdio: 'inherit', shell: process.platform === 'win32' });
   child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`))));
 });
 // On an already-provisioned stack (live preview) migrations are applied and the admin exists;
@@ -66,7 +76,7 @@ await tolerantStep('npx', ['tsx', 'src/bootstrap-admin.ts'], {
 let apiLog = '';
 let api = null;
 const startApi = async () => {
-  const child = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const child = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: process.platform === 'win32' });
   child.stdout.on('data', (chunk) => { apiLog += String(chunk); });
   child.stderr.on('data', (chunk) => { apiLog += String(chunk); });
   for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -84,10 +94,10 @@ const portBusy = async (port) => new Promise((resolve) => {
 });
 const stopApi = async (child) => {
   if (!child?.pid) return;
-  try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
+  stopProcessTree(child);
   for (let attempt = 0; attempt < 30 && await portBusy(apiPort); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 300));
-    if (attempt === 10) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }
+    if (attempt === 10) stopProcessTree(child, 'SIGKILL');
   }
   // A stale listener on the same port would silently serve the health check and keep a second
   // pool open against the single-writer embedded database — that is what broke the seed phase.
@@ -95,9 +105,9 @@ const stopApi = async (child) => {
 };
 api = useExternalStack ? { pid: null } : await startApi();
 const web = useExternalStack ? { pid: null, stdout: null, stderr: null, on: () => {} } : spawn('npm', ['run', 'dev', '--', '--port', String(webPort), '--strictPort'], {
-  cwd: '/home/user/KolbeVintage',
+  cwd: repoRoot,
   env: { ...process.env, KV_API_PROXY_TARGET: `http://127.0.0.1:${apiPort}` },
-  stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+  stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: process.platform === 'win32',
 });
 let webLog = '';
 if (web.stdout) { web.stdout.on('data', (chunk) => { webLog += String(chunk); }); web.stderr.on('data', (chunk) => { webLog += String(chunk); }); }
@@ -105,7 +115,7 @@ for (let attempt = 0; attempt < 60; attempt += 1) {
   await new Promise((resolve) => setTimeout(resolve, 300));
   try { const webReady = await fetch(base); if (webReady.ok) break; } catch { /* still booting */ }
 }
-const shotDir = '/home/user/KolbeVintage/artifacts/admin-smoke';
+const shotDir = join(tmpdir(), 'kolbe-admin-smoke');
 mkdirSync(shotDir, { recursive: true });
 
 const results = [];
@@ -121,7 +131,7 @@ const checkFresh = (fresh, name, fn) => {
 
 const freshDb = !useExternalStack;
 const browser = await puppeteer.launch({
-  executablePath: '/tmp/chromium',
+  executablePath: chromePath,
   headless: 'shell',
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--font-render-hinting=none'],
 });
@@ -372,14 +382,14 @@ try {
   // synchronous `execFileSync` would freeze the event loop and the seed could never connect.
   const seedRun = await new Promise((resolve) => {
     const child = spawn('npm', ['run', '--silent', 'seed:local'], {
-      cwd: '/home/user/KolbeVintage/backend',
+      cwd: join(repoRoot, 'backend'),
       env: {
         ...process.env, NODE_ENV: 'development', REDIS_URL: undefined,
         DATABASE_URL: stack.databaseUrl, TEST_DATABASE_URL: stack.databaseUrl,
         JWT_SECRET: process.env.JWT_SECRET ?? 'browser-smoke-secret-at-least-thirty-two-chars',
         PUBLIC_ORIGIN: base,
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32',
     });
     let out = '';
     child.stdout.on('data', (chunk) => { out += String(chunk); });
@@ -545,7 +555,7 @@ try {
 } finally {
   await browser.close();
   if (!useExternalStack) {
-    for (const child of [api, web]) { try { if (child?.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } }
+    for (const child of [api, web]) stopProcessTree(child, 'SIGKILL');
     await socketServer.stop();
     await db.close();
   }

@@ -9,6 +9,8 @@
    database instead of booting their own. */
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 
@@ -28,7 +30,7 @@ const env = {
 };
 
 const run = (command, args, extraEnv = {}) => new Promise((resolve, reject) => {
-  const child = spawn(command, args, { env: { ...env, ...extraEnv }, stdio: 'inherit' });
+  const child = spawn(command, args, { env: { ...env, ...extraEnv }, stdio: 'inherit', shell: process.platform === 'win32' });
   child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`))));
 });
 
@@ -38,8 +40,8 @@ await run('npx', ['tsx', 'src/bootstrap-admin.ts'], {
   BOOTSTRAP_ADMIN_PASSWORD: process.env.BOOTSTRAP_ADMIN_PASSWORD ?? 'ChangeMe-Admin-123456',
 });
 
-const app = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: 'inherit' });
-writeFileSync('/tmp/kv-local-stack.json', JSON.stringify({ pgPort, apiPort, databaseUrl }, null, 2));
+const app = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: 'inherit', shell: process.platform === 'win32' });
+writeFileSync(join(tmpdir(), 'kv-local-stack.json'), JSON.stringify({ pgPort, apiPort, databaseUrl }, null, 2));
 console.log(`[local-stack] database=${databaseUrl} api=http://127.0.0.1:${apiPort}`);
 
 const shutdown = () => { try { app.kill('SIGTERM'); } catch { /* gone */ } void server.stop().finally(() => process.exit(0)); };

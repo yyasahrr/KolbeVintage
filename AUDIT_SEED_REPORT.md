@@ -1,7 +1,7 @@
 # Frontend Demo/Seed Audit — KolbeVintage — 2026-09-28
 
-**Scope:** `src/App.tsx`, `src/data/store.tsx`, `src/data/ops.tsx`, `src/portals/supplier.tsx`, `src/portals/vip.tsx`, `src/portals/retail.tsx`, `src/portals/account.tsx` + full `src` scan for `SEED_|demo|mock|fake|sample|localStorage|useStore|useOps|Math.random|Date.now|hardcoded IDs`.  
-**Method:** `grep -rn` + manual file read, then patch + `npx tsc --noEmit` + `vite build` + `backend npm run test:embedded`.  
+**Scope:** `src/App.tsx`, `src/data/store.tsx`, `src/data/ops.tsx`, `src/portals/supplier.tsx`, `src/portals/vip.tsx`, `src/portals/retail.tsx`, `src/portals/account.tsx` + full `src` scan for `SEED_|demo|mock|fake|sample|localStorage|useStore|useOps|Math.random|Date.now|hardcoded IDs`.
+**Method:** `grep -rn` + manual file read, then patch + `npx tsc --noEmit` + `vite build` + `backend npm run test:embedded`.
 **Branch:** `arena/01a0e916-kolbevintage` (PR https://github.com/yyasahrr/KolbeVintage/pull/2) — workflow `.github/workflows/ci.yml` stays local untracked (GitHub App lacks `workflows` permission; CI blocker unchanged).
 
 

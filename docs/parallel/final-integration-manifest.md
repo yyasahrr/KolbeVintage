@@ -2,7 +2,7 @@
 
 Maintained by Agent 6 (Final Integration / Reconciliation / Release).
 This file is updated as each branch is inspected, merged, reconciled and validated.
-**Final state: all seven branches merged, all conflicts reconciled, full test matrix green (see Validation results).**
+**Status update (2026-09-30): the first independent audit of PR #6 failed.** The validation table below records the original integration attempt and is historical evidence, not a current release verdict. The corrective results are recorded at the end of this manifest.
 
 - Integration branch: `arena/01a0ee73-kolbevintage` (session branch; the project's `arena/final-integration`
   naming is not available to this session — all integration work happens on the session branch, never on `main`)
@@ -192,3 +192,13 @@ Migration strategy decisions).
 5. Agent 5 / Agent B (`01a0ed8f`) → `7f5d48d`.
 6. D1 (`01a0ed90`) → `d41ec0b`.
 7. D2 (`01a0ed97`) → `5caee9c` — then reconciliation follow-ups: `50df184`, `051` fix.
+
+## Independent audit and corrective validation (2026-09-30)
+
+The first audit of PR #6 was **FAIL** on ten integration defects. The detailed corrective matrix is in `final-integration-report.md`. The original 31-file upgrade and browser claims above are historical only. The remediation uses `050z` (pre-051 recovery snapshot) and forward migrations `052`–`054`, yielding **35 migration files**. The migration verifier stages a realistic pre-051 database, validates dependent IDs/codes and merged size data after the new chain, and verifies a second run applies zero migrations.
+
+The effective SEO metadata precedence is D2 `seo_pages` when an entity row exists, with `seo_entries` as the core fallback. Both the public SEO API and raw HTML use that resolution. `seo_pages` also provides sitemap registration and canonical overrides; `seo_entries` continues to provide the core SEO API and revision history. Facet and scheduled-crawl configuration is persisted but explicitly marked `inactive` in the admin UI/API; there is no executor.
+
+The official browser smoke scripts run under the installed Chrome via `KV_CHROME_PATH` and use portable temporary paths. Current validation counts and commit SHAs are recorded in the final remediation report after all gates run.
+
+**Recovery boundary:** If a live database ran the original 051 before this correction and its cascade deleted loser-only `product_type_sizes`, the missing mappings cannot be inferred. Restore them from a pre-051 backup or another authoritative source before declaring that installation's data repaired. Fresh installs and installations paused before 051 are covered by the verified migration chain. Production PostgreSQL and external storage/CDN/Search Console/Merchant Center remain `NOT_CONFIGURED`.

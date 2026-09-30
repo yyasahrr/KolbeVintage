@@ -8,7 +8,7 @@
  *
  * Run with: npm run test:contract   (inside backend/)
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
@@ -69,8 +69,9 @@ const env = {
 };
 const run = (command: string, args: string[], extraEnv: Record<string, string | undefined> = {}) =>
   new Promise<number>((resolve) => {
-    const child = spawn(command, args, { env: { ...env, ...extraEnv }, stdio: 'inherit' });
+    const child = spawn(command, args, { env: { ...env, ...extraEnv }, stdio: 'inherit', shell: process.platform === 'win32' });
     child.on('exit', (code) => resolve(code ?? 1));
+    child.on('error', () => resolve(1));
   });
 
 let app: ReturnType<typeof spawn> | null = null;
@@ -79,7 +80,7 @@ try {
   if (await run('npx', ['tsx', 'src/bootstrap-admin.ts'], { BOOTSTRAP_ADMIN_EMAIL: adminEmail, BOOTSTRAP_ADMIN_PASSWORD: adminPassword }) !== 0) {
     throw new Error('admin bootstrap failed');
   }
-  app = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  app = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: process.platform === 'win32' });
   const log: string[] = [];
   app.stdout?.on('data', (chunk) => log.push(String(chunk)));
   app.stderr?.on('data', (chunk) => log.push(String(chunk)));
@@ -177,13 +178,16 @@ try {
 
   // ---------- (30) Jalali round trip through the single central utility ----------
   const isoFromJalali = persianInputToIso('۱۴۰۵/۰۷/۱۳');
-  check('persianInputToIso(«۱۴۰۵/۰۷/۱۳») → 2026-10-05 (central Jalali utility)',
-    isoFromJalali !== null && isoFromJalali.startsWith('2026-10-05'), String(isoFromJalali));
+  check('persianInputToIso(«۱۴۰۵/۰۷/۱۳») → local 2026-10-05 (central Jalali utility)',
+    isoFromJalali !== null && isoDateOnly(isoFromJalali) === '2026-10-05', String(isoFromJalali));
   check('Jalali round trip ISO → ۱۴۰۵/۰۷/۱۳ → ISO is stable',
     isoToPersianInput(isoFromJalali) === '۱۴۰۵/۰۷/۱۳' && persianInputToIso(isoToPersianInput(isoFromJalali)!) === isoFromJalali);
-  check('formatPersianDateTime renders Persian digits + Jalali date for table rows',
+  const localFixtureTime = new Date('2026-09-29T10:30:00.000Z');
+  const expectedLocalTime = `${String(localFixtureTime.getHours()).padStart(2, '0')}:${String(localFixtureTime.getMinutes()).padStart(2, '0')}`
+    .replace(/\d/g, (digit) => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]!);
+  check('formatPersianDateTime renders Persian digits + local time for table rows',
     /^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}/.test(formatPersianDateTime('2026-09-29T10:30:00.000Z')) &&
-    formatPersianDateTime('2026-09-29T10:30:00.000Z').includes('۱۰:۳۰'),
+    formatPersianDateTime('2026-09-29T10:30:00.000Z').includes(expectedLocalTime),
     formatPersianDateTime('2026-09-29T10:30:00.000Z'));
   check('todayIso/addDaysIso stay ISO internally (no Jalali strings in payloads)',
     /^\d{4}-\d{2}-\d{2}T/.test(todayIso()) && addDaysIso(todayIso(), 7) > todayIso());
@@ -388,7 +392,10 @@ try {
   console.error('SMOKE ERROR:', error instanceof Error ? error.message : error);
   check('frontend contract smoke completed without exceptions', false, String(error instanceof Error ? error.stack ?? error.message : error).slice(0, 400));
 } finally {
-  if (app?.pid) { try { process.kill(-app.pid, 'SIGKILL'); } catch { /* already gone */ } }
+  if (app?.pid) {
+    if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(app.pid), '/T', '/F'], { stdio: 'ignore' });
+    else { try { process.kill(-app.pid, 'SIGKILL'); } catch { /* already gone */ } }
+  }
   await server.stop();
   await db.close();
 }

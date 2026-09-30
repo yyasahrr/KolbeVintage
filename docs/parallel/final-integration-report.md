@@ -3,7 +3,9 @@
 **Agent:** Agent 6 — Final Integration / Reconciliation / Release
 **Branch:** `arena/01a0ee73-kolbevintage` (base: `main` @ `3cd9dace97e00e3131af018fb5b696f8c18d67fc`)
 **Date:** 2026-09-30
-**Verdict: FINAL INTEGRATION READY**
+**Original verdict: FINAL INTEGRATION READY — superseded by the first independent audit (FAIL).**
+
+The original report below is retained as a historical record. It overstated migration safety, SEO behavior, and browser verification. Current remediation evidence and limitations appear in the addendum at the end.
 
 All seven parallel branches are merged into one integration branch, every schema/contract conflict is
 reconciled and documented, and the mandatory test matrix passes end-to-end on a fresh environment
@@ -105,8 +107,46 @@ upgrade path are all machine-verified.
 
 ## 7. Verdict
 
-**FINAL INTEGRATION READY**
+**Historical verdict, superseded by the first independent audit: FINAL INTEGRATION READY**
 
 Every mandatory gate in the test matrix passes; all schema/contract conflicts are resolved with
 documented decisions; no test was mass-loosened; no external service is faked; hygiene checks are
 clean. The integration branch is ready for review/PR against `main`.
+
+---
+
+## PR #6 remediation addendum — 2026-09-30
+
+The first independent audit returned **FAIL** with ten confirmed blockers. This addendum records the corrective work without changing that history. The independent reviewer branch was unavailable on the remote during remediation, so the ten findings in the remediation brief were used as the audit record.
+
+| Audit blocker | Correction and evidence |
+|---|---|
+| 051 product type integrity | `050z` snapshots loser size mappings immediately before the existing 051; `053` restores distinct sizes to the surviving type and synchronizes dependent product IDs/codes. Fresh and staged pre-051 upgrade fixtures cover winner-only, loser-only, shared sizes, and both product references. |
+| 048 review uniqueness | `052` removes the actual legacy `(product_id,user_id)` constraint and keeps purchase-scoped uniqueness. Review API verifies ownership, product membership, and qualifying payment; integration cases cover separate orders and duplicate same-order reviews. |
+| CMS paths | One shared CMS resolver recognizes stored path, SEO slug, and canonical URL path. HTTP tests cover each and unknown paths. |
+| Finance close | Tehran-local period dates are repaired by `054`; close returns 409 through the final active calendar day without mutation. Boundary and already-closed tests cover the rule. |
+| Redirect safety | Central internal-path validation rejects external schemes, protocol-relative, backslash, encoded and control-character targets, including unsafe preexisting rows; cycle protection remains. |
+| SEO Center and raw HTML | D2 `seo_pages` is the effective admin metadata layer over core `seo_entries` fallback. Raw Product, Category, CMS and Blog routes emit crawlable content and head metadata before JavaScript. Product/ProductGroup JSON-LD uses real IRR prices and availability, with no fabricated aggregate rating. |
+| Storefront search | Production storefront calls `/api/v1/search` for all filters, with loading, error, empty and retry states. Server filters use dedicated gender, season and vibe columns. The catalog cache pages beyond 100 products so server hits remain displayable and purchasable. |
+| Product video | Admin saves/deletes through `product_media` API; admin and public read endpoints persist across reloads. Storefront PDP reads the public endpoint. |
+| Facet/scheduled crawl | Configuration remains saved, while admin UI and GET API explicitly report execution as inactive. No running job is claimed. |
+| Hygiene/browser | Smoke scripts use the installed Chrome on Windows and portable paths; both official suites were rerun. Generated build/cache artifacts were removed from the change set. |
+
+The migration chain contains **35 files**. An installation that already ran the destructive 051 before this remediation cannot reconstruct arbitrary size mappings deleted by its cascade from schema state alone. That installation needs a pre-051 backup or an independent authoritative size source to restore those rows. This limitation cannot be marked as a successful data recovery without that evidence.
+
+The following external services remain **NOT_CONFIGURED**: production PostgreSQL validation, object storage, CDN, Search Console, and Merchant Center. No external-service PASS is claimed.
+
+### Actual local validation after remediation
+
+| Gate | Result |
+|---|---|
+| Fresh migrations; staged pre-051 upgrade; second run | PASS, 35 files; no-op second run |
+| Backend TypeScript build | PASS |
+| Embedded backend and raw HTTP SEO integration tests | PASS, 125/125 across 20 suites |
+| Frontend typecheck and production build | PASS |
+| Frontend/backend contract | PASS, 60/60 |
+| Official admin browser smoke | PASS, 47/47 on installed Chrome |
+| Official experience browser smoke | PASS, 30/30 on installed Chrome; includes server search UI check |
+| Whitespace hygiene | `git diff --check` and `git diff origin/main --check` both PASS; PR-introduced whitespace cleaned without SQL semantic changes |
+
+The initial experience smoke rerun failed at the newly added search check because the main navigation button opens a mega menu. The test was corrected to use the existing footer shop action; its second run passed 30/30. The initial seed attempt lacked the local stack environment variables and was rerun successfully with the stack's database URL and development configuration. These failed setup attempts are retained here to avoid presenting an uninterrupted green history.

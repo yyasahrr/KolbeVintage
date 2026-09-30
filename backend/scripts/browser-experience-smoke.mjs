@@ -5,10 +5,12 @@
    Runs against an existing stack: local-stack.mjs → seed:local → scripts/browser-smoke-fixtures.mjs → vite on :5173.
    Screenshots → /tmp/kv-shots. */
 import { mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import puppeteer from 'puppeteer-core';
 
 const BASE = process.env.KV_WEB ?? 'http://127.0.0.1:5173';
-const SHOTS = '/tmp/kv-shots';
+const SHOTS = join(tmpdir(), 'kv-shots');
 mkdirSync(SHOTS, { recursive: true });
 const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`); };
@@ -24,7 +26,7 @@ async function token(identity, password) {
   throw new Error(`login rate limited for ${identity}`);
 }
 
-const browser = await puppeteer.launch({ executablePath: '/tmp/chromium', headless: 'shell', args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] });
+const browser = await puppeteer.launch({ executablePath: process.env.KV_CHROME_PATH ?? '/tmp/chromium', headless: 'shell', args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] });
 const page = await browser.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e.message)));
@@ -94,6 +96,19 @@ try {
   check('Cart drawer: role=dialog + aria-modal + name, focus moved inside, scroll locked', opened.open && opened.named && opened.inside && opened.overflow === 'hidden', JSON.stringify(opened));
   check('Cart drawer: Tab/Shift+Tab trapped; Escape closes and restores focus to the opener', trapped && !closed.open && /^سبد خرید/.test(closed.active) && closed.overflow !== 'hidden', JSON.stringify(closed));
   await shot('02-quick-buy');
+
+  const searchRequests = [];
+  const recordSearch = (request) => { if (request.url().includes('/api/v1/search?')) searchRequests.push(request.url()); };
+  page.on('request', recordSearch);
+  await clickText('footer button', 'همه محصولات');
+  await page.waitForSelector('input[placeholder="جست‌وجوی محصول، برند…"]', { timeout: 10000 });
+  await page.type('input[placeholder="جست‌وجوی محصول، برند…"]', 'no-matching-product-987654');
+  await page.waitForFunction(() => document.body.innerText.includes('محصولی پیدا نشد'), { timeout: 15000 }).catch(() => undefined);
+  check('Storefront search uses backend results and renders the empty state',
+    searchRequests.some((url) => url.includes('q=no-matching-product-987654')) && (await text()).includes('محصولی پیدا نشد'),
+    searchRequests.at(-1) ?? 'no request');
+  page.off('request', recordSearch);
+  await page.goto(BASE, { waitUntil: 'networkidle2' });
 
   await clickText('nav[aria-label="ناوبری اصلی"] button', 'درباره ما');
   await page.waitForFunction(() => document.body.innerText.includes('ارزش‌های ما'), { timeout: 15000 }).catch(() => undefined);
