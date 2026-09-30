@@ -144,4 +144,3 @@ CREATE TABLE IF NOT EXISTS tracking_import_items (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS tracking_import_items_import_idx ON tracking_import_items(import_id, status);
-

@@ -58,13 +58,13 @@ export type JournalLineInput = {
 /** The accounting period that covers a timestamp; created on demand, then locked when closed. */
 export async function ensurePeriod(client: PoolClient, date: Date): Promise<string> {
   const code = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-  const startsOn = new Date(date.getFullYear(), date.getMonth(), 1);
-  const endsOn = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  const startsOn = `${code}-01`;
+  const endsOn = `${code}-${String(new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()).padStart(2, '0')}`;
   const existing = await one<{ code: string; status: string }>(client,
     `INSERT INTO accounting_periods(code, title, starts_on, ends_on)
      VALUES ($1, $2, $3, $4) ON CONFLICT (code) DO UPDATE SET title = accounting_periods.title
      RETURNING code, status`,
-    [code, code, startsOn.toISOString().slice(0, 10), endsOn.toISOString().slice(0, 10)]);
+    [code, code, startsOn, endsOn]);
   if (existing?.status !== 'open') throw conflict('دوره مالی بسته است؛ اصلاح باید با سند اصلاحی ثبت شود.');
   return code;
 }

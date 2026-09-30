@@ -331,6 +331,20 @@ test('membership renew/upgrade, CRM intelligence, automation, tracking, reviews,
       const duplicateReview = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/reviews`, headers: buyer.headers,
         payload: { rating: 4, title: 'دوباره', comment: 'تکراری', images: [], orderId: orderResponse.json().id } });
       assert.equal(duplicateReview.statusCode, 409, duplicateReview.body);
+      const secondOrderId = randomUUID();
+      await pool.query(`INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,status,subtotal_rial,total_rial,paid_at)
+        VALUES($1,$2,$3,'retail','cash','paid',100000000,100000000,now())`,
+        [secondOrderId, `REVIEW-${suffix}`, buyer.id]);
+      await pool.query(`INSERT INTO order_lines(id,order_id,product_id,variant_id,product_name,sku,quantity,unit_price_rial,line_total_rial)
+        SELECT $1,$2,$3,$4,p.name,v.sku,1,100000000,100000000
+        FROM products p JOIN product_variants v ON v.id=$4 WHERE p.id=$3`,
+        [randomUUID(), secondOrderId, productId, variantId]);
+      const secondReview = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/reviews`, headers: buyer.headers,
+        payload: { rating: 4, title: 'خرید دوم', comment: 'نظر برای سفارش دوم', orderId: secondOrderId } });
+      assert.equal(secondReview.statusCode, 201, secondReview.body);
+      const duplicateSecond = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/reviews`, headers: buyer.headers,
+        payload: { rating: 4, title: 'تکراری', comment: 'تکراری', orderId: secondOrderId } });
+      assert.equal(duplicateSecond.statusCode, 409, duplicateSecond.body);
       const reported = await app.inject({ method: 'POST', url: `/api/v1/reviews/${review.json().reviewId}/report`,
         headers: admin.headers, payload: { reason: 'بررسی محتوای نامناسب' } });
       assert.equal(reported.statusCode, 201, reported.body);
@@ -739,8 +753,9 @@ test('membership renew/upgrade, CRM intelligence, automation, tracking, reviews,
 
       /* (2) review rating / verified purchase are immutable at the database level. */
       const reviewRow = await pool.query<{ id: string; rating: number }>(
-        'SELECT id, rating FROM customer_reviews WHERE product_id = $1 AND user_id = $2 ORDER BY created_at LIMIT 1', [productId, buyer.id]);
-      assert.ok(reviewRow.rowCount === 1, 'the buyer review exists from the earlier block');
+        'SELECT id, rating FROM customer_reviews WHERE product_id = $1 AND user_id = $2 AND order_id = $3',
+        [productId, buyer.id, orderResponse.json().id]);
+      assert.equal(reviewRow.rowCount, 1, 'the original purchase has exactly one review');
       const reviewId = reviewRow.rows[0]!.id;
       const originalRating = reviewRow.rows[0]!.rating;
       // Any real change is rejected — the value itself must differ from the stored one.

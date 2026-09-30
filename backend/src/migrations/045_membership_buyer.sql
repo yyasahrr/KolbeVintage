@@ -85,4 +85,3 @@ CREATE TABLE IF NOT EXISTS buyer_documents (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS buyer_documents_user_idx ON buyer_documents(user_id, created_at DESC);
-

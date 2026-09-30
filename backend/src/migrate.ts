@@ -9,6 +9,7 @@ const path = join(dirname(fileURLToPath(import.meta.url)), 'migrations');
 try {
   const files = (await readdir(path)).filter((file) => /^\d+.*\.sql$/.test(file)).sort();
   for (const file of files) {
+    if (process.env.NODE_ENV === 'test' && process.env.MIGRATION_STOP_AFTER && file > process.env.MIGRATION_STOP_AFTER) break;
     const client = await pool.connect();
     try {
       await client.query('BEGIN');

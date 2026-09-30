@@ -293,6 +293,15 @@ test('financial operations: settlements, approvals, adjustments, periods and rep
     const earlyClose = await app.inject({ method: 'POST', url: `/api/v1/admin/finance/periods/${currentCode}/close`, headers: admin,
       payload: { note: 'تلاش برای بستن دوره جاری' } });
     assert.equal(earlyClose.statusCode, 409, earlyClose.body);
+    assert.equal((await pool.query('SELECT status FROM accounting_periods WHERE code=$1', [currentCode])).rows[0].status, 'open');
+    for (const [code, offset] of [['2098-01', 1], ['2098-02', 0]] as const) {
+      await pool.query(`INSERT INTO accounting_periods(code,title,starts_on,ends_on,status)
+        VALUES($1,$1,(now() AT TIME ZONE 'Asia/Tehran')::date-1,
+          (now() AT TIME ZONE 'Asia/Tehran')::date+$2::integer,'open')`, [code, offset]);
+      const premature = await app.inject({ method: 'POST', url: `/api/v1/admin/finance/periods/${code}/close`, headers: admin });
+      assert.equal(premature.statusCode, 409, `${code}: ${premature.body}`);
+      assert.equal((await pool.query('SELECT status,closed_at FROM accounting_periods WHERE code=$1', [code])).rows[0].status, 'open');
+    }
 
     // A finished month can be closed, locked and — from closed — reopened.
     const pastCode = '2001-01';

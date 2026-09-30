@@ -196,4 +196,3 @@ INSERT INTO crm_labels(code, title, kind, description) VALUES
   ('discount_driven', 'خریدار تخفیف‌محور', 'behavioral', 'بیشتر خریدها با کد تخفیف انجام شده'),
   ('installment_buyer', 'خریدار اقساطی', 'behavioral', 'خرید اقساطی داشته است')
 ON CONFLICT (code) DO NOTHING;
-

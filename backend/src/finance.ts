@@ -977,15 +977,17 @@ export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config
     const { code, action } = z.object({ code: z.string().regex(/^\d{4}-\d{2}$/), action: z.enum(['close', 'lock', 'reopen']) }).parse(request.params);
     const body = z.object({ note: z.string().trim().max(500).optional() }).parse(request.body ?? {});
     return transaction(pool, async (client) => {
-      const period = await one<{ code: string; status: string; ends_on: string }>(client,
-        'SELECT code, status, ends_on FROM accounting_periods WHERE code = $1 FOR UPDATE', [code]);
+      const period = await one<{ code: string; status: string; is_complete: boolean }>(client,
+        `SELECT code, status,
+                ends_on < (now() AT TIME ZONE 'Asia/Tehran')::date
+                AND (to_date(code || '-01', 'YYYY-MM-DD') + interval '1 month')::date
+                    <= (now() AT TIME ZONE 'Asia/Tehran')::date AS is_complete
+         FROM accounting_periods WHERE code = $1 FOR UPDATE`, [code]);
       if (!period) throw notFound();
       const target = action === 'close' ? 'closed' : action === 'lock' ? 'locked' : 'open';
       if (period.status === target) return { code, status: target };
       if (action === 'reopen' && period.status === 'locked') throw conflict('دوره قفل‌شده فقط با دسترسی ویژه باز می‌شود.');
-      if (action !== 'reopen' && new Date(period.ends_on) < new Date() && action === 'close') {
-        // closing a past period is the normal case
-      } else if (action !== 'reopen' && new Date(period.ends_on) >= new Date()) {
+      if (action !== 'reopen' && !period.is_complete) {
         throw conflict('دوره جاری تا پایان ماه قابل بستن نیست.');
       }
       const unbalanced = await one<{ count: string }>(client,

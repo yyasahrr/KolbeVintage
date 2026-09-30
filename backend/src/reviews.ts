@@ -123,8 +123,12 @@ export function registerReviewRoutes(app: FastifyInstance, pool: DbPool, config:
            AND o.status IN ('paid','processing','preparing','ready_to_ship','in_transit','shipped','delivered')
          ORDER BY o.paid_at DESC NULLS LAST LIMIT 1`, [id, user.id]);
       if (body.orderId) {
-        const owns = await one(client, 'SELECT id FROM orders WHERE id = $1 AND buyer_id = $2', [body.orderId, user.id]);
-        if (!owns) throw badRequest('سفارش انتخاب‌شده متعلق به شما نیست.');
+        const qualifies = await one(client,
+          `SELECT o.id FROM orders o JOIN order_lines l ON l.order_id = o.id
+           WHERE o.id = $1 AND o.buyer_id = $2 AND l.product_id = $3
+             AND o.status IN ('paid','processing','preparing','ready_to_ship','in_transit','shipped','delivered')`,
+          [body.orderId, user.id, id]);
+        if (!qualifies) throw badRequest('سفارش انتخاب‌شده خرید واجد شرایط این محصول نیست.');
       }
       const orderId = body.orderId ?? purchase?.order_id ?? null;
       const existing = await one(client,
@@ -137,7 +141,7 @@ export function registerReviewRoutes(app: FastifyInstance, pool: DbPool, config:
         `INSERT INTO customer_reviews(id,product_id,user_id,order_id,rating,title,body,comment,images,photo_file_ids,verified_purchase,status)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending')`,
         [reviewId, id, user.id, orderId, body.rating, body.title, commentText, commentText,
-          JSON.stringify(body.images), body.photoFileIds, Boolean(purchase)]);
+          JSON.stringify(body.images), body.photoFileIds, Boolean(orderId)]);
       const contactId = await ensureContact(client, user.id);
       await client.query(
         `INSERT INTO crm_activities(id,contact_id,type,title,body,ref_type,ref_id,result,created_by)

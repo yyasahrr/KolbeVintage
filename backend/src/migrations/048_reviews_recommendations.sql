@@ -133,4 +133,3 @@ INSERT INTO recommendation_slots(code, title, page_scope, default_strategy, stra
   ('checkout.last_minute', 'پیشنهاد آخرین لحظه', 'checkout', 'popular', ARRAY['popular', 'rule_based']),
   ('account.for_you', 'پیشنهاد شخصی حساب من', 'account', 'personalized', ARRAY['personalized', 'trending'])
 ON CONFLICT (code) DO NOTHING;
-
