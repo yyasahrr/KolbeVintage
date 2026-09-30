@@ -15,7 +15,7 @@ const mediaBody = z.object({
   // Union of Agent C's media roles and Agent D1's video-domain roles.
   role: z.enum(['hero', 'gallery', 'flat_lay', 'on_model', 'detail', 'size_guide', 'video', 'poster', 'campaign']).default('gallery'),
   fileId: z.uuid().nullable().optional(),
-  externalUrl: z.string().url().max(500).nullable().optional(),
+  externalUrl: z.string().url().startsWith('https://').max(500).nullable().optional(),
   url: z.string().regex(/^https:\/\/[^\s<>"]+$/).max(500).nullable().optional(),
   posterFileId: z.uuid().nullable().optional(),
   variantId: z.uuid().nullable().optional(),

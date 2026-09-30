@@ -9,7 +9,7 @@ import { audit, outbox } from './operations.js';
 import { badRequest, conflict, notFound, patchBody } from './errors.js';
 import { getFile, putFile } from './storage.js';
 import { isResizable, renderVariant, snapWidth } from './images.js';
-import { legacySeoToWrite, renameSeoKey, resolveSeo, loadEntry, loadSubject, upsertSeoEntry } from './seo.js';
+import { legacySeoToWrite, renameSeoKey, resolveSeo, resolveSeoFor, loadEntry, loadSubject, upsertSeoEntry } from './seo.js';
 import { ensureContact } from './crm.js';
 import { CARD_BLOCKS, NAV_TARGET, SIMPLE_STYLE_KEYS, STYLE_SPEC, cardStylesSchema, designQualityGate, responsiveConfigSchema, validateSectionPayload, validateStyleOverrides, type FieldSchema } from './cms-schema.js';
 import { recommend } from './recommendations.js';
@@ -382,9 +382,22 @@ export async function loadPublicPage(pool: DbPool, code: string, origin = 'https
      ORDER BY version DESC LIMIT 1`, [page.id]);
   const sections = snapshot ? snapshot.sections_snapshot.filter((s) => s.visible) : await workingSections(pool, page.id, true);
   // Req 235: head tags come from the SEO Domain, not from the CMS row.
-  const subject = await loadSubject(pool, 'page', code);
-  const seo = subject ? resolveSeo(subject, await loadEntry(pool, 'page', code), origin) : null;
+  const seo = await resolveSeoFor(pool, 'page', code, origin);
   return { ...page, seo, publishedVersion: snapshot?.version ?? null, sections: await enrichSections(pool, sections) };
+}
+
+/** Resolve every published CMS URL through the page and SEO identities. */
+export async function resolvePublicCmsPath(pool: DbPool, path: string, origin: string) {
+  const page = await one<{ code: string; active: boolean; status: string; scheduled_start_at: string | null; scheduled_end_at: string | null }>(pool,
+    `SELECT p.code, p.active, p.status, p.scheduled_start_at, p.scheduled_end_at
+       FROM cms_pages p
+       LEFT JOIN seo_entries e ON e.entity_type = 'page' AND e.entity_key = p.code
+       LEFT JOIN seo_pages s ON s.entity_type = 'cms' AND s.entity_key = p.code
+      WHERE p.path = $1 OR e.canonical_path IN ($1,$2) OR s.slug = $1
+         OR s.canonical_url = $2
+      ORDER BY (p.path = $1) DESC, p.updated_at DESC LIMIT 1`,
+    [path, `${origin.replace(/\/$/, '')}${path}`]);
+  return page && pageIsLive(page) ? page.code : null;
 }
 
 /* ============================ Routes ============================ */
@@ -443,11 +456,10 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
 
   /** Canonical URLs from the SEO Domain (e.g. /about, /campaign/x) deep-link into the SPA (Req 235). */
   app.get('/api/v1/site/resolve-path', async (request) => {
-    const { path } = z.object({ path: z.string().regex(/^\/[a-z0-9/_-]{0,120}$/) }).parse(request.query);
-    const page = await one<{ code: string; active: boolean; status: string; scheduled_start_at: string | null; scheduled_end_at: string | null }>(pool,
-      'SELECT code, active, status, scheduled_start_at, scheduled_end_at FROM cms_pages WHERE path = $1 ORDER BY updated_at DESC LIMIT 1', [path]);
-    if (!page || !pageIsLive(page)) throw notFound();
-    return { kind: 'page', code: page.code };
+    const { path } = z.object({ path: z.string().regex(/^\/[\p{L}\p{N}/_-]{0,120}$/u) }).parse(request.query);
+    const code = await resolvePublicCmsPath(pool, path, config.PUBLIC_ORIGIN);
+    if (!code) throw notFound();
+    return { kind: 'page', code };
   });
 
   app.get('/api/v1/site/layout', async () => {

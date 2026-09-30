@@ -62,6 +62,31 @@ test('CMS page builder, palettes and support widget are fully manageable', { ski
     assert.equal(publicPage.json().sections.length, 2);
     assert.equal(publicPage.json().sections[0].component_code, 'product_slider');
     assert.equal(publicPage.json().sections[1].component_code, 'hero');
+    const pageCode = `home-${suffix}`;
+    const storedPath = `/cms-${suffix}`;
+    const seoSlug = `/seo-${suffix}`;
+    const canonicalPath = `/canonical-${suffix}`;
+    await pool.query('UPDATE cms_pages SET path=$2 WHERE id=$1', [pageId, storedPath]);
+    await pool.query(`INSERT INTO seo_entries(id,entity_type,entity_key,title,canonical_path)
+      VALUES($1,'page',$2,'Canonical CMS title',$3)
+      ON CONFLICT(entity_type,entity_key) DO UPDATE SET title=EXCLUDED.title,canonical_path=EXCLUDED.canonical_path`,
+      [randomUUID(), pageCode, canonicalPath]);
+    await pool.query(`INSERT INTO seo_pages(entity_type,entity_key,slug,canonical_url)
+      VALUES('cms',$1,$2,$3)`, [pageCode, seoSlug, `${config.PUBLIC_ORIGIN}${canonicalPath}`]);
+    for (const path of [storedPath, seoSlug, canonicalPath]) {
+      const resolved = await app.inject({ method: 'GET', url: `/api/v1/site/resolve-path?path=${encodeURIComponent(path)}` });
+      assert.equal(resolved.statusCode, 200, `${path}: ${resolved.body}`);
+      assert.equal(resolved.json().code, pageCode);
+      const loaded = await app.inject({ method: 'GET', url: `/api/v1/site/pages/${resolved.json().code}` });
+      assert.equal(loaded.statusCode, 200);
+      assert.match(loaded.json().seo.title, /Canonical CMS title/);
+      const raw = await app.inject({ method: 'GET', url: path });
+      assert.equal(raw.statusCode, 200, raw.body);
+      assert.match(raw.body, /<title>Canonical CMS title/);
+      assert.match(raw.body, /<link rel="canonical" href=/);
+      assert.match(raw.body, /<main><h1>/);
+    }
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/site/resolve-path?path=/missing-cms-page' })).statusCode, 404);
 
     // Color palettes: 6 coordinated colors, manual and scheduled activation (item 21).
     const palette = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/palettes', headers, payload: {

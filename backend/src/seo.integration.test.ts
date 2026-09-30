@@ -63,6 +63,16 @@ test('SEO/Search/Media PostgreSQL integration smoke', { skip: !databaseUrl }, as
       ($4,NULL,'Kolbe','Noindex Coat','Coats','Description','published',300000,'{}')`, [productId, supplierProductId, vendorId, noindexProductId]);
     await pool.query(`INSERT INTO product_variants(id,product_id,sku,size_label,color_label) VALUES
       ($1,$2,$3,'M','Black'),($4,$5,$6,'M','Black')`, [variantId, productId, `SEO-${suffix}`, supplierVariantId, supplierProductId, `SUP-${suffix}`]);
+    const videoSave = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${productId}/media`, headers,
+      payload: { role: 'video', url: 'https://media.example.test/aurora.mp4', purpose: 'gallery', metadata: { title: 'Aurora video' } } });
+    assert.equal(videoSave.statusCode, 201, videoSave.body);
+    const videoId = videoSave.json().id as string;
+    const adminVideos = await app.inject({ method: 'GET', url: `/api/v1/admin/products/${productId}/media`, headers });
+    assert.ok(adminVideos.json().items.some((item: { id: string; url: string }) => item.id === videoId && item.url === 'https://media.example.test/aurora.mp4'));
+    const publicVideos = await app.inject({ method: 'GET', url: `/api/v1/products/${productId}/media` });
+    assert.ok(publicVideos.json().items.some((item: { id: string; url: string }) => item.id === videoId && item.url === 'https://media.example.test/aurora.mp4'));
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/admin/products/${productId}/media/${videoId}`, headers })).statusCode, 200);
+    assert.ok(!(await app.inject({ method: 'GET', url: `/api/v1/products/${productId}/media` })).json().items.some((item: { id: string }) => item.id === videoId));
     await pool.query(`INSERT INTO seo_pages(entity_type,entity_key,slug,canonical_url,is_indexable) VALUES
       ('product',$1,'/products/aurora','https://kolbe.ir/canonical-aurora',true),
       ('product',$2,'/products/supplier','https://kolbe.ir/canonical-supplier',true),
@@ -72,10 +82,47 @@ test('SEO/Search/Media PostgreSQL integration smoke', { skip: !databaseUrl }, as
     assert.match(sitemap.body, /https:\/\/kolbe\.ir\/canonical-aurora/);
     assert.match(sitemap.body, /<loc>https:\/\/kolbe\.ir\/<\/loc>/);
     assert.doesNotMatch(sitemap.body, /canonical-supplier|products\/noindex/);
+    const productSeo = await app.inject({ method: 'PUT', url: `/api/v1/admin/seo/pages/product/${productId}`, headers,
+      payload: { seoTitle: 'Aurora SEO Center title', metaDescription: 'Aurora description from SEO Center',
+        slug: '/products/aurora', canonicalUrl: 'https://kolbe.ir/canonical-aurora', isIndexable: true,
+        isFollowable: true, socialTitle: '', socialDescription: '', socialImageUrl: '', schemaOverride: {} } });
+    assert.equal(productSeo.statusCode, 200, productSeo.body);
+    const rawProduct = await app.inject({ method: 'GET', url: `/product/${productId}` });
+    assert.equal(rawProduct.statusCode, 200, rawProduct.body);
+    assert.match(rawProduct.body, /<title>Aurora SEO Center title/);
+    assert.match(rawProduct.body, /Aurora description from SEO Center/);
+    assert.match(rawProduct.body, /<link rel="canonical" href="https:\/\/kolbe\.ir\/canonical-aurora">/);
+    assert.match(rawProduct.body, /"@type":"Product"/);
+    assert.match(rawProduct.body, /"@type":"ProductGroup"/);
+    assert.match(rawProduct.body, /"priceCurrency":"IRR","price":"500000"/);
+    assert.doesNotMatch(rawProduct.body, /aggregateRating/);
+    const rawCategory = await app.inject({ method: 'GET', url: '/category/coats' });
+    assert.equal(rawCategory.statusCode, 200, rawCategory.body);
+    assert.match(rawCategory.body, /<h1>کت و پالتو<\/h1>/);
 
     // Search is a discovery layer; the price/availability filters read product prices and stock rows.
     await pool.query('INSERT INTO warehouses(id,code,name) VALUES ($1,$2,$3)', [warehouseId, `SEO-${suffix}`, 'SEO test warehouse']);
     await pool.query('INSERT INTO stock_balances(variant_id,warehouse_id,on_hand,reserved,damaged) VALUES ($1,$2,4,0,0)', [variantId, warehouseId]);
+    await pool.query("UPDATE products SET gender='female',seasons=ARRAY['winter'],vibes=ARRAY['classic'],description='بارانی وینتج' WHERE id=$1", [productId]);
+    const firstCatalogPage = await app.inject({ method: 'GET', url: '/api/v1/products?limit=1&offset=0' });
+    const secondCatalogPage = await app.inject({ method: 'GET', url: '/api/v1/products?limit=1&offset=1' });
+    assert.equal(firstCatalogPage.statusCode, 200, firstCatalogPage.body);
+    assert.equal(secondCatalogPage.statusCode, 200, secondCatalogPage.body);
+    assert.notEqual(firstCatalogPage.json().items[0]?.id, secondCatalogPage.json().items[0]?.id);
+    for (const query of [
+      'q=Aurora', 'q=%D8%A8%D8%A7%D8%B1%D8%A7%D9%86%DB%8C', 'category=Coats',
+      'gender=female', 'season=winter', 'vibe=classic',
+      'gender=female&season=winter&vibe=classic&category=Coats',
+    ]) {
+      const response = await app.inject({ method: 'GET', url: `/api/v1/search?${query}` });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.ok(response.json().items.some((item: { id: string }) => item.id === productId), query);
+    }
+    for (const query of ['gender=invalid', 'season=summer', 'vibe=unknown']) {
+      const response = await app.inject({ method: 'GET', url: `/api/v1/search?${query}` });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.ok(!response.json().items.some((item: { id: string }) => item.id === productId), query);
+    }
     await pool.query("INSERT INTO search_synonyms(phrase,replacement) VALUES ('vintage rainwear','Aurora Coat')");
     const synonymSearch = await app.inject({ method: 'GET', url: '/api/v1/search?q=vintage%20rainwear&available=true&minPriceRial=500000&maxPriceRial=500000' });
     assert.equal(synonymSearch.statusCode, 200, synonymSearch.body);
@@ -97,6 +144,17 @@ test('SEO/Search/Media PostgreSQL integration smoke', { skip: !databaseUrl }, as
     const followed = await app.inject({ method: 'GET', url: '/legacy-coat' });
     assert.equal(followed.statusCode, 301);
     assert.equal(followed.headers.location, '/current-coat');
+    for (const targetPath of ['//evil.example', 'http://evil.example', 'https://evil.example',
+      'javascript:alert(1)', 'data:text/html,x', '/\\evil.example', '/%2Fevil.example', '/%5Cevil.example',
+      '/safe\\evil.example', '/safe\r\nLocation: https://evil.example']) {
+      const unsafe = await app.inject({ method: 'POST', url: '/api/v1/admin/seo/redirects', headers,
+        payload: { sourcePath: `/unsafe-${randomUUID()}`, targetPath, statusCode: 301, active: true } });
+      assert.equal(unsafe.statusCode, 400, `unsafe redirect ${JSON.stringify(targetPath)}: ${unsafe.body}`);
+    }
+    await pool.query("INSERT INTO seo_redirects(id,source_path,target_path,status_code) VALUES ($1,'/legacy-unsafe','//evil.example',301)", [randomUUID()]);
+    const legacyUnsafe = await app.inject({ method: 'GET', url: '/legacy-unsafe' });
+    assert.equal(legacyUnsafe.statusCode, 400);
+    assert.equal(legacyUnsafe.headers.location, undefined);
     const loopWrite = await app.inject({ method: 'POST', url: '/api/v1/admin/seo/redirects', headers, payload: { sourcePath: '/current-coat', targetPath: '/legacy-coat', statusCode: 302, active: true } });
     assert.equal(loopWrite.statusCode, 400, loopWrite.body);
     await pool.query("INSERT INTO seo_redirects(id,source_path,target_path,status_code) VALUES ($1,'/old-loop-a','/old-loop-b',301),($2,'/old-loop-b','/old-loop-a',301)", [randomUUID(), randomUUID()]);
@@ -119,6 +177,11 @@ test('SEO/Search/Media PostgreSQL integration smoke', { skip: !databaseUrl }, as
     } });
     assert.equal(article.statusCode, 201, article.body);
     assert.equal((await app.inject({ method: 'GET', url: `/api/v1/public/editorial/${article.json().slug}` })).statusCode, 200);
+    const rawBlog = await app.inject({ method: 'GET', url: `/journal/${article.json().slug}` });
+    assert.equal(rawBlog.statusCode, 200, rawBlog.body);
+    assert.match(rawBlog.body, /<title>SEO smoke article<\/title>/);
+    assert.match(rawBlog.body, /<h1>SEO smoke article<\/h1>/);
+    assert.match(rawBlog.body, /"@type":"Article"/);
     const media = await app.inject({ method: 'POST', url: '/api/v1/admin/media', headers, payload: {
       mediaType: 'image', sourceType: 'external', publicUrl: 'https://media.example.test/aurora.jpg', mimeType: 'image/jpeg',
       altText: 'Aurora coat front view', title: 'Aurora front', metadata: {},
