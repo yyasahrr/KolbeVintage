@@ -37,7 +37,9 @@ export function TryOn({ onLogin }: { onLogin: () => void }) {
     setLoadingProducts(true);
     catalogApi.list({ limit: 60 }).then(({ items }) => {
       if (!live) return;
-      const available = items.flatMap((item) => { const image = productImage(item); return image ? [{ ...item, image }] : []; });
+      const order: Record<string, number> = { "کت و پالتو": 0, "پیراهن و شومیز": 1, "شلوار": 2, "بافت و هودی": 3, "کفش و بوت": 4, "اکسسوری": 5 };
+      const available = items.flatMap((item) => { const image = productImage(item); return image ? [{ ...item, image }] : []; })
+        .sort((a, b) => (order[a.category] ?? 9) - (order[b.category] ?? 9));
       setProducts(available);
       setProductId((current) => current && available.some((item) => item.id === current) ? current : available[0]?.id ?? "");
       setError("");
@@ -131,7 +133,7 @@ export function TryOn({ onLogin }: { onLogin: () => void }) {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{products.map((item) => <button key={item.id} type="button" onClick={() => setProductId(item.id)} aria-pressed={item.id === productId}
               className={cn("overflow-hidden rounded-lg border text-right transition-colors", item.id === productId ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.04]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]") }>
               <img src={item.image} alt="" loading="lazy" className="aspect-[3/4] w-full object-cover"/><span className="block truncate px-2.5 py-2 text-xs font-bold">{item.name}</span></button>)}</div>}
-          <Btn variant="accent" className="mt-5" disabled={!product} onClick={() => setStep(1)} icon={<ArrowLeft size={16}/>}>ادامه</Btn>
+          <Btn variant="accent" className="mt-5" disabled={!product} onClick={() => isAuthenticated() ? setStep(1) : onLogin()} icon={<ArrowLeft size={16}/>}>{isAuthenticated() ? "ادامه" : "ورود برای پرو مجازی"}</Btn>
         </div>}
 
         {step === 1 && <div>
