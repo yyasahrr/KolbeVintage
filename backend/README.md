@@ -65,3 +65,5 @@ Example checkout body:
 The backend provides the core data and transaction layer. It is **not yet a production payment system**. Zibal and NextPay are wired for cash retail and cash wholesale respectively, and MeliPayamak SMS is wired to the worker, but no live merchant credentials or sandbox callbacks have been tested. The admin console now uses server authentication and exposes a real order list and status transitions. Its other modules and the customer/supplier portals still use local demo data. DigiPay and SnappPay installment checkout, Vandar wallet/IBAN settlement, refund/reconciliation jobs, and the remaining frontend API replacement still need implementation and provider-specific acceptance tests. A pending payment never becomes paid without a verified provider response. Use the provider contract and keys issued to this merchant before enabling those flows.
 
 In development, Vite proxies `/api` to `http://127.0.0.1:4000`. In deployment, route `/api` to the backend at the reverse proxy or set `VITE_API_BASE_URL` to the public API origin when building the frontend.
+
+[راهنمای اتصال پرو مجازی به API آلفا](../docs/ALPHA_TRYON_FA.md)

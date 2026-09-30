@@ -24,6 +24,7 @@ const schema = z.object({
   S3_ACCESS_KEY_ID: z.string().min(1).optional(),
   S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   S3_PUBLIC_BASE_URL: z.url().optional(),
+  ALPHA_API_KEY: z.string().min(12).optional(),
 }).refine((env) => {
   const storage = [env.S3_ENDPOINT, env.S3_REGION, env.S3_BUCKET, env.S3_ACCESS_KEY_ID, env.S3_SECRET_ACCESS_KEY, env.S3_PUBLIC_BASE_URL];
   return storage.every((value) => !value) || storage.every(Boolean);
