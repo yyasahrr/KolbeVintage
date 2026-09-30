@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft, BadgeCheck, Check, ChevronLeft, Clock, Crown, FileText, Headset, Lock, MapPin,
   Package, Send, ShieldCheck, ShoppingBag, Star, Trash2, Wallet, Store as StoreIcon, Truck,
@@ -7,6 +7,7 @@ import { IMG, fmtMoney, fmtNum, type Product, type SeriesDef } from "../data/cat
 import { useStore } from "../data/store";
 import { KOLBE, BUYER_ADDRESS, limitsOf, describeLimits, type VipPlan } from "../data/platform";
 import { useOps } from "../data/ops";
+import { apiClient, membershipApi } from "../data/api";
 import { ParentOrderCard, SupplierChip } from "../components/orders";
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Swatch, Stepper, Empty, Input, Segmented, Field } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -223,8 +224,16 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const store = useStore();
   const { products, orders, plans, shipping, buyers } = store;
   const wcart = store.wcart.filter((line) => line.accountId === accountId);
+  void useEffect; // used above
   const ops = useOps();
-  const myPlan = plans.find((p) => p.id === (buyers.find((b) => b.name === buyer)?.planId ?? "gold")) ?? plans[0];
+  // Wholesale catalog is server-backed: GET /wholesale/products requires active membership (limits). Public sees store cache; VIP sees server auth price.
+  const [wholesaleServer, setWholesaleServer] = useState<Product[] | null>(null);
+  const [vipLoading, setVipLoading] = useState(false);
+  const [vipError, setVipError] = useState<string | null>(null);
+  const [serverPlans, setServerPlans] = useState<VipPlan[] | null>(null);
+  const [serverMembership, setServerMembership] = useState<any | null>(null);
+  const effectivePlans = serverPlans ?? plans;
+  const myPlan = effectivePlans.find((p) => p.id === (serverMembership?.planId ?? buyers.find((b) => b.name === buyer)?.planId ?? "gold")) ?? effectivePlans[0];
   const L = limitsOf(myPlan);
   const canSee = role === "vip" && L.showPrices;
   const sourceLocked = role === "vip" && L.sources === "kolbe";
@@ -241,16 +250,39 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const [toast, setToast] = useState<string | null>(null);
   const [justPlaced, setJustPlaced] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3400); };
-
-  const market = products.filter((p) => p.status === "published" && p.wholesaleFrom > 0);
+  const marketBase = products.filter((p) => p.status === "published" && p.wholesaleFrom > 0);
+  const market = wholesaleServer ?? marketBase;
   const selected = useMemo(() => market.find((p) => p.id === selectedId) ?? null, [selectedId, market]);
+  // Server state for membership/plans: authoritative pricing/limits/credit
+  useEffect(()=>{ if(role!=="vip") return; let cancel=false; (async()=>{ setVipLoading(true); setVipError(null);
+    try{
+      const [wh, pl, mem] = await Promise.all([
+        membershipApi.wholesaleProducts().catch(()=>null),
+        apiClient.get<{ items: VipPlan[] }>("/plans").catch(()=>null),
+        membershipApi.current().catch(()=>null),
+      ]);
+      if(cancel) return;
+      if(wh && (wh as any).items) {
+        // Map backend wholesale items to Product shape where possible; keep store products as fallback for images/series
+        const mapped: Product[] = (wh as any).items.map((row:any)=> {
+          const local = marketBase.find(m=> m.id===row.id || m.sku===row.sku);
+          if(local) return { ...local, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : local.wholesaleFrom };
+          return { id: row.id, sku: row.sku, name: row.name ?? row.product_name ?? "محصول", brand: row.brand ?? "", supplier: row.supplier_id ?? "کلبه", supplierId: row.supplier_id ?? "kolbe", category: row.category ?? "عمومی", retailPrice: 0, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : 0, rating:0, reviews:0, colors:[], images:[IMG.neutralRack], series:[], seriesCount:0, moq:1, stock: 100, fabric:"", desc:"", status:"published" } as unknown as Product;
+        });
+        if(mapped.length) setWholesaleServer(mapped);
+      }
+      if(pl && (pl as any).items) setServerPlans((pl as any).items);
+      if(mem) setServerMembership(mem);
+    } catch(e){ if(!cancel) setVipError(e instanceof Error? e.message : "خطا"); }
+    finally{ if(!cancel) setVipLoading(false); }
+  })(); return ()=>{ cancel=true; } }, [role]);
   const cats = ["همه", ...Array.from(new Set(market.map((p) => p.category)))];
   const filtered = market.filter((p) => (cat === "همه" || p.category === cat) && (!q.trim() || p.name.includes(q.trim()) || p.supplier.includes(q.trim())));
   const kolbeList = filtered.filter((p) => p.supplierId === KOLBE.id);
   const otherList = filtered.filter((p) => p.supplierId !== KOLBE.id);
 
   const myOrders = orders.filter((o) => o.accountId ? o.accountId === accountId : o.buyer === buyer);
-  const actionCount = myOrders.reduce((a, o) => a + o.subOrders.filter((s) => s.status === "approved").length, 0);
+  const actionCount = myOrders.reduce((a, o) => a + (o.subOrders ?? []).filter((s) => s.status === "approved").length, 0);
   const wholesaleShipping = shipping.filter((s) => s.active && s.scope !== "خرده");
   const chosenShip = wholesaleShipping.find((s) => s.id === shipId) ?? wholesaleShipping[0];
 
@@ -338,6 +370,8 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
         />
       ) : tab === "catalog" ? (
         <div className="animate-[fadeUp_0.4s_ease]">
+          {vipLoading && <div className="mb-3 rounded-[12px] bg-[var(--kv-surface-2)] px-4 py-2 text-xs text-[var(--kv-muted)]">در حال بارگذاری کاتالوگ عمده…</div>}
+          {vipError && <div className="mb-3 rounded-[12px] border border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{vipError} <button onClick={()=>window.location.reload()} className="underline">تلاش دوباره</button></div>}
           <section className="relative overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
             <img src={IMG.neutralRack} alt="" className="absolute inset-0 h-full w-full object-cover" />
             <div className="absolute inset-0 bg-gradient-to-l from-[#0E1527]/88 via-[#0E1527]/62 to-[#0E1527]/20" />
@@ -530,7 +564,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
               </Card>
               <p className="mb-3 mt-8 text-[15px] font-extrabold">پلن‌های عضویت</p>
               <div className="grid gap-4 md:grid-cols-3">
-                {plans.filter((p) => p.active).map((p) => <PlanCard key={p.id} plan={p} current={p.id === myPlan?.id} cta={p.id === myPlan?.id ? undefined : "درخواست تغییر پلن"} onPick={p.id === myPlan?.id ? undefined : () => flash(`درخواست تغییر به پلن ${p.name} برای کارشناس حساب ارسال شد`)} />)}
+                {effectivePlans.filter((p) => p.active).map((p) => <PlanCard key={p.id} plan={p} current={p.id === myPlan?.id} cta={p.id === myPlan?.id ? undefined : "درخواست تغییر پلن"} onPick={p.id === myPlan?.id ? undefined : () => flash(`درخواست تغییر به پلن ${p.name} برای کارشناس حساب ارسال شد`)} />)}
               </div>
               <Card className="mt-5 p-6">
                 <p className="mb-3 text-sm font-bold">نشانی‌های تحویل</p>
@@ -546,7 +580,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
             <>
               <SectionHead title="پلن‌های عضویت عمده" desc="بعد از ثبت درخواست و تأیید مدارک کسب‌وکار (معمولاً یک روز کاری)، قیمت‌های عمده و ثبت سفارش فعال می‌شود." />
               <div className="grid gap-4 md:grid-cols-3">
-                {plans.filter((p) => p.active).map((p) => <PlanCard key={p.id} plan={p} cta="درخواست عضویت" onPick={onAuth} />)}
+                {effectivePlans.filter((p) => p.active).map((p) => <PlanCard key={p.id} plan={p} cta="درخواست عضویت" onPick={onAuth} />)}
               </div>
             </>
           )}

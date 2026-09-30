@@ -1,6 +1,7 @@
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useId } from "react";
 import { Check, ChevronLeft, Minus, Plus, Search, X } from "lucide-react";
 import { cn } from "../utils/cn";
+import { useDialogFocus } from "./focus-trap";
 
 /* ---------- Button ---------- */
 export function Btn({
@@ -110,7 +111,8 @@ export function Input({ placeholder, value, onChange, icon, className, type = "t
     <div className={cn("relative", className)}>
       {icon && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--kv-faint)]">{icon}</span>}
       <input type={type}
-        value={value} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
+        // `undefined` keeps the field uncontrolled; a null value made React warn on every render.
+        value={value ?? ""} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
         className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 text-sm text-[var(--kv-ink)] outline-none transition-all placeholder:text-[var(--kv-faint)] focus:border-[var(--kv-accent)] focus:ring-2 focus:ring-[var(--kv-accent)]/15"
         style={icon ? { paddingRight: 42 } : undefined}
       />
@@ -214,20 +216,16 @@ export function Skeleton({ className }: { className?: string }) {
 
 /* ---------- Overlays ---------- */
 export function Drawer({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
+  const ref = useDialogFocus<HTMLElement>(open, onClose);
+  const titleId = useId();
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[70]">
-      <div className="absolute inset-0 bg-[#0E1527]/45 backdrop-blur-[2px] animate-[fadeIn_0.25s_ease]" onClick={onClose} />
-      <aside role="dialog" aria-modal="true" aria-label={title} className={cn("absolute left-0 top-0 flex h-full flex-col bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[drawerIn_0.3s_cubic-bezier(0.22,1,0.36,1)]", wide ? "w-full max-w-[560px]" : "w-full max-w-[420px]")}>
+      <div className="absolute inset-0 bg-[#0E1527]/45 backdrop-blur-[2px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <aside ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} className={cn("absolute left-0 top-0 flex h-full flex-col bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[drawerIn_0.3s_cubic-bezier(0.22,1,0.36,1)]", wide ? "w-full max-w-[560px]" : "w-full max-w-[420px]")}>
         <div className="flex items-center justify-between border-b border-[var(--kv-line)] px-6 py-4">
-          <h3 className="text-[16px] font-bold">{title}</h3>
-          <button autoFocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+          <h3 id={titleId} className="text-[16px] font-bold">{title}</h3>
+          <button data-autofocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
         </div>
         <div className="kv-scroll flex-1 overflow-y-auto p-6">{children}</div>
       </aside>
@@ -236,20 +234,29 @@ export function Drawer({ open, onClose, title, children, wide }: { open: boolean
 }
 
 export function Modal({ open, onClose, children, max = "max-w-[560px]", title = "پنجره" }: { open: boolean; onClose: () => void; children: ReactNode; max?: string; title?: string }) {
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-[#0E1527]/50 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label={title} className={cn("relative w-full rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-7 shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)]", max)}>
-        <button autoFocus onClick={onClose} className="kv-press absolute left-5 top-5 flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+      <div className="absolute inset-0 bg-[#0E1527]/50 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <div ref={ref} role="dialog" aria-modal="true" aria-label={title} className={cn("relative w-full rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-7 shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)]", max)}>
+        <button data-autofocus onClick={onClose} className="kv-press absolute left-5 top-5 flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
         {children}
       </div>
+    </div>
+  );
+}
+
+/** Full-screen media viewer with the same dialog focus rules (trap, Escape, restore); arrow keys via onKey. */
+export function Lightbox({ open, onClose, label, children, onKey, caption, z = "z-[80]" }: { open: boolean; onClose: () => void; label: string; children: ReactNode;
+  onKey?: (event: KeyboardEvent) => void; caption?: ReactNode; z?: string }) {
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose, { onKey });
+  if (!open) return null;
+  return (
+    <div ref={ref} role="dialog" aria-modal="true" aria-label={label} className={cn("fixed inset-0 flex items-center justify-center bg-black/85 p-4", z)} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="contents">{children}</div>
+      <button data-autofocus onClick={onClose} aria-label="بستن" className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white focus-visible:outline-2 focus-visible:outline-white"><X size={20} /></button>
+      {caption && <p className="absolute bottom-4 text-[12px] text-white/80" aria-live="polite">{caption}</p>}
     </div>
   );
 }
@@ -295,7 +302,7 @@ export function Timeline({ items }: { items: { t: string; d: string; time: strin
 export function Textarea({ placeholder, value, onChange, rows = 3 }: { placeholder?: string; value?: string; onChange?: (v: string) => void; rows?: number }) {
   return (
     <textarea
-      rows={rows} value={value} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
+      rows={rows} value={value ?? ""} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
       className="w-full resize-y rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3 text-sm leading-6 text-[var(--kv-ink)] outline-none transition-all placeholder:text-[var(--kv-faint)] focus:border-[var(--kv-accent)] focus:ring-2 focus:ring-[var(--kv-accent)]/15"
     />
   );
@@ -307,5 +314,32 @@ export function Checkbox({ checked, onChange, label }: { checked: boolean; onCha
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 accent-[#C1613B]" />
       {label}
     </label>
+  );
+}
+
+/* ---------- Server-state helpers: Loading / Error / Empty / Permission ---------- */
+export function LoadingState({ label = "در حال بارگذاری…" }: { label?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-6 py-10 text-center animate-[fadeIn_0.3s_ease]">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--kv-line-strong)] border-t-[var(--kv-accent)]" aria-label="loading" />
+      <p className="mt-3 text-[13px] font-medium text-[var(--kv-muted)]">{label}</p>
+    </div>
+  );
+}
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-danger)]/20 bg-[var(--kv-danger)]/[0.04] px-6 py-10 text-center">
+      <p className="text-[13px] font-bold text-[var(--kv-danger)]">خطا در بارگذاری</p>
+      <p className="mt-1.5 max-w-[40ch] text-[12.5px] leading-6 text-[var(--kv-muted)]">{message}</p>
+      {onRetry && <Btn variant="soft" size="sm" className="mt-4" onClick={onRetry}>تلاش دوباره</Btn>}
+    </div>
+  );
+}
+export function PermissionDenied({ message = "دسترسی لازم را ندارید." }: { message?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-dashed border-[var(--kv-line-strong)] bg-[var(--kv-surface)] px-6 py-10 text-center">
+      <p className="text-[14px] font-bold">دسترسی محدود</p>
+      <p className="mt-1.5 text-[12.5px] text-[var(--kv-muted)]">{message}</p>
+    </div>
   );
 }

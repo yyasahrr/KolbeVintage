@@ -7,7 +7,9 @@ import { PRODUCTS, IMG, fmtMoney } from "../data/catalog";
 import { digitsOnly } from "../data/customer";
 import { useStore } from "../data/store";
 import { Btn, Card, Field, Input } from "../components/primitives";
+import { authApi } from "../data/api";
 import { StyleCanvas } from "./style-canvas";
+import { StyleStudio, type CartAddLine } from "./style-studio";
 import { cn } from "../utils/cn";
 
 /* ================= STYLE BUILDER ================= */
@@ -251,10 +253,26 @@ export function TryOn() {
 
 /* ================= AUTH ================= */
 export function AuthScreens({ portal, onDone }: { portal: string; onDone: (phone: string) => void }) {
-  const [mode, setMode] = useState<"login" | "otp">("login");
+  const [mode, setMode] = useState<"login" | "otp" | "activate">("login");
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
+  const [activate, setActivate] = useState({ token: "", password: "", confirm: "" });
+  const [activating, setActivating] = useState(false);
+  const [activated, setActivated] = useState(false);
+
+  const submitActivation = async () => {
+    if (!activate.token.trim()) { setError("توکن فعال‌سازی را وارد کنید."); return; }
+    if (activate.password.length < 8) { setError("گذرواژه دست‌کم ۸ نویسه باشد."); return; }
+    if (activate.password !== activate.confirm) { setError("تکرار گذرواژه مطابقت ندارد."); return; }
+    setActivating(true); setError("");
+    try {
+      await authApi.setPassword({ token: activate.token.trim(), newPassword: activate.password });
+      setActivated(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "فعال‌سازی ناموفق بود.");
+    } finally { setActivating(false); }
+  };
   const conf: Record<string, { t: string; d: string; icon: React.ReactNode; tone: string }> = {
     retail: { t: "ورود به حساب کلبه", d: "یک حساب برای خرید خرده، عضویت عمده و استایل‌های شما.", icon: <User size={20} />, tone: "bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]" },
     supplier: { t: "ورود تأمین‌کننده", d: "مدیریت محصولات، سفارش‌ها و تسویه.", icon: <Store size={20} />, tone: "bg-[var(--kv-surface-2)] text-[var(--kv-ink)]" },
@@ -275,9 +293,27 @@ export function AuthScreens({ portal, onDone }: { portal: string; onDone: (phone
             <Field label="شماره موبایل"><Input placeholder="۰۹۱۲ ۳۴۵ ۶۷۸۹" value={phone} onChange={(v) => { setPhone(v); setError(""); }} /></Field>
             {error && <p role="alert" className="text-[12px] text-[var(--kv-danger)]">{error}</p>}
             <Btn variant={portal === "admin" ? "dark" : "accent"} className="w-full" size="lg" onClick={() => { if (!/^09\d{9}$/.test(digitsOnly(phone))) { setError("شماره همراه ۱۱ رقمی معتبر وارد کنید."); return; } setMode("otp"); setError(""); }}>ادامه با شماره همراه</Btn>
+            <button onClick={() => { setMode("activate"); setError(""); setActivated(false); }} className="w-full text-center text-[12.5px] font-bold text-[var(--kv-accent)] hover:underline">حساب منتقل‌شده از فروشگاه قبلی دارم (فعال‌سازی با توکن)</button>
             <p className="flex items-center justify-center gap-1.5 text-xs text-[var(--kv-muted)]"><Lock size={12} />نسخه آزمایشی: پیامک واقعی ارسال نمی‌شود.</p>
           </div>
-        ) : (
+        ) : mode === "activate" ? (
+          <div className="space-y-4">
+            <p className="text-center text-[13px] leading-7 text-[var(--kv-muted)]">توکن یک‌بارمصرفی که پس از مهاجرت حساب دریافت کرده‌اید وارد کنید و گذرواژه جدید بسازید.</p>
+            {activated ? (
+              <p role="status" className="rounded-[10px] bg-emerald-500/10 px-4 py-3 text-center text-[13px] font-bold text-emerald-700 dark:text-emerald-400">حساب شما فعال شد — حالا با شماره همراه وارد شوید.</p>
+            ) : (
+              <>
+                <Field label="توکن فعال‌سازی"><Input placeholder="مثلاً ۹f3a…" value={activate.token} onChange={(v) => { setActivate({ ...activate, token: v }); setError(""); }} /></Field>
+                <Field label="گذرواژه جدید (دست‌کم ۸ نویسه)"><Input type="password" value={activate.password} onChange={(v) => { setActivate({ ...activate, password: v }); setError(""); }} /></Field>
+                <Field label="تکرار گذرواژه جدید"><Input type="password" value={activate.confirm} onChange={(v) => { setActivate({ ...activate, confirm: v }); setError(""); }} /></Field>
+                {error && <p role="alert" className="text-[12px] text-[var(--kv-danger)]">{error}</p>}
+                <Btn variant={portal === "admin" ? "dark" : "accent"} className="w-full" size="lg" disabled={activating} onClick={() => void submitActivation()}>{activating ? "در حال فعال‌سازی…" : "فعال‌سازی حساب"}</Btn>
+              </>
+            )}
+            {!activated && error === "" && null}
+            <button onClick={() => { setMode("login"); setError(""); }} className="flex w-full items-center justify-center gap-1 text-[13px] font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]"><ChevronLeft size={14} className="rotate-180" />بازگشت به ورود</button>
+          </div>
+          ) : (
           <div className="space-y-4">
             <p className="text-center text-[13px] text-[var(--kv-muted)]">شماره همراه: <b className="text-[var(--kv-ink)] tabular-nums" dir="ltr">{digitsOnly(phone)}</b></p>
             <Field label="کد آزمایشی (۱۲۳۴۵)"><input inputMode="numeric" autoComplete="one-time-code" maxLength={5} value={code} onChange={(e) => { setCode(digitsOnly(e.target.value)); setError(""); }} className="h-12 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 text-center text-lg font-bold tracking-[0.3em] text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" dir="ltr" /></Field>
@@ -285,14 +321,16 @@ export function AuthScreens({ portal, onDone }: { portal: string; onDone: (phone
             <Btn variant={portal === "admin" ? "dark" : "accent"} className="w-full" size="lg" onClick={() => { if (code !== "12345") { setError("کد آزمایشی ۱۲۳۴۵ است."); return; } onDone(digitsOnly(phone)); }}>ورود به حساب</Btn>
             <button onClick={() => setMode("login")} className="flex w-full items-center justify-center gap-1 text-[13px] font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]"><ChevronLeft size={14} className="rotate-180" />تغییر شماره</button>
           </div>
-        )}
+          )
+        }
       </Card>
       <p className="mt-5 text-center text-xs leading-6 text-[var(--kv-muted)]">با ورود، <b>قوانین استفاده</b> و <b>حریم خصوصی</b> کلبه را می‌پذیرید.</p>
     </div>
   );
 }
 
-export default function StudioExperience({ tab, setTab, accountId, onLogin }: { tab: string; setTab: (t: string) => void; accountId?: string; onLogin: () => void }) {
+export default function StudioExperience({ tab, setTab, accountId, onLogin, onAddItems }: { tab: string; setTab: (t: string) => void; accountId?: string; onLogin: () => void; onAddItems?: (lines: CartAddLine[]) => void }) {
+  const demo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   return (
     <div>
       <div className="mx-auto flex w-full max-w-[1400px] justify-center px-4 pt-5 md:px-8">
@@ -304,7 +342,7 @@ export default function StudioExperience({ tab, setTab, accountId, onLogin }: { 
           ))}
         </div>
       </div>
-      {tab === "builder" ? <StyleCanvas accountId={accountId} onLogin={onLogin} /> : <TryOn />}
+      {tab === "builder" ? (demo ? <StyleCanvas accountId={accountId} onLogin={onLogin} /> : <StyleStudio accountId={accountId} onLogin={onLogin} onAddItems={onAddItems} />) : <TryOn />}
     </div>
   );
 }
