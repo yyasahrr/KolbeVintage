@@ -4,7 +4,8 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
-import { audit, claimIdempotency, completeIdempotency, requestHash } from './operations.js';
+import { audit, claimIdempotency, completeIdempotency, notifyByPermission, requestHash } from './operations.js';
+import { LOW_STOCK_THRESHOLD } from './inventory.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { asRial, rial } from './money.js';
 
@@ -101,12 +102,22 @@ export function registerManualSaleRoutes(app: FastifyInstance, pool: DbPool, con
         // Consume sellable stock atomically; the guard keeps available >= 0.
         // Manual sales are retail-channel events, so only the RETAIL inventory
         // domain is consumed (Agent 1 domain separation — never wholesale stock).
-        const balance = await one<{ on_hand: number }>(client,
+        const balance = await one<{ on_hand: number; reserved: number; damaged: number }>(client,
           `UPDATE stock_balances SET on_hand = on_hand - $3, version = version + 1, updated_at = now()
            WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'retail'
              AND on_hand - $3 >= reserved + damaged
-           RETURNING on_hand`, [line.variantId, body.warehouseId, line.quantity]);
+           RETURNING on_hand, reserved, damaged`, [line.variantId, body.warehouseId, line.quantity]);
         if (!balance) throw conflict(`موجودی قابل فروش «${variant.sku}» در انبار انتخاب‌شده کافی نیست.`);
+
+        // S: server-backed low/out-of-stock alerts after every real decrement.
+        const availableNow = balance.on_hand - balance.reserved - balance.damaged;
+        if (availableNow <= 0) {
+          await notifyByPermission(client, 'inventory:read', 'inventory.out_of_stock', 'variant', variant.id,
+            `اتمام موجودی ${variant.sku}`, `موجودی قابل‌فروش «${variant.product_name}» (${variant.sku}) در خرده‌فروشی صفر شد.`, 'high');
+        } else if (availableNow <= LOW_STOCK_THRESHOLD) {
+          await notifyByPermission(client, 'inventory:read', 'inventory.low_stock', 'variant', variant.id,
+            `موجودی کم ${variant.sku}`, `تنها ${availableNow} عدد از «${variant.product_name}» (${variant.sku}) در خرده‌فروشی باقی مانده است.`, 'normal');
+        }
         await client.query(
           `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
            VALUES ($1,$2,$3,'retail',$4,'manual sale','manual_sale',$5,$6,$7)`,

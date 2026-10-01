@@ -728,6 +728,56 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
   });
 
   /**
+   * P: hard delete is only allowed for fully clean products (no orders, invoices,
+   * movements, receipts, transfers, manual sales, promotions, supplier requests or
+   * series history). Anything with history must be archived/disabled instead.
+   */
+  app.delete('/api/v1/products/:id', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'products:write');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+
+    return transaction(pool, async (client) => {
+      const product = await one<{ id: string; name: string }>(client, 'SELECT id, name FROM products WHERE id = $1 FOR UPDATE', [id]);
+      if (!product) throw notFound();
+
+      const blockers: string[] = [];
+      const checks: Array<{ label: string; sql: string }> = [
+        { label: 'سفارش ثبت‌شده', sql: `SELECT 1 FROM order_lines ol JOIN product_variants v ON v.id = ol.variant_id WHERE v.product_id = $1 LIMIT 1` },
+        { label: 'گردش موجودی', sql: `SELECT 1 FROM stock_movements m JOIN product_variants v ON v.id = m.variant_id WHERE v.product_id = $1 LIMIT 1` },
+        { label: 'رسید انبار', sql: `SELECT 1 FROM stock_receipts r JOIN product_variants v ON v.id = r.variant_id WHERE v.product_id = $1 LIMIT 1` },
+        { label: 'انتقال موجودی', sql: `SELECT 1 FROM stock_transfers t JOIN product_variants v ON v.id = t.variant_id WHERE v.product_id = $1 LIMIT 1` },
+        { label: 'فروش دستی', sql: `SELECT 1 FROM manual_sale_lines l JOIN product_variants v ON v.id = l.variant_id WHERE v.product_id = $1 LIMIT 1` },
+        { label: 'قانون تخفیف/جشنواره', sql: `SELECT 1 FROM promotion_rules WHERE product_id = $1 LIMIT 1` },
+        { label: 'درخواست تأمین', sql: `SELECT 1 FROM supplier_request_items WHERE product_id = $1 LIMIT 1` },
+        { label: 'قالب سری', sql: `SELECT 1 FROM series_templates WHERE product_id = $1 LIMIT 1` },
+        { label: 'سند تملک', sql: `SELECT 1 FROM ownership_conversions WHERE product_id = $1 LIMIT 1` },
+      ];
+      for (const check of checks) {
+        const hit = await one<{ ok: number }>(client, check.sql, [id]);
+        if (hit) blockers.push(check.label);
+      }
+      const stocked = await one<{ ok: number }>(client,
+        `SELECT 1 AS ok FROM stock_balances b JOIN product_variants v ON v.id = b.variant_id
+         WHERE v.product_id = $1 AND (b.on_hand > 0 OR b.reserved > 0 OR b.incoming > 0 OR b.damaged > 0) LIMIT 1`, [id]);
+      if (stocked) blockers.push('موجودی فیزیکی');
+
+      if (blockers.length > 0) {
+        throw conflict(
+          `این محصول دارای سابقه (${blockers.join('، ')}) است و حذف فیزیکی آن مجاز نیست؛ به‌جای حذف، آن را آرشیو یا غیرفعال کنید.`,
+        );
+      }
+
+      await client.query('DELETE FROM stock_balances WHERE variant_id IN (SELECT id FROM product_variants WHERE product_id = $1)', [id]);
+      await client.query('DELETE FROM product_variants WHERE product_id = $1', [id]);
+      await client.query('DELETE FROM products WHERE id = $1', [id]);
+      await audit(client, user.id, 'product.hard_deleted', 'product', id, { name: product.name }, undefined, request.ip);
+      await outbox(client, 'product.hard_deleted', 'product', id, { productId: id, name: product.name });
+      return { id, deleted: true };
+    });
+  });
+
+  /**
    * Full product detail for the unified create/edit Product Studio (Req 38-39).
    * Unlike the public list this includes ALL variants (active + disabled) so the
    * Color×Size matrix can distinguish "variant disabled" from "variant missing"
