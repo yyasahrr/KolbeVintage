@@ -542,7 +542,16 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
   app.get('/api/v1/inventory/receipts', async (request) => {
     const user = await principal(request, pool, config);
     requirePermission(user, 'inventory:read');
-    const rows = await pool.query(`SELECT * FROM stock_receipts ORDER BY created_at DESC LIMIT 100`);
+    const query = z.object({
+      variantId: z.uuid().optional(), warehouseId: z.uuid().optional(),
+      inventoryDomain: z.enum(['retail', 'wholesale']).optional(), status: z.enum(['pending']).optional(),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+    }).parse(request.query);
+    // Filter before the legacy list limit so older pending receipts remain reachable from a row.
+    const rows = await pool.query(`SELECT * FROM stock_receipts
+      WHERE ($1::uuid IS NULL OR variant_id = $1) AND ($2::uuid IS NULL OR warehouse_id = $2)
+        AND ($3::text IS NULL OR inventory_domain = $3) AND ($4::text IS NULL OR status = $4)
+      ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET $5`, [query.variantId ?? null, query.warehouseId ?? null, query.inventoryDomain ?? null, query.status ?? null, query.offset]);
     return { items: rows.rows };
   });
 

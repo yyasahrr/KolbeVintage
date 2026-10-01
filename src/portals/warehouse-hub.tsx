@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
 import { Btn, Card, Checkbox, Drawer, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
 import { inventoryApi, manualSalesApi, productsApi, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { WarehouseSettings, type LowStock } from "../components/warehouse-settings";
+import { adjustmentPreview, pendingForRows } from "../data/warehouse-ux";
 import { formatPersianDateTimeFull } from "../data/persian-date";
 import { cn } from "../utils/cn";
 
@@ -106,26 +107,33 @@ export function WarehouseHub({ flash }: { flash: F }) {
 
 function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; flash: F }) {
   const [rows, setRows] = useState<InvRow[] | null>(null);
+  const [pendingReceipts, setPendingReceipts] = useState<ReceiptRow[]>([]);
+  const reloadSequence = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [lowOnly, setLowOnly] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [receiptFor, setReceiptFor] = useState<InvRow | null>(null);
+  const [pendingSelection, setPendingSelection] = useState<{ receipts: ReceiptRow[]; rows: InvRow[] } | null>(null);
+  const [receiveFor, setReceiveFor] = useState<{ receipt: ReceiptRow; row: InvRow } | null>(null);
+  const [archiveFor, setArchiveFor] = useState<InvRow | null>(null);
+  const [detailFor, setDetailFor] = useState<InvRow | null>(null);
   const [saleFor, setSaleFor] = useState<InvRow | null>(null);
   const [adjustFor, setAdjustFor] = useState<InvRow | null>(null);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
+    const sequence = ++reloadSequence.current;
     setError(null);
     try {
       const params: Record<string, string | number> = { inventoryDomain: domain, limit: 100 };
       if (search.trim()) params.search = search.trim();
       if (lowOnly) params.lowStock = 5;
-      const res = await inventoryApi.balances(params);
-      setRows(res.items as unknown as InvRow[]);
-    } catch (e) { setError(e instanceof Error ? e.message : "خطا در بارگذاری موجودی"); }
+      const [res, pending] = await Promise.all([inventoryApi.balances(params), inventoryApi.pendingReceipts({ inventoryDomain: domain })]);
+      if (sequence === reloadSequence.current) { setRows(res.items as InvRow[]); setPendingReceipts(pending.items as ReceiptRow[]); }
+    } catch (e) { if (sequence === reloadSequence.current) setError(e instanceof Error ? e.message : "خطا در بارگذاری موجودی"); }
   }, [domain, search, lowOnly]);
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { void reload(); return () => { reloadSequence.current++; }; }, [reload]);
 
   // L/M: product-centric expandable grouping (product → variants).
   const groups = useMemo(() => {
@@ -144,6 +152,22 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
       flash(enable ? "فروش محصول فعال شد." : "فروش محصول متوقف شد (موجودی دست‌نخورده می‌ماند).");
       await reload();
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت فروش"); }
+    finally { setBusy(false); }
+  };
+
+  const openIncoming = async (targetRows: InvRow[]) => {
+    setBusy(true);
+    try {
+      const receipts = (await Promise.all(targetRows.map((row) => inventoryApi.pendingReceipts({
+        variantId: row.variant_id, warehouseId: row.warehouse_id, inventoryDomain: domain,
+      })))).flatMap((result) => result.items) as ReceiptRow[];
+      const matching = [...new Map(pendingForRows(receipts, targetRows).map((receipt) => [receipt.id, receipt])).values()];
+      if (!matching.length) { flash("رسید در انتظار دریافت یافت نشد؛ ورودی ممکن است مربوط به انتقال باشد. نقل‌وانتقالات را بررسی کنید."); await reload(); }
+      else if (matching.length === 1) {
+        const receipt = matching[0]!;
+        setReceiveFor({ receipt, row: targetRows.find((row) => row.variant_id === receipt.variant_id && row.warehouse_id === receipt.warehouse_id)! });
+      } else setPendingSelection({ receipts: matching, rows: targetRows });
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری رسیدهای در انتظار"); }
     finally { setBusy(false); }
   };
 
@@ -201,12 +225,18 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                               : <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10.5px] font-bold text-gray-600">فروش متوقف</span>}</td>
                         )}
                         <td onClick={(e) => e.stopPropagation()}>
-                          {domain === "retail" && (
-                            <button disabled={busy} className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline"
-                              onClick={() => void toggleSale(product, !product.retail_enabled)}>
-                              {product.retail_enabled ? "توقف فروش" : "فعال‌سازی فروش"}
-                            </button>
-                          )}
+                          <div className="flex flex-wrap gap-2">
+                            {sum.incoming > 0 && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void openIncoming(vRows)}>دریافت کالا</Btn>}
+                            <select aria-label={`عملیات ${product.product_name}`} value="" disabled={busy} className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2 text-xs" onChange={(e) => {
+                              if (e.target.value === "details") setExpanded(new Set(expanded).add(product.product_id));
+                              if (e.target.value === "sale") void toggleSale(product, !product.retail_enabled);
+                              if (e.target.value === "archive") setArchiveFor(product);
+                            }}>
+                              <option value="">عملیات ▾</option><option value="details">مشاهده جزئیات</option>
+                              {domain === "retail" && product.product_status !== "archived" && <option value="sale">{product.retail_enabled ? "توقف فروش" : "فعال‌سازی فروش"}</option>}
+                              {domain === "retail" && product.product_status !== "archived" && <option value="archive">آرشیو محصول…</option>}
+                            </select>
+                          </div>
                         </td>
                       </tr>
                     }
@@ -224,13 +254,28 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                         <td className="tabular-nums">{fa(row.reserved)}</td>
                         <td className="tabular-nums font-bold">{fa(Number(row.available))}</td>
                         <td><Badge map={STOCK_BADGE} value={row.stock_status} /></td>
-                        {domain === "retail" && <td></td>}
-                        <td className="whitespace-nowrap space-x-2 space-x-reverse">
-                          <button className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline" onClick={() => setReceiptFor(row)}>رسید ورود</button>
-                          {domain === "retail" && (
-                            <button className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline" onClick={() => setSaleFor(row)}>ثبت فروش دستی</button>
-                          )}
-                          <button className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline" onClick={() => setAdjustFor(row)}>اصلاح</button>
+                        {domain === "retail" && <td><span className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-bold", row.retail_enabled && row.product_status !== "archived" ? "bg-emerald-100 text-emerald-800" : "bg-gray-200 text-gray-600")}>{row.product_status === "archived" ? "آرشیو" : row.retail_enabled ? "فعال" : "فروش متوقف"}</span></td>}
+                        <td>
+                          <div className="flex flex-wrap gap-2">
+                            {row.incoming > 0 && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void openIncoming([row])}>دریافت کالا</Btn>}
+                            <select aria-label={`عملیات ${row.sku}`} value="" disabled={busy} className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2 text-xs" onChange={(e) => {
+                              if (e.target.value === "details") setDetailFor(row);
+                              if (e.target.value === "receipt") setReceiptFor(row);
+                              if (e.target.value === "manual") setSaleFor(row);
+                              if (e.target.value === "adjust") setAdjustFor(row);
+                              if (e.target.value === "receive") void openIncoming([row]);
+                              if (e.target.value === "sale") void toggleSale(row, !row.retail_enabled);
+                              if (e.target.value === "archive") setArchiveFor(row);
+                            }}>
+                              <option value="">عملیات ▾</option><option value="details">مشاهده جزئیات</option>
+                              <option value="receipt">ورود کالا</option>
+                              {domain === "retail" && <option value="manual">ثبت فروش دستی</option>}
+                              <option value="adjust">اصلاح موجودی</option>
+                              {row.incoming > 0 && pendingForRows(pendingReceipts, [row]).length > 0 && <option value="receive">دریافت کالای در راه</option>}
+                              {domain === "retail" && row.product_status !== "archived" && <option value="sale">{row.retail_enabled ? "توقف فروش" : "فعال‌سازی فروش"}</option>}
+                              {domain === "retail" && row.product_status !== "archived" && <option value="archive">آرشیو محصول…</option>}
+                            </select>
+                          </div>
                         </td>
                       </tr>
                     )) : null}
@@ -241,6 +286,20 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
           </table>
         </div>
       )}
+
+      {archiveFor && <Modal open title="آرشیو محصول" onClose={() => { if (!busy) setArchiveFor(null); }}><div className="space-y-3 p-4"><p className="text-sm leading-7">آرشیو «{archiveFor.product_name}» برای همه تنوع‌های این محصول اعمال می‌شود. موجودی و تاریخچه گردش حفظ می‌شوند.</p><div className="flex gap-2"><Btn size="sm" variant="soft" disabled={busy} onClick={() => setArchiveFor(null)}>انصراف</Btn><Btn size="sm" variant="soft" className="text-[var(--kv-danger)]" disabled={busy} onClick={async () => { setBusy(true); try { await productsApi.status(archiveFor.product_id, "archived"); setArchiveFor(null); flash("محصول آرشیو شد؛ موجودی و تاریخچه حفظ شدند."); await reload(); } catch (e) { flash(e instanceof Error ? e.message : "خطا در آرشیو محصول"); } finally { setBusy(false); } }}>آرشیو محصول</Btn></div></div></Modal>}
+      {detailFor && <Modal open title="جزئیات موجودی" onClose={() => setDetailFor(null)}><div className="space-y-2 p-4"><InventoryContext row={detailFor} /><p>موجودی: {fa(detailFor.on_hand)} · رزرو: {fa(detailFor.reserved)} · آسیب‌دیده: {fa(detailFor.damaged)} · قابل فروش: {fa(detailFor.available)}</p><Badge map={STOCK_BADGE} value={detailFor.stock_status} /></div></Modal>}
+      {pendingSelection && <Modal open title="رسیدهای در انتظار" onClose={() => setPendingSelection(null)}>
+        <div className="max-h-[75vh] space-y-2 overflow-y-auto p-4"><h3 className="text-base font-bold">رسیدهای در انتظار</h3><p className="text-sm text-[var(--kv-muted)]">یک رسید را برای دریافت انتخاب کنید.</p>
+          {pendingSelection.receipts.map((receipt) => {
+            const row = pendingSelection.rows.find((item) => item.variant_id === receipt.variant_id && item.warehouse_id === receipt.warehouse_id)!;
+            return <button key={receipt.id} className="flex w-full flex-wrap justify-between gap-2 rounded-lg border border-[var(--kv-line)] p-3 text-sm hover:bg-[var(--kv-surface-2)] focus-visible:outline-2" onClick={() => { setReceiveFor({ receipt, row }); setPendingSelection(null); }}>
+              <span dir="ltr">{receipt.reference}</span><span>{row.color_label} / {row.size_label} · {row.warehouse_name}</span><span>+{fa(receipt.quantity ?? 0)}</span><span dir="ltr">{receipt.batch_reference ?? "—"}</span>
+            </button>;
+          })}
+        </div>
+      </Modal>}
+      {receiveFor && <ReceiveModal receipt={receiveFor.receipt} row={receiveFor.row} onClose={() => setReceiveFor(null)} onDone={async () => { setReceiveFor(null); await reload(); }} flash={flash} />}
 
       {receiptFor && <ReceiptModal row={receiptFor} domain={domain} onClose={() => setReceiptFor(null)} onDone={() => { setReceiptFor(null); void reload(); }} flash={flash} />}
       {saleFor && <QuickManualSaleModal row={saleFor} onClose={() => setSaleFor(null)} onDone={() => { setSaleFor(null); void reload(); }} flash={flash} />}
@@ -347,37 +406,92 @@ function QuickManualSaleModal({ row, onClose, onDone, flash }: { row: InvRow; on
   );
 }
 
+function InventoryContext({ row }: { row: InvRow }) {
+  return <p className="text-sm leading-7">{row.product_name} · {row.color_label ?? "—"} / {row.size_label ?? "—"}<br />انبار: {row.warehouse_name} · دامنه: {row.inventory_domain === "retail" ? "خرده" : "عمده"}</p>;
+}
+
 function AdjustModal({ row, domain, onClose, onDone, flash }: { row: InvRow; domain: "retail" | "wholesale"; onClose: () => void; onDone: () => void; flash: F }) {
-  const [delta, setDelta] = useState("");
-  const [reason, setReason] = useState("شمارش دوره‌ای انبار");
+  const [direction, setDirection] = useState<"increase" | "decrease">("increase");
+  const [quantity, setQuantity] = useState("");
+  const reasons = ["شمارش دوره‌ای", "اصلاح خطای ثبت", "مغایرت موجودی", "خرابی / ضایعات", "مرجوعی", "سایر"];
+  const [reason, setReason] = useState(reasons[0]!);
+  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  return (
-    <Modal open onClose={onClose} title="اصلاح موجودی (سند تعدیلی)">
-      <div className="space-y-3 p-4">
-        <p className="text-[12.5px] text-[var(--kv-muted)]">هر اصلاح به‌صورت سند گردش با دلیل، مرجع و کاربر ثبت می‌شود؛ هرگز بازنویسی مستقیم انجام نمی‌شود.</p>
-        <Field label="تغییر (مثبت یا منفی)"><Input value={delta} onChange={setDelta} placeholder="مثلاً 3 یا -2" /></Field>
-        <Field label="دلیل"><Input value={reason} onChange={setReason} /></Field>
-        <div className="flex gap-2">
-          <Btn size="sm" variant="accent" disabled={busy} onClick={async () => {
-            const d = Number(delta);
-            if (!d) { flash("مقدار تغییر معتبر نیست."); return; }
-            if (reason.trim().length < 4) { flash("دلیل اصلاح الزامی است."); return; }
-            setBusy(true);
-            try {
-              await inventoryApi.adjust(
-                { variantId: row.variant_id, warehouseId: row.warehouse_id, delta: d, reason: reason.trim(),
-                  reference: newKey("adj"), inventoryDomain: domain },
-                newKey("adjk"));
-              flash("سند اصلاح موجودی ثبت شد.");
-              onDone();
-            } catch (e) { flash(e instanceof Error ? e.message : "خطا در اصلاح موجودی"); }
-            finally { setBusy(false); }
-          }}>ثبت سند</Btn>
-          <Btn size="sm" variant="soft" onClick={onClose}>انصراف</Btn>
-        </div>
+  const preview = adjustmentPreview(row, direction, quantity);
+  const auditReason = reason === "سایر" ? `سایر: ${note.trim()}` : reason;
+  const reasonValid = reason !== "سایر" || note.trim().length >= 4;
+  return <Modal open onClose={() => { if (!busy) onClose(); }} title="اصلاح موجودی (سند تعدیلی)">
+    <div className="max-h-[75vh] space-y-3 overflow-y-auto p-4">
+      <h3 className="text-base font-bold">اصلاح موجودی</h3>
+      <InventoryContext row={row} />
+      <Field label="نوع تغییر"><Segmented options={[{ v: "increase", label: "افزایش +" }, { v: "decrease", label: "کاهش −" }]} value={direction} onChange={setDirection} /></Field>
+      <Field label="مقدار"><input aria-label="مقدار" type="number" min="1" max="100000" step="1" value={quantity} onChange={(e) => { if (/^\d*$/.test(e.target.value)) setQuantity(e.target.value); }} onKeyDown={(e) => { if (["+", "-", "e", "."].includes(e.key)) e.preventDefault(); }} className="w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-3 focus-visible:outline-2" /></Field>
+      <div aria-live="polite" className="rounded-lg bg-[var(--kv-surface-2)] p-3 text-sm">
+        <p>موجودی فعلی: {fa(row.on_hand)}</p><p>تغییر: <b dir="ltr">{preview.delta > 0 ? "+" : ""}{fa(preview.delta)}</b></p><p>موجودی جدید: {fa(preview.next)}</p>
+        {!preview.valid && <p role="alert" className="mt-2 text-[var(--kv-danger)]">{preview.message}</p>}
       </div>
-    </Modal>
-  );
+      <Field label="دلیل"><Select options={reasons} value={reason} onChange={setReason} /></Field>
+      {reason === "سایر" && <Field label="توضیح اصلاح (الزامی)"><Textarea value={note} onChange={setNote} rows={3} /></Field>}
+      <p className="text-xs text-[var(--kv-muted)]">دلیل، مرجع و کاربر در سند ثبت می‌شوند. فروش خارج از سایت را با «ثبت فروش دستی» ثبت کنید.</p>
+      <div className="flex gap-2">
+        <Btn size="sm" variant="accent" disabled={busy || !preview.valid || !reasonValid} onClick={async () => {
+          if (!preview.valid || !reasonValid) return;
+          setBusy(true);
+          try {
+            await inventoryApi.adjust({ variantId: row.variant_id, warehouseId: row.warehouse_id, delta: preview.delta, reason: auditReason, reference: newKey("adj"), inventoryDomain: domain }, newKey("adjk"));
+            flash("سند اصلاح موجودی ثبت شد."); onDone();
+          } catch (e) { flash(e instanceof Error ? e.message : "خطا در اصلاح موجودی"); }
+          finally { setBusy(false); }
+        }}>ثبت سند</Btn><Btn size="sm" variant="soft" disabled={busy} onClick={onClose}>انصراف</Btn>
+      </div>
+    </div>
+  </Modal>;
+}
+
+function ReceiveModal({ receipt, row, onClose, onDone, flash }: { receipt: ReceiptRow; row?: InvRow; onClose: () => void; onDone: () => void | Promise<void>; flash: F }) {
+  const [context, setContext] = useState<InvRow | null>(row ?? null);
+  const [contextError, setContextError] = useState<string | null>(null);
+  useEffect(() => {
+    if (row || !receipt.variant_id) return;
+    let active = true;
+    inventoryApi.balances({ variantId: receipt.variant_id, warehouseId: receipt.warehouse_id, inventoryDomain: receipt.inventory_domain }).then((result) => {
+      if (!active) return;
+      const match = (result.items as InvRow[]).find((item) => item.variant_id === receipt.variant_id && item.warehouse_id === receipt.warehouse_id && item.inventory_domain === receipt.inventory_domain);
+      if (match) setContext(match); else setContextError("اطلاعات محصول این رسید یافت نشد.");
+    }).catch((e: unknown) => { if (active) setContextError(e instanceof Error ? e.message : "خطا در بارگذاری اطلاعات رسید"); });
+    return () => { active = false; };
+  }, [row, receipt.variant_id, receipt.warehouse_id, receipt.inventory_domain]);
+  const expected = receipt.quantity ?? 0;
+  const [quantity, setQuantity] = useState(String(expected));
+  const [busy, setBusy] = useState(false);
+  const actual = Number(quantity);
+  const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(actual) && actual >= 0 && actual <= expected;
+  const missing = valid ? expected - actual : 0;
+  return <Modal open title={`دریافت رسید ${receipt.reference}`} onClose={() => { if (!busy) onClose(); }}>
+    <div className="max-h-[75vh] space-y-3 overflow-y-auto p-4">
+      <h3 className="text-base font-bold">دریافت رسید {receipt.reference}</h3>
+      {context ? <InventoryContext row={context} /> : contextError ? <p role="alert" className="text-sm text-red-700">{contextError}</p> : <LoadingState label="در حال خواندن اطلاعات رسید…" />}
+      <p className="text-sm">دامنه: {receipt.inventory_domain === "retail" ? "خرده" : "عمده"} · شماره رسید: <span dir="ltr">{receipt.reference}</span><br />شماره بسته / کارتن: <span dir="ltr">{receipt.batch_reference ?? "—"}</span></p>
+      <p>مقدار مورد انتظار: {fa(expected)}</p>
+      <Field label="تعداد واقعی دریافتی"><input aria-label="تعداد واقعی دریافتی" type="number" min="0" max={expected} step="1" value={quantity} onChange={(e) => { if (/^\d*$/.test(e.target.value)) setQuantity(e.target.value); }} onKeyDown={(e) => { if (["+", "-", "e", "."].includes(e.key)) e.preventDefault(); }} className="w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-3 focus-visible:outline-2" /></Field>
+      <div aria-live="polite" className="text-sm">
+        {!valid && <p role="alert" className="text-red-700">تعداد باید عدد صحیح از صفر تا مقدار مورد انتظار باشد.</p>}
+        {missing > 0 && <p className="rounded-lg bg-amber-50 p-3 text-amber-900">مورد انتظار: {fa(expected)} · دریافتی: {fa(actual)} · کسری: {fa(missing)}<br />کسری به‌صورت مغایرت ثبت می‌شود.</p>}
+      </div>
+      <div className="flex gap-2"><Btn size="sm" variant="soft" disabled={busy} onClick={onClose}>انصراف</Btn>
+        <Btn size="sm" variant="accent" disabled={busy || !valid || !context} onClick={async () => {
+          if (!valid || !context) return;
+          setBusy(true);
+          try {
+            await inventoryApi.receiveReceipt(receipt.id, { receivedQuantity: actual });
+            flash(missing > 0 ? `رسید دریافت شد؛ کسری ${fa(missing)} عدد ثبت شد.` : "رسید کامل دریافت شد.");
+            await onDone();
+          } catch (e) { flash(e instanceof Error ? e.message : "خطا در دریافت رسید"); }
+          finally { setBusy(false); }
+        }}>{busy ? "در حال ثبت…" : "ثبت دریافت"}</Btn>
+      </div>
+    </div>
+  </Modal>;
 }
 
 /* ------------------------------ transfers center (C2/G/H) ------------------------------ */
@@ -719,8 +833,6 @@ function InboundReceipts({ flash }: { flash: F }) {
   const [rows, setRows] = useState<ReceiptRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [receiveFor, setReceiveFor] = useState<ReceiptRow | null>(null);
-  const [receivedQty, setReceivedQty] = useState("");
-  const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -756,7 +868,7 @@ function InboundReceipts({ flash }: { flash: F }) {
                   <td className="text-[11px] text-[var(--kv-muted)]">{formatPersianDateTimeFull(r.created_at)}</td>
                   <td>{r.status === "pending" && (
                     <button className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline"
-                      onClick={() => { setReceiveFor(r); setReceivedQty(""); }}>دریافت و شمارش</button>
+                      onClick={() => setReceiveFor(r)}>دریافت و شمارش</button>
                   )}</td>
                 </tr>
               ))}
@@ -765,33 +877,7 @@ function InboundReceipts({ flash }: { flash: F }) {
         </div>
       )}
 
-      {receiveFor && (
-        <Modal open onClose={() => setReceiveFor(null)} title={`دریافت رسید ${receiveFor.reference}`}>
-          <div className="space-y-3 p-4">
-            <p className="text-[12.5px] leading-6 text-[var(--kv-muted)]">
-              تعداد مورد انتظار: {fa(receiveFor.quantity ?? 0)} عدد. اگر تعداد واقعی کمتر است همان را وارد کنید؛
-              کسری به‌صورت مغایرت رسمی ثبت و اطلاع‌رسانی می‌شود — هرگز کورکورانه تأیید نکنید.
-            </p>
-            <Field label="تعداد واقعی دریافتی">
-              <Input value={receivedQty} onChange={setReceivedQty} placeholder={`پیش‌فرض: ${fa(receiveFor.quantity ?? 0)}`} />
-            </Field>
-            <div className="flex gap-2">
-              <Btn size="sm" variant="accent" disabled={busy} onClick={async () => {
-                setBusy(true);
-                try {
-                  const payload = receivedQty.trim() ? { receivedQuantity: Number(receivedQty) } : {};
-                  const res = await inventoryApi.receiveReceipt(receiveFor.id, payload) as Record<string, unknown>;
-                  const missing = Number(res.missingQuantity ?? 0);
-                  flash(missing > 0 ? `رسید دریافت شد؛ کسری ${fa(missing)} عدد ثبت و اطلاع‌رسانی شد.` : "رسید کامل دریافت شد.");
-                  setReceiveFor(null); await reload();
-                } catch (e) { flash(e instanceof Error ? e.message : "خطا در دریافت رسید"); }
-                finally { setBusy(false); }
-              }}>ثبت دریافت</Btn>
-              <Btn size="sm" variant="soft" onClick={() => setReceiveFor(null)}>انصراف</Btn>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {receiveFor && <ReceiveModal receipt={receiveFor} onClose={() => setReceiveFor(null)} onDone={async () => { setReceiveFor(null); await reload(); }} flash={flash} />}
     </Card>
   );
 }

@@ -267,7 +267,18 @@ export const inventoryApi = {
   /** H: partial/full reverse of a completed transfer (RTRF). */
   reverseTransfer: (id: string, payload: { quantity: number; reason: string }, key: string) =>
     authFetch<Record<string, unknown>>(`/inventory/transfers/${id}/reverse`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
-  receipts: () => authFetch<{ items: unknown[] }>("/inventory/receipts"),
+  receipts: (params?: { variantId?: string; warehouseId?: string; inventoryDomain?: "retail" | "wholesale"; status?: "pending"; offset?: number }) => {
+    const query = new URLSearchParams(Object.entries(params ?? {}).map(([key, value]) => [key, String(value)]));
+    return authFetch<{ items: unknown[] }>(`/inventory/receipts?${query.toString()}`);
+  },
+  pendingReceipts: async (params: { variantId?: string; warehouseId?: string; inventoryDomain: "retail" | "wholesale" }): Promise<{ items: unknown[] }> => {
+    const items: unknown[] = [];
+    for (let offset = 0; ; offset += 100) {
+      const page = await inventoryApi.receipts({ ...params, status: "pending", offset });
+      items.push(...page.items);
+      if (page.items.length < 100) return { items };
+    }
+  },
   transfer: (payload: { fromWarehouseId: string; toWarehouseId: string; lines: { variantId: string; quantity: number }[]; reference?: string }) =>
     authFetch<unknown>("/inventory/transfers", { method: "POST", body: JSON.stringify(payload) }),
   completeTransfer: (id: string) => authFetch<unknown>(`/inventory/transfers/${id}/complete`, { method: "POST" }),
