@@ -57,17 +57,77 @@ export function registerAccessRoutes(app: FastifyInstance, pool: DbPool, config:
     });
   });
 
+  /**
+   * Server-side user directory (Requirements 19-20): real search on
+   * name/phone/email/user-id plus server-side filters on role, status, order
+   * count, purchase total, join date, last-order date and city — with
+   * pagination metadata (total/limit/offset). Order aggregates come from the
+   * orders ledger; city from the customer's addresses.
+   * Not available in the current domain (reported, not faked): customer
+   * segment on users themselves (lives in crm_contacts) and acquisition source.
+   */
   app.get('/api/v1/admin/users', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'users:manage');
-    const query = z.object({ search: z.string().max(120).optional(), limit: z.coerce.number().int().min(1).max(100).default(50) })
-      .parse(request.query);
-    const rows = await pool.query(
-      `SELECT u.id, u.display_name, u.phone, u.email, u.status, u.created_at,
-              COALESCE(jsonb_agg(DISTINCT ur.role_code) FILTER (WHERE ur.role_code IS NOT NULL), '[]'::jsonb) AS roles
-       FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id
-       WHERE ($1::text IS NULL OR u.display_name ILIKE '%' || $1 || '%' OR u.phone ILIKE '%' || $1 || '%' OR u.email ILIKE '%' || $1 || '%')
-       GROUP BY u.id ORDER BY u.created_at DESC LIMIT $2`, [query.search ?? null, query.limit]);
-    return { items: rows.rows };
+    const query = z.object({
+      search: z.string().trim().max(120).optional(),
+      role: z.string().trim().max(40).optional(),
+      status: z.enum(['active', 'suspended']).optional(),
+      city: z.string().trim().max(120).optional(),
+      joinedFrom: z.iso.datetime().optional(),
+      joinedTo: z.iso.datetime().optional(),
+      minOrders: z.coerce.number().int().min(0).max(1000000).optional(),
+      maxOrders: z.coerce.number().int().min(0).max(1000000).optional(),
+      minSpentRial: z.string().regex(/^\d+$/).optional(),
+      maxSpentRial: z.string().regex(/^\d+$/).optional(),
+      lastOrderFrom: z.iso.datetime().optional(),
+      lastOrderTo: z.iso.datetime().optional(),
+      sort: z.enum(['newest', 'oldest', 'orders', 'spent', 'last_order']).default('newest'),
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+      offset: z.coerce.number().int().min(0).max(100000).default(0),
+    }).parse(request.query);
+    const sortSql = {
+      newest: 'created_at DESC', oldest: 'created_at ASC',
+      orders: 'order_count DESC, created_at DESC', spent: 'total_spent_rial DESC, created_at DESC',
+      last_order: 'last_order_at DESC NULLS LAST, created_at DESC',
+    }[query.sort];
+    const params = [
+      query.search ?? null, query.role ?? null, query.status ?? null, query.city ?? null,
+      query.joinedFrom ?? null, query.joinedTo ?? null,
+      query.minOrders ?? null, query.maxOrders ?? null,
+      query.minSpentRial ?? null, query.maxSpentRial ?? null,
+      query.lastOrderFrom ?? null, query.lastOrderTo ?? null,
+    ];
+    const baseSql = `
+      WITH order_stats AS (
+        SELECT o.buyer_id, count(*)::int AS order_count,
+               COALESCE(sum(o.total_rial) FILTER (WHERE o.status <> 'cancelled'), 0) AS total_spent_rial,
+               max(o.created_at) AS last_order_at
+        FROM orders o GROUP BY o.buyer_id
+      )
+      SELECT u.id, u.display_name, u.phone, u.email, u.status, u.created_at,
+             COALESCE(s.order_count, 0) AS order_count,
+             COALESCE(s.total_spent_rial, 0)::text AS total_spent_rial,
+             s.last_order_at,
+             (SELECT a.city FROM customer_addresses a WHERE a.user_id = u.id ORDER BY a.is_default DESC, a.created_at DESC LIMIT 1) AS city,
+             COALESCE((SELECT jsonb_agg(DISTINCT ur.role_code) FROM user_roles ur WHERE ur.user_id = u.id), '[]'::jsonb) AS roles
+      FROM users u LEFT JOIN order_stats s ON s.buyer_id = u.id
+      WHERE ($1::text IS NULL OR u.display_name ILIKE '%' || $1 || '%' OR u.phone ILIKE '%' || $1 || '%'
+             OR u.email ILIKE '%' || $1 || '%' OR u.id::text = lower($1))
+        AND ($2::text IS NULL OR EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id AND r.role_code = $2))
+        AND ($3::text IS NULL OR u.status = $3)
+        AND ($4::text IS NULL OR EXISTS (SELECT 1 FROM customer_addresses a WHERE a.user_id = u.id AND a.city ILIKE '%' || $4 || '%'))
+        AND ($5::timestamptz IS NULL OR u.created_at >= $5)
+        AND ($6::timestamptz IS NULL OR u.created_at <= $6)
+        AND ($7::int IS NULL OR COALESCE(s.order_count, 0) >= $7)
+        AND ($8::int IS NULL OR COALESCE(s.order_count, 0) <= $8)
+        AND ($9::numeric IS NULL OR COALESCE(s.total_spent_rial, 0) >= $9::numeric)
+        AND ($10::numeric IS NULL OR COALESCE(s.total_spent_rial, 0) <= $10::numeric)
+        AND ($11::timestamptz IS NULL OR s.last_order_at >= $11)
+        AND ($12::timestamptz IS NULL OR s.last_order_at <= $12)`;
+    const total = await pool.query(`SELECT count(*)::int AS total FROM (${baseSql}) q`, params);
+    const rows = await pool.query(`SELECT * FROM (${baseSql}) q ORDER BY ${sortSql} LIMIT $13 OFFSET $14`,
+      [...params, query.limit, query.offset]);
+    return { items: rows.rows, total: total.rows[0]?.total ?? 0, limit: query.limit, offset: query.offset };
   });
 
   app.post('/api/v1/admin/users/:id/roles/:role', async (request) => {

@@ -6,7 +6,7 @@ import { one, transaction, type DbPool } from './db.js';
 import { principal, requirePermission } from './auth.js';
 import { asRial, rial } from './money.js';
 import { audit, outbox } from './operations.js';
-import { ApiError, badRequest, forbidden, notFound } from './errors.js';
+import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { validateSpecifications, type SpecField } from './profile.js';
 import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
 
@@ -433,6 +433,66 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       await outbox(client, 'product.status_changed', 'product', id, { productId: id, status });
       return { id, status };
     });
+  });
+
+  /**
+   * Full product detail for the unified create/edit Product Studio (Req 38-39).
+   * Unlike the public list this includes ALL variants (active + disabled) so the
+   * Color×Size matrix can distinguish "variant disabled" from "variant missing"
+   * and "stock 0" (Req 26/32).
+   */
+  app.get('/api/v1/admin/products/:id', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'products:write');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const product = await one<Record<string, unknown>>(pool, 'SELECT * FROM products WHERE id = $1', [id]);
+    if (!product) throw notFound();
+    const variants = await pool.query(
+      `SELECT v.id, v.sku, v.size_label AS size, v.color_label AS color, v.weight_grams, v.active, v.attributes,
+              COALESCE(SUM(b.on_hand - b.reserved - b.damaged), 0)::int AS available,
+              COALESCE(SUM(b.on_hand), 0)::int AS on_hand
+       FROM product_variants v LEFT JOIN stock_balances b ON b.variant_id = v.id
+       WHERE v.product_id = $1 GROUP BY v.id ORDER BY v.sku`, [id]);
+    const row = product as { cash_price_rial: string; installment_price_rial: string | null; wholesale_price_rial: string | null };
+    return {
+      ...product,
+      cash_price_rial: asRial(row.cash_price_rial),
+      installment_price_rial: row.installment_price_rial === null ? null : asRial(row.installment_price_rial),
+      wholesale_price_rial: row.wholesale_price_rial === null ? null : asRial(row.wholesale_price_rial),
+      variants: variants.rows,
+    };
+  });
+
+  /**
+   * Add a variant to an existing product (Req 26/32: enabling a blank Color×Size
+   * cell in edit mode creates a real variant with a server SKU).
+   */
+  app.post('/api/v1/products/:id/variants', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = variantInput.parse(request.body);
+    const result = await transaction(pool, async (client) => {
+      const product = await one<{ supplier_id: string | null; category: string; product_type_id: string | null }>(client,
+        'SELECT supplier_id, category, product_type_id FROM products WHERE id = $1 FOR UPDATE', [id]);
+      if (!product) throw notFound();
+      const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
+      if (!isOwner) requirePermission(user, 'products:write');
+      if (product.product_type_id) await assertTypeSizes(client as unknown as DbPool, product.product_type_id, [body.size ?? undefined]);
+      const duplicate = await one<{ id: string }>(client,
+        `SELECT id FROM product_variants WHERE product_id = $1
+         AND COALESCE(color_label, '') = COALESCE($2, '') AND COALESCE(size_label, '') = COALESCE($3, '')`,
+        [id, body.color ?? null, body.size ?? null]);
+      if (duplicate) throw conflict('واریانتی با همین رنگ و سایز قبلاً برای این محصول ساخته شده است.');
+      const seq = await one<{ id: string }>(client, "SELECT nextval('sku_sequence')::text AS id");
+      const sku = `${product.supplier_id ? 'SP' : 'KV'}-${categoryCode(product.category)}-${seq!.id}`;
+      const variantId = randomUUID();
+      await client.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [variantId, id, sku, body.size ?? null, body.color ?? null, body.weightGrams ?? null, JSON.stringify(body.attributes)]);
+      await audit(client, user.id, 'product.variant_created', 'product', id, undefined,
+        { variantId, sku, color: body.color ?? null, size: body.size ?? null }, request.ip);
+      return { id: variantId, sku, color: body.color ?? null, size: body.size ?? null, weightGrams: body.weightGrams ?? null, active: true };
+    });
+    return reply.code(201).send(result);
   });
 
   /** Variant-level maintenance (weight for shipping, active flag) — item 83. */

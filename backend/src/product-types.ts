@@ -126,6 +126,65 @@ export function registerProductTypeRoutes(app: FastifyInstance, pool: DbPool, co
     return serializeType(row, await sizesFor(pool, row.id, false));
   });
 
+  /**
+   * Product color registry (Req 30): inline color creation from Product Studio
+   * persists here — colors are never local-state-only in production.
+   */
+  app.get('/api/v1/product-colors', async (request) => {
+    const query = z.object({ active: z.enum(['true', 'false']).default('true') }).parse(request.query);
+    const rows = await pool.query(
+      `SELECT id, name, hex, active, position, created_at FROM product_colors
+       WHERE ($1::boolean = false OR active = true) ORDER BY position, name`, [query.active === 'true']);
+    return { items: rows.rows };
+  });
+
+  app.post('/api/v1/admin/product-colors', async (request, reply) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'catalog:structure');
+    const body = z.object({
+      name: z.string().trim().min(1).max(80),
+      hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#8A6A4F'),
+      position: z.number().int().min(0).max(100000).default(0),
+    }).strict().parse(request.body);
+    const id = randomUUID();
+    try {
+      await transaction(pool, async (client) => {
+        await client.query('INSERT INTO product_colors(id,name,hex,active,position,created_by) VALUES ($1,$2,$3,true,$4,$5)',
+          [id, body.name, body.hex, body.position, user.id]);
+        await audit(client, user.id, 'product_color.created', 'product_color', id, undefined, body, request.ip);
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') throw conflict('رنگی با همین نام قبلاً ثبت شده است.');
+      throw error;
+    }
+    return reply.code(201).send({ id, ...body, active: true });
+  });
+
+  app.patch('/api/v1/admin/product-colors/:id', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'catalog:structure');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      name: z.string().trim().min(1).max(80).optional(),
+      hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      active: z.boolean().optional(),
+      position: z.number().int().min(0).max(100000).optional(),
+    }).strict().parse(request.body);
+    if (!Object.keys(body).length) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+    return transaction(pool, async (client) => {
+      const before = await one(client, 'SELECT * FROM product_colors WHERE id = $1 FOR UPDATE', [id]);
+      if (!before) throw notFound();
+      const map: Record<string, string> = { name: 'name', hex: 'hex', active: 'active', position: 'position' };
+      const sets: string[] = []; const values: unknown[] = [id];
+      for (const [key, column] of Object.entries(map)) {
+        const value = (body as Record<string, unknown>)[key];
+        if (value === undefined) continue;
+        values.push(value); sets.push(`${column} = $${values.length}`);
+      }
+      await client.query(`UPDATE product_colors SET ${sets.join(', ')} WHERE id = $1`, values);
+      await audit(client, user.id, 'product_color.updated', 'product_color', id, before, body, request.ip);
+      return one(client, 'SELECT * FROM product_colors WHERE id = $1', [id]);
+    });
+  });
+
   app.get('/api/v1/taxonomies', async (request) => {
     const query = z.object({ kind: z.enum(['gender', 'season']).optional() }).parse(request.query);
     const rows = await pool.query(
