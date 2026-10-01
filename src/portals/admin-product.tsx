@@ -1,22 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { Boxes, Check, Film, Image as ImageIcon, Loader2, Plus, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
+import { Boxes, Check, Film, Image as ImageIcon, Loader2, Pencil, Plus, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
 import { COLORS, IMG, fmtMoney, fmtNum, nextSku, type Colorway, type Product, type SeriesDef } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE } from "../data/platform";
 import { useOps } from "../data/ops";
 import { fileToUrl, removeBackground, sendToN8n } from "../components/media";
-import { filesApi, integrationsApi, inventoryApi, productStructureApi, productsApi } from "../data/api";
+import { filesApi, integrationsApi, inventoryApi, productColorsApi, productStructureApi, productsApi } from "../data/api";
 import {
   INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, buildProductCreatePayload, normalizeProductTypes, normalizeTaxonomies, normalizeWarehouses,
-  productVariantSkus, readProductCreateResponse, variantKey, variantMatrix,
+  productVariantSkus, readProductCreateResponse, rialFromToman, variantKey, variantMatrix,
   type InstallmentPolicy, type ProductCreateResponse, type ProductType as StructureProductType, type Taxonomy, type Warehouse,
 } from "../data/contracts";
 import { ProductSpecsEditor } from "../components/product-specs-editor";
 import { ProductInventoryDrawer } from "../components/product-inventory";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, ProductTypesManager, missingRequiredSpecs } from "./admin-product-types";
-import { productTypesApi, siteApi, type ProductType } from "../data/experience-api";
-import { Btn, Card, Drawer, Field, Input, Select, Status, Switch, Textarea, SearchBox, LoadingState, ErrorState } from "../components/primitives";
+import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
+import { Btn, Card, Drawer, Empty, Field, Input, Select, Status, Switch, Textarea, SearchBox, LoadingState, ErrorState } from "../components/primitives";
 import { cn } from "../utils/cn";
 
 type F = (m: string) => void;
@@ -169,6 +169,207 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [specsFor, setSpecsFor] = useState<Product | null>(null);
   const [productTypes, setProductTypes] = useState<StructureProductType[]>([]);
   const [taxonomies, setTaxonomies] = useState<Taxonomy[]>([]);
+
+  /* ---------- Unified create/edit mode (Req 38-39) ---------- */
+  type ServerVariant = { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number };
+  const [editing, setEditing] = useState<{ id: string; metadata: Record<string, unknown> } | null>(null);
+  const [editVariants, setEditVariants] = useState<ServerVariant[]>([]);
+  /* Create-mode Color×Size matrix: a switched-off cell means "no variant" (—),
+     which is different from a variant with stock 0 (Req 26/32). */
+  const [cellOff, setCellOff] = useState<Record<string, boolean>>({});
+  /* Persisted structure data (Req 30/34/35/41/43/44) */
+  const [serverColors, setServerColors] = useState<{ id: string; name: string; hex: string }[]>([]);
+  const [categories, setCategories] = useState<{ id: string; name: string; slug: string; parentId: string | null }[]>([]);
+  const [newCategory, setNewCategory] = useState<{ open: boolean; name: string; parentId: string }>({ open: false, name: "", parentId: "" });
+  const [newSize, setNewSize] = useState("");
+  const [vibeQuery, setVibeQuery] = useState("");
+  const [newVibe, setNewVibe] = useState("");
+  const autoSlug = (name: string, prefix: string) => {
+    const latin = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return /^[a-z0-9-]{2,60}$/.test(latin) ? latin.slice(0, 50) : `${prefix}-${Date.now().toString(36)}`;
+  };
+  const loadCategories = () => {
+    if (isDemo) return;
+    siteApi.categories()
+      .then((r) => setCategories((r.items ?? []).map((c) => ({ id: c.id, name: c.name, slug: c.slug, parentId: (c as { parent_id?: string | null }).parent_id ?? null }))))
+      .catch(() => setCategories([]));
+  };
+  const loadServerColors = () => {
+    if (isDemo) return;
+    productColorsApi.list().then((r) => setServerColors((r.items ?? []).map((c) => ({ id: c.id, name: c.name, hex: c.hex })))).catch(() => setServerColors([]));
+  };
+  useEffect(() => { loadCategories(); loadServerColors(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  /** Hierarchical category options (Req 34): parents first, children indented. */
+  const categoryTree: { name: string; depth: number }[] = (() => {
+    const out: { name: string; depth: number }[] = [];
+    const walk = (parentId: string | null, depth: number) => {
+      for (const c of categories.filter((x) => (x.parentId ?? null) === parentId)) {
+        out.push({ name: c.name, depth });
+        walk(c.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    return out;
+  })();
+  const NEW_CATEGORY_OPTION = "+ ساخت دسته جدید…";
+  const categoryOptionLabels = [
+    ...categoryTree.map((c) => `${"— ".repeat(c.depth)}${c.name}`),
+    ...(categoryTree.some((c) => c.name === d.category) || !d.category ? [] : [d.category]),
+    ...(isDemo ? [] : [NEW_CATEGORY_OPTION]),
+  ];
+  const createCategory = async () => {
+    const name = newCategory.name.trim();
+    if (!name) return;
+    try {
+      await studioApi.createTaxonomy("categories", {
+        name, slug: autoSlug(name, "cat"), description: "",
+        ...(newCategory.parentId ? { parentId: newCategory.parentId } : {}),
+      });
+      loadCategories();
+      setD((cur) => ({ ...cur, category: name }));
+      setNewCategory({ open: false, name: "", parentId: "" });
+      flash(`دسته «${name}» ساخته و انتخاب شد`);
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ساخت دسته"); }
+  };
+  const createColor = async () => {
+    const name = newColor.name.trim();
+    if (!name) return;
+    if (isDemo) {
+      const c = { id: `c-${Date.now()}`, name, hex: newColor.hex };
+      setD((cur) => ({ ...cur, colors: [...cur.colors, c] }));
+      setNewColor({ name: "", hex: "#8A6A4F" });
+      return;
+    }
+    try {
+      const created = await productColorsApi.create({ name, hex: newColor.hex });
+      loadServerColors();
+      setD((cur) => ({ ...cur, colors: [...cur.colors, { id: created.id, name: created.name, hex: created.hex }] }));
+      setNewColor({ name: "", hex: "#8A6A4F" });
+      flash(`رنگ «${name}» در سرور ذخیره و انتخاب شد`);
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره رنگ"); }
+  };
+  const createSize = async () => {
+    const code = newSize.trim();
+    if (!code) return;
+    if (!d.productTypeId) { flash("برای افزودن سایز، ابتدا نوع محصول را انتخاب کنید."); return; }
+    try {
+      await productStructureApi.createSize(d.productTypeId, { code, label: code });
+      loadTypes();
+      setD((cur) => ({ ...cur, sizes: cur.sizes.includes(code) ? cur.sizes : [...cur.sizes, code] }));
+      setNewSize("");
+      flash(`سایز «${code}» به نوع محصول اضافه شد`);
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
+  };
+  const createVibe = async () => {
+    const name = newVibe.trim();
+    if (!name) return;
+    try {
+      const slug = autoSlug(name, "vibe");
+      await studioApi.createTaxonomy("vibes", { name, slug, description: "" });
+      const res = await siteApi.vibes();
+      setVibeOptions(res.items ?? []);
+      setD((cur) => ({ ...cur, vibes: cur.vibes.includes(slug) ? cur.vibes : [...cur.vibes, slug] }));
+      setNewVibe("");
+      flash(`وایب «${name}» ساخته و انتخاب شد`);
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ساخت وایب"); }
+  };
+
+  /** Loads the real server product into the shared studio form (Req 38). */
+  const openEdit = async (p: Product) => {
+    try {
+      const detail = await productsApi.adminDetail(p.id);
+      const meta = (detail.metadata ?? {}) as Record<string, unknown>;
+      const variants = (detail.variants ?? []) as ServerVariant[];
+      const colorNames = [...new Set(variants.map((v) => v.color).filter((c): c is string => Boolean(c)))];
+      const knownColors = [...serverColors, ...Object.values(COLORS)];
+      const toToman = (value: unknown) => value === null || value === undefined ? "" : String(Math.round(Number(value) / 10) || "");
+      const metaImages = Array.isArray(meta.images) ? (meta.images as { fileId?: string | null; url?: string }[]) : [];
+      const seo = (meta.seo ?? {}) as { title?: string; slug?: string };
+      setD({
+        ...blank(),
+        name: String(detail.name ?? ""), brand: String(detail.brand ?? "Kolbe"), category: String(detail.category ?? ""),
+        sku: String(meta.editorialSku ?? ""), desc: String(detail.description ?? ""),
+        fabric: String(meta.fabric ?? ""), care: String(meta.care ?? ""),
+        retail: toToman(detail.cash_price_rial), installment: toToman(detail.installment_price_rial),
+        compare: toToman(meta.compareAtRial), seoTitle: String(seo.title ?? ""), slug: String(seo.slug ?? ""),
+        retailOn: detail.retail_enabled !== false, wholesaleOn: detail.wholesale_enabled !== false,
+        colors: colorNames.map((name) => knownColors.find((c) => c.name === name) ?? { id: `c-${name}`, name, hex: "#8A6A4F" }),
+        sizes: [...new Set(variants.map((v) => v.size).filter((s): s is string => Boolean(s)))],
+        images: metaImages.map((image) => ({ fileId: image.fileId ?? null, url: String(image.url ?? "") })).filter((image) => image.url),
+        videoFileId: (meta.videoFileId as string | null) ?? null,
+        cutout: (meta.cutout as Cutout | null) ?? { status: "none" },
+        typeCode: String(detail.product_type_code ?? ""), specs: (detail.specifications ?? {}) as Record<string, unknown>,
+        gender: (detail.gender as Draft["gender"]) ?? "unisex",
+        seasons: Array.isArray(detail.seasons) ? (detail.seasons as string[]) : [],
+        vibes: Array.isArray(detail.vibes) ? (detail.vibes as string[]) : [],
+        productTypeId: String(detail.product_type_id ?? ""), genderCode: String(detail.gender_code ?? ""),
+        installmentPolicy: (detail.installment_policy as InstallmentPolicy) ?? "enabled",
+        wholesaleMoq: detail.wholesale_moq === null || detail.wholesale_moq === undefined ? "" : String(detail.wholesale_moq),
+      });
+      setEditing({ id: p.id, metadata: meta });
+      setEditVariants(variants);
+      setCellOff({});
+      setSec("base");
+      setOpen(true);
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری محصول از سرور"); }
+  };
+
+  const refreshEditVariants = async () => {
+    if (!editing) return;
+    try {
+      const detail = await productsApi.adminDetail(editing.id);
+      setEditVariants((detail.variants ?? []) as ServerVariant[]);
+    } catch { /* keep the last snapshot */ }
+  };
+
+  /** Matrix cell action in edit mode: create / enable / disable a real variant. */
+  const toggleEditCell = async (color: string, size: string) => {
+    if (!editing) return;
+    const hit = editVariants.find((v) => (v.color ?? "") === color && (v.size ?? "") === size);
+    try {
+      if (!hit) {
+        const created = await productsApi.createVariant(editing.id, { color, size });
+        flash(`واریانت ${color}/${size} با SKU ${created.sku} ساخته شد`);
+      } else {
+        await productsApi.updateVariant(editing.id, hit.id, { active: !hit.active });
+        flash(hit.active ? `واریانت ${hit.sku} غیرفعال شد` : `واریانت ${hit.sku} فعال شد`);
+      }
+      await refreshEditVariants();
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر واریانت"); }
+  };
+
+  /** PATCHes the shared form back to the server (Req 38-39) — one studio, two modes. */
+  const saveEdit = async () => {
+    if (!editing) return;
+    try {
+      const metadata = {
+        ...editing.metadata,
+        images: d.images.map((image) => ({ fileId: image.fileId, url: image.url })),
+        videoFileId: d.videoFileId ?? null,
+        fabric: d.fabric.trim(), care: d.care.trim(),
+        seo: { title: d.seoTitle.trim() || d.name.trim(), slug: d.slug.trim() },
+        compareAtRial: d.compare ? rialFromToman(d.compare) : null,
+        editorialSku: d.sku.trim() || null,
+        cutout: d.cutout && d.cutout.status !== "none" ? d.cutout : null,
+      };
+      await productsApi.update(editing.id, {
+        name: d.name.trim(), brand: d.brand.trim(), category: d.category.trim(), description: d.desc,
+        cashPriceRial: d.retailOn ? rialFromToman(d.retail) : "0",
+        installmentPriceRial: d.retailOn && (d.installment || d.retail) ? rialFromToman(d.installment || d.retail) : null,
+        metadata,
+        gender: d.gender, seasons: d.seasons, vibes: d.vibes,
+        ...(d.genderCode ? { genderCode: d.genderCode } : {}),
+        productTypeId: d.productTypeId || null,
+        retailEnabled: d.retailOn, wholesaleEnabled: d.wholesaleOn,
+        installmentPolicy: d.installmentPolicy,
+        wholesaleMoq: d.wholesaleMoq ? Number(d.wholesaleMoq) : null,
+        ...(d.typeCode ? { productTypeCode: d.typeCode, specifications: d.specs } : {}),
+      });
+      flash(`«${d.name}» ذخیره شد`);
+      setOpen(false); setEditing(null); setD(blank());
+      await reload();
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره تغییرات"); }
+  };
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -225,10 +426,12 @@ export function ProductStudio({ flash }: { flash: F }) {
   // Server rows are not guaranteed to carry every optional collection; the studio must render
   // whatever the catalogue returns instead of crashing the module.
   const cats = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
+  // Persisted palette first (Req 30): server colors survive refresh; demo palette fills in locally.
   const palette = Array.from(new Map([
+    ...serverColors,
     ...Object.values(COLORS),
     ...products.flatMap((p) => p.colors ?? []),
-  ].filter((color) => Boolean(color?.id)).map((color) => [color.id, color])).values());
+  ].filter((color) => Boolean(color?.id)).map((color) => [color.name, color])).values());
   const list = products.filter((p) => !q.trim() || (p.name ?? "").includes(q.trim()) || (p.sku ?? "").includes(q.trim()));
   const issues = [
     !isDemo && !d.productTypeId && "نوع محصول",
@@ -299,9 +502,14 @@ export function ProductStudio({ flash }: { flash: F }) {
           pricePerSeries: series.pricePerSeries, available: series.available, colorIds: series.colorIds,
         })),
       });
+      // Req 26/32: a switched-off matrix cell means the variant must NOT exist at all —
+      // filter it out of the canonical payload instead of creating it with zero stock.
+      const enabledVariants = payload.variants.filter((variant) =>
+        !cellOff[variantKey((variant as { color?: string | null }).color ?? null, (variant as { size?: string | null }).size ?? null)]);
+      if (!enabledVariants.length) { flash("دست‌کم یک خانه فعال در ماتریس رنگ×سایز لازم است."); return; }
       setInventoryBusy(true);
       // Adaptive form data (Req 325-326): the server validates specs against the type template.
-      const adaptivePayload = { ...payload, ...(d.typeCode ? { productTypeCode: d.typeCode, specifications: d.specs } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
+      const adaptivePayload = { ...payload, variants: enabledVariants, ...(d.typeCode ? { productTypeCode: d.typeCode, specifications: d.specs } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
       const res = readProductCreateResponse(await productsApi.create(adaptivePayload));
       const skus = productVariantSkus(res);
 
@@ -331,7 +539,13 @@ export function ProductStudio({ flash }: { flash: F }) {
     }
   };
 
-  const secs = [["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"], ["price", "قیمت خرده"], ["series", "سری‌های عمده"], ["stock", "موجودی"], ["seo", "سئو و کانال‌ها"]];
+  // One unified studio for create AND edit (Req 39); initial stock only applies at creation.
+  const secs = [
+    ["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"],
+    ["price", "قیمت‌گذاری"], ["series", "سری‌های عمده"],
+    ...(editing ? [] : [["stock", "موجودی اولیه"]]),
+    ["specs", "مشخصات فنی و راهنمای سایز"], ["seo", "سئو و کانال‌ها"],
+  ];
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       {!open && (<>
@@ -339,12 +553,12 @@ export function ProductStudio({ flash }: { flash: F }) {
         <div className="min-w-[200px] flex-1"><SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول یا SKU…" /></div>
         <Btn variant="soft" size="sm" onClick={() => setManage(true)}>قالب‌های سری کلبه</Btn>
         {!isDemo && <Btn variant="soft" size="sm" onClick={() => setTypesOpen(true)}>انواع محصول و قالب مشخصات</Btn>}
-        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setD(blank()); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
+        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setD(blank()); setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
       </div>
       <Card className="overflow-hidden">
         <div className="kv-scroll overflow-x-auto">
           <table className="kv-table min-w-[920px]">
-            <thead><tr><th>محصول</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>موجودی (WMS)</th><th>سری</th><th>رسانه</th><th>استایل‌بیلدر</th><th>مشخصات</th><th>انتشار</th></tr></thead>
+            <thead><tr><th>محصول</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>موجودی (WMS)</th><th>سری</th><th>رسانه</th><th>استایل‌بیلدر</th><th>مشخصات</th><th>ویرایش</th><th>انتشار</th></tr></thead>
             <tbody>
               {list.map((p) => (
                 <tr key={p.id}>
@@ -365,6 +579,11 @@ export function ProductStudio({ flash }: { flash: F }) {
                       مشخصات و راهنمای سایز
                     </button>
                   </td>
+                  <td>
+                    {isDemo
+                      ? <span className="text-[11.5px] text-[var(--kv-muted)]">—</span>
+                      : <button onClick={() => void openEdit(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline"><Pencil size={13} />ویرایش</button>}
+                  </td>
                   <td><Switch on={p.status === "published"} onToggle={async () => { const next = p.status === "published" ? "draft" : "published"; if (!isDemo) { try { await productsApi.status(p.id, next); await reload(); flash(next === "published" ? `${p.name} منتشر شد` : `${p.name} از فروش خارج شد`); return; } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت"); return; } } setStatus(p.id, next); flash(p.status === "published" ? `${p.name} از فروش خارج شد (demo)` : `${p.name} منتشر شد (demo)`); }} /></td>
                 </tr>
               ))}
@@ -377,9 +596,9 @@ export function ProductStudio({ flash }: { flash: F }) {
       {open && (
       <div>
         <div className="mb-4 flex flex-wrap items-center gap-2.5">
-          <Btn variant="soft" size="sm" onClick={() => setOpen(false)} icon={<X size={14} />}>بازگشت به فهرست</Btn>
-          <h2 className="text-[17px] font-extrabold">تعریف محصول جدید</h2>
-          <span className="text-[11.5px] text-[var(--kv-muted)]">تمام بخش‌های محصول را در همین صفحه تکمیل کنید و در پایان ذخیره و انتشار بزنید.</span>
+          <Btn variant="soft" size="sm" onClick={() => { setOpen(false); setEditing(null); }} icon={<X size={14} />}>بازگشت به فهرست</Btn>
+          <h2 className="text-[17px] font-extrabold">{editing ? `ویرایش محصول · ${d.name || "…"}` : "تعریف محصول جدید"}</h2>
+          <span className="text-[11.5px] text-[var(--kv-muted)]">{editing ? "داده‌ها از سرور بارگذاری شده‌اند؛ تغییرات با ذخیره روی همان محصول اعمال می‌شود." : "تمام بخش‌های محصول را در همین صفحه تکمیل کنید و در پایان ذخیره و انتشار بزنید."}</span>
         </div>
         <Card className="p-4 md:p-6">
         <div className="grid gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
@@ -391,7 +610,31 @@ export function ProductStudio({ flash }: { flash: F }) {
           <div className="min-w-0 space-y-4">
             {sec === "base" && <>
               <Field label="نام محصول"><Input value={d.name} onChange={(v) => setD({ ...d, name: v })} placeholder="مثلاً کت پشمی دو‌دکمه" /></Field>
-              <div className="grid gap-3 sm:grid-cols-3"><Field label="برند"><Input value={d.brand} onChange={(v) => setD({ ...d, brand: v })} /></Field><Field label="دسته"><Select options={[...new Set([...cats, "شلوار", "کفش", "اکسسوری"])]} value={d.category} onChange={(v) => setD({ ...d, category: v, sizes: seriesSizesFor(v).slice(0, 4), series: [] })} /></Field><Field label="SKU"><Input value={d.sku} onChange={(v) => setD({ ...d, sku: v })} placeholder="خودکار · در صورت نیاز قابل تغییر" /></Field></div>
+              <div className="grid gap-3 sm:grid-cols-3"><Field label="برند"><Input value={d.brand} onChange={(v) => setD({ ...d, brand: v })} /></Field><Field label="دسته" hint={!isDemo && categories.length ? "سلسله‌مراتبی از سرور (زیر‌دسته‌ها با — تورفتگی)" : undefined}>
+                  <Select
+                    options={!isDemo && categories.length ? categoryOptionLabels : [...new Set([...cats, "شلوار", "کفش", "اکسسوری"])]}
+                    value={!isDemo && categories.length ? (categoryOptionLabels.find((label) => label.replace(/^(?:— )+/, "") === d.category) ?? d.category) : d.category}
+                    onChange={(v) => {
+                      if (v === NEW_CATEGORY_OPTION) { setNewCategory({ open: true, name: "", parentId: "" }); return; }
+                      const name = v.replace(/^(?:— )+/, "");
+                      setD({ ...d, category: name, sizes: seriesSizesFor(name).slice(0, 4), series: [] });
+                    }} />
+                </Field><Field label="SKU"><Input value={d.sku} onChange={(v) => setD({ ...d, sku: v })} placeholder="خودکار · در صورت نیاز قابل تغییر" /></Field></div>
+              {newCategory.open && (
+                <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
+                  <p className="mb-2 text-[12.5px] font-bold">ساخت دسته جدید (در همان سیستم دسته‌بندی سرور)</p>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Field label="نام دسته"><Input value={newCategory.name} onChange={(v) => setNewCategory({ ...newCategory, name: v })} placeholder="مثلاً کت و ژاکت" /></Field>
+                    <Field label="دسته والد (اختیاری)">
+                      <Select options={["— بدون والد —", ...categories.map((c) => c.name)]}
+                        value={categories.find((c) => c.id === newCategory.parentId)?.name ?? "— بدون والد —"}
+                        onChange={(label) => setNewCategory({ ...newCategory, parentId: categories.find((c) => c.name === label)?.id ?? "" })} />
+                    </Field>
+                    <Btn variant="accent" size="sm" disabled={!newCategory.name.trim()} onClick={() => void createCategory()} icon={<Plus size={14} />}>ساخت و انتخاب</Btn>
+                    <Btn variant="ghost" size="sm" onClick={() => setNewCategory({ open: false, name: "", parentId: "" })}>انصراف</Btn>
+                  </div>
+                </div>
+              )}
               <div className="grid gap-3 sm:grid-cols-3">
                 {typeOptions.length > 0 && (
                   <Field label="نوع محصول" hint="سایزها و قالب مشخصات از نوع محصول می‌آیند">
@@ -429,11 +672,42 @@ export function ProductStudio({ flash }: { flash: F }) {
                     {seasonTaxonomies.length === 0 && taxonomies.length > 0 && <span className="text-[12px] text-[var(--kv-muted)]">از «ساختار محصولات» فصل بسازید.</span>}
                   </div>
                 </Field>
-                {vibeOptions.length > 0 && <div className="sm:col-span-3"><Field label="وایب‌ها"><div className="flex flex-wrap gap-1.5">{vibeOptions.map((v) => <button key={v.slug} type="button" aria-pressed={d.vibes.includes(v.slug)} onClick={() => setD({ ...d, vibes: d.vibes.includes(v.slug) ? d.vibes.filter((x) => x !== v.slug) : [...d.vibes, v.slug] })} className={cn("rounded-full border px-2.5 py-1 text-[11.5px]", d.vibes.includes(v.slug) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)]")}>{v.name}</button>)}</div></Field></div>}
+                {!isDemo && <div className="sm:col-span-3"><Field label="وایب‌ها (چندانتخابی مدیریت‌شده)" hint="جست‌وجو، انتخاب/حذف و ساخت وایب جدید — همه روی سرور">
+                  <div className="space-y-2">
+                    {d.vibes.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {d.vibes.map((slug) => {
+                          const vibe = vibeOptions.find((v) => v.slug === slug);
+                          return (
+                            <span key={slug} className="flex items-center gap-1 rounded-full border border-[var(--kv-accent)] bg-[var(--kv-accent)]/10 px-2.5 py-1 text-[11.5px] font-semibold">
+                              {vibe?.name ?? slug}
+                              <button type="button" aria-label={`حذف ${vibe?.name ?? slug}`} onClick={() => setD({ ...d, vibes: d.vibes.filter((x) => x !== slug) })}><X size={11} /></button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <Input value={vibeQuery} onChange={setVibeQuery} placeholder="جست‌وجوی وایب…" />
+                    <div className="flex flex-wrap gap-1.5">
+                      {vibeOptions
+                        .filter((v) => !d.vibes.includes(v.slug) && (!vibeQuery.trim() || v.name.includes(vibeQuery.trim()) || v.slug.includes(vibeQuery.trim())))
+                        .slice(0, 24)
+                        .map((v) => (
+                          <button key={v.slug} type="button" onClick={() => d.vibes.length < 8 ? setD({ ...d, vibes: [...d.vibes, v.slug] }) : flash("حداکثر ۸ وایب برای هر محصول")} className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 text-[11.5px]">{v.name}</button>
+                        ))}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input className="max-w-[220px]" value={newVibe} onChange={setNewVibe} placeholder="وایب جدید…" />
+                      <Btn variant="soft" size="sm" disabled={!newVibe.trim()} onClick={() => void createVibe()} icon={<Plus size={13} />}>ساخت وایب</Btn>
+                    </div>
+                  </div>
+                </Field></div>}
+                {isDemo && vibeOptions.length > 0 && <div className="sm:col-span-3"><Field label="وایب‌ها"><div className="flex flex-wrap gap-1.5">{vibeOptions.map((v) => <button key={v.slug} type="button" aria-pressed={d.vibes.includes(v.slug)} onClick={() => setD({ ...d, vibes: d.vibes.includes(v.slug) ? d.vibes.filter((x) => x !== v.slug) : [...d.vibes, v.slug] })} className={cn("rounded-full border px-2.5 py-1 text-[11.5px]", d.vibes.includes(v.slug) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)]")}>{v.name}</button>)}</div></Field></div>}
               </div>
               {selectedType && <AdaptiveSpecForm type={selectedType} values={d.specs} onChange={(specs) => setD({ ...d, specs })} />}
               <Field label="توضیحات"><Textarea rows={4} value={d.desc} onChange={(v) => setD({ ...d, desc: v })} /></Field>
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="جنس پارچه"><Input value={d.fabric} onChange={(v) => setD({ ...d, fabric: v })} /></Field><Field label="نگهداری"><Input value={d.care} onChange={(v) => setD({ ...d, care: v })} /></Field></div>
+              {/* Req 45: fabric/care now live in the «مشخصات فنی» section. */}
+              <p className="text-[11.5px] text-[var(--kv-muted)]">جنس پارچه و نگهداری به بخش «مشخصات فنی و راهنمای سایز» منتقل شده‌اند.</p>
             </>}
             {sec === "variant" && <>
               <div>
@@ -447,7 +721,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                 <div className="flex flex-wrap items-end gap-2">
                   <Field label="نام رنگ"><Input value={newColor.name} onChange={(v) => setNewColor({ ...newColor, name: v })} placeholder="مثلاً قهوه‌ای کاراملی" /></Field>
                   <label className="flex flex-col gap-2 text-[13px] font-semibold text-[var(--kv-ink-2)]">کد رنگ<span className="flex items-center gap-2"><input type="color" value={newColor.hex} onChange={(e) => setNewColor({ ...newColor, hex: e.target.value })} className="h-11 w-14 cursor-pointer rounded-[10px] border border-[var(--kv-line)] bg-transparent" aria-label="انتخاب رنگ" /><span className="text-[12px] tabular-nums" dir="ltr">{newColor.hex.toUpperCase()}</span></span></label>
-                  <Btn variant="soft" disabled={!newColor.name.trim() || palette.some((c) => c.name === newColor.name.trim())} onClick={() => { if (typeof window !== "undefined" && !new URLSearchParams(window.location.search).has("demo")) { flash("ایجاد رنگ در حالت عادی باید از API باشد"); return; } const c = { id: `c-${Date.now()}`, name: newColor.name.trim(), hex: newColor.hex }; setD({ ...d, colors: [...d.colors, c] }); setNewColor({ name: "", hex: "#8A6A4F" }); }} icon={<Plus size={14} />}>افزودن</Btn>
+                  <Btn variant="soft" disabled={!newColor.name.trim() || palette.some((c) => c.name === newColor.name.trim())} onClick={() => void createColor()} icon={<Plus size={14} />}>{isDemo ? "افزودن (demo)" : "ذخیره در سرور و انتخاب"}</Btn>
                 </div>
               </div>
               <Field label={selectedType || typedSizeCodes.length ? `سایزهای ${selectedType?.name ?? typeOptions.find((t) => t.id === d.productTypeId)?.name ?? "نوع محصول"} (از قالب نوع محصول)` : "سایزهای خرده"}>
@@ -455,6 +729,69 @@ export function ProductStudio({ flash }: { flash: F }) {
                   ? <p className="text-[12.5px] text-[var(--kv-muted)]">این نوع محصول سایز فعالی ندارد؛ از «ساختار محصولات» سایز اضافه کنید.</p>
                   : <div className="flex flex-wrap gap-2">{sizeOptions.map((s) => <button key={s} aria-pressed={d.sizes.includes(s)} onClick={() => setD({ ...d, sizes: d.sizes.includes(s) ? d.sizes.filter((x) => x !== s) : [...d.sizes, s] })} className={cn("min-h-10 min-w-[46px] rounded-[10px] border px-3 text-[12.5px] font-bold", d.sizes.includes(s) ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)]")}>{s}</button>)}</div>}
               </Field>
+              {!isDemo && (
+                <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
+                  <p className="mb-2 text-[12.5px] font-bold">افزودن سایز جدید به نوع محصول</p>
+                  {!d.productTypeId
+                    ? <p className="text-[12px] text-[var(--kv-muted)]">سایزها به «نوع محصول» وصل‌اند؛ ابتدا در «اطلاعات پایه» نوع محصول را انتخاب کنید.</p>
+                    : <div className="flex flex-wrap items-end gap-2">
+                        <Field label="کد سایز" hint="مثلاً XXL یا ۴۴ — روی سرور ذخیره و بعد از رفرش هم می‌ماند">
+                          <Input value={newSize} onChange={setNewSize} placeholder="XXL" />
+                        </Field>
+                        <Btn variant="soft" size="sm" disabled={!newSize.trim()} onClick={() => void createSize()} icon={<Plus size={14} />}>افزودن به نوع محصول</Btn>
+                      </div>}
+                </div>
+              )}
+              {/* Req 26/32: the real Color×Size matrix. «—» = واریانت وجود ندارد؛ صفر = واریانت هست ولی موجودی صفر. */}
+              {d.colors.length > 0 && d.sizes.length > 0 && (
+                <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
+                  <p className="mb-1 text-[12.5px] font-bold">ماتریس واریانت رنگ × سایز</p>
+                  <p className="mb-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
+                    {editing
+                      ? "هر خانه وضعیت واقعی واریانت روی سرور است: کلیک = ساخت واریانت جدید یا فعال/غیرفعال‌کردن همان لحظه. «—» یعنی واریانت اصلاً وجود ندارد."
+                      : "خانه‌های خاموش هنگام ذخیره ساخته نمی‌شوند (واریانت وجود نخواهد داشت)؛ این با واریانتِ ساخته‌شده با موجودی صفر فرق دارد."}
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="kv-table min-w-[420px] text-xs">
+                      <thead><tr><th>رنگ \ سایز</th>{d.sizes.map((s) => <th key={s}>{s}</th>)}</tr></thead>
+                      <tbody>
+                        {d.colors.map((c) => (
+                          <tr key={c.id}>
+                            <td className="font-bold"><span className="flex items-center gap-1.5"><span className="h-3.5 w-3.5 rounded-full border border-black/15" style={{ background: c.hex }} />{c.name}</span></td>
+                            {d.sizes.map((s) => {
+                              if (editing) {
+                                const hit = editVariants.find((v) => (v.color ?? "") === c.name && (v.size ?? "") === s);
+                                return (
+                                  <td key={s}>
+                                    <button type="button" onClick={() => void toggleEditCell(c.name, s)}
+                                      className={cn("min-h-9 w-full rounded-[8px] border px-2 py-1 text-[11px] font-bold",
+                                        !hit ? "border-dashed border-[var(--kv-line)] text-[var(--kv-muted)]"
+                                          : hit.active ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)] opacity-50")}
+                                      title={hit ? `${hit.sku} · موجودی ${hit.on_hand}` : "ساخت واریانت"}>
+                                      {!hit ? "— (ساخت)" : hit.active ? `فعال · ${hit.on_hand.toLocaleString("fa-IR")}` : "غیرفعال"}
+                                    </button>
+                                  </td>
+                                );
+                              }
+                              const off = cellOff[variantKey(c.name, s)];
+                              return (
+                                <td key={s}>
+                                  <button type="button" aria-pressed={!off}
+                                    onClick={() => setCellOff((cur) => ({ ...cur, [variantKey(c.name, s)]: !off }))}
+                                    className={cn("min-h-9 w-full rounded-[8px] border px-2 py-1 text-[11px] font-bold",
+                                      off ? "border-dashed border-[var(--kv-line)] text-[var(--kv-muted)]" : "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10")}>
+                                    {off ? "—" : "ساخته می‌شود"}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </>}
             {sec === "media" && <>
               <div>
@@ -482,7 +819,11 @@ export function ProductStudio({ flash }: { flash: F }) {
             {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images.map((image) => image.url)} flash={flash} />}
             {sec === "price" && <>
               <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span><b className="text-[13px]">فروش خرده در kolbe.ir</b><span className="block text-[11.5px] text-[var(--kv-muted)]">قیمت تک‌عدد برای همه مشتریان</span></span><Switch on={d.retailOn} onToggle={() => setD({ ...d, retailOn: !d.retailOn })} /></div>
-              {d.retailOn && <div className="grid gap-3 sm:grid-cols-2"><Field label="قیمت نقدی (تومان)"><Input value={d.retail} onChange={(v) => setD({ ...d, retail: v.replace(/\D/g, "") })} /></Field><Field label="قیمت مخصوص چهارقسطه (تومان)" hint="هر قسط از این مبلغ محاسبه می‌شود؛ خالی یعنی برابر قیمت نقدی"><Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} /></Field><Field label="قیمت قبل از تخفیف" hint="اختیاری"><Input value={d.compare} onChange={(v) => setD({ ...d, compare: v.replace(/\D/g, "") })} /></Field></div>}
+              <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
+                چهار مفهوم قیمتی جدا از هم‌اند: <b>قیمت پایه خرده</b> (مبنای فروش تک‌عدد)، <b>قیمت چهارقسطه</b> (مخصوص پرداخت اقساطی)،
+                <b> قیمت عمده</b> (در بخش «سری‌های عمده» تعیین می‌شود) و <b>تخفیف</b> که فقط از موتور پروموشن/جشنواره اعمال می‌شود، نه از این فرم.
+              </p>
+              {d.retailOn && <div className="grid gap-3 sm:grid-cols-2"><Field label="قیمت پایه خرده — نقدی (تومان)" hint="مبنای اصلی قیمت تک‌عدد در kolbe.ir"><Input value={d.retail} onChange={(v) => setD({ ...d, retail: v.replace(/\D/g, "") })} /></Field><Field label="قیمت مخصوص چهارقسطه (تومان)" hint="هر قسط از این مبلغ محاسبه می‌شود؛ خالی یعنی برابر قیمت نقدی"><Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} /></Field><Field label="قیمت قبل از تخفیف — نمایشی (تومان)" hint="فقط برای نمایش خط‌خورده در کارت محصول؛ تخفیف واقعی از موتور پروموشن اعمال می‌شود"><Input value={d.compare} onChange={(v) => setD({ ...d, compare: v.replace(/\D/g, "") })} /></Field></div>}
               {d.retailOn && Number(d.installment || d.retail) > 0 && <p className="text-[12px] text-[var(--kv-muted)]">هر قسط: {fmtMoney(Math.ceil(Number(d.installment || d.retail) / 4))}</p>}
               <Field label="سیاست قسط" hint="سرور در تسویه‌حساب همین سیاست را اعمال می‌کند"><Select options={([...INSTALLMENT_POLICIES]).map((p) => INSTALLMENT_POLICY_LABEL[p])} value={INSTALLMENT_POLICY_LABEL[d.installmentPolicy]} onChange={(label) => { const found = ([...INSTALLMENT_POLICIES]).find((p) => INSTALLMENT_POLICY_LABEL[p] === label); if (found) setD({ ...d, installmentPolicy: found }); }} /></Field>
             </>}
@@ -512,7 +853,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                     <table className="kv-table min-w-[560px] text-xs">
                       <thead><tr><th>رنگ</th><th>سایز</th><th>SKU (پس از ایجاد)</th><th>وزن (گرم)</th><th>انبار</th><th>موجودی اولیه</th></tr></thead>
                       <tbody>
-                        {variantMatrix(d.colors.map((color) => color.name), d.sizes).map(({ color, size }) => (
+                        {variantMatrix(d.colors.map((color) => color.name), d.sizes).filter(({ color, size }) => !cellOff[variantKey(color, size)]).map(({ color, size }) => (
                           <tr key={`${color}-${size}`}>
                             <td>{color}</td><td>{size}</td>
                             <td className="text-[var(--kv-muted)]" dir="ltr">پس از ذخیره ساخته می‌شود</td>
@@ -538,9 +879,26 @@ export function ProductStudio({ flash }: { flash: F }) {
                   </div>
                   {d.colors.length === 0 || d.sizes.length === 0
                     ? <p className="px-4 py-3 text-[12px] text-[var(--kv-muted)]">ابتدا در بخش «رنگ و سایز» دست‌کم یک رنگ و یک سایز انتخاب کنید.</p>
-                    : <p className="px-4 py-3 text-[11.5px] text-[var(--kv-muted)]">{`${(d.colors.length * d.sizes.length).toLocaleString("fa-IR")} واریانت ساخته می‌شود و موجودی هر ردیف با رسید ورودی ثبت می‌شود.`}</p>}
+                    : <p className="px-4 py-3 text-[11.5px] text-[var(--kv-muted)]">{`${variantMatrix(d.colors.map((color) => color.name), d.sizes).filter(({ color, size }) => !cellOff[variantKey(color, size)]).length.toLocaleString("fa-IR")} واریانت (خانه‌های فعال ماتریس) ساخته می‌شود و موجودی هر ردیف با رسید ورودی ثبت می‌شود.`}</p>}
                 </Card>
                 {inventoryBusy && <LoadingState label="در حال ثبت رسیدهای موجودی اولیه…" />}
+              </div>
+            )}
+            {sec === "specs" && (
+              <div className="space-y-4">
+                {/* Req 45: fabric/care moved here from basic info — same fields, no data loss. */}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="جنس پارچه"><Input value={d.fabric} onChange={(v) => setD({ ...d, fabric: v })} /></Field>
+                  <Field label="نگهداری"><Input value={d.care} onChange={(v) => setD({ ...d, care: v })} /></Field>
+                </div>
+                {editing ? (
+                  <ProductSpecsEditor key={editing.id} productId={editing.id} flash={flash} />
+                ) : (
+                  <Empty
+                    title="مشخصات ساختاریافته و راهنمای سایز پس از ذخیره"
+                    desc="ویرایشگر مشخصات فنی (بر اساس قالب نوع محصول) و اتصال راهنمای سایز به شناسه محصول روی سرور نیاز دارند؛ بعد از «ذخیره و انتشار»، از دکمه «ویرایش» همین بخش فعال می‌شود."
+                  />
+                )}
               </div>
             )}
             {sec === "seo" && <>
@@ -550,8 +908,8 @@ export function ProductStudio({ flash }: { flash: F }) {
               <p className="text-[12px] text-[var(--kv-muted)]">کانال‌ها: {[d.retailOn && "فروشگاه خرده", d.wholesaleOn && "بازارچه عمده", d.cutout.status === "ready" && "استایل‌بیلدر"].filter(Boolean).join("، ") || "هیچ‌کدام"}</p>
             </>}
             <div className="space-y-2 border-t border-[var(--kv-line)] pt-4">
-              {issues.length > 0 && <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">برای انتشار تکمیل کنید: {issues.join("، ")}</p>}
-              <Btn variant="accent" disabled={issues.length > 0} onClick={save} icon={<Check size={14} />}>ذخیره و انتشار</Btn>
+              {!editing && issues.length > 0 && <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">برای انتشار تکمیل کنید: {issues.join("، ")}</p>}
+              <Btn variant="accent" disabled={editing ? !d.name.trim() : issues.length > 0} onClick={editing ? saveEdit : save} icon={<Check size={14} />}>{editing ? "ذخیره تغییرات" : "ذخیره و انتشار"}</Btn>
             </div>
           </div>
         </div>

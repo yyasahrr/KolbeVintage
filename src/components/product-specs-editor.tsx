@@ -190,7 +190,15 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
       <div>
         <p className="mb-1 text-[13px] font-extrabold">مشخصات فنی</p>
         {!specs.template ? (
-          <p className="text-[12.5px] text-[var(--kv-muted)]">این محصول نوع/قالب مشخصات ندارد؛ مقادیر آزاد زیر همان‌طور ذخیره می‌شوند.</p>
+          specs.values.length === 0 ? (
+            /* Req 49: real empty state instead of a bare form with zero context. */
+            <Empty
+              title="هنوز مشخصه‌ای برای این محصول ثبت نشده"
+              desc="این محصول نوع/قالب مشخصات ندارد. از «انواع محصول و قالب مشخصات» یک قالب به نوع محصول وصل کنید تا فرم ساختاریافته ظاهر شود، یا از «مشخصه اختصاصی» پایین همین بخش مقدار آزاد اضافه کنید."
+            />
+          ) : (
+            <p className="text-[12.5px] text-[var(--kv-muted)]">این محصول نوع/قالب مشخصات ندارد؛ مقادیر آزاد زیر همان‌طور ذخیره می‌شوند.</p>
+          )
         ) : (
           <p className="text-[12.5px] text-[var(--kv-muted)]">قالب «{specs.template.name}» · {faNum(productAttrs.length)} فیلد محصول · {faNum(variantAttrs.length)} فیلد واریانت</p>
         )}
@@ -298,6 +306,14 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
               </div>
             )}
             <Btn variant="ghost" size="sm" className="mt-2" onClick={() => void (async () => { try { await sizeGuidesApi.detachFromProduct(productId); setAttached({ mode: "link", guide: null }); flash("راهنمای سایز جدا شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()}>جدا کردن راهنما</Btn>
+          </div>
+        ) : guides.length === 0 ? (
+          /* Req 49: no guides exist yet — explain where they are created instead of an empty dropdown. */
+          <div className="mt-2">
+            <Empty
+              title="هنوز راهنمای سایزی ساخته نشده"
+              desc="راهنمای سایز با ستون‌های دلخواه (قد، دور سینه، دور کمر…) در بخش «ساختار محصولات ← راهنمای سایز» ساخته می‌شود؛ بعد از ساخت، همین‌جا به‌صورت «اتصال زنده» یا «کپی ثابت» به محصول وصل می‌شود."
+            />
           </div>
         ) : (
           <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_150px_auto] sm:items-end">
