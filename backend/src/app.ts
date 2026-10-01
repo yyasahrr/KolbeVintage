@@ -57,6 +57,7 @@ import { registerCartRoutes } from './cart.js';
 import { registerStorefrontHtmlRoutes } from './storefront-html.js';
 import { registerTryOnRoutes } from './tryon.js';
 import { registerManualSaleRoutes } from './manual-sales.js';
+import { registerOmsRoutes } from './oms.js';
 import { registerSupplierRequestRoutes } from './supplier-requests.js';
 import { registerSeriesTemplateRoutes } from './series.js';
 
@@ -147,6 +148,7 @@ if (process.env.DEBUG_ERRORS === '1') app.log.error(error);
   registerStorefrontHtmlRoutes(app, pool, config);
   registerTryOnRoutes(app, pool, config);
   registerManualSaleRoutes(app, pool, config);
+  registerOmsRoutes(app, pool, config);
   registerSupplierRequestRoutes(app, pool, config);
   registerSeriesTemplateRoutes(app, pool, config);
   app.addHook('onClose', async () => {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
+import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
@@ -105,6 +106,21 @@ const FULFILLMENT_RANK = `CASE (SELECT e.to_status FROM order_events e WHERE e.o
   WHEN 'fulfillment:delivered' THEN 7 WHEN 'fulfillment:completed' THEN 8 ELSE NULL END`;
 const PAYMENT_RANK = `CASE (SELECT pi.status FROM payment_intents pi WHERE pi.order_id = o.id ORDER BY pi.created_at DESC LIMIT 1)
   WHEN 'pending' THEN 0 WHEN 'failed' THEN 1 WHEN 'refunded' THEN 2 WHEN 'succeeded' THEN 3 ELSE 0 END`;
+/** §28-29: shipment/tracking come from the EXISTING shipments domain (no second tracking system). */
+const LATEST_SHIPMENT_JOIN = `LEFT JOIN LATERAL (
+  SELECT s.id AS shipment_id, s.carrier, s.tracking_code, s.status AS shipment_status, s.last_status_at, s.shipped_at
+  FROM shipments s WHERE s.order_id = o.id ORDER BY s.created_at DESC LIMIT 1
+) sh ON true`;
+const TRACKING_SQL = `COALESCE(sh.tracking_code, o.vip_tracking_code, o.tracking_code)`;
+/** §41: «مشکل‌دار» is computed ONLY from real persisted data — no fabricated frontend rules. */
+const EXCEPTIONS_SQL = `ARRAY_REMOVE(ARRAY[
+  CASE WHEN (SELECT pi.status FROM payment_intents pi WHERE pi.order_id = o.id ORDER BY pi.created_at DESC LIMIT 1) = 'failed' THEN 'payment_failed'::text END,
+  CASE WHEN o.status = 'pending_payment' AND o.created_at < now() - interval '24 hours' THEN 'payment_overdue'::text END,
+  CASE WHEN o.status IN ('in_transit','shipped') AND ${TRACKING_SQL} IS NULL THEN 'missing_tracking'::text END,
+  CASE WHEN o.status IN ('in_transit','shipped') AND COALESCE(sh.carrier, o.vip_carrier) IS NULL THEN 'missing_carrier'::text END,
+  CASE WHEN o.status NOT IN ('delivered','cancelled','returned') AND COALESCE(o.shipping_address->>'postalCode','') !~ '^\\d{10}$' THEN 'invalid_address'::text END,
+  CASE WHEN EXISTS (SELECT 1 FROM order_lines qx WHERE qx.order_id = o.id AND qx.qc_status IN ('rejected','partially_accepted')) THEN 'qc_issue'::text END
+], NULL)`;
 
 type VariantRow = {
   variant_id: string;
@@ -763,6 +779,18 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       supplierId: z.uuid().optional(),
       search: z.string().trim().max(120).optional(),
       sort: orderSort.default('newest'),
+      // §18: wholesale is split by SELLER — Kolbe-owned stock vs supplier-fulfilled orders.
+      sellerScope: z.enum(['kolbe', 'supplier']).optional(),
+      // §30-§32: server-side operational filters.
+      shipmentStatus: z.string().trim().max(40).optional(),
+      carrier: z.string().trim().max(80).optional(),
+      hasTracking: z.coerce.number().int().min(0).max(1).optional(),
+      dateFrom: z.iso.datetime().optional(),
+      dateTo: z.iso.datetime().optional(),
+      amountMinRial: z.string().regex(/^\d+$/).optional(),
+      amountMaxRial: z.string().regex(/^\d+$/).optional(),
+      problem: z.coerce.number().int().min(0).max(1).optional(),
+      withTotal: z.coerce.number().int().min(0).max(1).optional(),
     }).parse(request.query);
     const privileged = user.permissions.includes('orders:read');
     const orderBy = SORT_SQL[query.sort];
@@ -782,8 +810,12 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
                         LEFT JOIN users su ON su.id = l2.supplier_id WHERE l2.order_id = o.id), '[]'::jsonb) AS supplier_names,
               (SELECT COALESCE(sp.brand_name, su.display_name)
                  FROM order_lines l3 LEFT JOIN supplier_profiles sp ON sp.user_id = l3.supplier_id
-                 LEFT JOIN users su ON su.id = l3.supplier_id WHERE l3.order_id = o.id ORDER BY l3.id LIMIT 1) AS first_supplier
+                 LEFT JOIN users su ON su.id = l3.supplier_id WHERE l3.order_id = o.id ORDER BY l3.id LIMIT 1) AS first_supplier,
+              sh.carrier AS shipment_carrier, sh.shipment_status, ${TRACKING_SQL} AS tracking_code,
+              ${EXCEPTIONS_SQL} AS exception_reasons,
+              count(*) OVER()::int AS total_rows
        FROM orders o LEFT JOIN users u ON u.id = o.buyer_id
+       ${LATEST_SHIPMENT_JOIN}
        WHERE ($1::boolean OR o.buyer_id = $2)
          AND ($3::timestamptz IS NULL OR o.created_at < $3)
          AND ($4::text IS NULL OR o.status = $4)
@@ -791,7 +823,19 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
          AND ($6::text IS NULL OR COALESCE((SELECT pi.status FROM payment_intents pi WHERE pi.order_id = o.id ORDER BY pi.created_at DESC LIMIT 1), 'none') = $6)
          AND ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM order_lines sl WHERE sl.order_id = o.id AND sl.supplier_id = $7))
          AND ($8::text IS NULL OR o.reference ILIKE '%' || $8 || '%' OR u.display_name ILIKE '%' || $8 || '%'
-              OR u.phone ILIKE '%' || $8 || '%' OR EXISTS (SELECT 1 FROM order_lines ql WHERE ql.order_id = o.id AND (ql.sku ILIKE '%' || $8 || '%' OR ql.product_name ILIKE '%' || $8 || '%')))
+              OR u.phone ILIKE '%' || $8 || '%' OR ${TRACKING_SQL} ILIKE '%' || $8 || '%'
+              OR EXISTS (SELECT 1 FROM order_lines ql WHERE ql.order_id = o.id AND (ql.sku ILIKE '%' || $8 || '%' OR ql.product_name ILIKE '%' || $8 || '%')))
+         AND ($11::text IS NULL
+              OR ($11 = 'kolbe' AND NOT EXISTS (SELECT 1 FROM order_lines sk WHERE sk.order_id = o.id AND sk.supplier_id IS NOT NULL))
+              OR ($11 = 'supplier' AND EXISTS (SELECT 1 FROM order_lines sk WHERE sk.order_id = o.id AND sk.supplier_id IS NOT NULL)))
+         AND ($12::text IS NULL OR sh.shipment_status = $12)
+         AND ($13::integer IS NULL OR ($13 = 1 AND ${TRACKING_SQL} IS NOT NULL) OR ($13 = 0 AND ${TRACKING_SQL} IS NULL))
+         AND ($14::text IS NULL OR COALESCE(sh.carrier, o.vip_carrier) ILIKE '%' || $14 || '%')
+         AND ($15::timestamptz IS NULL OR o.created_at >= $15)
+         AND ($16::timestamptz IS NULL OR o.created_at <= $16)
+         AND ($17::bigint IS NULL OR o.total_rial >= $17)
+         AND ($18::bigint IS NULL OR o.total_rial <= $18)
+         AND ($19::integer IS NULL OR $19 = 0 OR cardinality(${EXCEPTIONS_SQL}) > 0)
        ORDER BY ${orderBy} LIMIT $9 OFFSET $10`,
       [
         privileged,
@@ -804,13 +848,24 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         query.search ?? null,
         query.limit,
         query.offset,
+        query.sellerScope ?? null,
+        query.shipmentStatus ?? null,
+        query.hasTracking ?? null,
+        query.carrier ?? null,
+        query.dateFrom ?? null,
+        query.dateTo ?? null,
+        query.amountMinRial ?? null,
+        query.amountMaxRial ?? null,
+        query.problem ?? null,
       ],
     );
 
+    const total = rows.rows.length ? Number(rows.rows[0].total_rows) : 0;
     return {
       items: rows.rows.map((row) => {
+        const { total_rows: _ignored, ...rest } = row;
         const base: Record<string, unknown> = {
-          ...row,
+          ...rest,
           subtotal_rial: asRial(row.subtotal_rial),
           discount_rial: asRial(row.discount_rial),
           shipping_rial: asRial(row.shipping_rial),
@@ -820,9 +875,11 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         if (!privileged) {
           delete base.supplier_names;
           delete base.first_supplier;
+          delete base.exception_reasons;
         }
         return base;
       }),
+      ...(query.withTotal === 1 ? { total, limit: query.limit, offset: query.offset } : {}),
     };
   });
 
@@ -929,26 +986,40 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     };
   });
 
-  app.post('/api/v1/orders/:id/transitions', async (request) => {
-    const user = await principal(request, pool, config);
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = z.object({
-      status: orderStatus,
-      note: z.string().trim().max(1000).optional(),
-      reason: z.string().trim().max(1000).optional(),
-    }).parse(request.body);
-    const effectiveNote = body.note ?? body.reason ?? null;
-
-    return transaction(pool, async (client) => {
+  /**
+   * Shared transition core — the single endpoint and §34 bulk endpoint go through
+   * EXACTLY this rulebook (status machine, payment gate, reservation movements,
+   * wholesale dispatch guard, earnings, events, audit).
+   */
+  async function applyOrderTransitionCore(
+    client: PoolClient,
+    user: Awaited<ReturnType<typeof principal>>,
+    id: string,
+    status: OrderStatus,
+    effectiveNote: string | null,
+    ip: string,
+  ) {
+    {
       const order = await one<OrderRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
       if (!order) throw notFound();
-      if (order.buyer_id === user.id && body.status === 'cancelled' && order.status === 'pending_payment') {
+      if (order.buyer_id === user.id && status === 'cancelled' && order.status === 'pending_payment') {
         // A buyer can cancel an unpaid order.
       } else {
         requirePermission(user, 'orders:transition');
       }
-      if (!allowed[order.status].includes(body.status)) {
+      if (!allowed[order.status].includes(status)) {
         throw conflict('این تغییر وضعیت در مرحله فعلی مجاز نیست.');
+      }
+
+      // §26: payment gate — the status machine already blocks unpaid orders from
+      // fulfillment (pending_payment → only paid/cancelled). Marking PAID by hand is
+      // the legitimate cash/COD/offline path, but it MUST document the evidence.
+      if (status === 'paid') {
+        const succeededIntent = await one<{ id: string }>(client,
+          `SELECT id FROM payment_intents WHERE order_id = $1 AND status = 'succeeded' LIMIT 1`, [id]);
+        if (!succeededIntent && (!effectiveNote || effectiveNote.trim().length < 5)) {
+          throw badRequest('برای ثبت دستی «پرداخت شد» بدون پرداخت موفق درگاه، یادداشت روش پرداخت آفلاین (نقدی/کارت‌به‌کارت تأییدشده/پرداخت در محل) الزامی است.');
+        }
       }
 
       // ========================================================================
@@ -959,10 +1030,10 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       // ========================================================================
       if (
         order.order_type === 'wholesale' &&
-        (body.status === 'ready_to_ship' ||
-          body.status === 'in_transit' ||
-          body.status === 'shipped' ||
-          body.status === 'delivered')
+        (status === 'ready_to_ship' ||
+          status === 'in_transit' ||
+          status === 'shipped' ||
+          status === 'delivered')
       ) {
         const supplierWarehouseReservation = await one<{ id: string }>(
           client,
@@ -982,7 +1053,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         }
       }
 
-      if (body.status === 'cancelled' || body.status === 'in_transit' || body.status === 'shipped') {
+      if (status === 'cancelled' || status === 'in_transit' || status === 'shipped') {
         const reservations = await client.query<{
           id: string;
           variant_id: string;
@@ -997,7 +1068,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
           [id],
         );
         for (const reservation of reservations.rows) {
-          const consume = body.status === 'in_transit' || body.status === 'shipped';
+          const consume = status === 'in_transit' || status === 'shipped';
           await client.query(
             `UPDATE stock_balances
              SET reserved = reserved - $4,
@@ -1030,30 +1101,30 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
               consume ? 'order shipped' : 'order cancelled',
               id,
               user.id,
-              `${body.status}:${reservation.id}`,
+              `${status}:${reservation.id}`,
             ],
           );
         }
       }
 
-      if (order.order_type === 'wholesale' && (body.status === 'in_transit' || body.status === 'shipped')) {
+      if (order.order_type === 'wholesale' && (status === 'in_transit' || status === 'shipped')) {
         await client.query(
           "UPDATE orders SET wholesale_fulfillment_status = 'vip_dispatched', vip_dispatched_at = COALESCE(vip_dispatched_at, now()) WHERE id = $1",
           [id],
         );
       }
-      if (order.order_type === 'wholesale' && body.status === 'delivered') {
+      if (order.order_type === 'wholesale' && status === 'delivered') {
         await client.query("UPDATE orders SET wholesale_fulfillment_status = 'delivered' WHERE id = $1", [id]);
       }
 
-      await client.query('UPDATE orders SET status = $2, updated_at = now() WHERE id = $1', [id, body.status]);
-      if (body.status === 'delivered') await postSupplierEarnings(client, id);
-      if (body.status === 'cancelled') {
+      await client.query('UPDATE orders SET status = $2, updated_at = now() WHERE id = $1', [id, status]);
+      if (status === 'delivered') await postSupplierEarnings(client, id);
+      if (status === 'cancelled') {
         await client.query("UPDATE payment_intents SET status = 'failed' WHERE order_id = $1 AND status = 'pending'", [id]);
       }
       await client.query(
         'INSERT INTO order_events(id,order_id,from_status,to_status,actor_id,note) VALUES ($1,$2,$3,$4,$5,$6)',
-        [randomUUID(), id, order.status, body.status, user.id, effectiveNote],
+        [randomUUID(), id, order.status, status, user.id, effectiveNote],
       );
       await audit(
         client,
@@ -1062,11 +1133,56 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         'order',
         id,
         { status: order.status },
-        { status: body.status, note: effectiveNote },
-        request.ip,
+        { status: status, note: effectiveNote },
+        ip,
       );
-      await outbox(client, 'order.status_changed', 'order', id, { orderId: id, from: order.status, to: body.status });
-      return { id, reference: order.reference, status: body.status };
+      await outbox(client, 'order.status_changed', 'order', id, { orderId: id, from: order.status, to: status });
+      return { id, reference: order.reference, status };
+    }
+  }
+
+  app.post('/api/v1/orders/:id/transitions', async (request) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      status: orderStatus,
+      note: z.string().trim().max(1000).optional(),
+      reason: z.string().trim().max(1000).optional(),
+    }).parse(request.body);
+    const effectiveNote = body.note ?? body.reason ?? null;
+    return transaction(pool, (client) => applyOrderTransitionCore(client, user, id, body.status, effectiveNote, request.ip));
+  });
+
+  // §34: bulk status change — ONE backend request, per-item results with readable
+  // reasons; a failing order never rolls back the orders that were valid.
+  app.post('/api/v1/orders/bulk-transitions', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'orders:transition');
+    const body = z.object({
+      orderIds: z.array(z.uuid()).min(1).max(200)
+        .refine((ids) => new Set(ids).size === ids.length, 'هر سفارش فقط یک بار مجاز است.'),
+      status: orderStatus,
+      note: z.string().trim().max(1000).optional(),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const results: { orderId: string; reference?: string; ok: boolean; error?: string }[] = [];
+      for (const [index, orderId] of body.orderIds.entries()) {
+        await client.query(`SAVEPOINT bulk_ord_${index}`);
+        try {
+          const applied = await applyOrderTransitionCore(client, user, orderId, body.status, body.note ?? null, request.ip);
+          await client.query(`RELEASE SAVEPOINT bulk_ord_${index}`);
+          results.push({ orderId, reference: applied.reference, ok: true });
+        } catch (error) {
+          await client.query(`ROLLBACK TO SAVEPOINT bulk_ord_${index}`);
+          results.push({ orderId, ok: false, error: error instanceof ApiError ? error.message : 'تغییر وضعیت این سفارش ناموفق بود.' });
+        }
+      }
+      const succeeded = results.filter((item) => item.ok).length;
+      await audit(client, user.id, 'orders.bulk_status_changed', 'order', body.orderIds[0]!, undefined,
+        { status: body.status, requested: body.orderIds.length, succeeded, failed: results.length - succeeded,
+          failures: results.filter((item) => !item.ok).map((item) => ({ orderId: item.orderId, error: item.error })) },
+        request.ip);
+      return { results, succeeded, failed: results.length - succeeded };
     });
   });
 

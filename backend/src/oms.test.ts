@@ -135,3 +135,121 @@ test('WMS §5/§6/§10-14: inventory summary, server filters/pagination, bulk op
     await pool.end();
   }
 });
+
+test('OMS §18-§34: payment gate, bulk transitions, shipment/tracking reconciliation, unified retail read model', { skip: !testDbUrl }, async () => {
+  const app = await buildApp({ ...baseConfig, PORT: 4062 });
+  const pool = createPool(baseConfig);
+  const suffix = randomUUID().slice(0, 8);
+  try {
+    const { adminHeaders } = await createAdmin(app, pool, suffix);
+    const wh = await app.inject({ method: 'POST', url: '/api/v1/warehouses', headers: adminHeaders, payload: { code: `OMS2${suffix.toUpperCase().slice(-4)}`, name: 'انبار سفارشات' } });
+    const warehouseId = wh.json().id as string;
+    const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers: adminHeaders, payload: {
+      brand: 'Kolbe', name: `پیراهن سفارشات ${suffix}`, category: 'پیراهن', cashPriceRial: '2500000', variants: [{ size: 'L', color: 'آبی' }] } });
+    const productId = product.json().id as string;
+    const variantId = product.json().variants[0].id as string;
+    await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}/status`, headers: adminHeaders, payload: { status: 'published' } });
+    await app.inject({ method: 'POST', url: '/api/v1/inventory/adjustments', headers: { ...adminHeaders, 'idempotency-key': `oms2-st-${suffix}` },
+      payload: { variantId, warehouseId, delta: 5, reason: 'موجودی اولیه آزمون', reference: `OMS2-${suffix}` } });
+
+    await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email: `oms-buyer-${suffix}@kolbe.test`, password: 'BuyerPassword123456!', displayName: 'خریدار آزمون' } });
+    const buyerLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { identity: `oms-buyer-${suffix}@kolbe.test`, password: 'BuyerPassword123456!' } });
+    const buyerHeaders = { authorization: `Bearer ${buyerLogin.json().accessToken as string}` };
+    const checkout = (key: string) => app.inject({ method: 'POST', url: '/api/v1/orders', headers: { ...buyerHeaders, 'idempotency-key': key }, payload: {
+      orderType: 'retail', paymentMode: 'cash', items: [{ variantId, quantity: 1 }],
+      shippingAddress: { recipient: 'خریدار آزمون', phone: '09123456789', province: 'تهران', city: 'تهران', line: 'خیابان آزمون، پلاک ۲', postalCode: '1234567890' } } });
+    const order = await checkout(`oms2-o1-${suffix}`);
+    assert.equal(order.statusCode, 201, order.body);
+    const orderId = order.json().id as string;
+    const orderRef = order.json().reference as string;
+
+    // §26: payment gate is backend-enforced — unpaid orders cannot advance to fulfillment.
+    const gate = await app.inject({ method: 'POST', url: `/api/v1/orders/${orderId}/transitions`, headers: adminHeaders, payload: { status: 'processing' } });
+    assert.equal(gate.statusCode, 409, 'unpaid order cannot start preparation');
+    // Manual «paid» (legitimate cash/offline path) requires documented evidence.
+    const paidNoNote = await app.inject({ method: 'POST', url: `/api/v1/orders/${orderId}/transitions`, headers: adminHeaders, payload: { status: 'paid' } });
+    assert.equal(paidNoNote.statusCode, 400, paidNoNote.body);
+    assert.ok(/یادداشت/.test(paidNoNote.json().message ?? ''), 'offline paid needs a note');
+    const paid = await app.inject({ method: 'POST', url: `/api/v1/orders/${orderId}/transitions`, headers: adminHeaders, payload: { status: 'paid', note: 'پرداخت نقدی حضوری دریافت شد' } });
+    assert.equal(paid.statusCode, 200, paid.body);
+
+    // §34: bulk transitions — per-item results; invalid ids fail alone, valid ones apply.
+    const ghost = randomUUID();
+    const bulk = await app.inject({ method: 'POST', url: '/api/v1/orders/bulk-transitions', headers: adminHeaders,
+      payload: { orderIds: [orderId, ghost], status: 'processing', note: 'شروع آماده‌سازی گروهی' } });
+    assert.equal(bulk.statusCode, 200, bulk.body);
+    assert.equal(bulk.json().succeeded, 1);
+    assert.equal(bulk.json().failed, 1);
+    const bulkResults = bulk.json().results as { orderId: string; ok: boolean; error?: string }[];
+    assert.equal(bulkResults.find((r) => r.orderId === orderId)?.ok, true);
+    assert.ok(bulkResults.find((r) => r.orderId === ghost)?.error, 'ghost order carries a readable reason');
+    const afterBulk = await app.inject({ method: 'GET', url: `/api/v1/orders/${orderId}`, headers: adminHeaders });
+    assert.equal(afterBulk.json().status, 'processing', 'bulk transition persisted');
+    const timeline = (afterBulk.json().events as { to_status: string; note: string | null }[]);
+    assert.ok(timeline.some((e) => e.to_status === 'processing' && /گروهی/.test(e.note ?? '')), 'real order event recorded for bulk transition');
+
+    // §28-§29: tracking registered through the EXISTING shipments domain shows up on the orders list.
+    const shipment = await app.inject({ method: 'POST', url: '/api/v1/admin/shipments', headers: adminHeaders,
+      payload: { orderId, carrier: 'پست پیشتاز', trackingCode: `TRK-${suffix}`, status: 'handed_over' } });
+    assert.equal(shipment.statusCode, 201, shipment.body);
+    const list = await app.inject({ method: 'GET', url: `/api/v1/orders?orderType=retail&withTotal=1&search=${encodeURIComponent(`TRK-${suffix}`)}`, headers: adminHeaders });
+    assert.equal(list.statusCode, 200, list.body);
+    const listItems = list.json().items as Record<string, unknown>[];
+    assert.equal(listItems.length, 1, 'search by tracking code finds the order');
+    assert.equal(listItems[0]!.reference, orderRef);
+    assert.equal(listItems[0]!.tracking_code, `TRK-${suffix}`);
+    assert.equal(listItems[0]!.shipment_carrier, 'پست پیشتاز');
+    assert.equal(listItems[0]!.shipment_status, 'handed_over');
+    assert.ok(Number(list.json().total) >= 1, 'withTotal returns real count');
+    const noTracking = await app.inject({ method: 'GET', url: `/api/v1/orders?hasTracking=0&search=${encodeURIComponent(`TRK-${suffix}`)}`, headers: adminHeaders });
+    assert.equal((noTracking.json().items as unknown[]).length, 0, 'hasTracking=0 excludes tracked orders');
+
+    // §18: sellerScope mechanics — this order has no supplier lines → kolbe scope only.
+    const kolbeScope = await app.inject({ method: 'GET', url: `/api/v1/orders?sellerScope=kolbe&search=${orderRef}`, headers: adminHeaders });
+    assert.equal((kolbeScope.json().items as unknown[]).length, 1);
+    const supplierScope = await app.inject({ method: 'GET', url: `/api/v1/orders?sellerScope=supplier&search=${orderRef}`, headers: adminHeaders });
+    assert.equal((supplierScope.json().items as unknown[]).length, 0);
+
+    // §41: «مشکل‌دار» from REAL data — a backdated unpaid order becomes payment_overdue.
+    const order2 = await checkout(`oms2-o2-${suffix}`);
+    const order2Id = order2.json().id as string;
+    await pool.query(`UPDATE orders SET created_at = now() - interval '2 days' WHERE id = $1`, [order2Id]);
+    const problems = await app.inject({ method: 'GET', url: `/api/v1/orders?problem=1&search=${order2.json().reference}`, headers: adminHeaders });
+    const problemItems = problems.json().items as { id: string; exception_reasons: string[] }[];
+    assert.equal(problemItems.length, 1);
+    assert.ok(problemItems[0]!.exception_reasons.includes('payment_overdue'));
+
+    // §22-§23: unified retail read model — website order + manual sale in ONE server-backed table.
+    const before = await pool.query('SELECT on_hand FROM stock_balances WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3', [variantId, warehouseId, 'retail']);
+    const manualSale = await app.inject({ method: 'POST', url: '/api/v1/admin/manual-sales', headers: { ...adminHeaders, 'idempotency-key': `oms2-ms-${suffix}` },
+      payload: { channel: 'instagram', warehouseId, customerName: 'مشتری اینستاگرام', customerPhone: '09351112233',
+        lines: [{ variantId, quantity: 1, unitPriceRial: '2500000' }], payment: { method: 'cash', amountRial: '2500000' } } });
+    assert.equal(manualSale.statusCode, 201, manualSale.body);
+    const after = await pool.query('SELECT on_hand FROM stock_balances WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3', [variantId, warehouseId, 'retail']);
+    assert.equal(Number(before.rows[0].on_hand) - Number(after.rows[0].on_hand), 1, 'manual sale consumed MAIN retail inventory via a movement');
+
+    const unified = await app.inject({ method: 'GET', url: '/api/v1/oms/retail-sales?limit=50', headers: adminHeaders });
+    assert.equal(unified.statusCode, 200, unified.body);
+    const unifiedItems = unified.json().items as Record<string, unknown>[];
+    const siteRow = unifiedItems.find((row) => row.reference === orderRef);
+    const manualRow = unifiedItems.find((row) => row.kind === 'manual_sale' && row.reference === manualSale.json().reference);
+    assert.ok(siteRow, 'website order present in the unified retail table');
+    assert.ok(manualRow, 'manual sale present in the unified retail table');
+    assert.equal(siteRow!.channel, 'website');
+    assert.equal(siteRow!.tracking_code, `TRK-${suffix}`);
+    assert.equal(manualRow!.channel, 'instagram');
+    assert.equal(manualRow!.payment_method, 'cash');
+    assert.equal(manualRow!.payment_status, 'succeeded');
+    const channelFiltered = await app.inject({ method: 'GET', url: '/api/v1/oms/retail-sales?channel=instagram&search=09351112233', headers: adminHeaders });
+    const channelItems = channelFiltered.json().items as Record<string, unknown>[];
+    assert.equal(channelItems.length, 1);
+    assert.equal(channelItems[0]!.kind, 'manual_sale');
+
+    // RBAC: the unified read model is admin-only.
+    const forbidden = await app.inject({ method: 'GET', url: '/api/v1/oms/retail-sales', headers: buyerHeaders });
+    assert.equal(forbidden.statusCode, 403);
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});
