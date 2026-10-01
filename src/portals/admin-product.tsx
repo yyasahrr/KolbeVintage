@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Boxes, Check, Film, Image as ImageIcon, Loader2, Pencil, Plus, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
+import { BadgePercent, Boxes, Check, Film, Image as ImageIcon, Loader2, Pencil, Plus, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
 import { COLORS, IMG, fmtMoney, fmtNum, nextSku, type Colorway, type Product, type SeriesDef } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE } from "../data/platform";
@@ -13,6 +13,7 @@ import {
 } from "../data/contracts";
 import { ProductSpecsEditor } from "../components/product-specs-editor";
 import { ProductInventoryDrawer } from "../components/product-inventory";
+import { DiscountManager } from "../components/discount-manager";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, ProductTypesManager, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
@@ -226,6 +227,7 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [createdSummary, setCreatedSummary] = useState<{ product: ProductCreateResponse; receipted: number } | null>(null);
   const [inventoryFor, setInventoryFor] = useState<Product | null>(null);
+  const [discountFor, setDiscountFor] = useState<Product | null>(null);
   const [types, setTypes] = useState<ProductType[]>([]);
   const [vibeOptions, setVibeOptions] = useState<{ slug: string; name: string }[]>([]);
   const [typesOpen, setTypesOpen] = useState(false);
@@ -628,7 +630,7 @@ export function ProductStudio({ flash }: { flash: F }) {
       <Card className="overflow-hidden">
         <div className="kv-scroll overflow-x-auto">
           <table className="kv-table min-w-[920px]">
-            <thead><tr><th>محصول</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>موجودی (WMS)</th><th>سری</th><th>رسانه</th><th>استایل‌بیلدر</th><th>مشخصات</th><th>ویرایش</th><th>انتشار</th></tr></thead>
+            <thead><tr><th>محصول</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>موجودی (WMS)</th><th>تخفیف و جشنواره</th><th>سری</th><th>رسانه</th><th>استایل‌بیلدر</th><th>مشخصات</th><th>ویرایش</th><th>انتشار</th></tr></thead>
             <tbody>
               {list.map((p) => (
                 <tr key={p.id}>
@@ -640,6 +642,13 @@ export function ProductStudio({ flash }: { flash: F }) {
                     <button onClick={() => setInventoryFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline">
                       <Boxes size={13} />موجودی و انبار
                     </button>
+                  </td>
+                  <td>
+                    {isDemo
+                      ? <span className="text-[11.5px] text-[var(--kv-muted)]">—</span>
+                      : <button onClick={() => setDiscountFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline">
+                          <BadgePercent size={13} />تخفیف / جشنواره
+                        </button>}
                   </td>
                   <td className="tabular-nums">{fmtNum((p.series ?? []).length)}</td>
                   <td className="text-[12px] text-[var(--kv-muted)]">{fmtNum((p.images ?? []).length)} تصویر{p.video ? " · ویدیو" : ""}</td>
@@ -1027,6 +1036,16 @@ export function ProductStudio({ flash }: { flash: F }) {
       </Drawer>
       <Drawer open={!!inventoryFor} onClose={() => setInventoryFor(null)} title={inventoryFor ? `موجودی · ${inventoryFor.name}` : ""} wide>
         <ProductInventoryDrawer product={inventoryFor} warehouses={warehouses ?? []} onClose={() => setInventoryFor(null)} onFlash={flash} />
+        {discountFor && (
+          <DiscountManager
+            productId={discountFor.id}
+            productName={discountFor.name}
+            productImage={discountFor.images?.[0]}
+            sku={discountFor.sku}
+            onClose={() => setDiscountFor(null)}
+            flash={flash}
+          />
+        )}
       </Drawer>
       <Drawer open={!!createdSummary} onClose={() => setCreatedSummary(null)} title="محصول ثبت شد — موجودی اولیه" wide>
         {createdSummary && (
