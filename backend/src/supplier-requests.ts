@@ -175,7 +175,7 @@ export function registerSupplierRequestRoutes(app: FastifyInstance, pool: DbPool
       limit: z.coerce.number().int().min(1).max(100).default(50),
     }).parse(request.query);
     const rows = await pool.query(
-      `SELECT r.id, r.request_number, r.supplier_id, u.name AS supplier_name, r.status, r.note,
+      `SELECT r.id, r.request_number, r.supplier_id, u.display_name AS supplier_name, r.status, r.note,
               r.rejection_reason, r.revision_note, r.revision_count, r.created_at, r.updated_at,
               r.dispatched_at, r.received_at,
               (SELECT count(*) FROM supplier_request_items i WHERE i.request_id = r.id)::int AS item_count,

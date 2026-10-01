@@ -270,6 +270,15 @@ test('Supplier requests: max 10 items, RBAC, review lifecycle, dispatch→incomi
     const requestId = created.json().id as string;
     assert.match(created.json().requestNumber as string, /^SR-\d+$/);
 
+    // List endpoint works for both supplier (own rows) and admin (all rows, with supplier name).
+    const supplierList = await app.inject({ method: 'GET', url: '/api/v1/supplier-requests', headers: supplierHeaders });
+    assert.equal(supplierList.statusCode, 200, supplierList.body);
+    assert.ok((supplierList.json().items as { id: string }[]).some((row) => row.id === requestId), 'supplier sees own request in list');
+    const adminList = await app.inject({ method: 'GET', url: '/api/v1/supplier-requests', headers: adminHeaders });
+    assert.equal(adminList.statusCode, 200, adminList.body);
+    const adminRow = (adminList.json().items as { id: string; supplier_name?: string }[]).find((row) => row.id === requestId);
+    assert.ok(adminRow?.supplier_name, 'admin list resolves supplier display name');
+
     // RBAC: another supplier cannot see this request.
     const foreign = await app.inject({ method: 'GET', url: `/api/v1/supplier-requests/${requestId}`, headers: supplier2Headers });
     assert.equal(foreign.statusCode, 403, 'supplier isolation on requests');
