@@ -3,10 +3,10 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
-import { one, transaction, type DbPool } from './db.js';
+import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, notifyByPermission, outbox, requestHash } from './operations.js';
-import { badRequest, conflict, forbidden, notFound } from './errors.js';
+import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { assertNotRestricted } from './console.js';
 
 export type InventoryDomain = 'retail' | 'wholesale';
@@ -208,14 +208,25 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       search: z.string().max(100).optional(),
       supplierId: z.uuid().optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
+      // §6: ALL filters are server-backed — no client-side full-dataset filtering.
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+      stockStatus: z.enum(['in_stock', 'low_stock', 'out_of_stock', 'incoming', 'fully_reserved']).optional(),
+      saleStatus: z.enum(['active', 'paused', 'archived']).optional(),
+      colorLabel: z.string().max(60).optional(),
+      sizeLabel: z.string().max(60).optional(),
+      category: z.string().max(60).optional(),
+      hasIncoming: z.coerce.number().int().min(0).max(1).optional(),
+      hasReservation: z.coerce.number().int().min(0).max(1).optional(),
+      withTotal: z.coerce.number().int().min(0).max(1).optional(),
     }).parse(request.query);
     const privileged = user.permissions.includes('inventory:read');
     // D3: real search across product name / SKU / color / size; O1: stock_status is
     // auto-computed on the server and never admin-editable.
     const rows = await pool.query(
-      `SELECT b.variant_id, b.warehouse_id, b.inventory_domain, w.code AS warehouse_code, w.name AS warehouse_name,
+      `WITH base AS (
+        SELECT b.variant_id, b.warehouse_id, b.inventory_domain, w.code AS warehouse_code, w.name AS warehouse_name,
               v.sku, v.size_label, v.color_label, p.id AS product_id, p.name AS product_name, p.owner_type,
-              p.supplier_id, p.retail_enabled, p.status AS product_status,
+              p.supplier_id, p.retail_enabled, p.status AS product_status, p.category,
               b.on_hand, b.reserved, b.incoming, b.damaged, (b.on_hand - b.reserved - b.damaged) AS available, b.version,
               CASE
                 WHEN b.on_hand - b.reserved - b.damaged > 0 AND b.on_hand - b.reserved - b.damaged <= ${LOW_STOCK_THRESHOLD} THEN 'low_stock'
@@ -223,7 +234,12 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
                 WHEN b.on_hand > 0 AND b.reserved >= b.on_hand - b.damaged THEN 'fully_reserved'
                 WHEN b.incoming > 0 THEN 'incoming'
                 ELSE 'out_of_stock'
-              END AS stock_status
+              END AS stock_status,
+              CASE
+                WHEN p.status = 'archived' THEN 'archived'
+                WHEN p.retail_enabled THEN 'active'
+                ELSE 'paused'
+              END AS sale_status
        FROM stock_balances b JOIN warehouses w ON w.id = b.warehouse_id
        JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id
        WHERE ($1::uuid IS NULL OR b.variant_id = $1)
@@ -234,11 +250,54 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
          AND ($6::integer IS NULL OR (b.on_hand - b.reserved - b.damaged) <= $6)
          AND ($8::text IS NULL OR b.inventory_domain = $8)
          AND ($9::uuid IS NULL OR p.supplier_id = $9)
-       ORDER BY available ASC, v.sku, b.inventory_domain LIMIT $7`,
+         AND ($11::text IS NULL OR p.category = $11)
+         AND ($12::text IS NULL OR v.color_label ILIKE '%' || $12 || '%')
+         AND ($13::text IS NULL OR v.size_label ILIKE '%' || $13 || '%')
+         AND ($14::integer IS NULL OR ($14 = 1 AND b.incoming > 0) OR ($14 = 0 AND b.incoming = 0))
+         AND ($15::integer IS NULL OR ($15 = 1 AND b.reserved > 0) OR ($15 = 0 AND b.reserved = 0))
+      )
+      SELECT *, count(*) OVER()::int AS total_rows FROM base
+      WHERE ($16::text IS NULL OR stock_status = $16)
+        AND ($17::text IS NULL OR sale_status = $17)
+      ORDER BY available ASC, sku, inventory_domain LIMIT $7 OFFSET $10`,
       [query.variantId ?? null, query.warehouseId ?? null, query.search ?? null,
         privileged, user.id, query.lowStock ?? null, query.limit, query.inventoryDomain ?? null,
-        query.supplierId ?? null]);
-    return { items: rows.rows };
+        query.supplierId ?? null, query.offset, query.category ?? null, query.colorLabel ?? null,
+        query.sizeLabel ?? null, query.hasIncoming ?? null, query.hasReservation ?? null,
+        query.stockStatus ?? null, query.saleStatus ?? null]);
+    const total = rows.rows.length ? Number(rows.rows[0].total_rows) : 0;
+    const items = rows.rows.map(({ total_rows: _ignored, ...row }) => row);
+    return query.withTotal === 1 ? { items, total, limit: query.limit, offset: query.offset } : { items, total };
+  });
+
+  // §5: KPI header for the operational tabs (On Hand / Reserved / Incoming / Damaged / Available).
+  // Server-computed over ALL balances of the domain — never a client-side sum of one page.
+  app.get('/api/v1/inventory/summary', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:read');
+    const query = z.object({
+      inventoryDomain: z.enum(['retail', 'wholesale']).optional(),
+      warehouseId: z.uuid().optional(),
+    }).parse(request.query);
+    const row = await one<Record<string, string>>(pool,
+      `SELECT COALESCE(sum(b.on_hand), 0)::bigint::text AS on_hand,
+              COALESCE(sum(b.reserved), 0)::bigint::text AS reserved,
+              COALESCE(sum(b.incoming), 0)::bigint::text AS incoming,
+              COALESCE(sum(b.damaged), 0)::bigint::text AS damaged,
+              COALESCE(sum(b.on_hand - b.reserved - b.damaged), 0)::bigint::text AS available,
+              count(DISTINCT b.variant_id)::int AS variants,
+              count(*) FILTER (WHERE b.on_hand - b.reserved - b.damaged > 0
+                AND b.on_hand - b.reserved - b.damaged <= ${LOW_STOCK_THRESHOLD})::int AS low_stock_lines,
+              count(*) FILTER (WHERE b.on_hand - b.reserved - b.damaged <= 0 AND b.incoming = 0)::int AS out_of_stock_lines
+       FROM stock_balances b
+       WHERE ($1::text IS NULL OR b.inventory_domain = $1)
+         AND ($2::uuid IS NULL OR b.warehouse_id = $2)`,
+      [query.inventoryDomain ?? null, query.warehouseId ?? null]);
+    return {
+      on_hand: Number(row!.on_hand), reserved: Number(row!.reserved), incoming: Number(row!.incoming),
+      damaged: Number(row!.damaged), available: Number(row!.available),
+      variants: Number(row!.variants), low_stock_lines: Number(row!.low_stock_lines), out_of_stock_lines: Number(row!.out_of_stock_lines),
+    };
   });
 
   app.get('/api/v1/inventory/variants/:variantId', async (request) => {
@@ -568,6 +627,8 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       })).min(1).max(200),
       reason: z.string().trim().min(4).max(500),
       reference: z.string().trim().min(3).max(120),
+      /** §12/§13: per-item mode — valid lines apply, invalid lines return a readable reason. */
+      partial: z.boolean().default(false),
     }).strict().parse(request.body);
     const key = request.headers['idempotency-key'];
     if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');
@@ -575,11 +636,12 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       const claim = await claimIdempotency(client, user.id, 'inventory.bulk_adjust', key, requestHash(body));
       if (claim.previous) return claim.previous;
       const movements: string[] = [];
-      for (const [index, line] of body.lines.entries()) {
+      const results: { variantId: string; warehouseId: string; ok: boolean; movementId?: string; onHand?: number; error?: string }[] = [];
+      const applyLine = async (line: typeof body.lines[number], index: number) => {
         const target = await one<{ id: string }>(client,
           'SELECT v.id FROM product_variants v JOIN warehouses w ON w.id = $2 WHERE v.id = $1 AND w.active = true',
           [line.variantId, line.warehouseId]);
-        if (!target) throw notFound();
+        if (!target) throw notFound('کالا یا انبار این ردیف یافت نشد.');
         const domain: InventoryDomain = line.inventoryDomain ?? 'retail';
         await client.query(
           `INSERT INTO stock_balances(variant_id,warehouse_id,inventory_domain) VALUES ($1,$2,$3)
@@ -596,11 +658,31 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
           `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
            VALUES ($1,$2,$3,$4,$5,$6,'adjustment',$7,$8,$9)`,
           [movementId, line.variantId, line.warehouseId, domain, line.delta, body.reason, `${body.reference}#${index + 1}`, user.id, `bulk-adjust:${key}:${index}`]);
-        movements.push(movementId);
+        return { movementId, onHand: Number(balance.on_hand) };
+      };
+      for (const [index, line] of body.lines.entries()) {
+        if (!body.partial) {
+          const applied = await applyLine(line, index);
+          movements.push(applied.movementId);
+          results.push({ variantId: line.variantId, warehouseId: line.warehouseId, ok: true, ...applied });
+          continue;
+        }
+        await client.query(`SAVEPOINT bulk_adj_${index}`);
+        try {
+          const applied = await applyLine(line, index);
+          await client.query(`RELEASE SAVEPOINT bulk_adj_${index}`);
+          movements.push(applied.movementId);
+          results.push({ variantId: line.variantId, warehouseId: line.warehouseId, ok: true, ...applied });
+        } catch (error) {
+          await client.query(`ROLLBACK TO SAVEPOINT bulk_adj_${index}`);
+          results.push({ variantId: line.variantId, warehouseId: line.warehouseId, ok: false,
+            error: error instanceof ApiError ? error.message : 'اصلاح این ردیف ناموفق بود.' });
+        }
       }
+      const succeeded = results.filter((item) => item.ok).length;
       await audit(client, user.id, 'inventory.bulk_adjusted', 'stock_balance', body.reference, undefined,
-        { lines: body.lines.length, reason: body.reason }, request.ip);
-      const result = { movements, lines: body.lines.length, reference: body.reference };
+        { lines: body.lines.length, succeeded, failed: results.length - succeeded, reason: body.reason, partial: body.partial }, request.ip);
+      const result = { movements, lines: body.lines.length, reference: body.reference, results, succeeded, failed: results.length - succeeded };
       await completeIdempotency(client, user.id, 'inventory.bulk_adjust', key, result);
       return result;
     });
@@ -842,7 +924,75 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       const response = await transaction(pool, async (client) => {
         const claim = await claimIdempotency(client, user.id, 'inventory.transfer.create', key, requestHash(body));
         if (claim.previous) return claim.previous;
+        const result = await createDomainTransferCore(client, user.id, body, request.ip);
+        await completeIdempotency(client, user.id, 'inventory.transfer.create', key, result);
+        return result;
+      });
+      return reply.code(201).send(response);
+    }
 
+    // Mode B: Canonical multi-line WMS warehouse transfer (draft -> in_transit -> completed)
+    const body = multiLineTransferBody.parse(request.body);
+    const domain: InventoryDomain = body.inventoryDomain ?? 'retail';
+    const result = await transaction(pool, async (client) => {
+      const from = await one<{ owner_id: string | null }>(client, 'SELECT owner_id FROM warehouses WHERE id = $1', [body.fromWarehouseId]);
+      const to = await one<{ owner_id: string | null }>(client, 'SELECT owner_id FROM warehouses WHERE id = $1', [body.toWarehouseId]);
+      if (!from || !to) throw notFound();
+      const supplier = user.roles.includes('supplier') && !user.permissions.includes('inventory:transfer');
+      if (supplier && (from.owner_id !== user.id || to.owner_id !== user.id)) throw forbidden();
+      const refSeq = await one<{ number: string }>(client, "SELECT nextval('transfer_reference_seq')::text AS number");
+      const reference = body.reference ?? `TRF-${refSeq!.number}`;
+      const transferId = randomUUID();
+      await client.query(
+        `INSERT INTO stock_transfers(id,reference,transfer_number,from_warehouse_id,to_warehouse_id,source_warehouse_id,destination_warehouse_id,source_domain,destination_domain,status,created_by)
+         VALUES ($1,$2,$2,$3,$4,$3,$4,$5,$5,'draft',$6)`,
+        [transferId, reference, body.fromWarehouseId, body.toWarehouseId, domain, user.id]);
+      for (const line of body.lines) {
+        await client.query(`INSERT INTO stock_transfer_lines(id,transfer_id,variant_id,quantity) VALUES ($1,$2,$3,$4)`,
+          [randomUUID(), transferId, line.variantId, line.quantity]);
+        await client.query(
+          `INSERT INTO stock_balances(variant_id,warehouse_id,inventory_domain) VALUES ($1,$2,$3)
+           ON CONFLICT (variant_id,warehouse_id,inventory_domain) DO NOTHING`,
+          [line.variantId, body.fromWarehouseId, domain]);
+        await client.query(
+          `INSERT INTO stock_balances(variant_id,warehouse_id,inventory_domain) VALUES ($1,$2,$3)
+           ON CONFLICT (variant_id,warehouse_id,inventory_domain) DO NOTHING`,
+          [line.variantId, body.toWarehouseId, domain]);
+        const ok = await client.query(
+          `UPDATE stock_balances SET on_hand = on_hand - $4, version = version + 1
+           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3 AND on_hand - reserved - damaged >= $4`,
+          [line.variantId, body.fromWarehouseId, domain, line.quantity]);
+        if (!ok.rowCount) throw conflict(`موجودی قابل انتقال برای SKU کافی نیست.`);
+      }
+      await client.query(`UPDATE stock_transfers SET status = 'in_transit' WHERE id = $1`, [transferId]);
+      for (const line of body.lines) {
+        await client.query(
+          `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+           VALUES ($1,$2,$3,$4,$5,'transfer out','transfer',$6,$7,$8)`,
+          [randomUUID(), line.variantId, body.fromWarehouseId, domain, -line.quantity, transferId, user.id, `trf-out:${transferId}:${line.variantId}`]);
+        await client.query(
+          `UPDATE stock_balances SET incoming = incoming + $4, version = version + 1
+           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
+          [line.variantId, body.toWarehouseId, domain, line.quantity]);
+        await client.query(
+          `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,incoming_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+           VALUES ($1,$2,$3,$4,$5,'transfer incoming','transfer',$6,$7,$8)`,
+          [randomUUID(), line.variantId, body.toWarehouseId, domain, line.quantity, transferId, user.id, `trf-in:${transferId}:${line.variantId}`]);
+      }
+      await audit(client, user.id, 'inventory.transfer_created', 'stock_transfer', transferId, undefined, body, request.ip);
+      return { id: transferId, reference, status: 'in_transit' };
+    });
+    return reply.code(201).send(result);
+  });
+
+  /** Mode A core — ALL §17/G1-G4 rules live here so single and bulk transfers share ONE rulebook. */
+  async function createDomainTransferCore(
+    client: DbClient,
+    actorId: string,
+    body: z.infer<typeof domainTransferBody>,
+    ip: string,
+  ) {
+    {
         const target = await one<{
           variant_id: string;
           product_id: string;
@@ -963,7 +1113,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
             body.quantity,
             ownershipConversionId,
             body.reason,
-            user.id,
+            actorId,
             body.batchReference ?? null,
           ],
         );
@@ -981,7 +1131,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
             body.quantity,
             `رزرو انتقال به ${body.destinationDomain}: ${body.reason}`,
             transferId,
-            user.id,
+            actorId,
             `transfer-reserve:${transferId}`,
           ],
         );
@@ -998,65 +1148,70 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
           quantity: body.quantity,
           ownershipConversionId,
         };
-        await audit(client, user.id, 'inventory.transfer_created', 'stock_transfer', transferId, undefined, result, request.ip);
-        await completeIdempotency(client, user.id, 'inventory.transfer.create', key, result);
+        await audit(client, actorId, 'inventory.transfer_created', 'stock_transfer', transferId, undefined, result, ip);
         return result;
-      });
-      return reply.code(201).send(response);
     }
+  }
 
-    // Mode B: Canonical multi-line WMS warehouse transfer (draft -> in_transit -> completed)
-    const body = multiLineTransferBody.parse(request.body);
-    const domain: InventoryDomain = body.inventoryDomain ?? 'retail';
-    const result = await transaction(pool, async (client) => {
-      const from = await one<{ owner_id: string | null }>(client, 'SELECT owner_id FROM warehouses WHERE id = $1', [body.fromWarehouseId]);
-      const to = await one<{ owner_id: string | null }>(client, 'SELECT owner_id FROM warehouses WHERE id = $1', [body.toWarehouseId]);
-      if (!from || !to) throw notFound();
-      const supplier = user.roles.includes('supplier') && !user.permissions.includes('inventory:transfer');
-      if (supplier && (from.owner_id !== user.id || to.owner_id !== user.id)) throw forbidden();
-      const refSeq = await one<{ number: string }>(client, "SELECT nextval('transfer_reference_seq')::text AS number");
-      const reference = body.reference ?? `TRF-${refSeq!.number}`;
-      const transferId = randomUUID();
-      await client.query(
-        `INSERT INTO stock_transfers(id,reference,transfer_number,from_warehouse_id,to_warehouse_id,source_warehouse_id,destination_warehouse_id,source_domain,destination_domain,status,created_by)
-         VALUES ($1,$2,$2,$3,$4,$3,$4,$5,$5,'draft',$6)`,
-        [transferId, reference, body.fromWarehouseId, body.toWarehouseId, domain, user.id]);
-      for (const line of body.lines) {
-        await client.query(`INSERT INTO stock_transfer_lines(id,transfer_id,variant_id,quantity) VALUES ($1,$2,$3,$4)`,
-          [randomUUID(), transferId, line.variantId, line.quantity]);
-        await client.query(
-          `INSERT INTO stock_balances(variant_id,warehouse_id,inventory_domain) VALUES ($1,$2,$3)
-           ON CONFLICT (variant_id,warehouse_id,inventory_domain) DO NOTHING`,
-          [line.variantId, body.fromWarehouseId, domain]);
-        await client.query(
-          `INSERT INTO stock_balances(variant_id,warehouse_id,inventory_domain) VALUES ($1,$2,$3)
-           ON CONFLICT (variant_id,warehouse_id,inventory_domain) DO NOTHING`,
-          [line.variantId, body.toWarehouseId, domain]);
-        const ok = await client.query(
-          `UPDATE stock_balances SET on_hand = on_hand - $4, version = version + 1
-           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3 AND on_hand - reserved - damaged >= $4`,
-          [line.variantId, body.fromWarehouseId, domain, line.quantity]);
-        if (!ok.rowCount) throw conflict(`موجودی قابل انتقال برای SKU کافی نیست.`);
+  // §14: bulk rule-aware transfers — ONE transactional request, per-line eligibility results.
+  // Every line goes through createDomainTransferCore, so ownership/reserved/damaged/full-stock
+  // rules are identical to single transfers (no parallel rulebook).
+  app.post('/api/v1/inventory/bulk-transfers', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    if (!user.permissions.includes('inventory:transfer') && !user.permissions.includes('inventory:adjust')) {
+      throw forbidden('شما مجوز ثبت انتقال موجودی را ندارید.');
+    }
+    const body = z.object({
+      sourceDomain: z.enum(['retail', 'wholesale']),
+      destinationDomain: z.enum(['retail', 'wholesale']),
+      sourceWarehouseId: z.uuid(),
+      destinationWarehouseId: z.uuid(),
+      reason: z.string().trim().min(4).max(500),
+      lines: z.array(z.object({
+        variantId: z.uuid(),
+        quantity: z.number().int().min(1).max(100000),
+        ownershipConversionId: z.uuid().optional(),
+        confirmFullStock: z.boolean().optional(),
+      }).strict()).min(1).max(100),
+    }).strict().parse(request.body);
+    if (body.sourceDomain === body.destinationDomain && body.sourceWarehouseId === body.destinationWarehouseId) {
+      throw badRequest('مبدأ و مقصد انتقال موجودی نمی‌تواند یکسان باشد.');
+    }
+    const key = request.headers['idempotency-key'];
+    if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');
+    const response = await transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, 'inventory.transfer.bulk', key, requestHash(body));
+      if (claim.previous) return claim.previous;
+      const results: { variantId: string; ok: boolean; reference?: string; transferId?: string; error?: string }[] = [];
+      for (const [index, line] of body.lines.entries()) {
+        await client.query(`SAVEPOINT bulk_trf_${index}`);
+        try {
+          const created = await createDomainTransferCore(client, user.id, {
+            variantId: line.variantId,
+            sourceDomain: body.sourceDomain,
+            destinationDomain: body.destinationDomain,
+            sourceWarehouseId: body.sourceWarehouseId,
+            destinationWarehouseId: body.destinationWarehouseId,
+            quantity: line.quantity,
+            reason: body.reason,
+            ownershipConversionId: line.ownershipConversionId,
+            confirmFullStock: line.confirmFullStock,
+          } as z.infer<typeof domainTransferBody>, request.ip);
+          await client.query(`RELEASE SAVEPOINT bulk_trf_${index}`);
+          results.push({ variantId: line.variantId, ok: true, reference: created.transferNumber as string, transferId: created.id as string });
+        } catch (error) {
+          await client.query(`ROLLBACK TO SAVEPOINT bulk_trf_${index}`);
+          results.push({ variantId: line.variantId, ok: false, error: error instanceof ApiError ? error.message : 'ثبت انتقال این ردیف ناموفق بود.' });
+        }
       }
-      await client.query(`UPDATE stock_transfers SET status = 'in_transit' WHERE id = $1`, [transferId]);
-      for (const line of body.lines) {
-        await client.query(
-          `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-           VALUES ($1,$2,$3,$4,$5,'transfer out','transfer',$6,$7,$8)`,
-          [randomUUID(), line.variantId, body.fromWarehouseId, domain, -line.quantity, transferId, user.id, `trf-out:${transferId}:${line.variantId}`]);
-        await client.query(
-          `UPDATE stock_balances SET incoming = incoming + $4, version = version + 1
-           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
-          [line.variantId, body.toWarehouseId, domain, line.quantity]);
-        await client.query(
-          `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,incoming_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-           VALUES ($1,$2,$3,$4,$5,'transfer incoming','transfer',$6,$7,$8)`,
-          [randomUUID(), line.variantId, body.toWarehouseId, domain, line.quantity, transferId, user.id, `trf-in:${transferId}:${line.variantId}`]);
-      }
-      await audit(client, user.id, 'inventory.transfer_created', 'stock_transfer', transferId, undefined, body, request.ip);
-      return { id: transferId, reference, status: 'in_transit' };
+      const succeeded = results.filter((item) => item.ok).length;
+      await audit(client, user.id, 'inventory.bulk_transfer', 'stock_transfer', key,
+        undefined, { lines: body.lines.length, succeeded, failed: results.length - succeeded, reason: body.reason }, request.ip);
+      const result = { results, succeeded, failed: results.length - succeeded };
+      await completeIdempotency(client, user.id, 'inventory.transfer.bulk', key, result);
+      return result;
     });
-    return reply.code(201).send(result);
+    return reply.code(201).send(response);
   });
 
   app.post('/api/v1/inventory/transfers/:id/approve', async (request) => {

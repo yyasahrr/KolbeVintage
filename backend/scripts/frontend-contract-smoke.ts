@@ -506,9 +506,10 @@ try {
     vipSrc.includes('availableSeries') && !vipSrc.includes('p.stock >=') && !vipSrc.includes('p.stock <'));
   const hubHead = hubSrc.slice(hubSrc.indexOf('export function WarehouseHub'), hubSrc.indexOf('tab === "retail"'));
   const hubOptions = hubHead.slice(hubHead.indexOf('options={['), hubHead.indexOf(']}'));
-  check('warehouse hub has exactly 3 primary tabs — settings opens from a header drawer',
-    (hubOptions.match(/\{ v: "/g) ?? []).length === 3 && !hubOptions.includes('تنظیمات') &&
-    hubHead.includes('تنظیمات انبار') && hubSrc.includes('<Drawer'));
+  // §3: settings became the FOURTH primary tab (supersedes the old header-drawer design).
+  check('warehouse hub has exactly 4 primary tabs incl. تنظیمات انبار — no settings drawer remains',
+    (hubOptions.match(/\{ v: "/g) ?? []).length === 4 && hubOptions.includes('تنظیمات انبار') &&
+    !hubSrc.includes('<Drawer open={settingsOpen}'));
 
   setAccessToken(null);
 } catch (error) {

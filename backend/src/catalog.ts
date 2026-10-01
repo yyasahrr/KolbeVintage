@@ -728,6 +728,82 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
   });
 
   /**
+   * §11/§12: bulk sale-status (فعال‌سازی/توقف فروش خرده) — ONE backend call with
+   * per-item results; invalid items fail with a readable reason, valid items apply.
+   * Sale status is independent from stock status (§8) and never touches balances.
+   */
+  app.post('/api/v1/products/bulk/sale-status', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'products:write');
+    const body = z.object({
+      productIds: z.array(z.uuid()).min(1).max(200)
+        .refine((ids) => new Set(ids).size === ids.length, 'هر محصول فقط یک بار مجاز است.'),
+      enabled: z.boolean(),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const results: { productId: string; ok: boolean; name?: string; error?: string }[] = [];
+      for (const productId of body.productIds) {
+        const product = await one<{ id: string; name: string; status: string; owner_type: string; retail_enabled: boolean; cash_price_rial: string | null }>(
+          client,
+          'SELECT id, name, status, owner_type, retail_enabled, cash_price_rial FROM products WHERE id = $1 FOR UPDATE',
+          [productId]);
+        if (!product) { results.push({ productId, ok: false, error: 'محصول یافت نشد.' }); continue; }
+        if (product.status === 'archived') {
+          results.push({ productId, ok: false, name: product.name, error: 'محصول آرشیو شده است؛ ابتدا باید از آرشیو خارج شود.' });
+          continue;
+        }
+        if (body.enabled && product.owner_type === 'supplier') {
+          results.push({ productId, ok: false, name: product.name, error: 'محصول متعلق به تأمین‌کننده فقط در کانال عمده مجاز است.' });
+          continue;
+        }
+        if (body.enabled && (!product.cash_price_rial || product.cash_price_rial === '0')) {
+          results.push({ productId, ok: false, name: product.name, error: 'قیمت خرده‌فروشی ثبت نشده است؛ فعال‌سازی فروش مجاز نیست.' });
+          continue;
+        }
+        if (product.retail_enabled === body.enabled) {
+          results.push({ productId, ok: true, name: product.name });
+          continue;
+        }
+        await client.query('UPDATE products SET retail_enabled = $2, version = version + 1, updated_at = now() WHERE id = $1', [productId, body.enabled]);
+        await outbox(client, 'product.updated', 'product', productId, { productId, retailEnabled: body.enabled });
+        results.push({ productId, ok: true, name: product.name });
+      }
+      const succeeded = results.filter((item) => item.ok).length;
+      await audit(client, user.id, 'products.bulk_sale_status', 'product', body.productIds[0]!, undefined,
+        { enabled: body.enabled, requested: body.productIds.length, succeeded, failed: results.length - succeeded,
+          failures: results.filter((item) => !item.ok).map((item) => ({ productId: item.productId, error: item.error })) },
+        request.ip);
+      return { results, succeeded, failed: results.length - succeeded };
+    });
+  });
+
+  /** §12: safe bulk archive — stock and ledger stay untouched; per-item results. */
+  app.post('/api/v1/products/bulk/archive', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'products:write');
+    const body = z.object({
+      productIds: z.array(z.uuid()).min(1).max(200)
+        .refine((ids) => new Set(ids).size === ids.length, 'هر محصول فقط یک بار مجاز است.'),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const results: { productId: string; ok: boolean; name?: string; error?: string }[] = [];
+      for (const productId of body.productIds) {
+        const product = await one<{ id: string; name: string; status: string }>(client,
+          'SELECT id, name, status FROM products WHERE id = $1 FOR UPDATE', [productId]);
+        if (!product) { results.push({ productId, ok: false, error: 'محصول یافت نشد.' }); continue; }
+        if (product.status === 'archived') { results.push({ productId, ok: true, name: product.name }); continue; }
+        await client.query(`UPDATE products SET status = 'archived', version = version + 1, updated_at = now() WHERE id = $1`, [productId]);
+        await outbox(client, 'product.status_changed', 'product', productId, { productId, status: 'archived' });
+        results.push({ productId, ok: true, name: product.name });
+      }
+      const succeeded = results.filter((item) => item.ok).length;
+      await audit(client, user.id, 'products.bulk_archived', 'product', body.productIds[0]!, undefined,
+        { requested: body.productIds.length, succeeded, failed: results.length - succeeded }, request.ip);
+      return { results, succeeded, failed: results.length - succeeded };
+    });
+  });
+
+  /**
    * P: hard delete is only allowed for fully clean products (no orders, invoices,
    * movements, receipts, transfers, manual sales, promotions, supplier requests or
    * series history). Anything with history must be archived/disabled instead.

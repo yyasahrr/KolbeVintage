@@ -204,6 +204,11 @@ export const productsApi = {
   update: (id: string, payload: unknown) => apiClient.patch<{ id: string; updated: string[] }>(`/products/${id}`, payload),
   status: (id: string, status: "published" | "draft" | "rejected" | "archived") =>
     apiClient.patch<{ id: string; status: string }>(`/products/${id}/status`, { status }),
+  /** §11/§12: ONE backend call with per-item results — never N client requests. */
+  bulkSaleStatus: (payload: { productIds: string[]; enabled: boolean }) =>
+    apiClient.post<{ results: { productId: string; ok: boolean; name?: string; error?: string }[]; succeeded: number; failed: number }>("/products/bulk/sale-status", payload),
+  bulkArchive: (payload: { productIds: string[] }) =>
+    apiClient.post<{ results: { productId: string; ok: boolean; name?: string; error?: string }[]; succeeded: number; failed: number }>("/products/bulk/archive", payload),
   /** Full server detail for the unified create/edit studio — includes inactive variants (Req 38). */
   adminDetail: (id: string) => authFetch<Record<string, unknown> & {
     variants: { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number }[];
@@ -246,6 +251,11 @@ export const inventoryApi = {
     return authFetch<{ items: unknown[] }>(`/inventory?${q.toString()}`);
   },
   lowStock: (threshold = 10) => authFetch<{ items: unknown[] }>(`/inventory/low-stock?threshold=${threshold}`),
+  /** §5: server-computed KPI header (on-hand/reserved/incoming/damaged/available) for a domain. */
+  summary: (params?: { inventoryDomain?: "retail" | "wholesale"; warehouseId?: string }) => {
+    const q = new URLSearchParams(Object.entries(params ?? {}).filter(([, v]) => v).map(([k, v]) => [k, String(v)]));
+    return authFetch<{ on_hand: number; reserved: number; incoming: number; damaged: number; available: number; variants: number; low_stock_lines: number; out_of_stock_lines: number }>(`/inventory/summary?${q.toString()}`);
+  },
   movements: (variantId: string) => authFetch<{ items: unknown[] }>(`/inventory/movements?variantId=${variantId}`),
   adjust: (payload: { variantId: string; warehouseId: string; delta: number; reason: string; reference: string; inventoryDomain?: "retail" | "wholesale" }, idempotencyKey: string) =>
     authFetch<unknown>("/inventory/adjustments", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
@@ -255,6 +265,21 @@ export const inventoryApi = {
     authFetch<unknown>("/inventory/receipts", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
   receiveReceipt: (id: string, payload?: { receivedQuantity?: number; note?: string }) =>
     authFetch<unknown>(`/inventory/receipts/${id}/receive`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+  /** Item 52 + §13: transactional bulk adjustment (≤200 lines) — `partial: true` returns per-line results. */
+  bulkAdjust: (payload: {
+    lines: { variantId: string; warehouseId: string; inventoryDomain?: "retail" | "wholesale"; delta: number }[];
+    reason: string; reference: string; partial?: boolean;
+  }, key: string) =>
+    authFetch<{ results: { variantId: string; warehouseId: string; ok: boolean; error?: string }[]; succeeded: number; failed: number }>(
+      "/inventory/bulk-adjustments", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
+  /** §14: bulk rule-aware transfers — server enforces ownership/reserved/full-stock per line. */
+  bulkTransfers: (payload: {
+    sourceDomain: "retail" | "wholesale"; destinationDomain: "retail" | "wholesale";
+    sourceWarehouseId: string; destinationWarehouseId: string; reason: string;
+    lines: { variantId: string; quantity: number; ownershipConversionId?: string; confirmFullStock?: boolean }[];
+  }, key: string) =>
+    authFetch<{ results: { variantId: string; ok: boolean; reference?: string; error?: string }[]; succeeded: number; failed: number }>(
+      "/inventory/bulk-transfers", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
   /** Mode A: official single-variant domain/warehouse transfer (G1-G6). */
   domainTransfer: (payload: {
     variantId: string; sourceDomain: "retail" | "wholesale"; destinationDomain: "retail" | "wholesale";
@@ -283,9 +308,7 @@ export const inventoryApi = {
     authFetch<unknown>("/inventory/transfers", { method: "POST", body: JSON.stringify(payload) }),
   completeTransfer: (id: string) => authFetch<unknown>(`/inventory/transfers/${id}/complete`, { method: "POST" }),
   transfers: () => authFetch<{ items: unknown[] }>("/inventory/transfers"),
-  /** Item 52: transactional all-or-nothing bulk adjustment (≤200 lines). */
-  bulkAdjust: (payload: { lines: { variantId: string; warehouseId: string; delta: number }[]; reason: string; reference: string }, idempotencyKey: string) =>
-    authFetch<unknown>("/inventory/bulk-adjustments", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
+
   /** Item 52: bulk receipt — creates and immediately receives (≤200 lines). */
   bulkReceipt: (payload: { lines: { variantId: string; warehouseId: string; quantity: number }[]; reference?: string }, idempotencyKey: string) =>
     authFetch<unknown>("/inventory/bulk-receipts", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),

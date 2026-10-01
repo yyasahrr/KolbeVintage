@@ -23,13 +23,19 @@ export async function warehouseUxSmoke({ page, check, apiPort, clickByText, setI
   await page.waitForSelector('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]');
   await page.type('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]', String(suffix));
   await waitForText(productName);
+  // §3/§4: settings is now the FOURTH primary tab (not a drawer) and must stay configuration-only.
   await clickByText('تنظیمات انبار');
-  const settingsText = await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent ?? '');
-  check('warehouse settings has configuration and no operational forms or balances', settingsText.includes('انبار انتخاب‌شده') && settingsText.includes('مکان‌ها') && settingsText.includes('فیلتر گزارش موجودی کم') && !/ثبت رسید|ثبت اصلاح|ثبت انتقال|تراز موجودی/.test(settingsText));
+  await waitForText('انبار انتخاب‌شده');
+  const settingsText = await text();
+  check('warehouse settings tab has configuration and no operational forms or balances', settingsText.includes('انبار انتخاب‌شده') && settingsText.includes('مکان‌ها') && settingsText.includes('فیلتر گزارش موجودی کم') && !/ثبت رسید|ثبت اصلاح|ثبت انتقال|تراز موجودی/.test(settingsText));
   check('low stock report explicitly describes global non-persisted scope', settingsText.includes('همه انبارها و دامنه‌ها') && settingsText.includes('ذخیره نمی‌شود'));
   await setInput('کد مکان', `UX-${String(suffix).slice(-5)}`); await setInput('نام مکان', 'قفسه آزمون'); await clickByText('افزودن مکان'); await waitForText('مکان انبار ثبت شد');
   check('location creation refreshes readable code/name/status list', (await text()).includes('قفسه آزمون') && (await text()).includes('فعال'));
-  await page.keyboard.press('Escape');
+  // Back to the retail operations tab (tab switch unmounts the table, so search again).
+  await clickByText('خرده‌فروشی');
+  await page.waitForSelector('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]');
+  await page.type('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]', String(suffix));
+  await waitForText(productName);
   const productRow = async () => page.evaluate((name) => [...document.querySelectorAll('tbody tr')].find((row) => row.textContent.includes(name))?.textContent ?? '', productName);
   check('incoming product exposes visible Receive action', (await productRow()).includes('دریافت کالا'));
   await page.evaluate((name) => [...document.querySelectorAll('tbody tr')].find((row) => row.textContent.includes(name))?.click(), productName);

@@ -40,6 +40,7 @@ export function WarehouseSettings({ onReport }: { onReport: (rows: LowStock[]) =
     {error && <ErrorState message={error} onRetry={() => { void loadWarehouses(); void loadLocations(); }} />}
     {notice && <p role="status" className="text-sm">{notice}</p>}
     <section className="space-y-3">
+      <h3 className="text-sm font-bold">اطلاعات انبار</h3>
       <Field label="انبار انتخاب‌شده"><select aria-label="انبار انتخاب‌شده" disabled={busy} value={selected} onChange={(e) => { setSelected(e.target.value); setNewLoc({ code: "", name: "" }); }} className="w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-3">
         {(warehouses ?? []).map((item) => <option key={item.id} value={item.id}>{item.code} — {item.name}</option>)}
       </select></Field>
@@ -61,7 +62,9 @@ export function WarehouseSettings({ onReport }: { onReport: (rows: LowStock[]) =
       <Btn size="sm" variant="soft" disabled={busy || !newLoc.code.trim() || !newLoc.name.trim()} onClick={() => void run(async () => { await inventoryApi.createLocation(selected, { code: newLoc.code.trim(), name: newLoc.name.trim() }); setNewLoc({ code: "", name: "" }); await loadLocations(); setNotice("مکان انبار ثبت شد."); })}>افزودن مکان</Btn>
     </section>}
     <section className="space-y-3 border-t border-[var(--kv-line)] pt-4">
-      <h3 className="text-sm font-bold">فیلتر گزارش موجودی کم — همه انبارها و دامنه‌ها</h3>
+      <h3 className="text-sm font-bold">قواعد موجودی</h3>
+      <p className="text-xs leading-6 text-[var(--kv-muted)]">آستانه هشدار «رو به اتمام» در کل سامانه ثابت و سمت سرور است (۵ عدد قابل فروش یا کمتر). وضعیت موجودی همیشه خودکار محاسبه می‌شود و قابل ویرایش دستی نیست.</p>
+      <h4 className="text-xs font-bold">فیلتر گزارش موجودی کم — همه انبارها و دامنه‌ها</h4>
       <p className="text-xs leading-6 text-[var(--kv-muted)]">این عدد ذخیره نمی‌شود؛ فقط اقلام با موجودی قابل فروش کمتر یا مساوی آن را در گزارش نشان می‌دهد و آستانه هشدار خودکار را تغییر نمی‌دهد.</p>
       <Field label="حد موجودی قابل فروش برای گزارش"><Input type="number" value={threshold} onChange={(value) => { if (/^\d*$/.test(value)) setThreshold(value); }} /></Field>
       <Btn size="sm" variant="soft" disabled={busy || !threshold || Number(threshold) > 100000} onClick={() => void run(async () => { onReport((await inventoryApi.lowStock(Number(threshold))).items as LowStock[]); })}>گزارش موجودی کم</Btn>
