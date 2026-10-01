@@ -21,7 +21,7 @@ import { cn } from "../utils/cn";
 import { AdminApiError, apiClient, isAuthenticated, inventoryApi, onAuthExpired, shippingApi, type ApiRequest } from "../data/api";
 import { normalizeWarehouses } from "../data/contracts";
 import { AdminServerOrders } from "./admin-server-orders";
-import { AdminWmsPanel } from "./admin-wms-panel";
+import { WarehouseHub } from "./warehouse-hub";
 import { FinanceLedgerPanel } from "../components/finance-ledger";
 import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
@@ -212,7 +212,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "rproducts", label: "تعریف محصول", icon: <Tags size={17} /> },
     { v: "structure", label: "ساختار محصولات", icon: <Layers size={17} /> },
     { v: "shipping", label: "حمل‌ونقل", icon: <Truck size={17} /> },
-    { v: "wms", label: "انبار و موجودی (WMS)", icon: <Boxes size={17} /> },
+    { v: "wms", label: "انبار و نقل‌وانتقالات", icon: <Boxes size={17} /> },
     { v: "crm", label: "مشتریان (CRM)", icon: <Contact size={17} /> },
     { v: "promo", label: "کوپن و جشنواره", icon: <TicketPercent size={17} /> },
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
@@ -613,7 +613,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "mreview" && moduleBoundary("بازبینی بازارچه", <MarketplaceReviewPanel flash={flash} />)}
           {tab === "imports" && moduleBoundary("مرکز ورود داده", <ImportCenterPanel flash={flash} />)}
           {tab === "shipping" && moduleBoundary("حمل‌ونقل", <ShippingAdmin flash={flash} />)}
-          {tab === "wms" && moduleBoundary("انبار و موجودی", <AdminWmsPanel />)}
+          {tab === "wms" && moduleBoundary("انبار و نقل‌وانتقالات", <WarehouseHub flash={flash} />)}
           {tab === "crm" && moduleBoundary("مشتریان", <CrmPanel />)}
           {tab === "buyers360" && moduleBoundary("پرونده ۳۶۰° خریداران", <Buyer360Panel flash={flash} />)}
           {tab === "crm-center" && moduleBoundary("مرکز رشد CRM", <CrmCenter flash={flash} />)}
