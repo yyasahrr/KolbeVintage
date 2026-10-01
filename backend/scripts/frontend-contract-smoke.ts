@@ -18,7 +18,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import {
   apiClient, authApi, getAccessToken, setAccessToken, setApiBaseUrl, ticketsApi, productsApi, filesApi,
-  ordersApi, seriesTemplatesApi, AdminApiError,
+  omsApi, ordersApi, seriesTemplatesApi, AdminApiError,
 } from '../../src/data/api.ts';
 import {
   TICKET_STATUSES, adaptCmsHero, adaptSitePage, buildProductCreatePayload, buildShippingMethodPayload, buildTicketCreatePayload,
@@ -510,6 +510,31 @@ try {
   check('warehouse hub has exactly 4 primary tabs incl. تنظیمات انبار — no settings drawer remains',
     (hubOptions.match(/\{ v: "/g) ?? []).length === 4 && hubOptions.includes('تنظیمات انبار') &&
     !hubSrc.includes('<Drawer open={settingsOpen}'));
+
+  // ---------- OMS: 3-tab orders hub contracts (§18-§41) ----------
+  const omsAdmin = await authApi.login({ identity: adminEmail, password: adminPassword });
+  setAccessToken(omsAdmin.accessToken);
+  const omsOrders = await ordersApi.list({ orderType: 'retail', withTotal: '1', sellerScope: 'kolbe', limit: '5' }) as unknown as { items: Record<string, unknown>[]; total?: number };
+  check('ordersApi.list supports OMS params (withTotal/sellerScope) and returns a real total', typeof omsOrders.total === 'number');
+  check('orders list rows expose tracking/shipment/exception read-model columns',
+    omsOrders.items.length === 0 || ['tracking_code', 'shipment_status', 'exception_reasons'].every((k) => k in omsOrders.items[0]!));
+  const retailSales = await omsApi.retailSales({ limit: 5 });
+  check('omsApi.retailSales unifies website orders + manual sales with payment/channel columns',
+    typeof retailSales.total === 'number' &&
+    (retailSales.items.length === 0 || ['kind', 'channel', 'payment_status', 'payment_method', 'tracking_code'].every((k) => k in retailSales.items[0]!)));
+  const bulkGhost = await ordersApi.bulkTransitions({ orderIds: [randomUUID()], status: 'processing' });
+  check('ordersApi.bulkTransitions is ONE backend call with per-item results + readable reasons',
+    bulkGhost.failed === 1 && bulkGhost.results[0]!.ok === false && (bulkGhost.results[0]!.error ?? '').length > 0);
+  const ordersHubSrc = readFileSync(join(repoRoot, 'src/portals/orders-hub.tsx'), 'utf8');
+  const hubTabs = ordersHubSrc.slice(ordersHubSrc.indexOf('export function OrdersHub'));
+  check('orders hub has exactly 3 tabs: خرده / عمده کلبه / عمده تأمین‌کنندگان',
+    (hubTabs.match(/label: "سفارشات /g) ?? []).length === 3 && hubTabs.includes('سفارشات خرده') &&
+    hubTabs.includes('سفارشات عمده کلبه') && hubTabs.includes('سفارشات عمده تأمین‌کنندگان'));
+  check('shipping label print targets 100×150mm and tracking writes go through the shipments domain',
+    ordersHubSrc.includes('size: 100mm 150mm') && ordersHubSrc.includes('trackingApi.createShipment') &&
+    ordersHubSrc.includes('trackingApi.updateShipment'));
+  check('bulk invoice print reuses the existing invoice domain (no parallel invoice renderer)',
+    ordersHubSrc.includes('invoicesApi.list({ orderId') && !ordersHubSrc.includes('INV-'));
 
   setAccessToken(null);
 } catch (error) {
