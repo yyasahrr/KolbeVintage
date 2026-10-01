@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Check, MessageSquare, Phone, Plug, Plus, Send, Tag, Ticket as TicketIcon, Trash2, Users, CalendarClock, Megaphone } from "lucide-react";
 import { SUPPLIERS, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
-import { useOps, opsNow, smsParts, type Coupon, type Festival, type Lead, type LeadStage } from "../data/ops";
+import { useOps, opsNow, smsParts, resolveVariantPromotion, type Coupon, type Festival, type PromotionRule, type PromotionTargetType, type Lead, type LeadStage } from "../data/ops";
 import { useEffect } from "react";
 import { adminApi, crmApi, integrationsApi } from "../data/api";
 import { BarList, Kpi } from "../components/charts";
@@ -308,23 +308,178 @@ export function CrmCenter({ flash }: { flash: F }) {
 }
 
 /* ================= Promotions ================= */
+const TARGET_TYPE_LABELS: Record<PromotionTargetType, string> = {
+  variant: "واریانت دقیق (رنگ + سایز)",
+  color: "سطح رنگ (همه سایزهای یک رنگ)",
+  size: "سطح سایز (همه رنگ‌های یک سایز)",
+  product: "کل محصول (همه واریانت‌ها)",
+};
+
 export function PromoCenter({ flash }: { flash: F }) {
   const ops = useOps();
   const { products } = useStore();
   const cats = Array.from(new Set(products.map((p) => p.category)));
-  const [tab, setTab] = useState<"coupons" | "festivals">("coupons");
+  const [tab, setTab] = useState<"rules" | "coupons" | "festivals">("rules");
   const [cp, setCp] = useState<Coupon | null>(null);
   const [fs, setFs] = useState<Festival | null>(null);
+  const [pr, setPr] = useState<PromotionRule | null>(null);
+  const [simProductId, setSimProductId] = useState(products[0]?.id ?? "p1");
+  const simProduct = products.find((p) => p.id === simProductId) ?? products[0];
+  const simSizes = useMemo(
+    () => Array.from(new Set((simProduct?.series ?? []).flatMap((s) => Object.keys(s.composition)))),
+    [simProduct],
+  );
+  const [simColorId, setSimColorId] = useState(simProduct?.colors[0]?.id ?? "black");
+  const [simSize, setSimSize] = useState(simSizes[0] ?? "M");
+  const simResult = simProduct
+    ? resolveVariantPromotion(simProduct, simColorId, simSize, ops.promotionRules, ops.festivals)
+    : null;
   const today = new Date().toISOString().slice(0, 10);
+
   return (
     <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Segmented<"coupons" | "festivals"> options={[{ v: "coupons", label: "کوپن‌ها" }, { v: "festivals", label: "جشنواره‌ها" }]} value={tab} onChange={setTab} />
-        {tab === "coupons"
-          ? <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setCp({ id: `cp-${Date.now()}`, code: "", type: "percent", value: 10, minOrder: 0, maxUses: 100, used: 0, channel: "retail", expires: new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10), active: true })}>کوپن جدید</Btn>
-          : <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setFs({ id: `fs-${Date.now()}`, name: "", starts: today, ends: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10), discountPercent: 10, categories: [], active: true, bannerText: "" })}>جشنواره جدید</Btn>}
+        <Segmented<"rules" | "coupons" | "festivals">
+          options={[
+            { v: "rules", label: "قوانین تخفیف هدفمند (محصول / رنگ / سایز / واریانت)" },
+            { v: "coupons", label: "کوپن‌ها" },
+            { v: "festivals", label: "جشنواره‌ها" },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+        {tab === "rules" ? (
+          <Btn
+            size="sm"
+            variant="accent"
+            icon={<Plus size={14} />}
+            onClick={() =>
+              setPr({
+                id: `pr-${Date.now()}`,
+                name: "",
+                targetType: "variant",
+                productId: products[0]?.id ?? "p1",
+                colorId: products[0]?.colors[0]?.id ?? "black",
+                sizeCode: "XL",
+                discountType: "percent",
+                discountValue: 15,
+                starts: today,
+                ends: new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10),
+                priority: 5,
+                active: true,
+              })
+            }
+          >
+            قانون تخفیف جدید
+          </Btn>
+        ) : tab === "coupons" ? (
+          <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setCp({ id: `cp-${Date.now()}`, code: "", type: "percent", value: 10, minOrder: 0, maxUses: 100, used: 0, channel: "retail", expires: new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10), active: true })}>کوپن جدید</Btn>
+        ) : (
+          <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setFs({ id: `fs-${Date.now()}`, name: "", starts: today, ends: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10), discountPercent: 10, categories: [], active: true, bannerText: "" })}>جشنواره جدید</Btn>
+        )}
       </div>
-      {tab === "coupons" ? (
+
+      {tab === "rules" ? (
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <Card className="overflow-hidden">
+            <div className="border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-4 py-3 text-xs text-[var(--kv-muted)]">
+              ترتیب اولویت قطعی موتور تخفیف (Promotion Resolver): ابتدا <b>اولویت عددی (Priority)</b>، سپس دقت هدف‌گذاری: <b>واریانت دقیق (Variant) &gt; رنگ (Color) &gt; سایز (Size) &gt; کل محصول (Product) &gt; جشنواره (Festival)</b>.
+            </div>
+            <div className="kv-scroll overflow-x-auto">
+              <table className="kv-table min-w-[820px]">
+                <thead>
+                  <tr>
+                    <th>عنوان قانون</th>
+                    <th>سطح هدف‌گذاری</th>
+                    <th>محصول / رنگ / سایز</th>
+                    <th>مقدار تخفیف</th>
+                    <th>اولویت</th>
+                    <th>بازه اعتبار</th>
+                    <th>فعال</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(ops.promotionRules ?? []).map((r) => {
+                    const prod = products.find((p) => p.id === r.productId);
+                    const colorName = prod?.colors.find((c) => c.id === r.colorId)?.name ?? r.colorId;
+                    return (
+                      <tr key={r.id}>
+                        <td><b className="text-[13px]">{r.name}</b></td>
+                        <td><Status value={TARGET_TYPE_LABELS[r.targetType]} /></td>
+                        <td className="text-xs">
+                          <b>{prod?.name ?? r.productId}</b>
+                          {r.targetType === "color" && <span className="mr-1.5 text-[var(--kv-muted)]">· رنگ: {colorName}</span>}
+                          {r.targetType === "size" && <span className="mr-1.5 text-[var(--kv-muted)]">· سایز: {r.sizeCode}</span>}
+                          {r.targetType === "variant" && <span className="mr-1.5 text-[var(--kv-muted)]">· {colorName} / {r.sizeCode}</span>}
+                        </td>
+                        <td className="font-extrabold tabular-nums text-[var(--kv-accent)]">
+                          {r.discountType === "percent" ? `${fmtNum(r.discountValue)}٪` : fmtMoney(r.discountValue)}
+                        </td>
+                        <td className="tabular-nums">{fmtNum(r.priority)}</td>
+                        <td className="text-xs text-[var(--kv-muted)]">
+                          {r.starts ? new Date(r.starts).toLocaleDateString("fa-IR") : "—"} تا {r.ends ? new Date(r.ends).toLocaleDateString("fa-IR") : "—"}
+                        </td>
+                        <td><Switch on={r.active} onToggle={() => ops.upsert("promotionRules", { ...r, active: !r.active })} /></td>
+                        <td><Btn size="sm" variant="ghost" onClick={() => setPr(r)}>ویرایش</Btn></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card className="h-fit p-5 space-y-4">
+            <div>
+              <p className="text-[14.5px] font-extrabold">شبیه‌ساز لحظه‌ای موتور قیمت‌گذاری (Pricing Resolver)</p>
+              <p className="mt-1 text-xs text-[var(--kv-muted)]">انتخاب محصول، رنگ و سایز برای بررسی قانون برنده و قیمت نهایی در PDP و Checkout</p>
+            </div>
+            <Field label="محصول">
+              <select
+                value={simProductId}
+                onChange={(e) => {
+                  const nextProd = products.find((p) => p.id === e.target.value);
+                  setSimProductId(e.target.value);
+                  if (nextProd?.colors[0]) setSimColorId(nextProd.colors[0].id);
+                }}
+                className="h-10 w-full rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-sm"
+              >
+                {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="رنگ (Color)">
+                <select
+                  value={simColorId}
+                  onChange={(e) => setSimColorId(e.target.value)}
+                  className="h-10 w-full rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-sm"
+                >
+                  {(simProduct?.colors ?? []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.id})</option>)}
+                </select>
+              </Field>
+              <Field label="سایز (Size)">
+                <select
+                  value={simSize}
+                  onChange={(e) => setSimSize(e.target.value)}
+                  className="h-10 w-full rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-sm"
+                >
+                  {simSizes.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+            </div>
+            {simResult && (
+              <div className="rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 p-4 space-y-2 text-[13px]">
+                <div className="flex justify-between"><span className="text-[var(--kv-muted)]">قیمت پایه (basePrice):</span><b className="tabular-nums">{fmtMoney(simResult.basePrice)}</b></div>
+                <div className="flex justify-between"><span className="text-[var(--kv-muted)]">قانون منطبق (matchedRule):</span><b>{simResult.matchedRule ? simResult.matchedRule.name : "بدون تخفیف"}</b></div>
+                <div className="flex justify-between"><span className="text-[var(--kv-muted)]">سطح هدف (targetType):</span><span dir="ltr" className="font-mono text-xs">{simResult.matchedRule?.targetType ?? "none"}</span></div>
+                <div className="flex justify-between text-[var(--kv-success)]"><span>مبلغ کسر شده (discountAmount):</span><b className="tabular-nums">−{fmtMoney(simResult.discountAmount)}</b></div>
+                <div className="flex justify-between border-t border-[var(--kv-line)] pt-2 text-[15px] font-extrabold"><span>قیمت نهایی (finalPrice):</span><span className="tabular-nums text-[var(--kv-accent)]">{fmtMoney(simResult.finalPrice)}</span></div>
+              </div>
+            )}
+          </Card>
+        </div>
+      ) : tab === "coupons" ? (
         <Card className="overflow-hidden"><div className="kv-scroll overflow-x-auto"><table className="kv-table min-w-[800px]"><thead><tr><th>کد</th><th>نوع</th><th>کانال</th><th>حداقل خرید</th><th>مصرف</th><th>انقضا</th><th>فعال</th><th></th></tr></thead><tbody>
           {ops.coupons.map((c) => <tr key={c.id}>
             <td><b className="tabular-nums" dir="ltr">{c.code}</b></td>
@@ -350,6 +505,92 @@ export function PromoCenter({ flash }: { flash: F }) {
           {ops.festivals.length === 0 && <Empty title="جشنواره‌ای تعریف نشده" desc="بازه زمانی، درصد و دسته‌ها را تعریف کنید." />}
         </div>
       )}
+      <Drawer open={!!pr} onClose={() => setPr(null)} title={pr?.name || "تعریف قانون تخفیف هدفمند"}>
+        {pr && (() => {
+          const targetProd = products.find((p) => p.id === pr.productId) ?? products[0];
+          const targetSizes = Array.from(new Set((targetProd?.series ?? []).flatMap((s) => Object.keys(s.composition))));
+          return (
+            <div className="space-y-4">
+              <Field label="عنوان قانون تخفیف"><Input value={pr.name} onChange={(v) => setPr({ ...pr, name: v })} placeholder="مثلاً: تخفیف ویژه مشکی سایز XL" /></Field>
+              <Field label="سطح هدف‌گذاری (Target Scope)">
+                <select
+                  value={pr.targetType}
+                  onChange={(e) => setPr({ ...pr, targetType: e.target.value as PromotionTargetType })}
+                  className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                >
+                  <option value="variant">۱. واریانت دقیق (رنگ + سایز مشخص)</option>
+                  <option value="color">۲. سطح رنگ (همه سایزهای یک رنگ در محصول)</option>
+                  <option value="size">۳. سطح سایز (همه رنگ‌های یک سایز در محصول)</option>
+                  <option value="product">۴. کل محصول (همه رنگ‌ها و سایزهای محصول)</option>
+                </select>
+              </Field>
+              <Field label="محصول هدف">
+                <select
+                  value={pr.productId}
+                  onChange={(e) => {
+                    const nextP = products.find((p) => p.id === e.target.value);
+                    setPr({ ...pr, productId: e.target.value, colorId: nextP?.colors[0]?.id ?? "black" });
+                  }}
+                  className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                >
+                  {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+                </select>
+              </Field>
+              {(pr.targetType === "color" || pr.targetType === "variant") && (
+                <Field label="رنگ هدف (Color)">
+                  <select
+                    value={pr.colorId ?? ""}
+                    onChange={(e) => setPr({ ...pr, colorId: e.target.value })}
+                    className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                  >
+                    {(targetProd?.colors ?? []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.id})</option>)}
+                  </select>
+                </Field>
+              )}
+              {(pr.targetType === "size" || pr.targetType === "variant") && (
+                <Field label="سایز هدف (Size)">
+                  <select
+                    value={pr.sizeCode ?? "M"}
+                    onChange={(e) => setPr({ ...pr, sizeCode: e.target.value })}
+                    className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                  >
+                    {(targetSizes.length ? targetSizes : ["S", "M", "L", "XL", "2XL"]).map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </Field>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="نوع تخفیف">
+                  <Select options={["درصدی", "مبلغ ثابت"]} value={pr.discountType === "percent" ? "درصدی" : "مبلغ ثابت"} onChange={(v) => setPr({ ...pr, discountType: v === "درصدی" ? "percent" : "fixed" })} />
+                </Field>
+                <Field label={pr.discountType === "percent" ? "درصد تخفیف (۱ تا ۹۵)" : "مبلغ تخفیف (تومان)"}>
+                  <Input value={String(pr.discountValue)} onChange={(v) => setPr({ ...pr, discountValue: Number(faDigits(v).replace(/\D/g, "")) || 0 })} />
+                </Field>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="اولویت (Priority)">
+                  <Input value={String(pr.priority)} onChange={(v) => setPr({ ...pr, priority: Number(faDigits(v).replace(/[^\d-]/g, "")) || 0 })} />
+                </Field>
+                <Field label="شروع"><input type="date" value={pr.starts ?? ""} onChange={(e) => setPr({ ...pr, starts: e.target.value })} className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]" /></Field>
+                <Field label="پایان"><input type="date" value={pr.ends ?? ""} onChange={(e) => setPr({ ...pr, ends: e.target.value })} className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]" /></Field>
+              </div>
+              <div className="flex gap-2">
+                <Btn
+                  variant="accent"
+                  disabled={!pr.name.trim() || pr.discountValue <= 0 || (pr.discountType === "percent" && pr.discountValue > 95)}
+                  onClick={() => {
+                    ops.upsert("promotionRules", pr, true);
+                    setPr(null);
+                    flash(`قانون تخفیف «${pr.name}» ذخیره شد`);
+                  }}
+                >
+                  ذخیره قانون تخفیف
+                </Btn>
+                <Btn variant="ghost" onClick={() => { ops.remove("promotionRules", pr.id); setPr(null); }}>حذف</Btn>
+              </div>
+            </div>
+          );
+        })()}
+      </Drawer>
       <Drawer open={!!cp} onClose={() => setCp(null)} title={cp?.code ? `کوپن ${cp.code}` : "کوپن جدید"}>
         {cp && <div className="space-y-4">
           <Field label="کد"><Input value={cp.code} onChange={(v) => setCp({ ...cp, code: v.toUpperCase().replace(/[^A-Z0-9]/g, "") })} placeholder="SUMMER10" /></Field>

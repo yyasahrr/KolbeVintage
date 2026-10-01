@@ -16,7 +16,7 @@ import { ProductInventoryDrawer } from "../components/product-inventory";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, ProductTypesManager, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
-import { Btn, Card, Drawer, Empty, Field, Input, Select, Status, Switch, Textarea, SearchBox, LoadingState, ErrorState } from "../components/primitives";
+import { Btn, Card, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea, SearchBox, LoadingState, ErrorState } from "../components/primitives";
 import { cn } from "../utils/cn";
 
 type F = (m: string) => void;
@@ -146,6 +146,7 @@ const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن"
 type MatrixVariant = {
   id: string; sku: string; active: boolean; weight_grams: number | null;
   price_override_rial: string | null; available: number; on_hand: number;
+  retail_on_hand: number; retail_available: number; wholesale_on_hand: number; wholesale_available: number;
 };
 
 /**
@@ -174,6 +175,11 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
       ) : (
         <div className="space-y-3">
           <p className="text-[11.5px] text-[var(--kv-muted)]" dir="ltr">{variant.sku} · on-hand {variant.on_hand} · available {variant.available}</p>
+          {/* Req 29: retail/wholesale inventory domains are separate (Agent 1 foundation). */}
+          <div className="flex flex-wrap gap-1.5 text-[11px]">
+            <span className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 font-semibold">موجودی خرده: {variant.retail_on_hand.toLocaleString("fa-IR")} (قابل فروش {variant.retail_available.toLocaleString("fa-IR")})</span>
+            <span className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 font-semibold">موجودی عمده: {variant.wholesale_on_hand.toLocaleString("fa-IR")} (قابل فروش {variant.wholesale_available.toLocaleString("fa-IR")})</span>
+          </div>
           <div className="flex items-center justify-between rounded-[10px] border border-[var(--kv-line)] px-3 py-2">
             <span className="text-[12px] font-bold">وضعیت فروش این واریانت</span>
             <Switch on={variant.active} onToggle={onToggleActive} />
@@ -230,7 +236,10 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [taxonomies, setTaxonomies] = useState<Taxonomy[]>([]);
 
   /* ---------- Unified create/edit mode (Req 38-39) ---------- */
-  type ServerVariant = { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number; price_override_rial: string | null };
+  type ServerVariant = { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number; price_override_rial: string | null;
+    retail_on_hand: number; retail_available: number; wholesale_on_hand: number; wholesale_available: number };
+  /* Req 29 (user decision): retail/wholesale inventory tabs live inside the Product Studio matrix. */
+  const [invDomain, setInvDomain] = useState<"retail" | "wholesale">("retail");
   const [editing, setEditing] = useState<{ id: string; metadata: Record<string, unknown> } | null>(null);
   const [editVariants, setEditVariants] = useState<ServerVariant[]>([]);
   /* Req 33: the advanced per-cell variant editor (weight, price override, status). */
@@ -809,9 +818,17 @@ export function ProductStudio({ flash }: { flash: F }) {
                   <p className="mb-1 text-[12.5px] font-bold">ماتریس واریانت رنگ × سایز</p>
                   <p className="mb-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
                     {editing
-                      ? "هر خانه وضعیت واقعی واریانت روی سرور است: کلیک = ساخت واریانت جدید یا فعال/غیرفعال‌کردن همان لحظه. «—» یعنی واریانت اصلاً وجود ندارد."
+                      ? "هر خانه وضعیت واقعی واریانت روی سرور است: کلیک = باز شدن ویرایشگر واریانت. «—» یعنی واریانت اصلاً وجود ندارد."
                       : "خانه‌های خاموش هنگام ذخیره ساخته نمی‌شوند (واریانت وجود نخواهد داشت)؛ این با واریانتِ ساخته‌شده با موجودی صفر فرق دارد."}
                   </p>
+                  {editing && (
+                    /* Req 29 (user decision): inventory-domain tabs inside the Product Studio. */
+                    <div className="mb-2">
+                      <Segmented
+                        options={[{ v: "retail" as const, label: "موجودی خرده‌فروشی" }, { v: "wholesale" as const, label: "موجودی عمده‌فروشی" }]}
+                        value={invDomain} onChange={setInvDomain} />
+                    </div>
+                  )}
                   <div className="overflow-x-auto">
                     <table className="kv-table min-w-[420px] text-xs">
                       <thead><tr><th>رنگ \ سایز</th>{d.sizes.map((s) => <th key={s}>{s}</th>)}</tr></thead>
@@ -830,8 +847,8 @@ export function ProductStudio({ flash }: { flash: F }) {
                                         isOpen && "ring-2 ring-[var(--kv-accent)]",
                                         !hit ? "border-dashed border-[var(--kv-line)] text-[var(--kv-muted)]"
                                           : hit.active ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)] opacity-50")}
-                                      title={hit ? `${hit.sku} · موجودی ${hit.on_hand}` : "ساخت واریانت"}>
-                                      {!hit ? "— (ساخت)" : `${hit.active ? "فعال" : "غیرفعال"} · ${hit.on_hand.toLocaleString("fa-IR")}${hit.price_override_rial ? " · قیمت ویژه" : ""}`}
+                                      title={hit ? `${hit.sku} · خرده ${hit.retail_on_hand} · عمده ${hit.wholesale_on_hand}` : "ساخت واریانت"}>
+                                      {!hit ? "— (ساخت)" : `${hit.active ? "فعال" : "غیرفعال"} · ${(invDomain === "retail" ? hit.retail_on_hand : hit.wholesale_on_hand).toLocaleString("fa-IR")}${hit.price_override_rial ? " · قیمت ویژه" : ""}`}
                                     </button>
                                   </td>
                                 );

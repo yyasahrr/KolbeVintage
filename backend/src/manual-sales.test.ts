@@ -311,6 +311,11 @@ test('product structure: persisted colors, variant matrix cells and admin produc
     const zeroStock = all.find((v) => v.id === created.json().id);
     assert.equal(zeroStock?.active, true);
     assert.equal(zeroStock?.available, 0, 'a fresh enabled cell has stock 0, not “missing”');
+    // Req 29: retail/wholesale inventory domains are reported separately per variant (Agent 1 foundation).
+    const domainRows = detail.json().variants as { id: string; retail_on_hand: number; wholesale_on_hand: number }[];
+    const stocked = domainRows.find((v) => v.id === variants[0]!.id);
+    assert.equal(stocked?.retail_on_hand, 10, 'seeded stock lands in the retail domain by default');
+    assert.equal(stocked?.wholesale_on_hand, 0, 'wholesale domain stays empty until a domain transfer');
     assert.ok(warehouseId);
   } finally {
     await app.close();

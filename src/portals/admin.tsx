@@ -129,8 +129,19 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const { products, orders, buyers, plans, accounts, setStatus, transitionSub, setBuyer, upsertPlan, removePlan, setTicketStatus } = store;
   const pending = products.filter((p) => p.status === "pending");
   const allSubs = orders.flatMap((o) => (o.subOrders ?? []).map((sub) => ({ parent: o, sub })));
-  const kolbeSubs = allSubs.filter((i) => i.sub.supplierId === KOLBE.id);
-  const kolbePending = kolbeSubs.filter((i) => i.sub.status === "pending_supplier" || i.sub.status === "paid" || i.sub.status === "preparing");
+  const kolbeSubs = allSubs.filter(
+    (i) =>
+      i.sub.supplierId === KOLBE.id ||
+      ["ready_to_ship", "in_transit", "shipped"].includes(i.sub.status),
+  );
+  const kolbePending = kolbeSubs.filter(
+    (i) =>
+      i.sub.status === "pending_supplier" ||
+      i.sub.status === "paid" ||
+      i.sub.status === "preparing" ||
+      i.sub.status === "ready_to_ship" ||
+      i.sub.status === "in_transit",
+  );
   const activeSubs = allSubs.filter((i) => !isTerminal(i.sub.status));
   const awaitingPay = allSubs.filter((i) => i.sub.status === "approved");
   const pendingBuyers = buyers.filter((b) => b.status === "در انتظار تأیید");
@@ -428,9 +439,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "kolbe" && (
             <div className="animate-[fadeUp_0.35s_ease]">
               <div className="mb-4 flex flex-wrap items-center gap-3 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 px-4 py-3 text-[12.5px] leading-6 text-[var(--kv-muted)]">
-                <SupplierChip id={KOLBE.id} name={KOLBE.name} />برای محصولات خود کلبه، تیم عملیات نقش تأمین‌کننده را دارد: تأیید امکان تأمین ← (پرداخت خریدار) ← آماده‌سازی ← ارسال.
+                <SupplierChip id={KOLBE.id} name={KOLBE.name} />میز عملیات و انبار مرکزی کلبه: مدیریت محصولات ملکی کلبه + دریافت مرسولات ورودی تأمین‌کنندگان، کنترل کیفیت (QC)، تجمیع سفارش‌های چندتأمین‌کننده و ارسال نهایی به مشتری VIP.
               </div>
-              <SubOrderDesk items={kolbeSubs} actor="تیم عملیات کلبه" onTransition={kolbeTransition} emptyTitle="زیرسفارشی برای کلبه نیست" emptyDesc="سفارش‌های محصولات کلبه وینتیج اینجا مدیریت می‌شود." />
+              <SubOrderDesk items={kolbeSubs} actor="تیم عملیات کلبه" isKolbeOps={true} onTransition={kolbeTransition} emptyTitle="زیرسفارشی در میز عملیات کلبه نیست" emptyDesc="زیرسفارش‌های کلبه و مرسولات ورودی تأمین‌کنندگان به انبار کلبه اینجا مدیریت می‌شوند." />
             </div>
           )}
 

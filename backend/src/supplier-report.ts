@@ -221,16 +221,17 @@ export function registerSupplierReportRoutes(app: FastifyInstance, pool: DbPool,
       await audit(client, user.id, 'order.fulfillment_changed', 'order', id, { from: current }, { to: body.status, tracking: body.trackingCode }, request.ip);
       // If shipped, consume reserved stock (existing logic uses in_transit). Here also handle.
       if (body.status === 'shipped' || body.status === 'handed_to_carrier') {
-        const reservations = await client.query<{ id: string; variant_id: string; warehouse_id: string; quantity: number }>(
-          `SELECT r.id,r.variant_id,r.warehouse_id,r.quantity FROM stock_reservations r JOIN order_lines l ON l.id = r.order_line_id WHERE l.order_id = $1 AND r.status = 'active' FOR UPDATE OF r`, [id]);
+        const reservations = await client.query<{ id: string; variant_id: string; warehouse_id: string; inventory_domain: string | null; quantity: number }>(
+          `SELECT r.id,r.variant_id,r.warehouse_id,r.inventory_domain,r.quantity FROM stock_reservations r JOIN order_lines l ON l.id = r.order_line_id WHERE l.order_id = $1 AND r.status = 'active' FOR UPDATE OF r`, [id]);
         for (const r of reservations.rows) {
           if (r.quantity) {
-            await client.query(`UPDATE stock_balances SET reserved = reserved - $3, on_hand = on_hand - $3, version = version + 1 WHERE variant_id = $1 AND warehouse_id = $2`,
-              [r.variant_id, r.warehouse_id, r.quantity]);
+            const domain = r.inventory_domain ?? 'wholesale';
+            await client.query(`UPDATE stock_balances SET reserved = reserved - $4, on_hand = on_hand - $4, version = version + 1 WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
+              [r.variant_id, r.warehouse_id, domain, r.quantity]);
             await client.query(`UPDATE stock_reservations SET status = 'consumed', updated_at = now() WHERE id = $1`, [r.id]);
-            await client.query(`INSERT INTO stock_movements(id,variant_id,warehouse_id,on_hand_delta,reserved_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-              VALUES ($1,$2,$3,$4,$5,'order shipped','order',$6,$7,$8)`,
-              [(await import('node:crypto')).randomUUID(), r.variant_id, r.warehouse_id, -r.quantity, -r.quantity, id, user.id, `fulfill-ship:${r.id}`]);
+            await client.query(`INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reserved_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+              VALUES ($1,$2,$3,$4,$5,$6,'order shipped','order',$7,$8,$9)`,
+              [(await import('node:crypto')).randomUUID(), r.variant_id, r.warehouse_id, domain, -r.quantity, -r.quantity, id, user.id, `fulfill-ship:${r.id}`]);
           }
         }
       }

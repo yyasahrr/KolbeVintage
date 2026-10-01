@@ -90,6 +90,161 @@ export type SmsCampaign = { id: string; name: string; audience: string; recipien
 /* ---------------- Promotions ---------------- */
 export type Coupon = { id: string; code: string; type: "percent" | "fixed" | "freeShip"; value: number; minOrder: number; maxUses: number; used: number; channel: "retail" | "wholesale"; expires: string; active: boolean };
 export type Festival = { id: string; name: string; starts: string; ends: string; discountPercent: number; categories: string[]; active: boolean; bannerText: string };
+export type PromotionTargetType = "product" | "color" | "size" | "variant";
+export type PromotionRule = {
+  id: string;
+  name: string;
+  targetType: PromotionTargetType;
+  productId: string;
+  colorId?: string;
+  sizeCode?: string;
+  discountType: "percent" | "fixed";
+  discountValue: number;
+  starts?: string;
+  ends?: string;
+  priority: number;
+  active: boolean;
+};
+
+export type ResolvedPromotionPrice = {
+  basePrice: number;
+  matchedRule: {
+    id: string;
+    name: string;
+    targetType: PromotionTargetType | "festival";
+    priority: number;
+  } | null;
+  discountType: "percent" | "fixed" | null;
+  discountValue: number | null;
+  discountAmount: number;
+  finalPrice: number;
+  startsAt: string | null;
+  endsAt: string | null;
+  source: "promotion_rule" | "festival" | "none";
+};
+
+const COLOR_NORMALIZE: Record<string, string> = {
+  black: "black", "مشکی": "black",
+  orange: "orange", "نارنجی آجری": "orange", "نارنجی": "orange",
+  cream: "cream", "کرمی": "cream",
+  olive: "olive", "زیتونی": "olive",
+  sand: "sand", "شنی": "sand",
+  navy: "navy", "سرمه‌ای": "navy",
+  white: "white", "سفید": "white",
+  burgundy: "burgundy", "زرشکی": "burgundy",
+  brown: "brown", "قهوه‌ای": "brown",
+  gray: "gray", "طوسی": "gray",
+};
+
+const normColor = (v?: string) => {
+  if (!v) return "";
+  const k = v.trim().toLowerCase();
+  return COLOR_NORMALIZE[k] ?? k;
+};
+const normSize = (v?: string) => (v ? v.trim().toUpperCase() : "");
+
+const targetSpecificity = (t: PromotionTargetType) =>
+  t === "variant" ? 40 : t === "color" ? 30 : t === "size" ? 20 : 10;
+
+export function resolveVariantPromotion(
+  product: { id: string; category: string; retailPrice: number; installmentPrice?: number },
+  colorIdOrName: string | undefined,
+  sizeCode: string | undefined,
+  rules: PromotionRule[],
+  festivals: Festival[],
+  paymentMode: "cash" | "four_installments" = "cash",
+): ResolvedPromotionPrice {
+  const basePrice = paymentMode === "four_installments"
+    ? (product.installmentPrice ?? product.retailPrice)
+    : product.retailPrice;
+  const today = new Date().toISOString().slice(0, 10);
+  const cKey = normColor(colorIdOrName);
+  const sKey = normSize(sizeCode);
+
+  const matchingRules = (rules ?? []).filter((r) => {
+    if (!r.active) return false;
+    if (r.starts && r.starts > today) return false;
+    if (r.ends && r.ends < today) return false;
+    if (r.productId !== product.id) return false;
+    if (r.targetType === "variant") {
+      return normColor(r.colorId) === cKey && normSize(r.sizeCode) === sKey;
+    }
+    if (r.targetType === "color") {
+      return normColor(r.colorId) === cKey;
+    }
+    if (r.targetType === "size") {
+      return normSize(r.sizeCode) === sKey;
+    }
+    return r.targetType === "product";
+  });
+
+  if (matchingRules.length > 0) {
+    const sorted = [...matchingRules].sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      const spec = targetSpecificity(b.targetType) - targetSpecificity(a.targetType);
+      if (spec !== 0) return spec;
+      const amtA = a.discountType === "percent" ? Math.round((basePrice * a.discountValue) / 100) : Math.min(basePrice, a.discountValue);
+      const amtB = b.discountType === "percent" ? Math.round((basePrice * b.discountValue) / 100) : Math.min(basePrice, b.discountValue);
+      return amtB - amtA;
+    });
+    const winner = sorted[0]!;
+    const discountAmount = winner.discountType === "percent"
+      ? Math.round((basePrice * Math.min(95, winner.discountValue)) / 100)
+      : Math.min(basePrice, winner.discountValue);
+    return {
+      basePrice,
+      matchedRule: {
+        id: winner.id,
+        name: winner.name,
+        targetType: winner.targetType,
+        priority: winner.priority,
+      },
+      discountType: winner.discountType,
+      discountValue: winner.discountValue,
+      discountAmount,
+      finalPrice: Math.max(0, basePrice - discountAmount),
+      startsAt: winner.starts ?? null,
+      endsAt: winner.ends ?? null,
+      source: "promotion_rule",
+    };
+  }
+
+  const liveFestivals = (festivals ?? []).filter(
+    (f) => f.active && f.starts <= today && f.ends >= today && f.categories.includes(product.category),
+  );
+  if (liveFestivals.length > 0) {
+    const bestFest = [...liveFestivals].sort((a, b) => b.discountPercent - a.discountPercent)[0]!;
+    const discountAmount = Math.round((basePrice * bestFest.discountPercent) / 100);
+    return {
+      basePrice,
+      matchedRule: {
+        id: bestFest.id,
+        name: bestFest.name,
+        targetType: "festival",
+        priority: 0,
+      },
+      discountType: "percent",
+      discountValue: bestFest.discountPercent,
+      discountAmount,
+      finalPrice: Math.max(0, basePrice - discountAmount),
+      startsAt: bestFest.starts,
+      endsAt: bestFest.ends,
+      source: "festival",
+    };
+  }
+
+  return {
+    basePrice,
+    matchedRule: null,
+    discountType: null,
+    discountValue: null,
+    discountAmount: 0,
+    finalPrice: basePrice,
+    startsAt: null,
+    endsAt: null,
+    source: "none",
+  };
+}
 
 /* ---------------- CRM ---------------- */
 export type LeadStage = "new" | "contacted" | "qualified" | "won" | "lost";
@@ -102,7 +257,7 @@ export type OpsState = {
   seriesTemplates: SeriesTemplate[]; banks: Record<string, SupplierBank>; withdrawals: Withdrawal[]; commissions: Record<string, number>;
   applicationForm: ApplicationForm; applications: Application[]; extraSuppliers: ExtraSupplier[];
   restrictions: Restriction[]; tickets: Ticket[]; returns: ReturnReq[];
-  sms: SmsConfig; smsCampaigns: SmsCampaign[]; coupons: Coupon[]; festivals: Festival[];
+  sms: SmsConfig; smsCampaigns: SmsCampaign[]; coupons: Coupon[]; festivals: Festival[]; promotionRules: PromotionRule[];
   leads: Lead[]; tasks: CrmTask[]; notes: CrmNote[]; tags: Record<string, string[]>;
 };
 
@@ -208,6 +363,11 @@ const seed = (): OpsState => USE_DEMO_SEED_OPS ? ({
   festivals: [
     { id: "fs1", name: "جشنواره پاییزه", starts: inDays(-2).slice(0, 10), ends: inDays(3).slice(0, 10), discountPercent: 15, categories: ["مانتو و بارانی", "پالتو"], active: true, bannerText: "۱۵٪ تخفیف بارانی و پالتو" },
   ],
+  promotionRules: [
+    { id: "pr-variant-xl-orange", name: "تخفیف تک‌سایز XL رنگ نارنجی آجری", targetType: "variant", productId: "p1", colorId: "orange", sizeCode: "XL", discountType: "percent", discountValue: 25, starts: inDays(-5).slice(0, 10), ends: inDays(14).slice(0, 10), priority: 100, active: true },
+    { id: "pr-color-orange", name: "تخفیف ویژه رنگ نارنجی آجری", targetType: "color", productId: "p1", colorId: "orange", discountType: "percent", discountValue: 18, starts: inDays(-5).slice(0, 10), ends: inDays(14).slice(0, 10), priority: 80, active: true },
+    { id: "pr-size-2xl", name: "تخفیف سایز 2XL ژاکت کشباف", targetType: "size", productId: "p4", sizeCode: "2XL", discountType: "fixed", discountValue: 350000, starts: inDays(-3).slice(0, 10), ends: inDays(10).slice(0, 10), priority: 70, active: true },
+  ],
   leads: [
     { id: "ld1", name: "بوتیک رز — کرج", phone: "09129804567", source: "فرم عضویت عمده", stage: "qualified", value: 120000000, owner: "نیلوفر", note: "علاقه‌مند به سری کامل پیراهن", createdAt: "۳ روز پیش" },
     { id: "ld2", name: "فروشگاه نیک‌پوش — تبریز", phone: "09145501234", source: "اینستاگرام", stage: "contacted", value: 60000000, owner: "آرش", note: "", createdAt: "هفته پیش" },
@@ -241,6 +401,7 @@ const seed = (): OpsState => USE_DEMO_SEED_OPS ? ({
   smsCampaigns: [],
   coupons: [],
   festivals: [],
+  promotionRules: [],
   leads: [],
   tasks: [],
   notes: [],
@@ -274,10 +435,11 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     (async () => {
       setLoading(true); setError(null);
       try {
-        const [cmsPages, coupons, festivals, tickets, crmContacts] = await Promise.all([
+        const [cmsPages, coupons, festivals, promotionRules, tickets, crmContacts] = await Promise.all([
           apiClient.get<{ items: unknown[] }>("/admin/cms/pages").catch(() => null),
           apiClient.get<{ items: Coupon[] }>("/admin/coupons").catch(() => null),
           apiClient.get<{ items: Festival[] }>("/admin/festivals").catch(() => null),
+          apiClient.get<{ items: PromotionRule[] }>("/promotions/rules").catch(() => null),
           apiClient.get<{ items: unknown[] }>("/tickets").catch(() => null),
           apiClient.get<{ items: Lead[] }>("/admin/crm/contacts").catch(() => null),
         ]);
@@ -288,6 +450,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
           hero: (cmsPages as any)?.items?.[0]?.hero ?? s.hero,
           coupons: (coupons as any)?.items ?? s.coupons,
           festivals: (festivals as any)?.items ?? s.festivals,
+          promotionRules: (promotionRules as any)?.items ?? s.promotionRules,
           tickets: (tickets as any)?.items ?? s.tickets,
           leads: (crmContacts as any)?.items ?? s.leads,
         }));
@@ -339,6 +502,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
       const endpoint: Record<string,{ create: string; update: (id:string)=>string }> = {
         coupons: { create: "/admin/coupons", update: (id) => `/admin/coupons/${id}` },
         festivals: { create: "/admin/festivals", update: (id) => `/admin/festivals/${id}` },
+        promotionRules: { create: "/promotions/rules", update: (id) => `/promotions/rules/${id}` },
         tickets: { create: "/tickets", update: (id) => `/tickets/${id}` },
         returns: { create: "/returns", update: (id) => `/returns/${id}/inspect` },
         applications: { create: "/cooperation-requests", update: (id) => `/admin/cooperation-requests/${id}/review` },
@@ -372,6 +536,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
       const delMap: Record<string,string> = {
         coupons: `/admin/coupons/${id}/deactivate`,
         festivals: `/admin/festivals/${id}`,
+        promotionRules: `/promotions/rules/${id}`,
         tickets: `/tickets/${id}`,
       };
       const path = delMap[key as string];

@@ -8,6 +8,7 @@ import { asRial, rial } from './money.js';
 import { audit } from './operations.js';
 import { badRequest, notFound } from './errors.js';
 import { createCoupon } from './coupons.js';
+import { registerPromotionRoutes } from './promotions.js';
 
 /* Coupon and festival management (item 17). */
 
@@ -180,4 +181,6 @@ export function registerPromoRoutes(app: FastifyInstance, pool: DbPool, config: 
       message: result.note ?? (result.source === 'coupon' ? 'کد تخفیف اعمال شد.' : undefined),
     };
   });
+
+  registerPromotionRoutes(app, pool, config);
 }

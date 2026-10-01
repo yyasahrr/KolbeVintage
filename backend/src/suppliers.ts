@@ -8,7 +8,7 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
 import { nextDocumentReference } from './references.js';
-import { badRequest, conflict, notFound } from './errors.js';
+import { badRequest, conflict, forbidden, notFound } from './errors.js';
 
 /* Supplier management (items 5, 6, 43): complete legal/identity, contact, bank,
    operational and contract data with versioned snapshots and an admin-managed
@@ -350,5 +350,73 @@ export function registerSupplierRoutes(app: FastifyInstance, pool: DbPool, confi
     await transaction(pool, (client) => audit(client, user.id, 'supplier.document_verified', 'supplier_document', params.docId,
       undefined, { verified: body.verified }, request.ip));
     return updated.rows[0];
+  });
+
+  // Requirement 2: Supplier profile & admin-only supplier routes strictly protected against VIP/Customer access
+  app.put('/api/v1/supplier/profile', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!user.roles.includes('supplier') && !user.permissions.includes('users:manage') && !user.permissions.includes('suppliers:manage')) {
+      throw forbidden();
+    }
+    const body = z.object({
+      brandName: z.string().trim().min(2).max(160),
+      legalName: z.string().trim().max(200).optional(),
+      nationalId: z.string().trim().max(20).optional(),
+      economicCode: z.string().trim().max(30).optional(),
+      businessPhone: z.string().trim().max(30).optional(),
+      bankIban: z.string().trim().max(34).optional(),
+    }).parse(request.body);
+    return transaction(pool, async (client) => {
+      await client.query(
+        `INSERT INTO supplier_profiles(user_id, brand_name, legal_name, national_id, economic_code, business_phone, bank_iban)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (user_id) DO UPDATE SET
+           brand_name = EXCLUDED.brand_name,
+           legal_name = COALESCE(EXCLUDED.legal_name, supplier_profiles.legal_name),
+           national_id = COALESCE(EXCLUDED.national_id, supplier_profiles.national_id),
+           economic_code = COALESCE(EXCLUDED.economic_code, supplier_profiles.economic_code),
+           business_phone = COALESCE(EXCLUDED.business_phone, supplier_profiles.business_phone),
+           bank_iban = COALESCE(EXCLUDED.bank_iban, supplier_profiles.bank_iban),
+           version = supplier_profiles.version + 1,
+           updated_at = now()`,
+        [user.id, body.brandName, body.legalName ?? null, body.nationalId ?? null, body.economicCode ?? null, body.businessPhone ?? null, body.bankIban ?? null],
+      );
+      await audit(client, user.id, 'supplier_profile.updated', 'supplier_profile', user.id, undefined, { brandName: body.brandName }, request.ip);
+      return { userId: user.id, brandName: body.brandName };
+    });
+  });
+
+  app.get('/api/v1/suppliers/:id', async (request) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const isAdmin = user.permissions.includes('users:manage') || user.permissions.includes('suppliers:manage');
+    const isSelfSupplier = user.roles.includes('supplier') && user.id === id;
+    if (!isAdmin && !isSelfSupplier) throw forbidden();
+    const row = await one(
+      pool,
+      `SELECT sp.user_id, sp.brand_name, sp.legal_name, sp.national_id, sp.economic_code,
+              sp.business_phone, sp.bank_iban, sp.cooperation_status, sp.version,
+              u.email, u.phone, u.display_name
+       FROM supplier_profiles sp JOIN users u ON u.id = sp.user_id
+       WHERE sp.user_id = $1`,
+      [id],
+    );
+    if (!row) throw notFound();
+    return row;
+  });
+
+  app.get('/api/v1/suppliers', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!user.permissions.includes('users:manage') && !user.permissions.includes('suppliers:manage')) {
+      throw forbidden();
+    }
+    const rows = await pool.query(
+      `SELECT sp.user_id, sp.brand_name, sp.legal_name, sp.national_id, sp.economic_code,
+              sp.business_phone, sp.bank_iban, sp.cooperation_status, sp.version,
+              u.email, u.phone, u.display_name
+       FROM supplier_profiles sp JOIN users u ON u.id = sp.user_id
+       ORDER BY sp.created_at DESC LIMIT 100`,
+    );
+    return { items: rows.rows };
   });
 }

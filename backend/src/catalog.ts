@@ -9,6 +9,7 @@ import { audit, outbox } from './operations.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { validateSpecifications, type SpecField } from './profile.js';
 import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
+import { resolveVariantPrice } from './promotions.js';
 
 const installmentPolicy = z.enum(['disabled', 'enabled', 'disabled_when_discounted', 'enabled_when_discounted']);
 const variantInput = z.object({
@@ -18,6 +19,19 @@ const variantInput = z.object({
   // Req 25: optional per-variant retail price override (integer rial).
   priceOverrideRial: z.string().regex(/^\d{1,15}$/).nullable().optional(),
   attributes: z.record(z.string(), z.string()).default({}),
+});
+const saleTermsSchema = z.object({
+  moq: z.number().int().min(1).max(10000).default(1),
+  packSize: z.number().int().min(1).max(1000).default(1),
+  leadTimeDays: z.number().int().min(1).max(90).default(3),
+  returnableWithinDays: z.number().int().min(0).max(30).default(7),
+  fulfillmentPolicy: z.literal('kolbe_central_qc').default('kolbe_central_qc'),
+}).default({
+  moq: 1,
+  packSize: 1,
+  leadTimeDays: 3,
+  returnableWithinDays: 7,
+  fulfillmentPolicy: 'kolbe_central_qc',
 });
 const productBody = z.object({
   brand: z.string().trim().min(1).max(120),
@@ -29,14 +43,12 @@ const productBody = z.object({
   wholesalePriceRial: z.string().regex(/^\d+$/).optional(),
   variants: z.array(variantInput).min(1).max(100),
   metadata: z.record(z.string(), z.unknown()).default({}),
-  // Adaptive product form (Req 325-326): type → template → validated values.
   productTypeCode: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(),
   specifications: z.record(z.string(), z.unknown()).default({}),
   gender: z.enum(['men', 'women', 'unisex', 'kids']).default('unisex'),
   vibes: z.array(z.string().regex(/^[a-z0-9-]{2,40}$/)).max(8).default([]),
   installmentEnabled: z.boolean().default(true),
   discountPercent: z.number().int().min(0).max(95).default(0),
-  // Item 8/35/36/46/245-247 — all optional so older clients keep working.
   productTypeId: z.uuid().nullable().optional(),
   retailEnabled: z.boolean().optional(),
   wholesaleEnabled: z.boolean().optional(),
@@ -44,9 +56,11 @@ const productBody = z.object({
   wholesaleMoq: z.number().int().min(0).max(1000000).nullable().optional(),
   genderCode: z.string().trim().max(40).nullable().optional(),
   seasons: z.array(z.string().trim().min(1).max(40)).max(20).default([]),
+  allowInstallments: z.boolean().optional(),
+  disableInstallmentsOnDiscount: z.boolean().optional(),
+  saleTerms: saleTermsSchema.optional(),
 });
 
-/** Loads the type template and validates the values; sizes must belong to the type's active size list. */
 async function resolveTypeSpecs(db: DbPool | import('pg').PoolClient, code: string | undefined, specs: Record<string, unknown>, sizes: (string | undefined)[]) {
   if (!code) return { specifications: specs && Object.keys(specs).length ? specs : {} };
   const type = await one<{ spec_template: SpecField[]; sizes: { code: string; active: boolean }[] }>(db,
@@ -71,8 +85,11 @@ type ProductListRow = {
   gender_code: string | null; metadata: unknown; created_at: string;
   product_type_code: string | null; gender: string; vibes: string[]; specifications: unknown;
   installment_enabled: boolean; discount_percent: number; supplier_id: string | null;
+  allow_installments: boolean; disable_installments_on_discount: boolean; sale_terms: Record<string, unknown>;
   variants: { id: string; sku: string; size: string | null; color: string | null; weightGrams: number | null;
-    available?: number; reserved?: number; incoming?: number; damaged?: number }[];
+    attributes?: Record<string, unknown>;
+    available?: number; reserved?: number; incoming?: number; damaged?: number;
+    retailAvailableStock?: number }[];
   seasons: string[];
 };
 
@@ -100,31 +117,42 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       limit: z.coerce.number().int().min(1).max(100).default(30),
       offset: z.coerce.number().int().min(0).max(100000).default(0),
       before: z.iso.datetime().optional(),
-      // Item 35: query isolation. Retail is the storefront-safe default.
       channel: z.enum(['retail', 'wholesale', 'all']).default('retail'),
       productTypeId: z.uuid().optional(),
       gender: z.string().max(40).optional(),
       season: z.string().max(40).optional(),
     }).parse(request.query);
-    // Availability is derived from the WMS ledger (stock_balances), never from product.metadata.
+
     const result = await pool.query(
       `SELECT p.id, p.brand, p.name, p.category, p.description, p.cash_price_rial,
               p.installment_price_rial, p.wholesale_price_rial, p.owner_type, p.retail_enabled, p.wholesale_enabled,
               p.product_type_id, p.installment_policy, p.wholesale_moq, p.gender_code, p.gender,
               p.seasons, p.vibes, p.specifications, p.installment_enabled, p.discount_percent, p.supplier_id,
+              p.allow_installments, p.disable_installments_on_discount, p.sale_terms,
               p.metadata, p.created_at,
-              COALESCE(jsonb_agg(jsonb_build_object('id', v.id, 'sku', v.sku, 'size', v.size_label, 'color', v.color_label,
+              COALESCE(jsonb_agg(jsonb_build_object(
+                'id', v.id,
+                'sku', v.sku,
+                'size', v.size_label,
+                'color', v.color_label,
                 'weightGrams', v.weight_grams,
                 'priceOverrideRial', v.price_override_rial::text,
-                'available', COALESCE(b.available, 0), 'reserved', COALESCE(b.reserved, 0),
-                'incoming', COALESCE(b.incoming, 0), 'damaged', COALESCE(b.damaged, 0))
-                ORDER BY v.sku) FILTER (WHERE v.id IS NOT NULL), '[]'::jsonb) AS variants
+                'attributes', v.attributes,
+                'available', COALESCE(b.available, 0),
+                'reserved', COALESCE(b.reserved, 0),
+                'incoming', COALESCE(b.incoming, 0),
+                'damaged', COALESCE(b.damaged, 0),
+                'retailAvailableStock', COALESCE(b.retail_available, 0)
+              ) ORDER BY v.sku) FILTER (WHERE v.id IS NOT NULL), '[]'::jsonb) AS variants
        FROM products p
        LEFT JOIN product_variants v ON v.product_id = p.id AND v.active
        LEFT JOIN (
          SELECT sb.variant_id,
                 SUM(sb.on_hand - sb.reserved - sb.damaged)::int AS available,
-                SUM(sb.reserved)::int AS reserved, SUM(sb.incoming)::int AS incoming, SUM(sb.damaged)::int AS damaged
+                SUM(sb.reserved)::int AS reserved,
+                SUM(sb.incoming)::int AS incoming,
+                SUM(sb.damaged)::int AS damaged,
+                GREATEST(0, SUM(CASE WHEN sb.inventory_domain = 'retail' AND w.owner_id IS NULL THEN (sb.on_hand - sb.reserved - sb.damaged) ELSE 0 END))::int AS retail_available
          FROM stock_balances sb JOIN warehouses w ON w.id = sb.warehouse_id AND w.active
          GROUP BY sb.variant_id
        ) b ON b.variant_id = v.id
@@ -138,24 +166,67 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
        GROUP BY p.id ORDER BY p.created_at DESC, p.id DESC LIMIT $7 OFFSET $8`,
       [query.category ?? null, query.before ?? null, query.channel, query.productTypeId ?? null,
         query.gender ?? null, query.season ?? null, query.limit, query.offset]);
-    return { items: (result.rows as ProductListRow[]).map((row) => {
-      const variants = row.variants as { available?: number; reserved?: number; incoming?: number; damaged?: number }[];
-      const sum = (key: 'available' | 'reserved' | 'incoming' | 'damaged') => variants.reduce((total, variant) => total + Number(variant[key] ?? 0), 0);
-      return {
-        id: row.id, brand: row.brand, name: row.name, category: row.category, description: row.description,
+
+    const items = [];
+    for (const row of result.rows as ProductListRow[]) {
+      const enrichedVariants = [];
+      let totalRetailAvailable = 0;
+      for (const v of row.variants) {
+        const resolved = await resolveVariantPrice(pool, v.id, { orderType: 'retail', paymentMode: 'cash' });
+        const stock = Number(v.retailAvailableStock ?? 0);
+        totalRetailAvailable += stock;
+        enrichedVariants.push({
+          ...v,
+          retailAvailableStock: stock,
+          basePriceRial: resolved.basePrice,
+          discountRial: resolved.discountAmount,
+          finalPriceRial: resolved.finalPrice,
+          discountType: resolved.discountType,
+          discountValue: resolved.discountValue,
+          matchedRule: resolved.matchedRule,
+        });
+      }
+      const sum = (key: 'available' | 'reserved' | 'incoming' | 'damaged') =>
+        row.variants.reduce((total, variant) => total + Number(variant[key] ?? 0), 0);
+
+      items.push({
+        id: row.id,
+        brand: row.brand,
+        name: row.name,
+        category: row.category,
+        description: row.description,
         cashPriceRial: asRial(row.cash_price_rial),
         installmentPriceRial: row.installment_price_rial === null ? null : asRial(row.installment_price_rial),
         wholesalePriceRial: row.wholesale_price_rial === null ? null : asRial(row.wholesale_price_rial),
-        ownerType: row.owner_type, retailEnabled: row.retail_enabled, wholesaleEnabled: row.wholesale_enabled,
-        productTypeId: row.product_type_id, installmentPolicy: row.installment_policy,
-        wholesaleMoq: row.wholesale_moq, genderCode: row.gender_code,
-        metadata: row.metadata, variants, createdAt: row.created_at,
-        productTypeCode: row.product_type_code, gender: row.gender, seasons: row.seasons, vibes: row.vibes,
-        specifications: row.specifications, installmentEnabled: row.installment_enabled, discountPercent: row.discount_percent,
+        ownerType: row.owner_type,
+        retailEnabled: row.retail_enabled,
+        wholesaleEnabled: row.wholesale_enabled,
+        productTypeId: row.product_type_id,
+        installmentPolicy: row.installment_policy,
+        wholesaleMoq: row.wholesale_moq,
+        genderCode: row.gender_code,
+        allowInstallments: row.allow_installments,
+        disableInstallmentsOnDiscount: row.disable_installments_on_discount,
+        saleTerms: row.sale_terms,
+        retailAvailableStock: totalRetailAvailable,
+        metadata: row.metadata,
+        variants: enrichedVariants,
+        createdAt: row.created_at,
+        productTypeCode: row.product_type_code,
+        gender: row.gender,
+        seasons: row.seasons,
+        vibes: row.vibes,
+        specifications: row.specifications,
+        installmentEnabled: row.installment_enabled,
+        discountPercent: row.discount_percent,
         supplierId: row.supplier_id,
-        available: sum('available'), reserved: sum('reserved'), incoming: sum('incoming'), damaged: sum('damaged'),
-      };
-    }) };
+        available: sum('available'),
+        reserved: sum('reserved'),
+        incoming: sum('incoming'),
+        damaged: sum('damaged'),
+      });
+    }
+    return { items };
   });
 
   /** Per-variant WMS inventory for one product — drives the ProductStudio inventory view. */
@@ -168,6 +239,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const rows = await pool.query(
       `SELECT v.id AS variant_id, v.sku, v.color_label AS color, v.size_label AS size, v.weight_grams,
               w.id AS warehouse_id, w.code AS warehouse_code, w.name AS warehouse_name,
+              b.inventory_domain,
               COALESCE(b.on_hand, 0)::int AS on_hand, COALESCE(b.reserved, 0)::int AS reserved,
               COALESCE(b.incoming, 0)::int AS incoming, COALESCE(b.damaged, 0)::int AS damaged,
               COALESCE(b.on_hand - b.reserved - b.damaged, 0)::int AS available
@@ -239,75 +311,222 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     return {items:rows.rows.map((r)=>({id:r.id,brand:r.brand,name:r.name,category:r.category,description:r.description,cashPriceRial:asRial(r.cash_price_rial),installmentPriceRial:r.installment_price_rial===null?null:asRial(r.installment_price_rial),availableStock:r.available_stock,metadata:r.metadata,variants:r.variants,createdAt:r.created_at,popularity:r.purchase_count,score:r.score})),total:count.rows[0]?.total??0,offset:query.offset,limit:query.limit,facets:facets.rows[0]};
   });
 
+  // Wholesale Catalog: Strictly sanitized DTO — NO supplier_id, phone, IBAN, warehouse address, or internal notes exposed to VIP buyers
   app.get('/api/v1/wholesale/products', async (request) => {
     const user = await principal(request, pool, config);
-    const membership = await one<{ limits: Record<string, unknown> }>(pool,
+    const membership = await one<{ limits: Record<string, unknown> }>(
+      pool,
       `SELECT p.limits FROM memberships m JOIN membership_plans p ON p.id = m.plan_id
        WHERE m.user_id = $1 AND m.status = 'active' AND m.starts_at <= now() AND m.ends_at > now()
-       LIMIT 1`, [user.id]);
+       LIMIT 1`,
+      [user.id],
+    );
     if (!membership) throw forbidden();
     const query = z.object({
       limit: z.coerce.number().int().min(1).max(100).default(30),
-      productTypeId: z.uuid().optional(), gender: z.string().max(40).optional(), season: z.string().max(40).optional(),
+      productTypeId: z.uuid().optional(),
+      gender: z.string().max(40).optional(),
+      season: z.string().max(40).optional(),
     }).parse(request.query);
     const kolbeOnly = membership.limits.sources === 'kolbe';
-    const rows = await pool.query(
-      `SELECT p.id,p.name,p.brand,p.category,p.wholesale_price_rial,p.owner_type,p.product_type_id,
-              p.installment_policy,p.wholesale_moq,p.gender_code,v.id AS variant_id,v.sku,v.weight_grams,
+
+    const rows = await pool.query<{
+      id: string;
+      name: string;
+      brand: string;
+      brand_display_name: string;
+      category: string;
+      description: string;
+      wholesale_price_rial: string;
+      owner_type: string;
+      product_type_id: string | null;
+      installment_policy: string;
+      wholesale_moq: number | null;
+      gender_code: string | null;
+      sale_terms: Record<string, unknown>;
+      allow_installments: boolean;
+      disable_installments_on_discount: boolean;
+      variant_id: string;
+      sku: string;
+      size_label: string | null;
+      color_label: string | null;
+      weight_grams: number | null;
+      attributes: Record<string, unknown>;
+      wholesale_available_stock: number;
+      seasons: string[];
+    }>(
+      `SELECT p.id, p.name, p.brand,
+              COALESCE(NULLIF(sp.brand_name, ''), p.brand) AS brand_display_name,
+              p.category, p.description, p.wholesale_price_rial,
+              p.owner_type, p.product_type_id, p.installment_policy, p.wholesale_moq, p.gender_code,
+              p.sale_terms, p.allow_installments, p.disable_installments_on_discount,
+              v.id AS variant_id, v.sku, v.size_label, v.color_label, v.weight_grams, v.attributes,
+              COALESCE((
+                SELECT GREATEST(0, SUM(sb.on_hand - sb.reserved - sb.damaged))::int
+                FROM stock_balances sb
+                JOIN warehouses w ON w.id = sb.warehouse_id
+                WHERE sb.variant_id = v.id
+                  AND sb.inventory_domain = 'wholesale'
+                  AND w.active = true
+              ), 0) AS wholesale_available_stock,
               COALESCE((SELECT jsonb_agg(ps.season_code) FROM product_seasons ps WHERE ps.product_id = p.id), '[]'::jsonb) AS seasons
-       FROM products p JOIN product_variants v ON v.product_id = p.id AND v.active
-       WHERE p.status = 'published' AND p.wholesale_price_rial > 0 AND p.wholesale_enabled = true
+       FROM products p
+       LEFT JOIN supplier_profiles sp ON sp.user_id = p.supplier_id
+       JOIN product_variants v ON v.product_id = p.id AND v.active
+       WHERE p.status = 'published'
+         AND p.wholesale_enabled = true
+         AND p.wholesale_price_rial > 0
          AND (NOT $1::boolean OR p.supplier_id IS NULL)
          AND ($3::uuid IS NULL OR p.product_type_id = $3)
          AND ($4::text IS NULL OR p.gender_code = $4)
          AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM product_seasons ps WHERE ps.product_id = p.id AND ps.season_code = $5))
-       ORDER BY p.created_at DESC,v.sku LIMIT $2`, [kolbeOnly, query.limit, query.productTypeId ?? null, query.gender ?? null, query.season ?? null]);
-    return { items: rows.rows.map((row) => ({ ...row, wholesale_price_rial: asRial(row.wholesale_price_rial) })) };
+       ORDER BY p.created_at DESC, v.sku LIMIT $2`,
+      [kolbeOnly, query.limit, query.productTypeId ?? null, query.gender ?? null, query.season ?? null],
+    );
+
+    const items = [];
+    for (const row of rows.rows) {
+      const resolved = await resolveVariantPrice(pool, row.variant_id, {
+        orderType: 'wholesale',
+        paymentMode: 'cash',
+      });
+      const terms = {
+        moq: row.wholesale_moq ?? 1,
+        packSize: 1,
+        leadTimeDays: 3,
+        returnableWithinDays: 7,
+        fulfillmentPolicy: 'kolbe_central_qc',
+        fulfillmentChannel: 'kolbe_warehouse',
+        inspectionBy: 'kolbe_qc',
+        ...(row.sale_terms ?? {}),
+      };
+      items.push({
+        id: row.id,
+        name: row.name,
+        brand: row.brand,
+        brandDisplayName: row.brand_display_name,
+        category: row.category,
+        description: row.description,
+        owner_type: row.owner_type,
+        ownerType: row.owner_type,
+        product_type_id: row.product_type_id,
+        installment_policy: row.installment_policy,
+        wholesale_moq: row.wholesale_moq,
+        gender_code: row.gender_code,
+        seasons: row.seasons,
+        variant_id: row.variant_id,
+        variantId: row.variant_id,
+        sku: row.sku,
+        size: row.size_label,
+        color: row.color_label,
+        weight_grams: row.weight_grams,
+        attributes: row.attributes,
+        base_wholesale_price_rial: resolved.basePrice,
+        discount_rial: resolved.discountAmount,
+        wholesale_price_rial: resolved.finalPrice,
+        matched_promotion: resolved.matchedRule,
+        wholesale_available_stock: Number(row.wholesale_available_stock ?? 0),
+        wholesaleAvailableStock: Number(row.wholesale_available_stock ?? 0),
+        sale_terms: terms,
+        saleTerms: terms,
+        allow_installments: row.allow_installments,
+        disable_installments_on_discount: row.disable_installments_on_discount,
+        fulfillment_via: 'kolbe_warehouse',
+      });
+    }
+    return { items };
   });
 
   app.post('/api/v1/products', async (request, reply) => {
     const user = await principal(request, pool, config);
+    const isSupplierOnly = user.roles.includes('supplier') && !user.permissions.includes('products:write');
     if (!user.roles.includes('supplier')) requirePermission(user, 'products:write');
     const body = productBody.parse(request.body);
-    const cash = rial(body.cashPriceRial), installment = body.installmentPriceRial === undefined ? null : rial(body.installmentPriceRial);
+    const cash = rial(body.cashPriceRial);
+    const installment = body.installmentPriceRial === undefined ? null : rial(body.installmentPriceRial);
     const wholesale = body.wholesalePriceRial === undefined ? null : rial(body.wholesalePriceRial);
     if (cash === 0n && (!wholesale || wholesale === 0n)) throw badRequest('دست‌کم یک قیمت معتبر لازم است.');
+
     const isSupplier = user.roles.includes('supplier');
-    if (isSupplier) {
-      // Agent B: the activity lifecycle (item 11) is the single gate - it already folds in
-      // the legacy cooperation status and always explains *why* an action is blocked.
-      const supplier = await one<{ activity_status: string }>(pool,
-        'SELECT activity_status FROM supplier_profiles WHERE user_id = $1', [user.id]);
+    if (isSupplierOnly) {
+      const supplier = await one<{ activity_status: string; cooperation_status: string }>(
+        pool,
+        'SELECT activity_status, cooperation_status FROM supplier_profiles WHERE user_id = $1',
+        [user.id],
+      );
       if (!supplier) throw forbidden('پروفایل تأمین‌کننده یافت نشد؛ ابتدا درخواست همکاری تکمیل کنید.');
       await assertSupplierMay(pool, user.id, 'product_create', { resource: 'product', ip: request.ip });
       const violation = await transaction(pool, (client) => supplierCapViolation(client, user.id, 'product_limit'));
       if (violation) throw forbidden(violation);
-      // Item 35: the API itself refuses a retail/supplier combination.
       if (body.retailEnabled === true || body.wholesaleEnabled === false)
         throw new ApiError(403, 'FORBIDDEN', 'محصول تأمین‌کننده فقط در کانال عمده مجاز است.');
     }
+
     if (body.productTypeId) await assertTypeSizes(pool, body.productTypeId, body.variants.map((v) => v.size ?? undefined));
     if (body.genderCode) await assertTaxonomy(pool, 'gender', body.genderCode);
     for (const season of new Set(body.seasons)) await assertTaxonomy(pool, 'season', season);
+
     const productId = randomUUID();
     const { specifications } = await resolveTypeSpecs(pool, body.productTypeCode, body.specifications, body.variants.map((v) => v.size));
-    const ownerType = isSupplier ? 'supplier' : 'kolbe';
-    const retailEnabled = isSupplier ? false : (body.retailEnabled ?? true);
-    const wholesaleEnabled = isSupplier ? true : (body.wholesaleEnabled ?? true);
-    // One seasons array feeds both representations (products.seasons + product_seasons) so they never diverge.
+    const ownerType = isSupplierOnly ? 'supplier' : 'kolbe';
+    const retailEnabled = isSupplierOnly ? false : (body.retailEnabled ?? true);
+    const wholesaleEnabled = isSupplierOnly ? true : (body.wholesaleEnabled ?? (wholesale !== null && wholesale > 0n));
+    const resolvedPolicy = body.installmentPolicy
+      ?? (body.allowInstallments === false
+        ? 'disabled'
+        : body.disableInstallmentsOnDiscount === true
+          ? 'disabled_when_discounted'
+          : 'enabled');
+    const allowInstallments = body.allowInstallments ?? (resolvedPolicy !== 'disabled');
+    const disableInstallmentsOnDiscount = body.disableInstallmentsOnDiscount ?? (resolvedPolicy === 'disabled_when_discounted');
+    const saleTerms = body.saleTerms ?? {
+      moq: body.wholesaleMoq ?? 1,
+      packSize: 1,
+      leadTimeDays: 3,
+      returnableWithinDays: 7,
+      fulfillmentPolicy: 'kolbe_central_qc',
+    };
+    const wholesaleMoq = body.wholesaleMoq !== undefined ? body.wholesaleMoq : (body.saleTerms?.moq ?? null);
     const seasons = [...new Set(body.seasons)];
+
     const result = await transaction(pool, async (client) => {
       await client.query(
         `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial,metadata,
            product_type_code,specifications,gender,seasons,vibes,installment_enabled,discount_percent,
-           product_type_id,owner_type,retail_enabled,wholesale_enabled,installment_policy,wholesale_moq,gender_code)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
-        [productId, isSupplier ? user.id : null, body.brand, body.name, body.category, body.description,
-          isSupplier ? 'pending' : 'draft', cash.toString(), installment?.toString() ?? null, wholesale?.toString() ?? null,
-          JSON.stringify(body.metadata), body.productTypeCode ?? null, JSON.stringify(specifications), body.gender,
-          seasons, body.vibes, body.installmentEnabled, body.discountPercent,
-          body.productTypeId ?? null, ownerType, retailEnabled, wholesaleEnabled,
-          body.installmentPolicy ?? 'enabled', body.wholesaleMoq ?? null, body.genderCode ?? null]);
+           product_type_id,owner_type,retail_enabled,wholesale_enabled,installment_policy,wholesale_moq,gender_code,
+           sale_terms,allow_installments,disable_installments_on_discount)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+        [
+          productId,
+          isSupplierOnly ? user.id : null,
+          body.brand,
+          body.name,
+          body.category,
+          body.description,
+          isSupplierOnly ? 'pending' : 'draft',
+          cash.toString(),
+          installment?.toString() ?? null,
+          wholesale?.toString() ?? null,
+          JSON.stringify(body.metadata),
+          body.productTypeCode ?? null,
+          JSON.stringify(specifications),
+          body.gender,
+          seasons,
+          body.vibes,
+          body.installmentEnabled,
+          body.discountPercent,
+          body.productTypeId ?? null,
+          ownerType,
+          retailEnabled,
+          wholesaleEnabled,
+          resolvedPolicy,
+          wholesaleMoq,
+          body.genderCode ?? null,
+          JSON.stringify(saleTerms),
+          allowInstallments,
+          disableInstallmentsOnDiscount,
+        ],
+      );
       for (const season of seasons) {
         await client.query('INSERT INTO product_seasons(product_id, season_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [productId, season]);
       }
@@ -316,19 +535,89 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         const seq = await one<{ id: string }>(client, "SELECT nextval('sku_sequence')::text AS id");
         const sku = `${isSupplier ? 'SP' : 'KV'}-${categoryCode(body.category)}-${seq!.id}`;
         const id = randomUUID();
-        await client.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [id, productId, sku, variant.size ?? null, variant.color ?? null, variant.weightGrams ?? null, JSON.stringify(variant.attributes)]);
-        // Color/size travel with the ids so the client can bind per-variant inventory input
-        // without relying on array order.
+        const attrs = {
+          ...variant.attributes,
+          ...(variant.color ? { colorId: variant.color } : {}),
+          ...(variant.size ? { sizeCode: variant.size } : {}),
+        };
+        await client.query(
+          'INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [id, productId, sku, variant.size ?? null, variant.color ?? null, variant.weightGrams ?? null, JSON.stringify(attrs)],
+        );
         variants.push({ id, sku, color: variant.color ?? null, size: variant.size ?? null, weightGrams: variant.weightGrams ?? null });
       }
-      await audit(client, user.id, 'product.created', 'product', productId, undefined, { name: body.name, variants }, request.ip);
+      await audit(client, user.id, 'product.created', 'product', productId, undefined, { name: body.name, ownerType, variants }, request.ip);
       await outbox(client, 'product.created', 'product', productId, { productId });
-      // Style analysis is async (Req 252): creation never waits for it.
       await outbox(client, 'product.style_analysis_requested', 'product', productId, { productId, reason: 'product.created' });
-      return { id: productId, status: isSupplier ? 'pending' : 'draft', ownerType, variants };
+      return {
+        id: productId,
+        status: isSupplierOnly ? 'pending' : 'draft',
+        ownerType,
+        retailEnabled,
+        wholesaleEnabled,
+        variants,
+      };
     });
     return reply.code(201).send(result);
+  });
+
+  // Add new variant(s) to an existing product. Unified after the Agent 1/Agent 2 merge:
+  // accepts BOTH the bulk shape {variants:[…]} (Agent 1 flows, promotion rules apply
+  // automatically) and the single-cell shape {color,size,…} (Agent 2 matrix editor,
+  // Req 26/32). All paths share the same guarantees: duplicate Color×Size → 409,
+  // product-type size validation, server SKU, optional price override (Req 25).
+  app.post('/api/v1/products/:id/variants', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const rawBody = request.body as Record<string, unknown> | null;
+    const isBulk = !!rawBody && Array.isArray((rawBody as { variants?: unknown }).variants);
+    const items = isBulk
+      ? z.object({ variants: z.array(variantInput).min(1).max(50) }).parse(rawBody).variants
+      : [variantInput.parse(rawBody ?? {})];
+
+    const created = await transaction(pool, async (client) => {
+      const product = await one<{ id: string; category: string; supplier_id: string | null; product_type_id: string | null }>(
+        client,
+        'SELECT id, category, supplier_id, product_type_id FROM products WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      if (!product) throw notFound();
+      const isSupplierOnly = user.roles.includes('supplier') && !user.permissions.includes('products:write');
+      if (isSupplierOnly) {
+        if (product.supplier_id !== user.id) throw forbidden();
+      } else {
+        requirePermission(user, 'products:write');
+      }
+      if (product.product_type_id)
+        await assertTypeSizes(client as unknown as DbPool, product.product_type_id, items.map((variant) => variant.size ?? undefined));
+
+      const out = [];
+      for (const variant of items) {
+        const duplicate = await one<{ id: string }>(client,
+          `SELECT id FROM product_variants WHERE product_id = $1
+           AND COALESCE(color_label, '') = COALESCE($2, '') AND COALESCE(size_label, '') = COALESCE($3, '')`,
+          [id, variant.color ?? null, variant.size ?? null]);
+        if (duplicate) throw conflict('واریانتی با همین رنگ و سایز قبلاً برای این محصول ساخته شده است.');
+        const seq = await one<{ id: string }>(client, "SELECT nextval('sku_sequence')::text AS id");
+        const sku = `${product.supplier_id ? 'SP' : 'KV'}-${categoryCode(product.category)}-${seq!.id}`;
+        const vId = randomUUID();
+        const attrs = {
+          ...variant.attributes,
+          ...(variant.color ? { colorId: variant.color } : {}),
+          ...(variant.size ? { sizeCode: variant.size } : {}),
+        };
+        await client.query(
+          `INSERT INTO product_variants(id, product_id, sku, size_label, color_label, weight_grams, price_override_rial, attributes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [vId, id, sku, variant.size ?? null, variant.color ?? null, variant.weightGrams ?? null, variant.priceOverrideRial ?? null, JSON.stringify(attrs)],
+        );
+        out.push({ id: vId, sku, size: variant.size ?? null, color: variant.color ?? null, weightGrams: variant.weightGrams ?? null,
+          priceOverrideRial: variant.priceOverrideRial ?? null, active: true });
+      }
+      await audit(client, user.id, 'product.variants_added', 'product', id, undefined, { variants: out }, request.ip);
+      return out;
+    });
+    return reply.code(201).send(isBulk ? { productId: id, variants: created } : created[0]);
   });
 
   app.patch('/api/v1/products/:id', async (request) => {
@@ -454,7 +743,11 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       `SELECT v.id, v.sku, v.size_label AS size, v.color_label AS color, v.weight_grams, v.active, v.attributes,
               v.price_override_rial::text AS price_override_rial,
               COALESCE(SUM(b.on_hand - b.reserved - b.damaged), 0)::int AS available,
-              COALESCE(SUM(b.on_hand), 0)::int AS on_hand
+              COALESCE(SUM(b.on_hand), 0)::int AS on_hand,
+              COALESCE(SUM(b.on_hand - b.reserved - b.damaged) FILTER (WHERE b.inventory_domain = 'retail'), 0)::int AS retail_available,
+              COALESCE(SUM(b.on_hand) FILTER (WHERE b.inventory_domain = 'retail'), 0)::int AS retail_on_hand,
+              COALESCE(SUM(b.on_hand - b.reserved - b.damaged) FILTER (WHERE b.inventory_domain = 'wholesale'), 0)::int AS wholesale_available,
+              COALESCE(SUM(b.on_hand) FILTER (WHERE b.inventory_domain = 'wholesale'), 0)::int AS wholesale_on_hand
        FROM product_variants v LEFT JOIN stock_balances b ON b.variant_id = v.id
        WHERE v.product_id = $1 GROUP BY v.id ORDER BY v.sku`, [id]);
     const row = product as { cash_price_rial: string; installment_price_rial: string | null; wholesale_price_rial: string | null };
@@ -465,39 +758,6 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       wholesale_price_rial: row.wholesale_price_rial === null ? null : asRial(row.wholesale_price_rial),
       variants: variants.rows,
     };
-  });
-
-  /**
-   * Add a variant to an existing product (Req 26/32: enabling a blank Color×Size
-   * cell in edit mode creates a real variant with a server SKU).
-   */
-  app.post('/api/v1/products/:id/variants', async (request, reply) => {
-    const user = await principal(request, pool, config);
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = variantInput.parse(request.body);
-    const result = await transaction(pool, async (client) => {
-      const product = await one<{ supplier_id: string | null; category: string; product_type_id: string | null }>(client,
-        'SELECT supplier_id, category, product_type_id FROM products WHERE id = $1 FOR UPDATE', [id]);
-      if (!product) throw notFound();
-      const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
-      if (!isOwner) requirePermission(user, 'products:write');
-      if (product.product_type_id) await assertTypeSizes(client as unknown as DbPool, product.product_type_id, [body.size ?? undefined]);
-      const duplicate = await one<{ id: string }>(client,
-        `SELECT id FROM product_variants WHERE product_id = $1
-         AND COALESCE(color_label, '') = COALESCE($2, '') AND COALESCE(size_label, '') = COALESCE($3, '')`,
-        [id, body.color ?? null, body.size ?? null]);
-      if (duplicate) throw conflict('واریانتی با همین رنگ و سایز قبلاً برای این محصول ساخته شده است.');
-      const seq = await one<{ id: string }>(client, "SELECT nextval('sku_sequence')::text AS id");
-      const sku = `${product.supplier_id ? 'SP' : 'KV'}-${categoryCode(product.category)}-${seq!.id}`;
-      const variantId = randomUUID();
-      await client.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,price_override_rial,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [variantId, id, sku, body.size ?? null, body.color ?? null, body.weightGrams ?? null, body.priceOverrideRial ?? null, JSON.stringify(body.attributes)]);
-      await audit(client, user.id, 'product.variant_created', 'product', id, undefined,
-        { variantId, sku, color: body.color ?? null, size: body.size ?? null }, request.ip);
-      return { id: variantId, sku, color: body.color ?? null, size: body.size ?? null, weightGrams: body.weightGrams ?? null,
-        priceOverrideRial: body.priceOverrideRial ?? null, active: true };
-    });
-    return reply.code(201).send(result);
   });
 
   /** Variant-level maintenance (weight for shipping, active flag) — item 83. */

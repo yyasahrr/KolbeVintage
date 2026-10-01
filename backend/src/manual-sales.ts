@@ -99,14 +99,17 @@ export function registerManualSaleRoutes(app: FastifyInstance, pool: DbPool, con
         subtotal += lineTotal;
 
         // Consume sellable stock atomically; the guard keeps available >= 0.
+        // Manual sales are retail-channel events, so only the RETAIL inventory
+        // domain is consumed (Agent 1 domain separation — never wholesale stock).
         const balance = await one<{ on_hand: number }>(client,
           `UPDATE stock_balances SET on_hand = on_hand - $3, version = version + 1, updated_at = now()
-           WHERE variant_id = $1 AND warehouse_id = $2 AND on_hand - $3 >= reserved + damaged
+           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'retail'
+             AND on_hand - $3 >= reserved + damaged
            RETURNING on_hand`, [line.variantId, body.warehouseId, line.quantity]);
         if (!balance) throw conflict(`موجودی قابل فروش «${variant.sku}» در انبار انتخاب‌شده کافی نیست.`);
         await client.query(
-          `INSERT INTO stock_movements(id,variant_id,warehouse_id,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-           VALUES ($1,$2,$3,$4,'manual sale','manual_sale',$5,$6,$7)`,
+          `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+           VALUES ($1,$2,$3,'retail',$4,'manual sale','manual_sale',$5,$6,$7)`,
           [randomUUID(), line.variantId, body.warehouseId, -line.quantity, saleId, user.id, `msale:${saleId}:${line.variantId}`]);
 
         lines.push({ id: randomUUID(), variantId: variant.id, productId: variant.product_id, sku: variant.sku,
@@ -193,10 +196,11 @@ export function registerManualSaleRoutes(app: FastifyInstance, pool: DbPool, con
         for (const line of lines.rows as { variant_id: string; quantity: number }[]) {
           await client.query(
             `UPDATE stock_balances SET on_hand = on_hand + $3, version = version + 1, updated_at = now()
-             WHERE variant_id = $1 AND warehouse_id = $2`, [line.variant_id, sale.warehouse_id, line.quantity]);
+             WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'retail'`,
+            [line.variant_id, sale.warehouse_id, line.quantity]);
           await client.query(
-            `INSERT INTO stock_movements(id,variant_id,warehouse_id,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-             VALUES ($1,$2,$3,$4,'manual sale payment rejected','manual_sale',$5,$6,$7)`,
+            `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+             VALUES ($1,$2,$3,'retail',$4,'manual sale payment rejected','manual_sale',$5,$6,$7)`,
             [randomUUID(), line.variant_id, sale.warehouse_id, line.quantity, params.id, user.id, `msale-reject:${params.id}:${line.variant_id}`]);
         }
         await client.query(`UPDATE manual_sales SET status = 'cancelled', cancelled_at = now(), updated_at = now() WHERE id = $1`, [params.id]);

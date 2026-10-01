@@ -368,12 +368,19 @@ async function validateInventoryRow(ctx: RowContext): Promise<{ variantId?: stri
   if (job.mode !== 'create_update') { errors.push('حالت اجرای موجودی باید create_update باشد.'); return null; }
   const sku = get('sku');
   if (!sku) { errors.push('SKU لازم است.'); return null; }
-  const variant = await one<{ id: string }>(pool, 'SELECT id FROM product_variants WHERE sku = $1', [sku]);
+  const variant = await one<{ id: string; owner_type: string; supplier_id: string | null; retail_enabled: boolean }>(
+    pool,
+    'SELECT v.id, p.owner_type, p.supplier_id, p.retail_enabled FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.sku = $1',
+    [sku],
+  );
   if (!variant) { errors.push(`SKU «${sku}» پیدا نشد.`); return null; }
   const warehouseCode = get('warehouse');
   if (!warehouseCode) { errors.push('کد انبار لازم است.'); return null; }
-  const warehouse = await one<{ id: string }>(pool, 'SELECT id FROM warehouses WHERE code = $1 AND active = true', [warehouseCode]);
+  const warehouse = await one<{ id: string; owner_id: string | null }>(pool, 'SELECT id, owner_id FROM warehouses WHERE code = $1 AND active = true', [warehouseCode]);
   if (!warehouse) { errors.push(`انبار «${warehouseCode}» فعال نیست.`); return null; }
+  const domain = (variant.owner_type === 'supplier' || variant.supplier_id !== null || !variant.retail_enabled || warehouse.owner_id !== null)
+    ? 'wholesale'
+    : 'retail';
   const quantityRaw = normalizeNumber(get('quantity'));
   if (quantityRaw === null) { errors.push('تعداد عدد معتبر نیست.'); return null; }
   const quantity = Number(quantityRaw);
@@ -384,37 +391,37 @@ async function validateInventoryRow(ctx: RowContext): Promise<{ variantId?: stri
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('INSERT INTO stock_balances(variant_id,warehouse_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [variant.id, warehouse.id]);
+    await client.query(`INSERT INTO stock_balances(variant_id,warehouse_id,inventory_domain) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [variant.id, warehouse.id, domain]);
     const reference = `IMP-${job.id.slice(0, 8)}-${ctx.rowNumber}`;
     if (!absolute) {
       if (quantity === 0) { await client.query('ROLLBACK'); return { variantId: variant.id, warehouseId: warehouse.id }; }
-      await client.query('UPDATE stock_balances SET incoming = incoming + $3, version = version + 1 WHERE variant_id = $1 AND warehouse_id = $2',
-        [variant.id, warehouse.id, quantity]);
+      await client.query(`UPDATE stock_balances SET incoming = incoming + $4, version = version + 1 WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
+        [variant.id, warehouse.id, domain, quantity]);
       const receiptId = randomUUID();
-      await client.query(`INSERT INTO stock_receipts(id,reference,warehouse_id,variant_id,quantity,status,created_by) VALUES ($1,$2,$3,$4,$5,'pending',$6)
-        ON CONFLICT (reference) DO NOTHING`, [receiptId, reference, warehouse.id, variant.id, quantity, ctx.actorId]);
+      await client.query(`INSERT INTO stock_receipts(id,reference,receipt_number,warehouse_id,variant_id,inventory_domain,quantity,status,created_by) VALUES ($1,$2,$2,$3,$4,$5,$6,'pending',$7)
+        ON CONFLICT (reference) DO NOTHING`, [receiptId, reference, warehouse.id, variant.id, domain, quantity, ctx.actorId]);
       const receipt = await one<{ id: string; status: string }>(client as unknown as DbPool, 'SELECT id, status FROM stock_receipts WHERE reference = $1', [reference]);
       if (receipt && receipt.status === 'pending') {
-        await client.query('UPDATE stock_balances SET incoming = incoming - $3, on_hand = on_hand + $3, version = version + 1 WHERE variant_id = $1 AND warehouse_id = $2',
-          [variant.id, warehouse.id, quantity]);
+        await client.query(`UPDATE stock_balances SET incoming = incoming - $4, on_hand = on_hand + $4, version = version + 1 WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
+          [variant.id, warehouse.id, domain, quantity]);
         await client.query("UPDATE stock_receipts SET status = 'received', received_at = now() WHERE id = $1", [receipt.id]);
-        await client.query(`INSERT INTO stock_movements(id,variant_id,warehouse_id,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-          VALUES ($1,$2,$3,$4,'import receipt','receipt',$5,$6,$7)`,
-          [randomUUID(), variant.id, warehouse.id, quantity, receipt.id, ctx.actorId, `import-receipt:${receipt.id}`]);
+        await client.query(`INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+          VALUES ($1,$2,$3,$4,$5,'import receipt','receipt',$6,$7,$8)`,
+          [randomUUID(), variant.id, warehouse.id, domain, quantity, receipt.id, ctx.actorId, `import-receipt:${receipt.id}`]);
       }
     } else {
       const balance = await one<{ on_hand: number; reserved: number; damaged: number }>(client as unknown as DbPool,
-        'SELECT on_hand, reserved, damaged FROM stock_balances WHERE variant_id = $1 AND warehouse_id = $2', [variant.id, warehouse.id]);
+        `SELECT on_hand, reserved, damaged FROM stock_balances WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`, [variant.id, warehouse.id, domain]);
       const delta = quantity - (balance?.on_hand ?? 0);
       if (delta !== 0) {
         const updated = await client.query(
-          `UPDATE stock_balances SET on_hand = on_hand + $3, version = version + 1, updated_at = now()
-           WHERE variant_id = $1 AND warehouse_id = $2 AND on_hand + $3 >= reserved + damaged`,
-          [variant.id, warehouse.id, delta]);
+          `UPDATE stock_balances SET on_hand = on_hand + $4, version = version + 1, updated_at = now()
+           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3 AND on_hand + $4 >= reserved + damaged`,
+          [variant.id, warehouse.id, domain, delta]);
         if (!updated.rowCount) throw new Error('تنظیم موجودی باعث منفی شدن موجودی قابل فروش می‌شود.');
-        await client.query(`INSERT INTO stock_movements(id,variant_id,warehouse_id,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-          VALUES ($1,$2,$3,$4,$5,'adjustment',$6,$7,$8)`,
-          [randomUUID(), variant.id, warehouse.id, delta, `import set ${quantity}`, reference, ctx.actorId, `import-set:${job.id}:${ctx.rowNumber}`]);
+        await client.query(`INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+          VALUES ($1,$2,$3,$4,$5,$6,'adjustment',$7,$8,$9)`,
+          [randomUUID(), variant.id, warehouse.id, domain, delta, `import set ${quantity}`, reference, ctx.actorId, `import-set:${job.id}:${ctx.rowNumber}`]);
       }
     }
     await audit(client, ctx.actorId, 'import.inventory_applied', 'variant', variant.id, undefined, { jobId: job.id, row: ctx.rowNumber, quantity }, undefined);
