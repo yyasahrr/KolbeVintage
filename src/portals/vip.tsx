@@ -146,6 +146,10 @@ export function VipPDP({ p, canSee, role, onBack, onAdd, onAuth, onGoCart }: {
                   {series.id === s.id && <span className="absolute left-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--kv-accent)] text-white"><Check size={12} /></span>}
                   <p className="text-[13.5px] font-bold">{s.name}</p>
                   <p className="mt-1 text-xs text-[var(--kv-muted)]">{fmtNum(s.pieces)} تکه در هر سری</p>
+                  {/* K2/K3: composition hint right on the series card, before selection */}
+                  <p className="mt-0.5 text-[10.5px] leading-5 text-[var(--kv-muted)]" dir="rtl">
+                    ترکیب: {Object.entries(s.composition).filter(([, n]) => n > 0).map(([size, n]) => `${fmtNum(n)}×${size}`).join("، ") || "—"}
+                  </p>
                   {canSee
                     ? <p className="mt-1.5 text-[12.5px] font-extrabold tabular-nums">{fmtMoney(s.pricePerSeries)}<span className="font-medium text-[var(--kv-muted)]"> / سری</span></p>
                     : <p className="mt-1.5 flex items-center gap-1 text-[11.5px] font-semibold text-[var(--kv-muted)]"><Lock size={11} />قیمت پس از عضویت</p>}
