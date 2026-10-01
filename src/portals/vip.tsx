@@ -3,11 +3,11 @@ import {
   ArrowLeft, BadgeCheck, Check, ChevronLeft, Clock, Crown, FileText, Headset, Lock, MapPin,
   Package, Send, ShieldCheck, ShoppingBag, Star, Trash2, Wallet, Store as StoreIcon, Truck,
 } from "lucide-react";
-import { IMG, fmtMoney, fmtNum, type Product, type SeriesDef } from "../data/catalog";
+import { IMG, fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE, BUYER_ADDRESS, limitsOf, describeLimits, type VipPlan } from "../data/platform";
 import { useOps } from "../data/ops";
-import { apiClient, membershipApi } from "../data/api";
+import { AdminApiError, apiClient, membershipApi, ordersApi, seriesTemplatesApi, type OrderSummary } from "../data/api";
 import { ParentOrderCard, SupplierChip } from "../components/orders";
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Swatch, Stepper, Empty, Input, Segmented, Field } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -18,6 +18,38 @@ type Source = "all" | "kolbe" | "others";
 type OrderFilter = "all" | "action" | "active" | "done";
 
 const FLOW = ["ثبت سفارش عمده", "تأمین به انبار کلبه", "کنترل کیفیت (QC) کلبه", "تجمیع و بسته‌بندی", "ارسال از کلبه به VIP"];
+
+/* ============ Server-backed series (K) ============
+   The operational source of truth for VIP ordering is series_templates /
+   series_template_items on the server. Local demo Product.series is only a
+   development/demo fallback and never drives a real VIP order. */
+export type ServerSeries = {
+  templateId: string; productId: string; name: string; active: boolean;
+  composition: { label: string; qty: number }[];
+  /** Whole orderable series, computed by the server from component-variant bottleneck. */
+  availableSeries: number;
+  moqSeries: number;
+  /** Toman for fmtMoney (the server sends integer RIAL). */
+  pricePerSeries: number;
+};
+
+const isUuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+const compositionOf = (items: { quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null }[]) =>
+  items.map((it) => ({ label: [it.color_label, it.size_label].filter(Boolean).join(" ") || it.sku, qty: it.quantity_per_series }));
+const rialToToman = (rial: string | null | undefined) => (rial ? Number(BigInt(rial) / 10n) : 0);
+
+/** Unified view the PDP renders — same shape for server series and demo fallback. */
+type SeriesView = {
+  id: string; name: string; active: boolean;
+  composition: { label: string; qty: number }[];
+  pricePerSeries: number; moqSeries: number; availableSeries: number;
+};
+
+const ORDER_STATUS_FA: Record<string, string> = {
+  pending_payment: "در انتظار پرداخت", paid: "پرداخت‌شده", processing: "در حال پردازش",
+  preparing: "در حال آماده‌سازی", ready_to_ship: "آماده ارسال", in_transit: "در مسیر",
+  shipped: "ارسال‌شده", delivered: "تحویل‌شده", cancelled: "لغوشده", returned: "مرجوع‌شده",
+};
 
 function PriceLock({ compact }: { compact?: boolean }) {
   return (
@@ -82,22 +114,58 @@ function PlanCard({ plan, current, cta, onPick }: { plan: VipPlan; current?: boo
 }
 
 /* ============ Wholesale PDP ============ */
-export function VipPDP({ p, canSee, role, onBack, onAdd, onAuth, onGoCart }: {
-  p: Product; canSee: boolean; role: VipRole; onBack: () => void;
-  onAdd: (s: SeriesDef, qty: number, color: string) => void; onAuth: () => void; onGoCart: () => void;
+export function VipPDP({ p, canSee, role, serverBacked, onBack, onAdd, onAuth, onGoCart, onSeriesLoaded }: {
+  p: Product; canSee: boolean; role: VipRole; serverBacked: boolean; onBack: () => void;
+  onAdd: (series: { id: string; name: string }, qty: number, color: string) => void; onAuth: () => void; onGoCart: () => void;
+  onSeriesLoaded?: (list: ServerSeries[]) => void;
 }) {
   const [img, setImg] = useState(0);
-  const [color, setColor] = useState(p.colors[0]);
-  const first = p.series.find((s) => s.available && p.stock >= s.pieces * s.moqSeries && (!s.colorIds || s.colorIds.includes(color.id))) ?? p.series[0];
-  const [seriesId, setSeriesId] = useState(first?.id ?? "");
-  const [qty, setQty] = useState(first?.moqSeries ?? 1);
+  const [color, setColor] = useState(p.colors[0] ?? null);
   const [added, setAdded] = useState(false);
-  const colorSeries = p.series.filter((s) => !s.colorIds || s.colorIds.includes(color.id));
-  const series = colorSeries.find((s) => s.id === seriesId) ?? colorSeries.find((s) => s.available && p.stock >= s.pieces * s.moqSeries) ?? colorSeries[0];
-  const pieces = (series?.pieces ?? 0) * qty;
+  // K: real VIP series come from the server (series_templates). null = loading.
+  const [srv, setSrv] = useState<ServerSeries[] | null>(serverBacked ? null : []);
+  const [srvError, setSrvError] = useState<string | null>(null);
+  const loadServerSeries = async () => {
+    setSrvError(null);
+    try {
+      const res = await seriesTemplatesApi.vipList(p.id);
+      const list: ServerSeries[] = res.items.filter((r) => r.active).map((r) => ({
+        templateId: r.id, productId: r.product_id, name: r.name, active: r.active,
+        composition: compositionOf(r.items), availableSeries: r.available_series,
+        moqSeries: r.moq_series, pricePerSeries: rialToToman(r.price_per_series_rial),
+      }));
+      setSrv(list);
+      onSeriesLoaded?.(list);
+    } catch (e) { setSrvError(e instanceof Error ? e.message : "خطا در دریافت سری‌های این محصول"); }
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (serverBacked) void loadServerSeries(); }, [p.id, serverBacked]);
+
+  // Demo fallback only (development/demo mode): never the operational source for real VIP.
+  const demoViews: SeriesView[] = serverBacked ? [] : p.series
+    .filter((s) => !s.colorIds || !color || s.colorIds.includes(color.id))
+    .map((s) => ({
+      id: s.id, name: s.name, active: s.available,
+      composition: Object.entries(s.composition).filter(([, n]) => n > 0).map(([size, n]) => ({ label: size, qty: n })),
+      pricePerSeries: s.pricePerSeries, moqSeries: s.moqSeries,
+      availableSeries: s.available ? Math.floor(p.stock / Math.max(1, s.pieces)) : 0,
+    }));
+  const views: SeriesView[] = serverBacked
+    ? (srv ?? []).map((s) => ({ id: s.templateId, name: s.name, active: s.active, composition: s.composition, pricePerSeries: s.pricePerSeries, moqSeries: s.moqSeries, availableSeries: s.availableSeries }))
+    : demoViews;
+  const orderable = (s: SeriesView) => s.active && s.availableSeries >= s.moqSeries;
+
+  const [seriesId, setSeriesId] = useState("");
+  const series = views.find((s) => s.id === seriesId) ?? views.find(orderable) ?? views[0];
+  const [qty, setQty] = useState(1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (series) setQty(series.moqSeries); }, [series?.id]);
+
   const total = (series?.pricePerSeries ?? 0) * qty;
   const meetsMoq = !!series && qty >= series.moqSeries;
+  const exceedsAvailable = !!series && qty > series.availableSeries;
   const kolbe = p.supplierId === KOLBE.id;
+  const seriesLoading = serverBacked && srv === null && !srvError;
 
   return (
     <div className="animate-[fadeUp_0.4s_ease]">
@@ -128,43 +196,56 @@ export function VipPDP({ p, canSee, role, onBack, onAdd, onAuth, onGoCart }: {
           <h1 className="kv-editorial-title mt-2 text-[26px] md:text-[30px]">{p.name}</h1>
           <p className="mt-2 text-[13px] leading-7 text-[var(--kv-muted)]">{p.desc}</p>
 
-          <div className="mt-5">
-            <p className="mb-2.5 text-[13px] font-bold">رنگ <span className="font-medium text-[var(--kv-muted)]">— {color.name}</span></p>
-            <div className="flex gap-2.5">{p.colors.map((c) => <Swatch key={c.id} hex={c.hex} name={c.name} selected={color.id === c.id} onSelect={() => { const next = p.series.find((s) => s.available && p.stock >= s.pieces * s.moqSeries && (!s.colorIds || s.colorIds.includes(c.id))) ?? p.series.find((s) => !s.colorIds || s.colorIds.includes(c.id)); setColor(c); setSeriesId(next?.id ?? ""); setQty(next?.moqSeries ?? 1); setAdded(false); }} />)}</div>
-          </div>
+          {p.colors.length > 0 && color && (
+            <div className="mt-5">
+              <p className="mb-2.5 text-[13px] font-bold">رنگ <span className="font-medium text-[var(--kv-muted)]">— {color.name}</span></p>
+              <div className="flex gap-2.5">{p.colors.map((c) => <Swatch key={c.id} hex={c.hex} name={c.name} selected={color.id === c.id} onSelect={() => { setColor(c); setAdded(false); }} />)}</div>
+            </div>
+          )}
 
           <div className="mt-5">
-            <p className="mb-2.5 text-[13px] font-bold">انتخاب سری <span className="font-medium text-[var(--kv-muted)]">— ترکیب سایز هر سری ثابت است</span></p>
-            <div className="grid gap-2.5 sm:grid-cols-3">
-              {colorSeries.map((s) => (
-                <button
-                  key={s.id} disabled={!s.available || p.stock < s.pieces * s.moqSeries} onClick={() => { setSeriesId(s.id); setQty(s.moqSeries); }}
-                  className={cn("kv-press relative rounded-[14px] border p-3.5 text-right transition-all",
-                    series.id === s.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06] shadow-[var(--shadow-soft-sm)]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]",
-                    (!s.available || p.stock < s.pieces * s.moqSeries) && "opacity-50")}
-                >
-                  {series.id === s.id && <span className="absolute left-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--kv-accent)] text-white"><Check size={12} /></span>}
-                  <p className="text-[13.5px] font-bold">{s.name}</p>
-                  <p className="mt-1 text-xs text-[var(--kv-muted)]">{fmtNum(s.pieces)} تکه در هر سری</p>
-                  {/* K2/K3: composition hint right on the series card, before selection */}
-                  <p className="mt-0.5 text-[10.5px] leading-5 text-[var(--kv-muted)]" dir="rtl">
-                    ترکیب: {Object.entries(s.composition).filter(([, n]) => n > 0).map(([size, n]) => `${fmtNum(n)}×${size}`).join("، ") || "—"}
-                  </p>
-                  {canSee
-                    ? <p className="mt-1.5 text-[12.5px] font-extrabold tabular-nums">{fmtMoney(s.pricePerSeries)}<span className="font-medium text-[var(--kv-muted)]"> / سری</span></p>
-                    : <p className="mt-1.5 flex items-center gap-1 text-[11.5px] font-semibold text-[var(--kv-muted)]"><Lock size={11} />قیمت پس از عضویت</p>}
-                  <p className="mt-1 text-[11px] text-[var(--kv-muted)]">{!s.available ? "غیرفعال" : p.stock < s.pieces * s.moqSeries ? "موجودی برای حداقل سفارش کافی نیست" : `حداقل ${fmtNum(s.moqSeries)} سری`}</p>
-                </button>
-              ))}
-            </div>
-            {!colorSeries.length && <p className="rounded-[11px] bg-[var(--kv-surface-2)] px-3 py-2 text-[12px] text-[var(--kv-muted)]">برای این رنگ سری قابل سفارش تعریف نشده است.</p>}
+            <p className="mb-2.5 text-[13px] font-bold">انتخاب سری <span className="font-medium text-[var(--kv-muted)]">— ترکیب هر سری ثابت است</span></p>
+            {seriesLoading && <p className="rounded-[11px] bg-[var(--kv-surface-2)] px-3 py-2.5 text-[12px] text-[var(--kv-muted)]">در حال دریافت سری‌های قابل سفارش از سرور…</p>}
+            {srvError && (
+              <p className="rounded-[11px] border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-700">
+                {srvError} <button onClick={() => void loadServerSeries()} className="font-bold underline">تلاش دوباره</button>
+              </p>
+            )}
+            {!seriesLoading && !srvError && (
+              <div className="grid gap-2.5 sm:grid-cols-3">
+                {views.map((s) => (
+                  <button
+                    key={s.id} disabled={!orderable(s)} onClick={() => { setSeriesId(s.id); setQty(s.moqSeries); }}
+                    className={cn("kv-press relative rounded-[14px] border p-3.5 text-right transition-all",
+                      series?.id === s.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06] shadow-[var(--shadow-soft-sm)]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]",
+                      !orderable(s) && "opacity-50")}
+                  >
+                    {series?.id === s.id && <span className="absolute left-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--kv-accent)] text-white"><Check size={12} /></span>}
+                    <p className="text-[13.5px] font-bold">{s.name}</p>
+                    {/* K2/K3: composition hint right on the series card, before selection */}
+                    <p className="mt-1 text-[10.5px] leading-5 text-[var(--kv-muted)]" dir="rtl">
+                      ترکیب: {s.composition.map((c) => `${c.label} × ${fmtNum(c.qty)}`).join("، ") || "—"}
+                    </p>
+                    {canSee
+                      ? <p className="mt-1.5 text-[12.5px] font-extrabold tabular-nums">{fmtMoney(s.pricePerSeries)}<span className="font-medium text-[var(--kv-muted)]"> / سری</span></p>
+                      : <p className="mt-1.5 flex items-center gap-1 text-[11.5px] font-semibold text-[var(--kv-muted)]"><Lock size={11} />قیمت پس از عضویت</p>}
+                    <p className="mt-1 text-[11px] text-[var(--kv-muted)]">
+                      {!s.active ? "غیرفعال"
+                        : s.availableSeries < s.moqSeries ? "موجودی سری برای حداقل سفارش کافی نیست"
+                        : `موجودی: ${fmtNum(s.availableSeries)} سری · حداقل ${fmtNum(s.moqSeries)} سری`}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
+            {!seriesLoading && !srvError && !views.length && <p className="rounded-[11px] bg-[var(--kv-surface-2)] px-3 py-2 text-[12px] text-[var(--kv-muted)]">برای این محصول هنوز سری قابل سفارشی تعریف نشده است.</p>}
           </div>
 
           {series && <div className="mt-4 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 p-4">
             <p className="mb-2.5 text-[12.5px] font-bold text-[var(--kv-muted)]">ترکیب سری «{series.name}»</p>
             <div className="flex flex-wrap gap-2">
-              {Object.entries(series.composition).filter(([, n]) => n > 0).map(([size, n]) => (
-                <span key={size} className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 py-1.5 text-[12.5px] font-bold tabular-nums">{size} <span className="text-[var(--kv-accent)]">×{fmtNum(n)}</span></span>
+              {series.composition.map((c) => (
+                <span key={c.label} className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 py-1.5 text-[12.5px] font-bold tabular-nums">{c.label} <span className="text-[var(--kv-accent)]">×{fmtNum(c.qty)}</span></span>
               ))}
             </div>
           </div>}
@@ -175,15 +256,16 @@ export function VipPDP({ p, canSee, role, onBack, onAdd, onAuth, onGoCart }: {
               <Stepper value={qty} onChange={setQty} min={1} />
             </div>
             <div className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-4 py-2.5 text-[13px]">
-              <span className="text-[var(--kv-muted)]">مجموع: </span><b className="tabular-nums">{fmtNum(pieces)} تکه</b>
+              <span className="text-[var(--kv-muted)]">انتخاب شما: </span><b className="tabular-nums">{fmtNum(qty)} سری</b>
               {canSee && <><span className="mx-2 text-[var(--kv-faint)]">·</span><b className="tabular-nums text-[var(--kv-accent)]">{fmtMoney(total)}</b></>}
             </div>
           </div>
           {series && !meetsMoq && <p className="mt-2 text-xs font-semibold text-[var(--kv-danger)]">حداقل سفارش این سری {fmtNum(series.moqSeries)} سری است.</p>}
+          {series && meetsMoq && exceedsAvailable && <p className="mt-2 text-xs font-semibold text-[var(--kv-danger)]">فقط {fmtNum(series.availableSeries)} سری از این ترکیب موجود است.</p>}
 
           {canSee ? (
             <div className="sticky bottom-4 z-10 mt-5 flex flex-wrap gap-2.5 lg:static">
-              <Btn variant="accent" size="lg" className="flex-1 shadow-[var(--shadow-soft-lg)] lg:shadow-none" disabled={!meetsMoq || !series?.available || p.stock < pieces || p.stock < (series?.pieces ?? 0) * (series?.moqSeries ?? 0)} icon={<ShoppingBag size={17} />} onClick={() => { if (series) { onAdd(series, qty, color.name); setAdded(true); } }}>
+              <Btn variant="accent" size="lg" className="flex-1 shadow-[var(--shadow-soft-lg)] lg:shadow-none" disabled={!series || !meetsMoq || !orderable(series) || exceedsAvailable} icon={<ShoppingBag size={17} />} onClick={() => { if (series) { onAdd({ id: series.id, name: series.name }, qty, color?.name ?? ""); setAdded(true); } }}>
                 افزودن به سبد عمده · {fmtMoney(total)}
               </Btn>
               {added && <Btn variant="dark" size="lg" onClick={onGoCart} icon={<ArrowLeft size={16} />}>سبد و ثبت سفارش</Btn>}
@@ -254,6 +336,20 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const [toast, setToast] = useState<string | null>(null);
   const [justPlaced, setJustPlaced] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3400); };
+  // K: server series cache keyed by templateId — fed by the PDP and cart re-hydration.
+  const [seriesCache, setSeriesCache] = useState<Record<string, ServerSeries>>({});
+  const cacheSeries = (list: ServerSeries[]) => setSeriesCache((prev) => {
+    const next = { ...prev };
+    for (const s of list) next[s.templateId] = s;
+    return next;
+  });
+  // Real orders placed on the server (POST /orders) for this buyer.
+  const [serverOrders, setServerOrders] = useState<OrderSummary[] | null>(null);
+  const [placing, setPlacing] = useState(false);
+  const loadServerOrders = async () => {
+    try { const res = await ordersApi.list({ orderType: "wholesale", limit: "30" }); setServerOrders(res.items); }
+    catch { /* keep previous list */ }
+  };
   const marketBase = products.filter((p) => p.status === "published" && p.wholesaleFrom > 0);
   const market = wholesaleServer ?? marketBase;
   const selected = useMemo(() => market.find((p) => p.id === selectedId) ?? null, [selectedId, market]);
@@ -270,7 +366,9 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
         // Map backend wholesale items to Product shape where possible; keep store products as fallback for images/series
         const mapped: Product[] = (wh as any).items.map((row:any)=> {
           const local = marketBase.find(m=> m.id===row.id || m.sku===row.sku);
-          if(local) return { ...local, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : local.wholesaleFrom };
+          // Keep the SERVER id even when a local demo product supplies images/colors:
+          // real series/orders are keyed by the server product id (K).
+          if(local) return { ...local, id: row.id, sku: row.sku ?? local.sku, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : local.wholesaleFrom };
           const publicBrand = row.brandDisplayName ?? row.brand ?? "کلبه وینتیج";
           return { id: row.id, sku: row.sku, name: row.name ?? row.product_name ?? "محصول", brand: publicBrand, supplier: publicBrand, supplierId: row.owner_type === "supplier" ? "partner" : "kolbe", category: row.category ?? "عمومی", retailPrice: 0, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : 0, rating:0, reviews:0, colors:[], images:[IMG.neutralRack], series:[], seriesCount:0, moq: row.sale_terms?.moq ?? 1, stock: row.wholesale_available_stock ?? 100, fabric:"", desc:"", status:"published" } as unknown as Product;
         });
@@ -281,6 +379,30 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
     } catch(e){ if(!cancel) setVipError(e instanceof Error? e.message : "خطا"); }
     finally{ if(!cancel) setVipLoading(false); }
   })(); return ()=>{ cancel=true; } }, [role]);
+  // Real wholesale orders of this buyer, straight from the server.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (role === "vip") void loadServerOrders(); }, [role]);
+  // Re-hydrate server series for cart lines restored from storage (uuid seriesIds not yet cached).
+  useEffect(() => {
+    const missing = store.wcart.filter((l) => l.accountId === accountId && isUuid(l.seriesId) && !seriesCache[l.seriesId]);
+    if (!missing.length) return;
+    let cancel = false;
+    (async () => {
+      for (const line of missing) {
+        try {
+          const d = await seriesTemplatesApi.detail(line.seriesId);
+          if (cancel) return;
+          cacheSeries([{
+            templateId: line.seriesId, productId: d.productId, name: d.name, active: d.active,
+            composition: compositionOf(d.items), availableSeries: d.availableSeries,
+            moqSeries: d.moqSeries, pricePerSeries: rialToToman(d.pricePerSeriesRial),
+          }]);
+        } catch { /* line stays unresolved and is not shown */ }
+      }
+    })();
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.wcart, accountId]);
   const cats = ["همه", ...Array.from(new Set(market.map((p) => p.category)))];
   const filtered = market.filter((p) => (cat === "همه" || p.category === cat) && (!q.trim() || p.name.includes(q.trim()) || p.brand.toLowerCase().includes(q.trim().toLowerCase()) || p.sku.toLowerCase().includes(q.trim().toLowerCase())));
   const kolbeList = filtered.filter((p) => p.supplierId === KOLBE.id);
@@ -291,15 +413,37 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const wholesaleShipping = shipping.filter((s) => s.active && s.scope !== "خرده");
   const chosenShip = wholesaleShipping.find((s) => s.id === shipId) ?? wholesaleShipping[0];
 
-  const cartLines = store.wcart.map((l, i) => {
-    const p = products.find((x) => x.id === l.productId);
+  type CartView = {
+    i: number; l: typeof wcart[number]; productId: string; name: string; image: string;
+    supplierId: string; brand: string; seriesName: string; pricePerSeries: number; moqSeries: number;
+    /** Set for server-backed lines; demo fallback lines keep null and never reach POST /orders. */
+    serverTemplateId: string | null; availableSeries: number | null;
+  };
+  const cartLines = store.wcart.map((l, i): CartView | null => {
+    if (l.accountId !== accountId) return null;
+    const p = market.find((x) => x.id === l.productId) ?? products.find((x) => x.id === l.productId) ?? null;
+    const srvS = seriesCache[l.seriesId];
+    if (srvS) {
+      return {
+        i, l, productId: l.productId, name: p?.name ?? "محصول", image: p?.images[0] ?? IMG.neutralRack,
+        supplierId: p?.supplierId ?? KOLBE.id, brand: p?.brand ?? "کلبه وینتیج",
+        seriesName: srvS.name, pricePerSeries: srvS.pricePerSeries, moqSeries: srvS.moqSeries,
+        serverTemplateId: srvS.templateId, availableSeries: srvS.availableSeries,
+      };
+    }
+    if (isUuid(l.seriesId)) return null; // server line awaiting re-hydration — never priced locally
     const s = p?.series.find((x) => x.id === l.seriesId);
-    return l.accountId === accountId && p && s ? { i, l, p, s } : null;
-  }).filter((x): x is { i: number; l: typeof wcart[number]; p: Product; s: SeriesDef } => !!x);
-  const groups = Array.from(cartLines.reduce((m, c) => { m.set(c.p.supplierId, [...(m.get(c.p.supplierId) ?? []), c]); return m; }, new Map<string, typeof cartLines>()).entries())
+    if (!p || !s) return null;
+    return {
+      i, l, productId: p.id, name: p.name, image: p.images[0], supplierId: p.supplierId, brand: p.brand,
+      seriesName: s.name, pricePerSeries: s.pricePerSeries, moqSeries: s.moqSeries,
+      serverTemplateId: null, availableSeries: null,
+    };
+  }).filter((x): x is CartView => !!x);
+  const groups = Array.from(cartLines.reduce((m, c) => { m.set(c.supplierId, [...(m.get(c.supplierId) ?? []), c]); return m; }, new Map<string, typeof cartLines>()).entries())
     .sort(([a], [b]) => (a === KOLBE.id ? -1 : b === KOLBE.id ? 1 : 0));
-  const cartTotal = cartLines.reduce((a, c) => a + c.s.pricePerSeries * c.l.qtySeries, 0);
-  const cartPieces = cartLines.reduce((a, c) => a + c.s.pieces * c.l.qtySeries, 0);
+  const cartTotal = cartLines.reduce((a, c) => a + c.pricePerSeries * c.l.qtySeries, 0);
+  const serverCartLines = cartLines.filter((c) => c.serverTemplateId);
 
   const daysAgo = (label: string) => { const t = label.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776)); const n = Number(t.match(/\d+/)?.[0] ?? 1); return t.includes("ماه") ? 30 * n : t.includes("هفته") ? 7 * n : t.includes("دیروز") ? 1 : t.includes("روز") ? n : 0; };
   const ordersThisMonth = myOrders.filter((o) => daysAgo(o.createdAt) < 30).length;
@@ -315,7 +459,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
     L.maxOrdersPerMonth !== null && ordersThisMonth >= L.maxOrdersPerMonth ? `سقف ${fmtNum(L.maxOrdersPerMonth)} سفارش ماهانه پلن ${myPlan?.name} پر شده است` : "",
     L.maxOrderValue !== null && payable > L.maxOrderValue ? `مبلغ سفارش از سقف ${fmtMoney(L.maxOrderValue)} پلن ${myPlan?.name} بیشتر است` : "",
     L.maxSuppliersPerOrder !== null && groups.length > L.maxSuppliersPerOrder ? `پلن ${myPlan?.name} حداکثر ${fmtNum(L.maxSuppliersPerOrder)} تأمین‌کننده در هر سفارش را مجاز می‌داند` : "",
-    sourceLocked && cartLines.some((c) => c.p.supplierId !== KOLBE.id) ? "پلن شما فقط خرید از کلبه وینتیج را شامل می‌شود؛ اقلام سایر تأمین‌کنندگان را حذف کنید" : "",
+    sourceLocked && cartLines.some((c) => c.supplierId !== KOLBE.id) ? "پلن شما فقط خرید از کلبه وینتیج را شامل می‌شود؛ اقلام سایر تأمین‌کنندگان را حذف کنید" : "",
   ].filter(Boolean);
 
   const filteredOrders = myOrders.filter((o) => {
@@ -338,10 +482,58 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
       { v: "membership", label: "پلن‌های عضویت", icon: <Crown size={16} /> },
     ];
 
-  const placeOrder = () => {
+  /** Refresh availableSeries from the server for every series currently in the cart (e.g. after a 409). */
+  const refreshSeriesAvailability = async () => {
+    const ids = [...new Set(serverCartLines.map((c) => c.serverTemplateId!))];
+    for (const id of ids) {
+      try {
+        const d = await seriesTemplatesApi.detail(id);
+        cacheSeries([{
+          templateId: id, productId: d.productId, name: d.name, active: d.active,
+          composition: compositionOf(d.items), availableSeries: d.availableSeries,
+          moqSeries: d.moqSeries, pricePerSeries: rialToToman(d.pricePerSeriesRial),
+        }]);
+      } catch { /* keep stale entry */ }
+    }
+  };
+
+  const placeOrder = async () => {
     if (!chosenShip) return;
     if (!accountId) return;
     if (violations.length) return;
+
+    // Real VIP checkout: the server expands seriesTemplateId+count into variant
+    // components and reserves them atomically — the client never computes variant
+    // quantities itself (K4). store.placeOrder is NOT used for server-backed lines.
+    if (serverCartLines.length > 0) {
+      setPlacing(true);
+      try {
+        const merged = new Map<string, number>();
+        for (const c of serverCartLines) merged.set(c.serverTemplateId!, (merged.get(c.serverTemplateId!) ?? 0) + c.l.qtySeries);
+        const payload = {
+          orderType: "wholesale" as const,
+          series: [...merged.entries()].map(([seriesTemplateId, count]) => ({ seriesTemplateId, count })),
+        };
+        const key = `vip-wholesale-${accountId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const res = await ordersApi.create(payload, key) as { reference?: string; id?: string };
+        for (const c of [...serverCartLines].sort((a, b) => b.i - a.i)) store.wcartRemove(c.i);
+        setCouponCode(""); setCouponInput("");
+        setJustPlaced(res.reference ?? null);
+        setTab("orders"); setOrderFilter("all");
+        await loadServerOrders();
+        flash(`سفارش ${res.reference ?? ""} در سرور ثبت شد و موجودی سری‌ها رزرو شد`);
+      } catch (e) {
+        if (e instanceof AdminApiError && e.status === 409) {
+          flash(e.message || "موجودی سری کافی نیست؛ موجودی لحظه‌ای به‌روزرسانی شد.");
+          await refreshSeriesAvailability();
+        } else {
+          flash(e instanceof Error ? e.message : "خطا در ثبت سفارش");
+        }
+      } finally { setPlacing(false); }
+      return;
+    }
+
+    // Demo fallback only (local demo products in development/demo mode).
     const id = store.placeOrder(buyer, chosenShip.name, address, accountId, discountPct);
     if (wCoupon && couponPct) ops.upsert("coupons", { ...wCoupon, used: wCoupon.used + 1 });
     setCouponCode(""); setCouponInput("");
@@ -369,7 +561,9 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
       {selected ? (
         <VipPDP
           p={selected} canSee={canSee && !(sourceLocked && selected.supplierId !== KOLBE.id)} role={role}
+          serverBacked={role === "vip" && isUuid(selected.id)}
           onBack={() => setSelectedId(null)} onAuth={onAuth}
+          onSeriesLoaded={cacheSeries}
           onAdd={(s, qty, color) => { if (!accountId) return; store.wcartAdd({ accountId, productId: selected.id, seriesId: s.id, color, qtySeries: qty }); flash(`${fmtNum(qty)} سری «${selected.name}» به سبد عمده اضافه شد`); }}
           onGoCart={() => { setSelectedId(null); setTab("cart"); }}
         />
@@ -458,29 +652,30 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
             <div className="grid gap-5 lg:grid-cols-[1fr_380px]">
               <div className="space-y-4">
                 {groups.map(([sid, lines], gi) => {
-                  const sub = lines.reduce((a, c) => a + c.s.pricePerSeries * c.l.qtySeries, 0);
+                  const sub = lines.reduce((a, c) => a + c.pricePerSeries * c.l.qtySeries, 0);
                   return (
                     <Card key={sid} className="overflow-hidden">
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-5 py-3">
-                        <div className="flex items-center gap-2"><span className="text-[11px] font-bold text-[var(--kv-faint)]">مرسوله {fmtNum(gi + 1)}</span><SupplierChip id={sid} name={lines[0].p.brand} maskSupplier /></div>
+                        <div className="flex items-center gap-2"><span className="text-[11px] font-bold text-[var(--kv-faint)]">مرسوله {fmtNum(gi + 1)}</span><SupplierChip id={sid} name={lines[0].brand} maskSupplier /></div>
                         <b className="text-[13.5px] tabular-nums">{fmtMoney(sub)}</b>
                       </div>
                       <div className="divide-y divide-[var(--kv-line)]">
                         {lines.map((c) => (
                           <div key={c.i} className="flex flex-wrap items-center gap-4 px-5 py-4">
-                            <img src={c.p.images[0]} alt="" className="h-20 w-16 rounded-[10px] object-cover" />
+                            <img src={c.image} alt="" className="h-20 w-16 rounded-[10px] object-cover" />
                             <div className="min-w-0 flex-1">
-                              <button onClick={() => setSelectedId(c.p.id)} className="text-[14px] font-bold hover:text-[var(--kv-accent)]">{c.p.name}</button>
-                              <p className="mt-0.5 text-xs text-[var(--kv-muted)]">{c.s.name} ({fmtNum(c.s.pieces)} تکه) · {c.l.color} · {fmtMoney(c.s.pricePerSeries)} / سری</p>
-                              {c.l.qtySeries < c.s.moqSeries && <p className="mt-1 text-[11.5px] font-bold text-[var(--kv-danger)]">حداقل سفارش این سری {fmtNum(c.s.moqSeries)} سری است</p>}
+                              <button onClick={() => setSelectedId(c.productId)} className="text-[14px] font-bold hover:text-[var(--kv-accent)]">{c.name}</button>
+                              <p className="mt-0.5 text-xs text-[var(--kv-muted)]">{c.seriesName}{c.l.color ? ` · ${c.l.color}` : ""} · {fmtMoney(c.pricePerSeries)} / سری</p>
+                              {c.l.qtySeries < c.moqSeries && <p className="mt-1 text-[11.5px] font-bold text-[var(--kv-danger)]">حداقل سفارش این سری {fmtNum(c.moqSeries)} سری است</p>}
+                              {c.availableSeries !== null && c.l.qtySeries > c.availableSeries && <p className="mt-1 text-[11.5px] font-bold text-[var(--kv-danger)]">فقط {fmtNum(c.availableSeries)} سری از این ترکیب موجود است</p>}
                             </div>
                             <Stepper value={c.l.qtySeries} onChange={(v) => store.wcartQty(c.i, v)} min={1} />
-                            <div className="w-32 text-left"><p className="text-[14px] font-extrabold tabular-nums">{fmtMoney(c.s.pricePerSeries * c.l.qtySeries)}</p><p className="text-[11px] text-[var(--kv-muted)]">{fmtNum(c.s.pieces * c.l.qtySeries)} تکه</p></div>
+                            <div className="w-32 text-left"><p className="text-[14px] font-extrabold tabular-nums">{fmtMoney(c.pricePerSeries * c.l.qtySeries)}</p><p className="text-[11px] text-[var(--kv-muted)]">{fmtNum(c.l.qtySeries)} سری</p></div>
                             <button onClick={() => store.wcartRemove(c.i)} className="text-[var(--kv-faint)] hover:text-[var(--kv-danger)]" aria-label="حذف"><Trash2 size={17} /></button>
                           </div>
                         ))}
                       </div>
-                      <p className="bg-[var(--kv-surface-2)]/40 px-5 py-2.5 text-[11.5px] text-[var(--kv-muted)]">{sid === KOLBE.id ? "این بخش مستقیماً از موجودی عمده انبار کلبه تأمین و ارسال می‌شود." : `کالای برند ${lines[0].p.brand} ابتدا به انبار مرکزی کلبه تحویل شده و پس از کنترل کیفیت (QC) و تجمیع برای شما ارسال می‌شود.`}</p>
+                      <p className="bg-[var(--kv-surface-2)]/40 px-5 py-2.5 text-[11.5px] text-[var(--kv-muted)]">{sid === KOLBE.id ? "این بخش مستقیماً از موجودی عمده انبار کلبه تأمین و ارسال می‌شود." : `کالای برند ${lines[0].brand} ابتدا به انبار مرکزی کلبه تحویل شده و پس از کنترل کیفیت (QC) و تجمیع برای شما ارسال می‌شود.`}</p>
                     </Card>
                   );
                 })}
@@ -491,7 +686,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
                 <p className="text-[15px] font-bold">ثبت سفارش</p>
                 <div className="mt-4 space-y-2.5 text-[13px]">
                   <div className="flex justify-between text-[var(--kv-muted)]"><span>تأمین‌کنندگان</span><b className="text-[var(--kv-ink)] tabular-nums">{fmtNum(groups.length)} → {fmtNum(groups.length)} زیرسفارش</b></div>
-                  <div className="flex justify-between text-[var(--kv-muted)]"><span>مجموع تکه‌ها</span><b className="text-[var(--kv-ink)] tabular-nums">{fmtNum(cartPieces)}</b></div>
+                  <div className="flex justify-between text-[var(--kv-muted)]"><span>تعداد سری‌های انتخابی</span><b className="text-[var(--kv-ink)] tabular-nums">{fmtNum(cartLines.reduce((a, c) => a + c.l.qtySeries, 0))} سری</b></div>
                   <div className="flex justify-between text-[var(--kv-muted)]"><span>جمع سری‌ها</span><span className="tabular-nums">{fmtMoney(cartTotal)}</span></div>
                   {L.discountPercent > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>تخفیف پلن {myPlan?.name} ({fmtNum(L.discountPercent)}٪)</span><span className="tabular-nums">−{fmtMoney(Math.round(cartTotal * L.discountPercent / 100))}</span></div>}
                   {couponPct > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>کوپن {wCoupon?.code} ({fmtNum(couponPct)}٪)</span><span className="tabular-nums">−{fmtMoney(Math.round(cartTotal * couponPct / 100))}</span></div>}
@@ -514,7 +709,11 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
                   <Field label="نشانی تحویل"><Input value={address} onChange={setAddress} icon={<MapPin size={15} />} /></Field>
                 </div>
                 {violations.length > 0 && <ul role="alert" className="mt-4 space-y-1 rounded-[11px] bg-[var(--kv-danger)]/[0.06] p-3 text-[12px] leading-6 text-[var(--kv-danger)]">{violations.map((v) => <li key={v}>• {v}</li>)}<li><button onClick={() => setTab("membership")} className="font-bold underline">مقایسه و ارتقای پلن</button></li></ul>}
-                <Btn variant="accent" size="lg" className="mt-5 w-full" icon={<Send size={16} />} disabled={violations.length > 0 || cartLines.some((c) => c.l.qtySeries < c.s.moqSeries)} onClick={placeOrder}>ثبت سفارش و ارسال به تأمین‌کنندگان</Btn>
+                <Btn variant="accent" size="lg" className="mt-5 w-full" icon={<Send size={16} />}
+                  disabled={placing || violations.length > 0 || cartLines.some((c) => c.l.qtySeries < c.moqSeries) || serverCartLines.some((c) => c.availableSeries !== null && c.l.qtySeries > c.availableSeries)}
+                  onClick={() => void placeOrder()}>
+                  {placing ? "در حال ثبت سفارش…" : "ثبت سفارش و ارسال به تأمین‌کنندگان"}
+                </Btn>
                 <p className="mt-3 text-[11.5px] leading-5 text-[var(--kv-muted)]">هنوز پرداختی انجام نمی‌شود. بعد از تأیید هر تأمین‌کننده، پرداخت همان بخش فعال می‌شود{myPlan?.creditLimit ? ` یا از اعتبار پلن ${myPlan.name} استفاده می‌کنید` : ""}.</p>
               </Card>
             </div>
@@ -529,8 +728,30 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
             </div>
             <Segmented<OrderFilter> options={[{ v: "all", label: "همه" }, { v: "action", label: "نیازمند پرداخت" }, { v: "active", label: "در جریان" }, { v: "done", label: "بسته‌شده" }]} value={orderFilter} onChange={setOrderFilter} />
           </div>
+          {role === "vip" && serverOrders !== null && serverOrders.length > 0 && (
+            <Card className="mb-5 overflow-hidden">
+              <div className="flex items-center justify-between border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-5 py-3">
+                <p className="text-[13.5px] font-extrabold">سفارش‌های ثبت‌شده شما</p>
+                <button onClick={() => void loadServerOrders()} className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline">به‌روزرسانی</button>
+              </div>
+              <div className="divide-y divide-[var(--kv-line)]">
+                {serverOrders.map((o) => (
+                  <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 text-[13px]">
+                    <div className="flex items-center gap-3">
+                      <b className="tabular-nums" dir="ltr">{o.reference}</b>
+                      <Status value={ORDER_STATUS_FA[o.status] ?? o.status} />
+                    </div>
+                    <div className="flex items-center gap-4 text-[12.5px]">
+                      <span className="tabular-nums font-bold">{fmtMoney(rialToToman(o.total_rial))}</span>
+                      <span className="text-[var(--kv-muted)]">{new Date(o.created_at).toLocaleDateString("fa-IR")}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
           {filteredOrders.length === 0 ? (
-            <Empty title="سفارشی در این دسته نیست" desc="وقتی از بازارچه سفارش ثبت کنید، اینجا با جزئیات هر زیرسفارش نمایش داده می‌شود." action={<Btn variant="accent" size="sm" onClick={() => setTab("catalog")}>رفتن به بازارچه</Btn>} />
+            serverOrders?.length ? null : <Empty title="سفارشی در این دسته نیست" desc="وقتی از بازارچه سفارش ثبت کنید، اینجا با جزئیات هر زیرسفارش نمایش داده می‌شود." action={<Btn variant="accent" size="sm" onClick={() => setTab("catalog")}>رفتن به بازارچه</Btn>} />
           ) : (
             <div className="space-y-3">
               {filteredOrders.map((o) => (

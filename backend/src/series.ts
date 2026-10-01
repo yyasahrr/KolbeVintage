@@ -108,10 +108,19 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
     const query = z.object({
       productId: z.uuid().optional(),
       active: z.coerce.boolean().optional(),
+      // VIP marketplace asks for the full operational picture in one call:
+      // composition items + availableSeries (component-bottleneck, server-computed).
+      withAvailability: z.coerce.boolean().default(false),
       limit: z.coerce.number().int().min(1).max(100).default(50),
     }).parse(request.query);
-    const rows = await pool.query(
+    const rows = await pool.query<{
+      id: string; product_id: string; product_name: string; name: string; description: string;
+      active: boolean; created_at: string; component_count: number; pairs_per_series: number;
+      product_wholesale_price_rial: string | null; product_wholesale_moq: number | null;
+    }>(
       `SELECT t.id, t.product_id, p.name AS product_name, t.name, t.description, t.active, t.created_at,
+              p.wholesale_price_rial::text AS product_wholesale_price_rial,
+              p.wholesale_moq AS product_wholesale_moq,
               (SELECT count(*) FROM series_template_items i WHERE i.series_template_id = t.id)::int AS component_count,
               (SELECT COALESCE(sum(i.quantity_per_series),0) FROM series_template_items i WHERE i.series_template_id = t.id)::int AS pairs_per_series
        FROM series_templates t JOIN products p ON p.id = t.product_id
@@ -120,7 +129,26 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
        ORDER BY t.created_at DESC LIMIT $3`,
       [query.productId ?? null, query.active ?? null, query.limit]);
     void user;
-    return { items: rows.rows };
+    const items = await Promise.all(rows.rows.map(async (row) => {
+      const pairs = Math.max(1, Number(row.pairs_per_series));
+      // Price/MOQ are derived server-side from the canonical product terms so the
+      // client never computes wholesale economics on its own (K3).
+      const base = {
+        ...row,
+        price_per_series_rial: row.product_wholesale_price_rial
+          ? (BigInt(row.product_wholesale_price_rial) * BigInt(pairs)).toString()
+          : null,
+        moq_series: Math.max(1, Math.ceil(Number(row.product_wholesale_moq ?? 1) / pairs)),
+      };
+      if (!query.withAvailability) return base;
+      const composition = await loadSeriesComposition(pool, row.id);
+      return {
+        ...base,
+        available_series: await computeAvailableSeries(pool, row.id),
+        items: composition?.items ?? [],
+      };
+    }));
+    return { items };
   });
 
   app.get('/api/v1/series-templates/:id', async (request) => {
@@ -130,6 +158,9 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
     const data = await loadSeriesComposition(pool, id);
     if (!data) throw notFound();
     const availableSeries = await computeAvailableSeries(pool, id);
+    const pairsPerSeries = data.items.reduce((sum, item) => sum + item.quantity_per_series, 0);
+    const terms = await one<{ wholesale_price_rial: string | null; wholesale_moq: number | null }>(
+      pool, 'SELECT wholesale_price_rial::text, wholesale_moq FROM products WHERE id = $1', [data.template.product_id]);
     return {
       id: data.template.id,
       productId: data.template.product_id,
@@ -138,8 +169,12 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
       description: data.template.description,
       active: data.template.active,
       items: data.items,
-      pairsPerSeries: data.items.reduce((sum, item) => sum + item.quantity_per_series, 0),
+      pairsPerSeries,
       availableSeries,
+      pricePerSeriesRial: terms?.wholesale_price_rial
+        ? (BigInt(terms.wholesale_price_rial) * BigInt(Math.max(1, pairsPerSeries))).toString()
+        : null,
+      moqSeries: Math.max(1, Math.ceil(Number(terms?.wholesale_moq ?? 1) / Math.max(1, pairsPerSeries))),
     };
   });
 

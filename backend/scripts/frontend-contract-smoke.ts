@@ -9,11 +9,16 @@
  * Run with: npm run test:contract   (inside backend/)
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import net from 'node:net';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import {
   apiClient, authApi, getAccessToken, setAccessToken, setApiBaseUrl, ticketsApi, productsApi, filesApi,
+  ordersApi, seriesTemplatesApi, AdminApiError,
 } from '../../src/data/api.ts';
 import {
   TICKET_STATUSES, adaptCmsHero, adaptSitePage, buildProductCreatePayload, buildShippingMethodPayload, buildTicketCreatePayload,
@@ -386,6 +391,89 @@ try {
     fmtToman('1234567890') === '۱۲۳٬۴۵۶٬۷۸۹ تومان' && fmtToman('-500000') === '−۵۰٬۰۰۰ تومان' &&
     fmtRial('1234567890') === '۱٬۲۳۴٬۵۶۷٬۸۹۰ ریال' && tomanFromRial('1234567890') === 123456789 &&
     rialFromToman(123456789) === '1234567890' && fmtToman('5') === '۰٫۵ تومان' && fmtToman(null) === '—');
+
+  // =================== VIP series: server-backed list + real POST /orders checkout ===================
+  // Same client code the VIP marketplace uses (seriesTemplatesApi.vipList / ordersApi.create).
+  const seriesProduct = await productsApi.create({
+    brand: 'Kolbe', name: `کتانی سری اسموک ${suffix}`, category: 'کفش',
+    cashPriceRial: '6000000', wholesalePriceRial: '3500000',
+    variants: [{ size: '40', color: 'سفید' }, { size: '41', color: 'سفید' }, { size: '42', color: 'سفید' }],
+  }) as { id: string; variants: { id: string; sku: string }[] };
+  await productsApi.status(seriesProduct.id, 'published');
+  // Wholesale stock 40→10, 41→10, 42→3 (42 is the bottleneck component).
+  for (const [i, qty] of [10, 10, 3].entries()) {
+    const receipt = await inventoryApi.receipt({
+      warehouseId: warehouse.id, variantId: seriesProduct.variants[i]!.id, quantity: qty,
+      inventoryDomain: 'wholesale', reference: `SMOKE-SER-${i}`,
+    }, `smoke-series-${suffix}-${i}`) as { id: string };
+    await inventoryApi.receiveReceipt(receipt.id);
+  }
+  const seriesTemplate = await seriesTemplatesApi.create({
+    productId: seriesProduct.id, name: `سری اسموک ${suffix}`,
+    items: [
+      { variantId: seriesProduct.variants[0]!.id, quantityPerSeries: 1 },
+      { variantId: seriesProduct.variants[1]!.id, quantityPerSeries: 2 },
+      { variantId: seriesProduct.variants[2]!.id, quantityPerSeries: 1 },
+    ],
+  }) as { id: string };
+  const vipPlan = await apiClient.post<{ id: string }>('/plans', {
+    code: `smoke-vip-${suffix}`, title: 'پلن اسموک', annualPriceRial: '10000000',
+    limits: { sources: 'all', maxOrdersPerMonth: 50, maxOrderValueRial: '50000000000', maxSuppliersPerOrder: 10, discountPercent: 0, prioritySupport: false },
+  });
+  await db.query(
+    `INSERT INTO memberships(id,user_id,plan_id,status,starts_at,ends_at) VALUES ($1,$2,$3,'active', now(), now() + interval '1 year')`,
+    [randomUUID(), me.id, vipPlan.id]);
+
+  // Back to the VIP buyer session.
+  setAccessToken(session.accessToken);
+  const vipSeries = await seriesTemplatesApi.vipList(seriesProduct.id);
+  const vipRow = vipSeries.items.find((row) => row.id === seriesTemplate.id);
+  check('VIP series list is server-backed (series_templates/items, not local Product.series)',
+    Boolean(vipRow) && vipRow!.items.length === 3 && vipRow!.active === true, `rows=${vipSeries.items.length}`);
+  check('availableSeries comes from the backend component-bottleneck calculation (size-42 ⇒ 3, not total stock)',
+    vipRow!.available_series === 3 && vipRow!.moq_series === 1 && vipRow!.price_per_series_rial === '14000000',
+    `available=${vipRow!.available_series} price=${vipRow!.price_per_series_rial}`);
+
+  let overOrder: unknown = null;
+  try {
+    await ordersApi.create({ orderType: 'wholesale', series: [{ seriesTemplateId: seriesTemplate.id, count: 4 }] }, `smoke-ser-over-${suffix}`);
+  } catch (error) { overOrder = error; }
+  check('VIP cannot order more than availableSeries (409 from atomic server reservation)',
+    overOrder instanceof AdminApiError && overOrder.status === 409,
+    overOrder instanceof Error ? overOrder.message : 'no error raised');
+
+  const placedOrder = await ordersApi.create(
+    { orderType: 'wholesale', series: [{ seriesTemplateId: seriesTemplate.id, count: 2 }] },
+    `smoke-ser-ok-${suffix}`) as { reference?: string };
+  check('VIP checkout sends seriesTemplateId+count to POST /orders (server expands recipe + reserves atomically)',
+    typeof placedOrder.reference === 'string' && placedOrder.reference!.startsWith('KV-'), placedOrder.reference ?? '');
+
+  const afterOrder = await seriesTemplatesApi.vipList(seriesProduct.id);
+  check('backend atomic reservation path reached by the frontend client: availableSeries 3 → 1',
+    afterOrder.items.find((row) => row.id === seriesTemplate.id)?.available_series === 1);
+
+  const myWholesaleOrders = await ordersApi.list({ orderType: 'wholesale' });
+  check('VIP orders list refreshes from the server after checkout',
+    myWholesaleOrders.items.some((order) => order.reference === placedOrder.reference));
+
+  // =================== VIP / warehouse-hub UI contract (static source assertions) ===================
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
+  const vipSrc = readFileSync(join(repoRoot, 'src/portals/vip.tsx'), 'utf8');
+  const hubSrc = readFileSync(join(repoRoot, 'src/portals/warehouse-hub.tsx'), 'utf8');
+  check('VIP UI renders no total piece/pair counts (business rule: series only)',
+    !vipSrc.includes('تکه') && !vipSrc.includes('جفت') && !vipSrc.includes('cartPieces'));
+  check('VIP UI still renders the series composition',
+    vipSrc.includes('ترکیب سری') && vipSrc.includes('composition'));
+  check('real VIP checkout uses POST /orders — store.placeOrder only as the demo fallback branch',
+    vipSrc.includes('ordersApi.create') && vipSrc.includes('seriesTemplateId') &&
+    vipSrc.indexOf('serverCartLines.length > 0') < vipSrc.indexOf('store.placeOrder('));
+  check('VIP availability uses server availableSeries (no local stock≥pieces×moq math)',
+    vipSrc.includes('availableSeries') && !vipSrc.includes('p.stock >=') && !vipSrc.includes('p.stock <'));
+  const hubHead = hubSrc.slice(hubSrc.indexOf('export function WarehouseHub'), hubSrc.indexOf('tab === "retail"'));
+  const hubOptions = hubHead.slice(hubHead.indexOf('options={['), hubHead.indexOf(']}'));
+  check('warehouse hub has exactly 3 primary tabs — settings opens from a header drawer',
+    (hubOptions.match(/\{ v: "/g) ?? []).length === 3 && !hubOptions.includes('تنظیمات') &&
+    hubHead.includes('تنظیمات انبار') && hubSrc.includes('<Drawer'));
 
   setAccessToken(null);
 } catch (error) {

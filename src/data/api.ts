@@ -1355,9 +1355,16 @@ export const seriesTemplatesApi = {
   create: (payload: { productId: string; name: string; description?: string; items: { variantId: string; quantityPerSeries: number }[] }) =>
     authFetch<Record<string, unknown>>("/series-templates", { method: "POST", body: JSON.stringify(payload) }),
   list: (productId?: string) => authFetch<{ items: Record<string, unknown>[] }>(`/series-templates${productId ? `?productId=${productId}` : ""}`),
+  /** VIP marketplace view: composition + server-computed availableSeries + price/MOQ per series in one call. */
+  vipList: (productId: string) => authFetch<{ items: {
+    id: string; product_id: string; name: string; active: boolean;
+    pairs_per_series: number; price_per_series_rial: string | null; moq_series: number; available_series: number;
+    items: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null }[];
+  }[] }>(`/series-templates?productId=${productId}&withAvailability=1`),
   detail: (id: string) => authFetch<Record<string, unknown> & {
     items: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null }[];
-    pairsPerSeries: number; availableSeries: number; name: string; productName: string;
+    pairsPerSeries: number; availableSeries: number; name: string; productName: string; productId: string;
+    pricePerSeriesRial: string | null; moqSeries: number; active: boolean;
   }>(`/series-templates/${id}`),
   update: (id: string, payload: Record<string, unknown>) =>
     authFetch<Record<string, unknown>>(`/series-templates/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),

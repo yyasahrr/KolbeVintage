@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Store, Truck } from "lucide-react";
-import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
+import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
+import { Btn, Card, Checkbox, Drawer, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
 import { inventoryApi, manualSalesApi, productsApi, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { AdminWmsPanel } from "./admin-wms-panel";
@@ -70,26 +70,33 @@ type F = (msg: string) => void;
 
 /**
  * C: «انبار و نقل‌وانتقالات» — the single warehouse hub.
- * Tabs: retail inventory / transfers (incl. reverse) / wholesale (inventory, supplier
- * requests, inbound & QC) / warehouse settings (the original WMS panel, kept as-is).
+ * Exactly THREE primary tabs: retail inventory / transfers (incl. reverse) /
+ * wholesale (inventory, supplier requests, inbound & QC).
+ * Warehouse settings (the original WMS panel, kept as-is) opens from a header
+ * button in a drawer — it is intentionally NOT a primary tab.
  */
 export function WarehouseHub({ flash }: { flash: F }) {
-  const [tab, setTab] = useState<"retail" | "transfers" | "wholesale" | "settings">("retail");
+  const [tab, setTab] = useState<"retail" | "transfers" | "wholesale">("retail");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   return (
     <div className="animate-[fadeUp_0.35s_ease] space-y-4">
-      <Segmented
-        options={[
-          { v: "retail", label: "خرده‌فروشی" },
-          { v: "transfers", label: "نقل‌وانتقالات" },
-          { v: "wholesale", label: "انبار عمده" },
-          { v: "settings", label: "تنظیمات انبار" },
-        ]}
-        value={tab} onChange={setTab}
-      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Segmented
+          options={[
+            { v: "retail", label: "خرده‌فروشی" },
+            { v: "transfers", label: "نقل‌وانتقالات" },
+            { v: "wholesale", label: "انبار عمده" },
+          ]}
+          value={tab} onChange={setTab}
+        />
+        <Btn size="sm" variant="soft" icon={<Settings size={14} />} onClick={() => setSettingsOpen(true)}>تنظیمات انبار</Btn>
+      </div>
       {tab === "retail" && <DomainInventory domain="retail" flash={flash} />}
       {tab === "transfers" && <TransfersCenter flash={flash} />}
       {tab === "wholesale" && <WholesaleCenter flash={flash} />}
-      {tab === "settings" && <AdminWmsPanel />}
+      <Drawer open={settingsOpen} onClose={() => setSettingsOpen(false)} title="تنظیمات انبار" wide>
+        <div className="p-4"><AdminWmsPanel /></div>
+      </Drawer>
     </div>
   );
 }

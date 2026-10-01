@@ -419,6 +419,18 @@ test('Series: relational templates, availability from component stock, atomic se
     assert.equal(compo.json().pairsPerSeries, 4);
     assert.equal(compo.json().availableSeries, 3, 'available series derives from component stock');
 
+    // VIP marketplace list (server-backed, one call): composition + bottleneck
+    // availability + canonical per-series price/MOQ — the exact contract vip.tsx consumes.
+    const vipList = await app.inject({ method: 'GET',
+      url: `/api/v1/series-templates?productId=${productId}&withAvailability=1`, headers: vipHeaders });
+    assert.equal(vipList.statusCode, 200, vipList.body);
+    const vipRow = (vipList.json().items as Record<string, unknown>[]).find((r) => r.id === templateId);
+    assert.ok(vipRow, 'template appears in the VIP series list');
+    assert.equal(vipRow!.available_series, 3, 'list availableSeries uses computeAvailableSeries (size-42 bottleneck, not total stock)');
+    assert.equal(vipRow!.moq_series, 1, 'series MOQ derived server-side');
+    assert.equal(vipRow!.price_per_series_rial, '14000000', 'per-series price = product wholesale price × pairs, computed server-side');
+    assert.equal((vipRow!.items as unknown[]).length, 3, 'composition items ship with the VIP list row');
+
     // K4: ordering 4 series (needs 42×4 but only 3 available) fails atomically — nothing reserved.
     const tooMany = await app.inject({ method: 'POST', url: '/api/v1/orders',
       headers: { ...vipHeaders, 'idempotency-key': `series-ord-fail-${suffix}` },
