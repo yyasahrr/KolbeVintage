@@ -14,6 +14,7 @@ import { postSupplierEarnings } from './wallet.js';
 import { recordRedemption, resolveCouponDiscount, resolveFestivalDiscount, type DiscountContext } from './coupons.js';
 import { quoteShipping } from './shipping.js';
 import { resolveVariantPrice, type ResolvedVariantPrice } from './promotions.js';
+import { loadSeriesComposition } from './series.js';
 
 const defaultShippingAddress = {
   recipient: 'تحویل در انبار/آدرس ثبت‌شده',
@@ -30,8 +31,14 @@ const checkout = z.object({
   items: z.array(z.object({
     variantId: z.uuid(),
     quantity: z.number().int().min(1).max(10000),
-  }).strict()).min(1).max(100)
+  }).strict()).max(100).default([])
     .refine((items) => new Set(items.map((item) => item.variantId)).size === items.length, 'هر واریانت فقط یک بار مجاز است.'),
+  // K3/K4: wholesale buys whole series; the server expands the relational recipe into
+  // variant-level lines inside ONE transaction so reservation is all-or-nothing.
+  series: z.array(z.object({
+    seriesTemplateId: z.uuid(),
+    count: z.number().int().min(1).max(1000),
+  }).strict()).max(20).optional(),
   shippingAddress: z.object({
     recipient: z.string().trim().min(2).max(120),
     phone: z.string().regex(/^09\d{9}$/),
@@ -261,6 +268,33 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     const body = checkout.parse(request.body);
     const key = request.headers['idempotency-key'];
     if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');
+
+    // K: expand series recipes (relational source of truth) into variant lines.
+    let seriesSnapshot: Array<Record<string, unknown>> | null = null;
+    if (body.series?.length) {
+      if (body.orderType !== 'wholesale') throw badRequest('سفارش بر مبنای سری فقط برای معاملات عمده مجاز است.');
+      const merged = new Map<string, number>(body.items.map((item) => [item.variantId, item.quantity]));
+      seriesSnapshot = [];
+      for (const entry of body.series) {
+        const composition = await loadSeriesComposition(pool, entry.seriesTemplateId);
+        if (!composition || !composition.template.active) {
+          throw badRequest('قالب سری انتخاب‌شده معتبر یا فعال نیست.');
+        }
+        seriesSnapshot.push({
+          seriesTemplateId: entry.seriesTemplateId,
+          name: composition.template.name,
+          count: entry.count,
+          components: composition.items.map((item) => ({
+            variantId: item.variant_id, sku: item.sku, quantityPerSeries: item.quantity_per_series,
+          })),
+        });
+        for (const item of composition.items) {
+          merged.set(item.variant_id, (merged.get(item.variant_id) ?? 0) + item.quantity_per_series * entry.count);
+        }
+      }
+      body.items = [...merged.entries()].map(([variantId, quantity]) => ({ variantId, quantity }));
+    }
+    if (body.items.length === 0) throw badRequest('سفارش باید حداقل یک قلم یا یک سری داشته باشد.');
 
     // Status/restriction gates run before the order transaction so rejected orders leave audit logs intact.
     const priced = await pool.query<{
@@ -705,6 +739,12 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
           fulfillmentChannel: 'kolbe_warehouse',
         })),
       };
+      // K: persist the series composition as a snapshot on the order itself (JSON is
+      // snapshot-only; series_template_items stays the source of truth).
+      if (seriesSnapshot) {
+        await audit(client, user.id, 'order.series_snapshot', 'order', orderId, undefined, { series: seriesSnapshot }, request.ip);
+        await outbox(client, 'order.series_snapshot', 'order', orderId, { series: seriesSnapshot });
+      }
       await completeIdempotency(client, user.id, 'order.create', key, response);
       return response;
     });
