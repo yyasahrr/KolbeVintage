@@ -1,19 +1,20 @@
 import { useState } from "react";
-import { ChevronDown, Check, X, Truck, PackageCheck, CreditCard, Ban, History, Store, MapPin, Clock } from "lucide-react";
-import { SUB_STATUS, SUB_STEPS, KOLBE, isTerminal, type ParentOrder, type SubOrder, type SubStatus } from "../data/platform";
+import { ChevronDown, Check, X, Truck, PackageCheck, CreditCard, Ban, History, Store, MapPin, Clock, ShieldCheck } from "lucide-react";
+import { SUB_STATUS, SUB_STEPS, KOLBE, KOLBE_CENTRAL_WAREHOUSE_ADDRESS, isTerminal, type ParentOrder, type SubOrder, type SubStatus } from "../data/platform";
 import { fmtMoney, fmtNum } from "../data/catalog";
 import { Btn, Status, Timeline, Empty, Field, Input, Card, Textarea } from "./primitives";
 import { cn } from "../utils/cn";
 
-export function SupplierChip({ id, name, size = "sm" }: { id: string; name: string; size?: "sm" | "md" }) {
+export function SupplierChip({ id, name, size = "sm", maskSupplier = false }: { id: string; name: string; size?: "sm" | "md"; maskSupplier?: boolean }) {
   const kolbe = id === KOLBE.id;
+  const label = kolbe ? "کلبه وینتیج" : maskSupplier ? "تأمین و کنترل کیفیت انبار کلبه" : name;
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 rounded-full font-bold whitespace-nowrap",
       size === "sm" ? "px-2.5 py-1 text-[11.5px]" : "px-3 py-1.5 text-[12.5px]",
       kolbe ? "bg-[#1B2A4A] text-[#E8D9C3] dark:bg-[#E8D9C3] dark:text-[#0E1527]" : "bg-[var(--kv-surface-2)] text-[var(--kv-ink-2)] border border-[var(--kv-line)]"
     )}>
-      <Store size={12} />{kolbe ? "کلبه وینتیج" : name}
+      <Store size={12} />{label}
     </span>
   );
 }
@@ -75,6 +76,11 @@ export function ParentOrderCard({ order, perspective, defaultOpen, onPaySub, onP
             <b className="text-[14.5px] tabular-nums">{order.id}</b>
             <span className="text-xs text-[var(--kv-muted)]">{order.createdAt}</span>
             {perspective === "admin" && <span className="rounded-full bg-[var(--kv-surface-2)] px-2.5 py-0.5 text-[11.5px] font-bold">{order.buyer}</span>}
+            {perspective === "buyer" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[#E7F0E6] px-2.5 py-0.5 text-[11px] font-bold text-[#3E6B4A] dark:bg-[#3E6B4A]/20 dark:text-[#7FB08C]">
+                <ShieldCheck size={12} /> تجمیع و کنترل کیفیت در انبار مرکزی کلبه
+              </span>
+            )}
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {Object.entries(counts).map(([label, n]) => (
@@ -87,22 +93,22 @@ export function ParentOrderCard({ order, perspective, defaultOpen, onPaySub, onP
         </div>
         <div className="shrink-0 text-left">
           <p className="text-[15px] font-extrabold tabular-nums">{fmtMoney(total)}</p>
-          <p className="text-xs text-[var(--kv-muted)]">{fmtNum(subs.length)} زیرسفارش · {fmtNum(pieces)} تکه</p>
+          <p className="text-xs text-[var(--kv-muted)]">{fmtNum(subs.length)} مرسوله تجمیعی · {fmtNum(pieces)} تکه</p>
         </div>
       </button>
 
       {perspective === "buyer" && payable.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--kv-line)] bg-[var(--kv-accent)]/[0.06] px-4 py-3">
-          <p className="flex items-center gap-2 text-[13px] font-bold"><CreditCard size={15} className="text-[var(--kv-accent)]" />{fmtNum(payable.length)} زیرسفارش تأیید شده و منتظر پرداخت شماست</p>
+          <p className="flex items-center gap-2 text-[13px] font-bold"><CreditCard size={15} className="text-[var(--kv-accent)]" />{fmtNum(payable.length)} بخش سفارش تأیید شده و منتظر پرداخت شماست</p>
           <Btn variant="accent" size="sm" onClick={onPayAll}>پرداخت همه · {fmtMoney(payableTotal)}</Btn>
         </div>
       )}
 
       {open && (
         <div className="border-t border-[var(--kv-line)] animate-[fadeIn_0.25s_ease]">
-          {subs.map((s, i) => <SubRow key={s.id} sub={s} index={i} perspective={perspective} onPay={onPaySub ? () => onPaySub(s.id) : undefined} onCancel={onCancelSub ? () => onCancelSub(s.id) : undefined} onReturn={onReturnSub ? () => onReturnSub(s.id) : undefined} />)}
+          {subs.map((s, i) => <SubRow key={s.id} sub={s} buyerName={order.buyer} index={i} perspective={perspective} onPay={onPaySub ? () => onPaySub(s.id) : undefined} onCancel={onCancelSub ? () => onCancelSub(s.id) : undefined} onReturn={onReturnSub ? () => onReturnSub(s.id) : undefined} />)}
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 bg-[var(--kv-surface-2)]/40 px-5 py-3 text-xs text-[var(--kv-muted)]">
-            <span className="flex items-center gap-1.5"><Truck size={13} />{order.shippingMethod}</span>
+            <span className="flex items-center gap-1.5"><Truck size={13} />ارسال نهایی از انبار مرکزی کلبه با {order.shippingMethod}</span>
             <span className="flex items-center gap-1.5"><MapPin size={13} />{order.address}</span>
           </div>
         </div>
@@ -111,20 +117,22 @@ export function ParentOrderCard({ order, perspective, defaultOpen, onPaySub, onP
   );
 }
 
-function SubRow({ sub, index, perspective, onPay, onCancel, onReturn }: { sub: SubOrder; index: number; perspective: "buyer" | "admin"; onPay?: () => void; onCancel?: () => void; onReturn?: () => void }) {
+function SubRow({ sub, buyerName, index, perspective, onPay, onCancel, onReturn }: { sub: SubOrder; buyerName: string; index: number; perspective: "buyer" | "admin"; onPay?: () => void; onCancel?: () => void; onReturn?: () => void }) {
   const [hist, setHist] = useState(false);
   const terminal = isTerminal(sub.status);
+  // Requirement 2: Never leak private supplier identity to VIP buyer
+  const isBuyerView = perspective === "buyer";
   return (
     <div className={cn("px-5 py-4", index > 0 && "border-t border-dashed border-[var(--kv-line)]")}>
       <div className="flex flex-wrap items-start gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-bold text-[var(--kv-faint)] tabular-nums">زیرسفارش {fmtNum(index + 1)} · {sub.id}</span>
-            <SupplierChip id={sub.supplierId} name={sub.supplierName} />
+            <span className="text-[11px] font-bold text-[var(--kv-faint)] tabular-nums">مرسوله {fmtNum(index + 1)} · {sub.id}</span>
+            <SupplierChip id={sub.supplierId} name={sub.supplierName} maskSupplier={isBuyerView} />
             <Status value={SUB_STATUS[sub.status].label} />
           </div>
           <div className="mt-3 space-y-2">
-            {sub.lines.map((l, i) => (
+            {(sub.lines ?? []).map((l, i) => (
               <div key={i} className="flex items-center gap-3">
                 <img src={l.image} alt="" className="h-14 w-12 shrink-0 rounded-[9px] object-cover" />
                 <div className="min-w-0">
@@ -135,8 +143,8 @@ function SubRow({ sub, index, perspective, onPay, onCancel, onReturn }: { sub: S
               </div>
             ))}
           </div>
-          {sub.note && <p className="mt-3 rounded-[10px] bg-[var(--kv-danger)]/[0.06] px-3 py-2 text-[12px] leading-6 text-[var(--kv-danger)]">توضیح تأمین‌کننده: {sub.note}</p>}
-          {sub.tracking && <p className="mt-3 flex items-center gap-1.5 text-[12px] text-[var(--kv-muted)]"><Truck size={13} />کد رهگیری: <b className="tabular-nums text-[var(--kv-ink)]" dir="ltr">{sub.tracking}</b>{sub.eta && <span> · {sub.eta}</span>}</p>}
+          {sub.note && <p className="mt-3 rounded-[10px] bg-[var(--kv-danger)]/[0.06] px-3 py-2 text-[12px] leading-6 text-[var(--kv-danger)]">{isBuyerView ? "گزارش واحد کنترل کیفیت و تأمین کلبه" : "توضیح تأمین‌کننده"}: {sub.note}</p>}
+          {sub.tracking && <p className="mt-3 flex items-center gap-1.5 text-[12px] text-[var(--kv-muted)]"><Truck size={13} />کد رهگیری مرسوله خروجی انبار کلبه: <b className="tabular-nums text-[var(--kv-ink)]" dir="ltr">{sub.tracking}</b>{sub.eta && <span> · {sub.eta}</span>}</p>}
         </div>
         <div className="w-full sm:w-56">
           <SubProgress status={sub.status} />
@@ -144,15 +152,20 @@ function SubRow({ sub, index, perspective, onPay, onCancel, onReturn }: { sub: S
             {perspective === "buyer" && sub.status === "approved" && onPay && <Btn variant="accent" size="sm" onClick={onPay} icon={<CreditCard size={14} />}>پرداخت این بخش</Btn>}
             {perspective === "buyer" && sub.status === "pending_supplier" && onCancel && <Btn variant="ghost" size="sm" onClick={onCancel} icon={<X size={14} />}>لغو</Btn>}
             {perspective === "buyer" && sub.status === "delivered" && onReturn && <Btn variant="soft" size="sm" onClick={onReturn} icon={<History size={14} />}>درخواست مرجوعی</Btn>}
-            {perspective === "buyer" && sub.status === "approved" && <p className="w-full text-[11px] leading-5 text-[var(--kv-muted)]"><Clock size={11} className="inline" /> بعد از پرداخت، تأمین‌کننده آماده‌سازی را شروع می‌کند.</p>}
+            {perspective === "buyer" && sub.status === "approved" && <p className="w-full text-[11px] leading-5 text-[var(--kv-muted)]"><Clock size={11} className="inline" /> پس از پرداخت، کالا به انبار کلبه منتقل، کنترل کیفیت (QC) و ارسال می‌شود.</p>}
             {perspective === "admin" && !terminal && onCancel && <Btn variant="soft" size="sm" onClick={onCancel} icon={<Ban size={14} />}>لغو توسط کلبه</Btn>}
-            <button onClick={() => setHist(!hist)} className="inline-flex items-center gap-1 text-[12px] font-bold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]"><History size={13} />{hist ? "بستن تاریخچه" : `تاریخچه (${fmtNum(sub.events.length)})`}</button>
+            <button onClick={() => setHist(!hist)} className="inline-flex items-center gap-1 text-[12px] font-bold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]"><History size={13} />{hist ? "بستن تاریخچه" : `تاریخچه (${fmtNum((sub.events ?? []).length)})`}</button>
           </div>
         </div>
       </div>
       {hist && (
         <div className="mt-4 rounded-[14px] bg-[var(--kv-surface-2)]/50 p-4 animate-[fadeIn_0.2s_ease]">
-          <Timeline items={(sub.events ?? []).map((e) => ({ t: e.t, d: `توسط ${e.by}`, time: e.time, done: true }))} />
+          <Timeline items={(sub.events ?? []).map((e) => {
+            const actorLabel = isBuyerView && e.by !== KOLBE.name && !buyerName.includes(e.by)
+              ? "واحد تأمین و کنترل کیفیت کلبه"
+              : e.by;
+            return { t: e.t, d: `توسط ${actorLabel}`, time: e.time, done: true };
+          })} />
         </div>
       )}
     </div>
@@ -160,9 +173,10 @@ function SubRow({ sub, index, perspective, onPay, onCancel, onReturn }: { sub: S
 }
 
 /* ============ Operations desk — used by suppliers and by Kolbe's own ops team ============ */
-export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc }: {
+export function SubOrderDesk({ items, actor, isKolbeOps, onTransition, emptyTitle, emptyDesc }: {
   items: { parent: ParentOrder; sub: SubOrder }[];
   actor: string;
+  isKolbeOps?: boolean;
   onTransition: (parentId: string, subId: string, status: SubStatus, extra?: { note?: string; tracking?: string; eta?: string }) => void;
   emptyTitle: string; emptyDesc: string;
 }) {
@@ -171,6 +185,7 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
   const [note, setNote] = useState("");
   const [tracking, setTracking] = useState("");
   const cur = sorted.find((i) => i.sub.id === sel) ?? sorted[0];
+  const isKolbeOpsActor = Boolean(isKolbeOps) || actor.includes("کلبه") || actor.includes("مدیریت");
 
   return (
     <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
@@ -182,8 +197,10 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
               <b className="text-[13px] tabular-nums">{sub.id}</b>
               <Status value={SUB_STATUS[sub.status].label} />
             </div>
-            <p className="mt-1.5 truncate text-[12.5px] font-semibold">{parent.buyer}</p>
-            <p className="mt-0.5 truncate text-[12px] text-[var(--kv-muted)]">{sub.lines.map((l) => `${l.name} × ${fmtNum(l.qtySeries)} سری`).join(" · ")}</p>
+            <p className="mt-1.5 truncate text-[12.5px] font-semibold">
+              {isKolbeOpsActor ? parent.buyer : "مقصد: انبار مرکزی کلبه (جهت کنترل کیفیت و تجمیع)"}
+            </p>
+            <p className="mt-0.5 truncate text-[12px] text-[var(--kv-muted)]">{(sub.lines ?? []).map((l) => `${l.name} × ${fmtNum(l.qtySeries)} سری`).join(" · ")}</p>
             <div className="mt-2 flex items-center justify-between text-[12px]"><span className="text-[var(--kv-faint)]">{parent.createdAt}</span><b className="tabular-nums">{fmtMoney(sub.total)}</b></div>
           </button>
         ))}
@@ -193,13 +210,20 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
         {!cur ? <Empty title="موردی انتخاب نشده" desc="از فهرست یک زیرسفارش را انتخاب کنید." /> : (() => {
           const { parent, sub } = cur;
           const pieces = (sub.lines ?? []).reduce((a, l) => a + l.pieces, 0);
+          const allSiblingAccepted = (parent.subOrders ?? []).every(
+            (s) => s.id === sub.id || s.status === "in_transit" || s.status === "shipped" || s.status === "delivered",
+          );
           return (
             <div className="animate-[fadeIn_0.2s_ease]">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs text-[var(--kv-muted)] tabular-nums">{sub.id} · بخشی از سفارش {parent.id}</p>
-                  <h3 className="mt-1 text-[17px] font-extrabold">{parent.buyer}</h3>
-                  <p className="mt-0.5 text-[12.5px] text-[var(--kv-muted)]">ثبت: {parent.createdAt} · ارسال با {parent.shippingMethod}</p>
+                  <p className="text-xs text-[var(--kv-muted)] tabular-nums">{sub.id} · بخشی از سفارش عمده {parent.id}</p>
+                  <h3 className="mt-1 text-[17px] font-extrabold">
+                    {isKolbeOpsActor ? parent.buyer : "درخواست تأمین انبار مرکزی کلبه"}
+                  </h3>
+                  <p className="mt-0.5 text-[12.5px] text-[var(--kv-muted)]">
+                    ثبت: {parent.createdAt} · {isKolbeOpsActor ? `ارسال نهایی با ${parent.shippingMethod}` : "تحویل الزامی به انبار مرکزی کلبه"}
+                  </p>
                 </div>
                 <Status value={SUB_STATUS[sub.status].label} />
               </div>
@@ -208,7 +232,7 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
                 <table className="kv-table">
                   <thead><tr><th>محصول</th><th>سری</th><th>رنگ</th><th>تعداد</th><th>مبلغ</th></tr></thead>
                   <tbody>
-                    {sub.lines.map((l, i) => (
+                    {(sub.lines ?? []).map((l, i) => (
                       <tr key={i}>
                         <td><span className="flex items-center gap-2.5"><img src={l.image} alt="" className="h-10 w-9 rounded-lg object-cover" /><b className="whitespace-nowrap">{l.name}</b></span></td>
                         <td>{l.seriesName}</td><td>{l.color}</td>
@@ -223,52 +247,90 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
                   <b className="text-[15px] tabular-nums">{fmtMoney(sub.total)}</b>
                 </div>
               </div>
-              <p className="mt-3 flex items-center gap-1.5 text-xs text-[var(--kv-muted)]"><MapPin size={13} />{parent.address}</p>
+              <p className="mt-3 flex items-center gap-1.5 text-xs text-[var(--kv-muted)]">
+                <MapPin size={13} />
+                {isKolbeOpsActor ? `آدرس تحویل نهایی VIP: ${parent.address}` : KOLBE_CENTRAL_WAREHOUSE_ADDRESS}
+              </p>
 
               <div className="mt-5"><SubProgress status={sub.status} /></div>
 
               <div className="mt-5 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 p-4">
                 {sub.status === "pending_supplier" && (
                   <div className="space-y-3">
-                    <p className="text-[13.5px] font-bold">آیا امکان تأمین این سفارش را دارید؟</p>
-                    <Field label="توضیح برای خریدار (اختیاری)"><Textarea rows={2} placeholder="مثلاً: آماده ارسال ظرف ۵ روز کاری" value={note} onChange={setNote} /></Field>
+                    <p className="text-[13.5px] font-bold">آیا امکان تأمین و ارسال این محموله به انبار مرکزی کلبه را دارید؟</p>
+                    <Field label="توضیح تأمین (اختیاری)"><Textarea rows={2} placeholder="مثلاً: آماده ارسال به انبار کلبه ظرف ۲ روز کاری" value={note} onChange={setNote} /></Field>
                     <div className="flex flex-wrap gap-2">
                       <Btn variant="accent" size="sm" icon={<Check size={14} />} onClick={() => onTransition(parent.id, sub.id, "approved", note ? { note } : undefined)}>تأیید امکان تأمین</Btn>
                       <Btn variant="soft" size="sm" icon={<X size={14} />} onClick={() => onTransition(parent.id, sub.id, "rejected", { note: note || "امکان تأمین در حال حاضر وجود ندارد." })}>رد سفارش</Btn>
                     </div>
                   </div>
                 )}
-                {sub.status === "approved" && <p className="flex items-center gap-2 text-[13px] text-[var(--kv-muted)]"><Clock size={15} />تأیید شده؛ منتظر پرداخت خریدار. پس از پرداخت، آماده‌سازی را شروع کنید.</p>}
+                {sub.status === "approved" && <p className="flex items-center gap-2 text-[13px] text-[var(--kv-muted)]"><Clock size={15} />تأیید شده؛ منتظر پرداخت خریدار. پس از پرداخت، آماده‌سازی برای ارسال به انبار کلبه آغاز می‌شود.</p>}
                 {sub.status === "paid" && (
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <p className="text-[13px] font-bold">پرداخت انجام شده — سفارش را وارد آماده‌سازی کنید.</p>
-                    <Btn variant="accent" size="sm" icon={<PackageCheck size={14} />} onClick={() => onTransition(parent.id, sub.id, "preparing")}>شروع آماده‌سازی</Btn>
+                    <p className="text-[13px] font-bold">پرداخت انجام شده — آماده‌سازی محموله جهت ارسال به انبار کلبه را شروع کنید.</p>
+                    <Btn variant="accent" size="sm" icon={<PackageCheck size={14} />} onClick={() => onTransition(parent.id, sub.id, "preparing")}>شروع آماده‌سازی برای انبار کلبه</Btn>
                   </div>
                 )}
                 {sub.status === "preparing" && (
                   <div className="space-y-3">
-                    <p className="text-[13.5px] font-bold">آماده‌سازی محصول</p>
-                    <Btn variant="accent" size="sm" icon={<PackageCheck size={14} />} onClick={() => onTransition(parent.id, sub.id, "ready_to_ship")}>محصول آماده ارسال است</Btn>
+                    <p className="text-[13.5px] font-bold">ارسال محموله به انبار مرکزی کلبه (Inbound Shipment)</p>
+                    <p className="text-xs text-[var(--kv-muted)]">ارسال مستقیم به مشتری VIP مجاز نیست. محموله باید به سوله دریافت و کنترل کیفیت کلبه تحویل شود.</p>
+                    <div className="grid gap-2.5 sm:grid-cols-2">
+                      <Field label="کد رهگیری ارسال به انبار کلبه"><Input placeholder="INB-TRK-…" value={tracking} onChange={setTracking} /></Field>
+                      <Field label="مقصد الزامی"><Input value="انبار مرکزی کلبه (KOLBE-CENTRAL)" onChange={() => {}} /></Field>
+                    </div>
+                    <Btn variant="accent" size="sm" icon={<Truck size={14} />} onClick={() => onTransition(parent.id, sub.id, "ready_to_ship", { tracking: tracking.trim() || `INB-${Date.now().toString().slice(-5)}`, eta: "در مسیر انبار کلبه" })}>ثبت ارسال محموله به انبار کلبه</Btn>
                   </div>
                 )}
                 {sub.status === "ready_to_ship" && (
-                  <div className="space-y-3">
-                    <p className="text-[13.5px] font-bold">تحویل به شرکت حمل</p>
-                    <div className="grid gap-2.5 sm:grid-cols-2">
-                      <Field label="کد رهگیری باربری"><Input placeholder="TPX-…" value={tracking} onChange={setTracking} /></Field>
-                      <Field label="زمان تقریبی تحویل"><Input placeholder="۲ تا ۳ روز آینده" /></Field>
+                  isKolbeOpsActor ? (
+                    <div className="space-y-3">
+                      <p className="text-[13.5px] font-bold">دریافت در انبار کلبه و ثبت کنترل کیفیت (QC Inspection)</p>
+                      <p className="text-xs text-[var(--kv-muted)]">پس از شمارش و بررسی کیفی اقلام ({fmtNum(pieces)} تکه)، رسید انبار کلبه (GRN) و نتیجه QC را ثبت کنید.</p>
+                      <Field label="گزارش بازرس کنترل کیفیت (QC Note)"><Input placeholder="همه سری‌ها سالم و مطابق استاندارد کلبه تأیید شد" value={note} onChange={setNote} /></Field>
+                      <div className="flex flex-wrap gap-2">
+                        <Btn variant="accent" size="sm" icon={<ShieldCheck size={14} />} onClick={() => onTransition(parent.id, sub.id, "in_transit", { note: note.trim() || "دریافت در انبار کلبه و تأیید کامل کنترل کیفیت (QC Passed)" })}>تأیید دریافت و QC در انبار کلبه</Btn>
+                        <Btn variant="soft" size="sm" icon={<X size={14} />} onClick={() => onTransition(parent.id, sub.id, "rejected", { note: note.trim() || "رد در کنترل کیفیت انبار کلبه (QC Rejected)" })}>رد کیفی در انبار کلبه</Btn>
+                      </div>
                     </div>
-                    <Btn variant="accent" size="sm" icon={<Truck size={14} />} disabled={!tracking.trim()} onClick={() => onTransition(parent.id, sub.id, "in_transit", { tracking: tracking.trim(), eta: "تحویل تا ۳ روز آینده" })}>تحویل به باربری و ثبت رهگیری</Btn>
-                  </div>
+                  ) : (
+                    <p className="flex items-center gap-2 text-[13px] text-[var(--kv-muted)]">
+                      <ShieldCheck size={15} className="text-[var(--kv-accent)]" />
+                      محموله به مقصد انبار مرکزی کلبه ارسال شده است. دریافت فیزیکی، کنترل کیفیت (QC)، تجمیع سفارش و ارسال به مشتری VIP توسط تیم عملیات انبار کلبه انجام می‌شود.
+                    </p>
+                  )
                 )}
-                {sub.status === "in_transit" && <Btn variant="accent" size="sm" onClick={() => onTransition(parent.id, sub.id, "shipped")}>ثبت ارسال از مبدا</Btn>}
+                {sub.status === "in_transit" && (
+                  isKolbeOpsActor ? (
+                    <div className="space-y-3">
+                      <p className="text-[13.5px] font-bold">تجمیع سفارش در انبار کلبه و ارسال نهایی به مشتری VIP</p>
+                      {!allSiblingAccepted && (
+                        <p className="rounded-[10px] bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-800 dark:text-amber-200">
+                          توجه: سایر بخش‌های این سفارش چندتأمین‌کننده باید ابتدا در انبار کلبه دریافت و تأیید کیفی (QC) شوند تا تجمیع و ارسال نهایی به VIP انجام شود.
+                        </p>
+                      )}
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        <Field label="کد رهگیری باربری خروجی کلبه به VIP"><Input placeholder="KOLBE-VIP-…" value={tracking} onChange={setTracking} /></Field>
+                        <Field label="زمان تقریبی تحویل به VIP"><Input placeholder="۲ تا ۳ روز آینده" /></Field>
+                      </div>
+                      <Btn variant="accent" size="sm" disabled={!allSiblingAccepted} icon={<Truck size={14} />} onClick={() => onTransition(parent.id, sub.id, "shipped", { tracking: tracking.trim() || `KV-VIP-${Date.now().toString().slice(-5)}`, eta: "تحویل تا ۳ روز آینده" })}>تجمیع و ارسال بسته از انبار کلبه به VIP</Btn>
+                    </div>
+                  ) : (
+                    <p className="text-[13px] text-[var(--kv-muted)]">محموله شما در انبار کلبه دریافت و در کنترل کیفیت (QC) تأیید شد. در حال تجمیع و ارسال به مشتری توسط کلبه.</p>
+                  )
+                )}
                 {sub.status === "shipped" && (
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <p className="text-[13px] text-[var(--kv-muted)]">در مسیر تحویل · {sub.tracking}</p>
-                    <Btn variant="soft" size="sm" icon={<Check size={14} />} onClick={() => onTransition(parent.id, sub.id, "delivered")}>ثبت تحویل</Btn>
-                  </div>
+                  isKolbeOpsActor ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[13px] text-[var(--kv-muted)]">ارسال شده از انبار کلبه به مشتری VIP · {sub.tracking}</p>
+                      <Btn variant="soft" size="sm" icon={<Check size={14} />} onClick={() => onTransition(parent.id, sub.id, "delivered")}>ثبت تحویل نهایی به VIP</Btn>
+                    </div>
+                  ) : (
+                    <p className="text-[13px] text-[var(--kv-muted)]">بسته تجمیع‌شده از انبار کلبه برای خریدار ارسال شده است.</p>
+                  )
                 )}
-                {isTerminal(sub.status) && <p className="text-[13px] text-[var(--kv-muted)]">این زیرسفارش بسته شده است.{sub.note && ` توضیح: ${sub.note}`}</p>}
+                {isTerminal(sub.status) && <p className="text-[13px] text-[var(--kv-muted)]">این بخش سفارش بسته شده است.{sub.note && ` توضیح: ${sub.note}`}</p>}
               </div>
 
               <p className="mb-3 mt-5 text-[13px] font-bold">تاریخچه</p>
@@ -283,5 +345,5 @@ export function SubOrderDesk({ items, actor, onTransition, emptyTitle, emptyDesc
 }
 
 function rank(s: SubStatus) {
-  return ({ pending_supplier: 0, paid: 1, preparing: 2, shipped: 3, approved: 4, delivered: 5, rejected: 6, cancelled: 7 } as Record<SubStatus, number>)[s];
+  return ({ pending_supplier: 0, paid: 1, preparing: 2, ready_to_ship: 3, in_transit: 4, shipped: 5, approved: 6, delivered: 7, rejected: 8, cancelled: 9 } as Record<SubStatus, number>)[s];
 }

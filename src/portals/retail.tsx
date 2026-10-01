@@ -11,7 +11,7 @@ import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
 import { promoApi, publicApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
-import { useOps } from "../data/ops";
+import { useOps, resolveVariantPromotion } from "../data/ops";
 import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage, normalizeTaxonomies, readPricingSnapshot, readShippingQuote, type PricingSnapshot, type Taxonomy } from "../data/contracts";
 import { cmsApi, ordersApi, productStructureApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
@@ -34,10 +34,19 @@ function getPublishedPosts(kind: JournalPost["kind"]): JournalPost[] { try { con
 /** Retail sizes come from real server variants; legacy demo products fall back to series composition. */
 export const productSizes = (p: Product) => (p.sizes?.length ? p.sizes : Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition ?? {})))));
 
+const TARGET_BADGE: Record<string, string> = {
+  variant: "تخفیف واریانت دقیق",
+  color: "تخفیف رنگ",
+  size: "تخفیف سایز",
+  product: "تخفیف محصول",
+  festival: "تخفیف جشنواره",
+};
+
 /* ============ Retail product card — image-first, 70% visual ============ */
 export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
   p: Product; wished: boolean; onWish: () => void; onOpen: () => void; onAdd: (size: string, color: string) => boolean;
 }) {
+  const ops = useOps();
   const [colorId, setColorId] = useState(p.colors[0]?.id ?? "");
   const sizes = productSizes(p);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
@@ -45,6 +54,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
   const [added, setAdded] = useState(false);
   const toast = useToast();
   const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
+  const resolved = resolveVariantPromotion(p, chosenColor?.id ?? chosenColor?.name, size, ops.promotionRules, ops.festivals);
   const quickAdd = () => {
     if (!chosenColor) { setMessage("رنگی برای این محصول تعریف نشده است"); return; }
     const ok = onAdd(size, chosenColor.name);
@@ -64,9 +74,11 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
             <img src={p.images[0]} alt={p.imageMeta?.[0]?.alt || p.name} loading="lazy" className="h-full w-full object-cover" />
           </div>
         </button>
-        {p.badge && (
+        {(resolved.matchedRule || p.badge) && (
           <span className="absolute right-3 top-3 rounded-full bg-[var(--kv-glass)] px-3 py-1 text-[11.5px] font-bold backdrop-blur-md border border-white/40 shadow-sm">
-            {p.badge}
+            {resolved.matchedRule
+              ? `${TARGET_BADGE[resolved.matchedRule.targetType] ?? "تخفیف"} · ${resolved.discountType === "percent" ? `${fmtNum(resolved.discountValue ?? 0)}٪` : fmtMoney(resolved.discountAmount)}`
+              : p.badge}
           </span>
         )}
         <button
@@ -81,11 +93,16 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
         <div className="flex items-start justify-between gap-2">
           <div>
             <button onClick={onOpen} className="text-[14px] font-bold leading-6 hover:text-[var(--kv-accent)] transition-colors">{p.name}</button>
-            <p className="mt-0.5 text-xs text-[var(--kv-muted)]">{p.supplier} · {p.category}</p>
+            <p className="mt-0.5 text-xs text-[var(--kv-muted)]">{p.brand} · {p.category}</p>
           </div>
           <span className="flex items-center gap-1 text-xs font-semibold text-[var(--kv-muted)]"><Star size={12} fill="#D6A94E" strokeWidth={0} />{p.rating.toLocaleString("fa-IR")}</span>
         </div>
-        <p className="mt-2 text-[14.5px] font-extrabold tabular-nums">{fmtMoney(p.retailPrice)}</p>
+        <div className="mt-2 flex flex-wrap items-baseline gap-2">
+          <p className="text-[14.5px] font-extrabold tabular-nums text-[var(--kv-accent)]">{fmtMoney(resolved.finalPrice)}</p>
+          {resolved.discountAmount > 0 && (
+            <span className="text-xs text-[var(--kv-muted)] line-through tabular-nums">{fmtMoney(resolved.basePrice)}</span>
+          )}
+        </div>
         <div className="mt-3 flex flex-wrap items-center gap-1" role="group" aria-label={`انتخاب رنگ ${p.name}`}>
           {p.colors.map((color) => (
             <button key={color.id} title={color.name} aria-label={`${p.name}، رنگ ${color.name}`} aria-pressed={color.id === colorId} onClick={() => setColorId(color.id)}
@@ -183,6 +200,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
   p: Product; onBack: () => void; onAdd: (size: string, color: string) => void; wished: boolean; onWish: () => void;
   taxonomyLabel?: (kind: string, code: string) => string;
 }) {
+  const ops = useOps();
   const [img, setImg] = useState(0);
   const gallery: { kind: "image" | "video"; src: string; title: string; thumbnail?: string }[] = [...p.images.map((src, i) => ({ kind: "image" as const, src, title: p.imageMeta?.[i]?.alt || p.name })), ...(p.videos ?? []).map((video) => ({ kind: "video" as const, src: video.src, title: video.title || p.name, thumbnail: video.thumbnail })), ...(!p.videos?.length && p.video ? [{ kind: "video" as const, src: p.video, title: `${p.name} · ویدیو`, thumbnail: undefined }] : [])];
   const selectedMedia = gallery[img] ?? gallery[0];
@@ -190,6 +208,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
   const sizes = productSizes(p);
   useEffect(() => { if (isAuthenticated()) accountApi.view(p.id); }, [p.id]);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
+  const resolved = resolveVariantPromotion(p, color?.id ?? color?.name, size, ops.promotionRules, ops.festivals);
   return (
     <div className="animate-[fadeUp_0.4s_ease]">
       <button onClick={onBack} className="kv-press mb-5 inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]">
@@ -209,7 +228,18 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
           <div className="kv-img relative flex-1 overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
 
             {selectedMedia?.kind === "video" ? (selectedMedia.src.includes("youtube") || selectedMedia.src.includes("youtu.be") ? <iframe key={img} src={selectedMedia.src} title={selectedMedia.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen className="aspect-[3/4] w-full bg-black" /> : <video key={img} src={selectedMedia.src} poster={selectedMedia.thumbnail} controls playsInline preload="metadata" className="aspect-[3/4] w-full bg-black object-contain" />) : <ResponsiveImg key={img} src={selectedMedia?.src || p.images[0]} alt={selectedMedia?.title || p.name} priority={img === 0} fetchPriority={img === 0 ? "high" : "auto"} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />}
-            {p.badge && <span className="absolute right-4 top-4"><Status value={p.badge} dot={false} /></span>}
+            {(resolved.matchedRule || p.badge) && (
+              <span className="absolute right-4 top-4">
+                <Status
+                  value={
+                    resolved.matchedRule
+                      ? `${TARGET_BADGE[resolved.matchedRule.targetType] ?? "تخفیف"} · ${resolved.discountType === "percent" ? `${fmtNum(resolved.discountValue ?? 0)}٪` : fmtMoney(resolved.discountAmount)}`
+                      : (p.badge ?? "")
+                  }
+                  dot={false}
+                />
+              </span>
+            )}
           </div>
         </div>
         {/* config 45% */}
@@ -220,9 +250,19 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
             <span className="flex items-center gap-1 font-bold text-[var(--kv-ink)]"><Star size={14} fill="#D6A94E" strokeWidth={0} /> {p.rating.toLocaleString("fa-IR")}</span>
             <span>({fmtNum(p.reviews)} دیدگاه)</span>
             <span>·</span>
-            <span>فروشنده: {p.supplier}</span>
+            <span>برند: {p.brand}</span>
           </div>
-          <p className="mt-4 text-[24px] font-extrabold tabular-nums">{fmtMoney(p.retailPrice)}</p>
+          <div className="mt-4 flex flex-wrap items-baseline gap-3">
+            <p className="text-[24px] font-extrabold tabular-nums text-[var(--kv-accent)]">{fmtMoney(resolved.finalPrice)}</p>
+            {resolved.discountAmount > 0 && (
+              <>
+                <span className="text-sm text-[var(--kv-muted)] line-through tabular-nums">{fmtMoney(resolved.basePrice)}</span>
+                <span className="rounded-full bg-[var(--kv-accent)]/12 px-2.5 py-0.5 text-xs font-bold text-[var(--kv-accent)]">
+                  {resolved.matchedRule?.name ?? TARGET_BADGE[resolved.matchedRule?.targetType ?? "product"]} (−{fmtMoney(resolved.discountAmount)})
+                </span>
+              </>
+            )}
+          </div>
           <div className="mt-6">
             <p className="mb-2.5 text-[13px] font-bold">انتخاب رنگ <span className="font-medium text-[var(--kv-muted)]">— {color.name}</span></p>
             <div className="flex gap-2.5">{p.colors.map((c) => <Swatch key={c.id} hex={c.hex} name={c.name} selected={color.id === c.id} onSelect={() => setColor(c)} />)}</div>
@@ -553,11 +593,11 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [shipId, setShipId] = useState("");
   const ship = retailShipping.find((s) => s.id === shipId) ?? retailShipping[0];
   const today = new Date().toISOString().slice(0, 10);
-  const liveFestivals = ops.festivals.filter((f) => f.active && f.starts <= today && f.ends >= today);
   const festivalDiscount = cart.reduce((sum, l) => {
     const p = retailProducts.find((x) => x.id === l.id);
-    const pct = p ? Math.max(0, ...liveFestivals.filter((f) => f.categories.includes(p.category)).map((f) => f.discountPercent)) : 0;
-    return sum + Math.round((p?.retailPrice ?? 0) * l.qty * pct / 100);
+    if (!p) return sum;
+    const resolved = resolveVariantPromotion(p, l.color, l.size, ops.promotionRules, ops.festivals, paymentMode);
+    return sum + resolved.discountAmount * l.qty;
   }, 0);
   const coupon = ops.coupons.find((c) => c.code === couponCode && c.channel === "retail");
   const couponError = !coupon ? "" : !coupon.active ? "این کوپن غیرفعال است." : coupon.expires < today ? "مهلت این کوپن تمام شده است." : coupon.used >= coupon.maxUses ? "ظرفیت این کوپن تکمیل شده است." : cartTotal < coupon.minOrder ? `حداقل خرید برای این کوپن ${fmtMoney(coupon.minOrder)} است.` : "";
@@ -795,7 +835,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
             <p className="text-[15px] font-bold">خلاصه سفارش</p>
             <div className="mt-4 space-y-2.5 text-[13px]">
               <div className="flex justify-between text-[var(--kv-muted)]"><span>جمع اقلام ({fmtNum(cart.reduce((s, l) => s + l.qty, 0))})</span><span className="tabular-nums">{fmtMoney(paymentMode === "cash" ? cartTotal : installmentCartTotal)}</span></div>
-              {festivalDiscount > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>تخفیف {liveFestivals.map((f) => f.name).join("، ")}</span><span className="tabular-nums">−{fmtMoney(festivalDiscount)}</span></div>}
+              {festivalDiscount > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>تخفیف قوانین و جشنواره</span><span className="tabular-nums">−{fmtMoney(festivalDiscount)}</span></div>}
               {couponDiscount > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>کوپن {validCoupon?.code}</span><span className="tabular-nums">−{fmtMoney(couponDiscount)}</span></div>}
               <div className="flex justify-between text-[var(--kv-muted)]"><span>هزینه ارسال{ship ? ` (${ship.name})` : ""}{quotedWeight !== null && quotedWeight > 0 ? ` · ${quotedWeight.toLocaleString("fa-IR")} گرم` : ""}</span><span>{shipCost === 0 ? "رایگان" : fmtMoney(shipCost)}</span></div>
               <div className="flex justify-between border-t border-[var(--kv-line)] pt-3 text-[15px] font-extrabold"><span>مبلغ نهایی</span><span className="tabular-nums">{fmtMoney(Math.max(0, (paymentMode === "cash" ? cartTotal : installmentCartTotal) - totalDiscount) + shipCost)}</span></div>

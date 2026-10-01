@@ -118,7 +118,7 @@ const subscriptionSecret = (config: Config, row: SubscriptionRow): string | null
 export async function ensureDeliveries(pool: DbPool, limit = 50) {
   const events = await pool.query<OutboxRow>(
     `SELECT id,event_type,aggregate_type,aggregate_id,payload,schema_version,occurred_at,source,attempts,delivered_at,published_at
-     FROM outbox_events WHERE delivered_at IS NULL ORDER BY occurred_at LIMIT $1`, [limit]);
+     FROM outbox_events WHERE delivered_at IS NULL ORDER BY occurred_at DESC LIMIT $1`, [limit]);
   let created = 0;
   for (const event of events.rows) {
     const subscriptions = await pool.query<{ id: string; max_events_per_minute: number; recent: string; event_patterns: string[] }>(

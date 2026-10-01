@@ -17,7 +17,7 @@ type Tab = "catalog" | "cart" | "orders" | "membership" | "support";
 type Source = "all" | "kolbe" | "others";
 type OrderFilter = "all" | "action" | "active" | "done";
 
-const FLOW = ["ثبت سفارش", "تأیید تأمین‌کننده", "پرداخت", "آماده‌سازی و ارسال", "تحویل"];
+const FLOW = ["ثبت سفارش عمده", "تأمین به انبار کلبه", "کنترل کیفیت (QC) کلبه", "تجمیع و بسته‌بندی", "ارسال از کلبه به VIP"];
 
 function PriceLock({ compact }: { compact?: boolean }) {
   return (
@@ -37,11 +37,11 @@ function VipCard({ p, canSee, onOpen }: { p: Product; canSee: boolean; onOpen: (
         <div className="kv-img kv-img-zoom aspect-[4/3] overflow-hidden">
           <img src={p.images[0]} alt={p.name} loading="lazy" className="h-full w-full object-cover" />
         </div>
-        <span className="absolute right-3 top-3"><SupplierChip id={p.supplierId} name={p.supplier} /></span>
+        <span className="absolute right-3 top-3"><SupplierChip id={p.supplierId} name={p.brand} maskSupplier /></span>
       </button>
       <div className="flex flex-1 flex-col p-4">
         <button onClick={onOpen} className="text-right text-[14.5px] font-bold leading-6 transition-colors hover:text-[var(--kv-accent)]">{p.name}</button>
-        <p className="mt-1 text-xs text-[var(--kv-muted)]">{kolbe ? "تولید و تأمین مستقیم کلبه" : `تأمین‌کننده: ${p.supplier}`} · {p.sku}</p>
+        <p className="mt-1 text-xs text-[var(--kv-muted)]">{kolbe ? "تولید و تأمین مستقیم کلبه" : `برند تجاری: ${p.brand} · کنترل کیفیت انبار کلبه`} · {p.sku}</p>
         <div className="mt-2.5 flex items-center gap-1.5">
           {p.colors.slice(0, 4).map((c) => <span key={c.id} title={c.name} className="h-4 w-4 rounded-full border border-black/15" style={{ background: c.hex }} />)}
           <span className="mr-1 text-[11px] text-[var(--kv-muted)]">{fmtNum(p.colors.length)} رنگ</span>
@@ -115,13 +115,13 @@ export function VipPDP({ p, canSee, role, onBack, onAdd, onAuth, onGoCart }: {
           </div>
           <div className="kv-img relative flex-1 overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
             <img key={img} src={p.images[img]} alt={p.name} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
-            <span className="absolute right-4 top-4"><SupplierChip id={p.supplierId} name={p.supplier} size="md" /></span>
+            <span className="absolute right-4 top-4"><SupplierChip id={p.supplierId} name={p.brand} size="md" maskSupplier /></span>
           </div>
         </div>
 
         <div>
           <div className="flex flex-wrap items-center gap-3 text-[13px] text-[var(--kv-muted)]">
-            <span>{kolbe ? "تأیید و ارسال توسط تیم عملیات کلبه" : `تأیید و ارسال توسط ${p.supplier}`}</span>
+            <span>{kolbe ? "تولید، کنترل کیفیت و ارسال مستقیم از انبار کلبه" : `برند ${p.brand} · دریافت، کنترل کیفیت (QC) و ارسال از انبار مرکزی کلبه`}</span>
             {p.reviews > 0 && <span className="flex items-center gap-1"><Star size={12} fill="#D6A94E" strokeWidth={0} /><b className="text-[var(--kv-ink)]">{p.rating.toLocaleString("fa-IR")}</b> ({fmtNum(p.reviews)})</span>}
             <span className="tabular-nums" dir="ltr">{p.sku}</span>
           </div>
@@ -267,7 +267,8 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
         const mapped: Product[] = (wh as any).items.map((row:any)=> {
           const local = marketBase.find(m=> m.id===row.id || m.sku===row.sku);
           if(local) return { ...local, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : local.wholesaleFrom };
-          return { id: row.id, sku: row.sku, name: row.name ?? row.product_name ?? "محصول", brand: row.brand ?? "", supplier: row.supplier_id ?? "کلبه", supplierId: row.supplier_id ?? "kolbe", category: row.category ?? "عمومی", retailPrice: 0, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : 0, rating:0, reviews:0, colors:[], images:[IMG.neutralRack], series:[], seriesCount:0, moq:1, stock: 100, fabric:"", desc:"", status:"published" } as unknown as Product;
+          const publicBrand = row.brandDisplayName ?? row.brand ?? "کلبه وینتیج";
+          return { id: row.id, sku: row.sku, name: row.name ?? row.product_name ?? "محصول", brand: publicBrand, supplier: publicBrand, supplierId: row.owner_type === "supplier" ? "partner" : "kolbe", category: row.category ?? "عمومی", retailPrice: 0, wholesaleFrom: row.wholesale_price_rial ? Number(row.wholesale_price_rial)/10 : 0, rating:0, reviews:0, colors:[], images:[IMG.neutralRack], series:[], seriesCount:0, moq: row.sale_terms?.moq ?? 1, stock: row.wholesale_available_stock ?? 100, fabric:"", desc:"", status:"published" } as unknown as Product;
         });
         if(mapped.length) setWholesaleServer(mapped);
       }
@@ -277,7 +278,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
     finally{ if(!cancel) setVipLoading(false); }
   })(); return ()=>{ cancel=true; } }, [role]);
   const cats = ["همه", ...Array.from(new Set(market.map((p) => p.category)))];
-  const filtered = market.filter((p) => (cat === "همه" || p.category === cat) && (!q.trim() || p.name.includes(q.trim()) || p.supplier.includes(q.trim())));
+  const filtered = market.filter((p) => (cat === "همه" || p.category === cat) && (!q.trim() || p.name.includes(q.trim()) || p.brand.toLowerCase().includes(q.trim().toLowerCase()) || p.sku.toLowerCase().includes(q.trim().toLowerCase())));
   const kolbeList = filtered.filter((p) => p.supplierId === KOLBE.id);
   const otherList = filtered.filter((p) => p.supplierId !== KOLBE.id);
 
@@ -457,7 +458,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
                   return (
                     <Card key={sid} className="overflow-hidden">
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-5 py-3">
-                        <div className="flex items-center gap-2"><span className="text-[11px] font-bold text-[var(--kv-faint)]">زیرسفارش {fmtNum(gi + 1)}</span><SupplierChip id={sid} name={lines[0].p.supplier} /></div>
+                        <div className="flex items-center gap-2"><span className="text-[11px] font-bold text-[var(--kv-faint)]">مرسوله {fmtNum(gi + 1)}</span><SupplierChip id={sid} name={lines[0].p.brand} maskSupplier /></div>
                         <b className="text-[13.5px] tabular-nums">{fmtMoney(sub)}</b>
                       </div>
                       <div className="divide-y divide-[var(--kv-line)]">
@@ -475,7 +476,7 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
                           </div>
                         ))}
                       </div>
-                      <p className="bg-[var(--kv-surface-2)]/40 px-5 py-2.5 text-[11.5px] text-[var(--kv-muted)]">{sid === KOLBE.id ? "این بخش توسط تیم عملیات کلبه تأیید و ارسال می‌شود." : `این بخش برای ${lines[0].p.supplier} ارسال می‌شود و پس از تأیید او قابل پرداخت است.`}</p>
+                      <p className="bg-[var(--kv-surface-2)]/40 px-5 py-2.5 text-[11.5px] text-[var(--kv-muted)]">{sid === KOLBE.id ? "این بخش مستقیماً از موجودی عمده انبار کلبه تأمین و ارسال می‌شود." : `کالای برند ${lines[0].p.brand} ابتدا به انبار مرکزی کلبه تحویل شده و پس از کنترل کیفیت (QC) و تجمیع برای شما ارسال می‌شود.`}</p>
                     </Card>
                   );
                 })}

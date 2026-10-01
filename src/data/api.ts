@@ -1178,3 +1178,77 @@ export const membershipLifecycleApi = {
     authFetch<unknown>(`/admin/memberships/${membershipId}/change-plan`, { method: "POST", body: JSON.stringify({ planId, reason }) }),
   runExpiry: () => authFetch<Record<string, number>>("/admin/memberships/run-expiry", { method: "POST" }),
 };
+
+/* ---------- wholesale Kolbe-intermediated fulfillment + inventory domains + promotion rules ---------- */
+
+export const wholesaleFulfillmentApi = {
+  supplierFulfillments: () => authFetch<{ items: Record<string, unknown>[] }>("/wholesale/supplier/fulfillments"),
+  dispatchToKolbe: (id: string, payload: { destinationWarehouseId?: string; carrier?: string; trackingCode?: string; note?: string }, idempotencyKey: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/fulfillments/${id}/dispatch-to-kolbe`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(payload),
+    }),
+  inboundShipments: () => authFetch<{ items: Record<string, unknown>[] }>("/wholesale/inbound-shipments"),
+  receiveShipment: (id: string, payload: { stage: "arrived_at_kolbe" | "receiving" | "under_inspection"; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/inbound-shipments/${id}/receive`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  inspectShipment: (id: string, payload: Record<string, unknown>, idempotencyKey: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/inbound-shipments/${id}/inspect`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(payload),
+    }),
+  consolidateOrder: (orderId: string, idempotencyKey: string, note?: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/orders/${orderId}/consolidate`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify({ note }),
+    }),
+  dispatchVipOrder: (orderId: string, idempotencyKey: string, reason?: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/orders/${orderId}/dispatch-vip`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify({ reason }),
+    }),
+};
+
+export const inventoryDomainApi = {
+  variantBreakdown: (variantId: string) => authFetch<Record<string, unknown>>(`/inventory/variants/${variantId}`),
+  ownershipConversions: () => authFetch<{ items: Record<string, unknown>[] }>("/inventory/ownership-conversions"),
+  createOwnershipConversion: (payload: Record<string, unknown>, idempotencyKey: string) =>
+    authFetch<Record<string, unknown>>("/inventory/ownership-conversions", {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(payload),
+    }),
+  completeOwnershipConversion: (id: string, idempotencyKey: string) =>
+    authFetch<Record<string, unknown>>(`/inventory/ownership-conversions/${id}/complete`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+    }),
+  transfers: () => authFetch<{ items: Record<string, unknown>[] }>("/inventory/transfers"),
+  transferDetail: (id: string) => authFetch<Record<string, unknown>>(`/inventory/transfers/${id}`),
+};
+
+export const promotionRulesApi = {
+  list: () => authFetch<{ promotions: Record<string, unknown>[]; rules: Record<string, unknown>[]; items: Record<string, unknown>[] }>("/promotions"),
+  rules: () => authFetch<{ items: Record<string, unknown>[] }>("/promotions/rules"),
+  createRule: (payload: Record<string, unknown>, idempotencyKey: string) =>
+    authFetch<Record<string, unknown>>("/promotions/rules", {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(payload),
+    }),
+  updateRule: (id: string, payload: Record<string, unknown>) =>
+    authFetch<Record<string, unknown>>(`/promotions/rules/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deactivateRule: (id: string) =>
+    authFetch<Record<string, unknown>>(`/promotions/rules/${id}`, { method: "DELETE" }),
+  resolveVariantPrice: (variantId: string, channel: "retail" | "wholesale" = "retail", paymentMode: "cash" | "four_installments" = "cash") =>
+    publicApi.get<Record<string, unknown>>(`/pricing/variants/${variantId}?channel=${channel}&paymentMode=${paymentMode}`),
+};
