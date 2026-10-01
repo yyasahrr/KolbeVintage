@@ -156,8 +156,10 @@ const money = (value: string | undefined) => value ? `${new Intl.NumberFormat("f
 const date = (value: string) => new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 const makeIdemKey = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-export function AdminServerOrders({ request }: { request: ApiRequest }) {
-  const [section, setSection] = useState<"orders" | "inbound-qc" | "inventory-transfers" | "server-promotions">("orders");
+export function AdminServerOrders({ request, hideOrders = false }: { request: ApiRequest; hideOrders?: boolean }) {
+  // hideOrders: the orders experience moved to OrdersHub (3-tab OMS); this screen keeps inbound QC,
+  // inventory transfers and server promotions — nothing is deleted, only de-duplicated.
+  const [section, setSection] = useState<"orders" | "inbound-qc" | "inventory-transfers" | "server-promotions">(hideOrders ? "inbound-qc" : "orders");
 
   // 1. Orders state
   const [orders, setOrders] = useState<Order[]>([]);
@@ -535,7 +537,7 @@ export function AdminServerOrders({ request }: { request: ApiRequest }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h2 className="text-lg font-bold">سفارش‌های ثبت‌شده در سرور</h2><p className="text-xs text-[var(--kv-muted)]">مرتب‌سازی، فیلتر و مبالغ همگی از پایگاه‌داده می‌آیند.</p></div>
         <div className="flex flex-wrap items-center gap-2">
-          <button
+          {!hideOrders && <button
             type="button"
             onClick={() => setSection("orders")}
             className={`inline-flex min-h-10 items-center gap-2 rounded-lg border px-3.5 text-xs font-bold transition-colors ${
@@ -546,7 +548,7 @@ export function AdminServerOrders({ request }: { request: ApiRequest }) {
           >
             <PackageCheck size={15} />
             سفارش‌های سرور
-          </button>
+          </button>}
           <button
             type="button"
             onClick={() => setSection("inbound-qc")}
@@ -602,7 +604,7 @@ export function AdminServerOrders({ request }: { request: ApiRequest }) {
       {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900"><span>{error}</span><button type="button" onClick={() => void loadOrders()} className="font-bold underline">تلاش دوباره</button></div>}
 
       {/* ================= SECTION 1: ORDERS ================= */}
-      {section === "orders" && (
+      {section === "orders" && !hideOrders && (
         <>
         {/* B: retail vs wholesale deals are two different worlds — hard split up front. */}
         <div className="flex flex-wrap items-center gap-2">

@@ -21,6 +21,7 @@ import { cn } from "../utils/cn";
 import { AdminApiError, apiClient, isAuthenticated, inventoryApi, onAuthExpired, shippingApi, type ApiRequest } from "../data/api";
 import { normalizeWarehouses } from "../data/contracts";
 import { AdminServerOrders } from "./admin-server-orders";
+import { OrdersHub } from "./orders-hub";
 import { WarehouseHub } from "./warehouse-hub";
 import { FinanceLedgerPanel } from "../components/finance-ledger";
 import { AuditLogPanel } from "../components/audit-log-panel";
@@ -191,7 +192,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
   const nav: NavItem[] = [
     { g: "دادهٔ واقعی" },
-    { v: "server-orders", label: "سفارش‌های سرور", icon: <ClipboardList size={17} /> },
+    { v: "server-orders", label: "مرکز سفارشات", icon: <ClipboardList size={17} /> },
+    { v: "server-ops", label: "QC و عملیات سرور", icon: <ClipboardList size={17} /> },
     { g: "نمای کلی" },
     { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: badge(summary ? summary.pendingProducts + summary.pendingSupplierActions + summary.pendingMemberships : undefined, pending.length + kolbePending.length + pendingBuyers.length) },
     { g: "بازار عمده" },
@@ -240,7 +242,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
   ];
   const titles: Record<string, [string, string]> = {
-    "server-orders": ["سفارش‌های واقعی", "خواندن و مدیریت سفارش‌های ثبت‌شده در PostgreSQL"],
+    "server-orders": ["مرکز سفارشات", "سه نمای عملیاتی: خرده، عمده کلبه و عمده تأمین‌کنندگان — داده واقعی PostgreSQL"],
+    "server-ops": ["QC و عملیات سرور", "دریافت و بازرسی محموله‌های عمده، انتقال‌های موجودی و پروموشن‌های سرور"],
     tower: ["برج کنترل عملیات", "همه صف‌ها بر اساس فوریت"],
     worders: ["سفارش‌های عمده در جریان", "سفارش مادر و زیرسفارش‌های هر تأمین‌کننده"],
     kolbe: ["میز عملیات کلبه", "تأیید، آماده‌سازی و ارسال زیرسفارش‌های محصولات خود کلبه"],
@@ -364,7 +367,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
           {moduleBoundary("وضعیت اتصال", <ServerConnectionState tab={tab} key={tab} />)}
           <ModuleBoundary name={t} key={tab}>
-          {tab === "server-orders" && <AdminServerOrders request={request} />}
+          {tab === "server-orders" && <OrdersHub />}
+          {tab === "server-ops" && <AdminServerOrders request={request} hideOrders />}
 
           {/* ---------- Tower ---------- */}
           {tab === "tower" && (

@@ -328,6 +328,10 @@ export const ordersApi = {
   get: (id: string) => authFetch<unknown>(`/orders/${id}`),
   create: (payload: unknown, key: string) => authFetch<unknown>("/orders", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
   transition: (id: string, payload: { status: string; note?: string }) => authFetch<unknown>(`/orders/${id}/transitions`, { method: "POST", body: JSON.stringify(payload) }),
+  /** §34: ONE transactional backend call with per-order results — never N client requests. */
+  bulkTransitions: (payload: { orderIds: string[]; status: string; note?: string }) =>
+    authFetch<{ results: { orderId: string; reference?: string; ok: boolean; error?: string }[]; succeeded: number; failed: number }>(
+      "/orders/bulk-transitions", { method: "POST", body: JSON.stringify(payload) }),
   supplierList: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return authFetch<{ items: unknown[] }>(`/supplier/orders?${q.toString()}`);
@@ -686,6 +690,18 @@ export const manualSalesApi = {
   verifyPayment: (saleId: string, paymentId: string, action: "verify" | "reject", note?: string) =>
     authFetch<{ id: string; status: string; verificationStatus: string }>(
       `/admin/manual-sales/${saleId}/payments/${paymentId}/verification`, { method: "POST", body: JSON.stringify({ action, note }) }),
+};
+
+/* ------------------- OMS unified retail read model (§22-23) ------------------- */
+
+export const omsApi = {
+  /** Website retail orders + manual sales in ONE server-side table (read model, no second order system). */
+  retailSales: (params?: Record<string, string | number>) => {
+    const q = new URLSearchParams();
+    if (params) for (const [k, v] of Object.entries(params)) { if (v !== "" && v !== undefined) q.set(k, String(v)); }
+    return authFetch<{ items: Record<string, unknown>[]; total: number; limit: number; offset: number }>(
+      `/oms/retail-sales?${q.toString()}`);
+  },
 };
 
 /* --------------------- dynamic specs + size guides --------------------- */
