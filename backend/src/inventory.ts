@@ -5,11 +5,14 @@ import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { rial } from './money.js';
-import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
+import { audit, claimIdempotency, completeIdempotency, notifyByPermission, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { assertNotRestricted } from './console.js';
 
 export type InventoryDomain = 'retail' | 'wholesale';
+
+/** O1: threshold under which available stock is flagged «کم» and low-stock alerts fire. */
+export const LOW_STOCK_THRESHOLD = 5;
 
 const warehouseBody = z.object({
   code: z.string().regex(/^[A-Z0-9_-]{3,30}$/),
@@ -36,6 +39,7 @@ const receiptBody = z.object({
   inventoryDomain: z.enum(['retail', 'wholesale']).optional(),
   quantity: z.number().int().min(1).max(100000),
   reference: z.string().trim().min(2).max(120).optional(),
+  batchReference: z.string().trim().min(1).max(120).optional(),
 });
 const domainTransferBody = z.object({
   variantId: z.uuid(),
@@ -46,6 +50,8 @@ const domainTransferBody = z.object({
   quantity: z.number().int().min(1).max(100000),
   reason: z.string().trim().min(4).max(500),
   ownershipConversionId: z.uuid().optional(),
+  confirmFullStock: z.boolean().optional(),
+  batchReference: z.string().trim().min(1).max(120).optional(),
 });
 const multiLineTransferBody = z.object({
   fromWarehouseId: z.uuid(),
@@ -200,24 +206,38 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       inventoryDomain: z.enum(['retail', 'wholesale']).optional(),
       lowStock: z.coerce.number().int().min(0).max(1000000).optional(),
       search: z.string().max(100).optional(),
+      supplierId: z.uuid().optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
     }).parse(request.query);
     const privileged = user.permissions.includes('inventory:read');
+    // D3: real search across product name / SKU / color / size; O1: stock_status is
+    // auto-computed on the server and never admin-editable.
     const rows = await pool.query(
       `SELECT b.variant_id, b.warehouse_id, b.inventory_domain, w.code AS warehouse_code, w.name AS warehouse_name,
               v.sku, v.size_label, v.color_label, p.id AS product_id, p.name AS product_name, p.owner_type,
-              b.on_hand, b.reserved, b.incoming, b.damaged, (b.on_hand - b.reserved - b.damaged) AS available, b.version
+              p.supplier_id, p.retail_enabled, p.status AS product_status,
+              b.on_hand, b.reserved, b.incoming, b.damaged, (b.on_hand - b.reserved - b.damaged) AS available, b.version,
+              CASE
+                WHEN b.on_hand - b.reserved - b.damaged > 0 AND b.on_hand - b.reserved - b.damaged <= ${LOW_STOCK_THRESHOLD} THEN 'low_stock'
+                WHEN b.on_hand - b.reserved - b.damaged > 0 THEN 'in_stock'
+                WHEN b.on_hand > 0 AND b.reserved >= b.on_hand - b.damaged THEN 'fully_reserved'
+                WHEN b.incoming > 0 THEN 'incoming'
+                ELSE 'out_of_stock'
+              END AS stock_status
        FROM stock_balances b JOIN warehouses w ON w.id = b.warehouse_id
        JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id
        WHERE ($1::uuid IS NULL OR b.variant_id = $1)
          AND ($2::uuid IS NULL OR b.warehouse_id = $2)
-         AND ($3::text IS NULL OR v.sku ILIKE '%' || $3 || '%' OR p.name ILIKE '%' || $3 || '%')
+         AND ($3::text IS NULL OR v.sku ILIKE '%' || $3 || '%' OR p.name ILIKE '%' || $3 || '%'
+              OR v.color_label ILIKE '%' || $3 || '%' OR v.size_label ILIKE '%' || $3 || '%')
          AND ($4::boolean = true OR (w.owner_id = $5 AND p.supplier_id = $5 AND b.inventory_domain = 'wholesale'))
          AND ($6::integer IS NULL OR (b.on_hand - b.reserved - b.damaged) <= $6)
          AND ($8::text IS NULL OR b.inventory_domain = $8)
+         AND ($9::uuid IS NULL OR p.supplier_id = $9)
        ORDER BY available ASC, v.sku, b.inventory_domain LIMIT $7`,
       [query.variantId ?? null, query.warehouseId ?? null, query.search ?? null,
-        privileged, user.id, query.lowStock ?? null, query.limit, query.inventoryDomain ?? null]);
+        privileged, user.id, query.lowStock ?? null, query.limit, query.inventoryDomain ?? null,
+        query.supplierId ?? null]);
     return { items: rows.rows };
   });
 
@@ -448,9 +468,9 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       const refSeq = await one<{ number: string }>(client, "SELECT nextval('receipt_reference_seq')::text AS number");
       const reference = body.reference ?? `RCPT-${refSeq!.number}`;
       await client.query(
-        `INSERT INTO stock_receipts(id,reference,receipt_number,warehouse_id,variant_id,quantity,status,created_by)
-         VALUES ($1,$2,$2,$3,$4,$5,'pending',$6)`,
-        [id, reference, body.warehouseId, body.variantId, body.quantity, user.id]);
+        `INSERT INTO stock_receipts(id,reference,receipt_number,warehouse_id,variant_id,quantity,status,created_by,inventory_domain,batch_reference)
+         VALUES ($1,$2,$2,$3,$4,$5,'pending',$6,$7,$8)`,
+        [id, reference, body.warehouseId, body.variantId, body.quantity, user.id, domain, body.batchReference ?? null]);
       await client.query(
         `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,incoming_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
          VALUES ($1,$2,$3,$4,$5,'incoming stock','receipt',$6,$7,$8)`,
@@ -467,22 +487,55 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     const user = await principal(request, pool, config);
     requirePermission(user, 'inventory:adjust');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      receivedQuantity: z.number().int().min(0).max(100000).optional(),
+      note: z.string().trim().max(500).optional(),
+    }).parse(request.body ?? {});
     return transaction(pool, async (client) => {
-      const r = await one<{ id: string; warehouse_id: string; variant_id: string; quantity: number; status: string }>(client,
+      const r = await one<{
+        id: string; warehouse_id: string; variant_id: string; quantity: number; status: string;
+        inventory_domain: InventoryDomain; reference: string; supplier_request_id: string | null;
+      }>(client,
         'SELECT * FROM stock_receipts WHERE id = $1 FOR UPDATE', [id]);
       if (!r) throw notFound();
       if (r.status !== 'pending') throw conflict('این رسید قبلاً تعیین تکلیف شده است.');
+      // D1 fix: the receipt's own inventory domain is authoritative — never hard-code retail.
+      const domain: InventoryDomain = r.inventory_domain ?? 'retail';
+      const received = body.receivedQuantity ?? r.quantity;
+      if (received > r.quantity) {
+        throw badRequest('تعداد دریافت‌شده نمی‌تواند از تعداد مورد انتظار رسید بیشتر باشد.');
+      }
+      const missing = r.quantity - received;
       await client.query(
-        `UPDATE stock_balances SET incoming = GREATEST(0, incoming - $3), on_hand = on_hand + $3, version = version + 1
-         WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'retail'`,
-        [r.variant_id, r.warehouse_id, r.quantity]);
-      await client.query(`UPDATE stock_receipts SET status = 'received', received_at = now() WHERE id = $1`, [id]);
+        `UPDATE stock_balances SET incoming = GREATEST(0, incoming - $4), on_hand = on_hand + $3, version = version + 1
+         WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $5`,
+        [r.variant_id, r.warehouse_id, received, r.quantity, domain]);
+      await client.query(
+        `UPDATE stock_receipts SET status = 'received', received_at = now(), received_quantity = $2, missing_quantity = $3 WHERE id = $1`,
+        [id, received, missing]);
       await client.query(
         `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,incoming_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-         VALUES ($1,$2,$3,'retail',$4,$5,'receipt confirmed','receipt',$6,$7,$8)`,
-        [randomUUID(), r.variant_id, r.warehouse_id, r.quantity, -r.quantity, id, user.id, `receipt-confirm:${id}`]);
-      await audit(client, user.id, 'inventory.receipt_received', 'stock_receipt', id, { status: r.status }, { status: 'received' }, request.ip);
-      return { id, status: 'received' };
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'receipt',$8,$9,$10)`,
+        [randomUUID(), r.variant_id, r.warehouse_id, domain, received, -r.quantity,
+          missing > 0 ? `receipt confirmed (کسری ${missing} عدد)` : 'receipt confirmed',
+          id, user.id, `receipt-confirm:${id}`]);
+      await audit(client, user.id, 'inventory.receipt_received', 'stock_receipt', id, { status: r.status },
+        { status: 'received', receivedQuantity: received, missingQuantity: missing, note: body.note ?? null }, request.ip);
+      if (missing > 0) {
+        // R: discrepancy is recorded as a first-class event, never silently confirmed.
+        await outbox(client, 'inventory.receipt_discrepancy', 'stock_receipt', id,
+          { reference: r.reference, expected: r.quantity, received, missing });
+        await notifyByPermission(client, 'inventory:adjust', 'inventory.receipt_discrepancy.notify', 'stock_receipt', id,
+          `مغایرت رسید ${r.reference}`,
+          `از ${r.quantity} عدد مورد انتظار فقط ${received} عدد دریافت شد (کسری ${missing} عدد).`, 'high');
+      }
+      if (r.supplier_request_id) {
+        await client.query(
+          `UPDATE supplier_requests SET status = 'received', received_at = COALESCE(received_at, now()), updated_at = now()
+           WHERE id = $1 AND status = 'dispatched'`,
+          [r.supplier_request_id]);
+      }
+      return { id, status: 'received', inventoryDomain: domain, receivedQuantity: received, missingQuantity: missing };
     });
   });
 
@@ -815,32 +868,50 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
             throw forbidden('موجودی خرده‌فروشی فقط می‌تواند در انبار رسمی کلبه نگهداری شود.');
           }
           if (target.owner_type === 'supplier') {
+            // G1: only stock whose ownership has REALLY been converted to Kolbe may enter retail.
+            // A stale/draft conversion or one without enough remaining quantity must not suffice.
             if (ownershipConversionId) {
-              const conv = await one<{ id: string }>(
+              const conv = await one<{ id: string; quantity: number; used_quantity: number; status: string }>(
                 client,
-                `SELECT id FROM ownership_conversions
+                `SELECT id, quantity, used_quantity, status FROM ownership_conversions
                  WHERE id = $1 AND product_id = $2
                    AND (variant_id IS NULL OR variant_id = $3)
-                   AND to_owner_type = 'kolbe'`,
+                   AND to_owner_type = 'kolbe'
+                 FOR UPDATE`,
                 [ownershipConversionId, target.product_id, body.variantId],
               );
               if (!conv) {
                 throw forbidden('سند انتقال مالکیت نامعتبر است یا با این کالا مطابقت ندارد.');
+              }
+              if (conv.status !== 'completed') {
+                throw forbidden('سند انتقال مالکیت هنوز نهایی نشده است؛ انتقال به خرده‌فروشی مجاز نیست.');
+              }
+              if (conv.quantity - conv.used_quantity < body.quantity) {
+                throw forbidden(
+                  `ظرفیت باقی‌مانده سند تملک کافی نیست (باقی‌مانده: ${conv.quantity - conv.used_quantity}، درخواستی: ${body.quantity}).`,
+                );
               }
             } else {
               const existingConv = await one<{ id: string }>(
                 client,
                 `SELECT id FROM ownership_conversions
                  WHERE product_id = $1 AND (variant_id IS NULL OR variant_id = $2)
-                   AND to_owner_type = 'kolbe'
-                 ORDER BY created_at DESC LIMIT 1`,
-                [target.product_id, body.variantId],
+                   AND to_owner_type = 'kolbe' AND status = 'completed'
+                   AND quantity - used_quantity >= $3
+                 ORDER BY created_at DESC LIMIT 1
+                 FOR UPDATE`,
+                [target.product_id, body.variantId, body.quantity],
               );
               if (!existingConv) {
                 throw forbidden('انتقال کالای متعلق به تأمین‌کننده به موجودی خرده‌فروشی بدون ثبت رسمی خرید/تملک توسط کلبه مجاز نیست.');
               }
               ownershipConversionId = existingConv.id;
             }
+            // Consume conversion capacity now (restored if the draft transfer is cancelled).
+            await client.query(
+              `UPDATE ownership_conversions SET used_quantity = used_quantity + $2, updated_at = now() WHERE id = $1`,
+              [ownershipConversionId, body.quantity],
+            );
           }
         }
 
@@ -856,6 +927,11 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
         if (!reservedSource) {
           throw conflict('موجودی قابل انتقال در دامنه/انبار مبدأ کافی نیست.');
         }
+        // G3: moving 100% of available stock needs an explicit confirmation flag.
+        const availableAfter = reservedSource.on_hand - reservedSource.reserved - reservedSource.damaged;
+        if (availableAfter === 0 && body.confirmFullStock !== true) {
+          throw badRequest('این انتقال تمام موجودی قابل‌فروش مبدأ را جابه‌جا می‌کند؛ برای ادامه باید تأیید صریح انتقال کامل (confirmFullStock) ارسال شود.');
+        }
 
         const seq = await one<{ number: string }>(client, "SELECT nextval('stock_transfer_seq')::text AS number");
         const transferNumber = `TRF-${seq!.number}`;
@@ -865,8 +941,8 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
           `INSERT INTO stock_transfers(
             id, reference, transfer_number, variant_id, source_domain, destination_domain,
             from_warehouse_id, to_warehouse_id, source_warehouse_id, destination_warehouse_id,
-            quantity, status, ownership_conversion_id, reason, created_by, actor_id
-          ) VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$6,$7,$8,'draft',$9,$10,$11,$11)`,
+            quantity, status, ownership_conversion_id, reason, created_by, actor_id, batch_reference
+          ) VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$6,$7,$8,'draft',$9,$10,$11,$11,$12)`,
           [
             transferId,
             transferNumber,
@@ -879,6 +955,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
             ownershipConversionId,
             body.reason,
             user.id,
+            body.batchReference ?? null,
           ],
         );
 
@@ -1151,15 +1228,8 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
           ],
         );
 
-        if (dstDomain === 'retail' && tr.ownership_conversion_id) {
-          const v = await one<{ product_id: string }>(client, 'SELECT product_id FROM product_variants WHERE id = $1', [tr.variant_id]);
-          if (v) {
-            await client.query(
-              `UPDATE products SET retail_enabled = true, updated_at = now() WHERE id = $1`,
-              [v.product_id],
-            );
-          }
-        }
+        // Q: anbar transfer ≠ store publication. Completing a wholesale→retail transfer
+        // must NOT auto-enable retail sale; that remains an explicit admin decision.
 
         await client.query(
           `UPDATE stock_transfers
@@ -1256,11 +1326,165 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
         ],
       );
 
+      // G1: give back the ownership-conversion capacity consumed at creation.
+      const convRow = await one<{ ownership_conversion_id: string | null }>(
+        client, 'SELECT ownership_conversion_id FROM stock_transfers WHERE id = $1', [transfer.id]);
+      if (convRow?.ownership_conversion_id) {
+        await client.query(
+          `UPDATE ownership_conversions SET used_quantity = GREATEST(0, used_quantity - $2), updated_at = now() WHERE id = $1`,
+          [convRow.ownership_conversion_id, transfer.quantity],
+        );
+      }
+
       await client.query(`UPDATE stock_transfers SET status = 'cancelled', updated_at = now() WHERE id = $1`, [transfer.id]);
       const out = { id: transfer.id, transferNumber: transfer.transfer_number, status: 'cancelled' };
       await audit(client, user.id, 'inventory.transfer_cancelled', 'stock_transfer', transfer.id, { status: 'draft' }, out, request.ip);
       return out;
     });
+  });
+
+  // H. Reverse Transfer: completed transfers are immutable; corrections happen through a
+  // dedicated reverse document (TRF-100 → RTRF-100) capped by what is still free at the
+  // destination — sold/reserved stock can never be reversed.
+  app.post('/api/v1/inventory/transfers/:id/reverse', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:transfer');
+    const params = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      quantity: z.number().int().min(1).max(100000),
+      reason: z.string().trim().min(4).max(500),
+    }).parse(request.body);
+    const key = request.headers['idempotency-key'];
+    if (typeof key !== 'string' || key.length < 8 || key.length > 120) {
+      throw badRequest('Idempotency-Key معتبر لازم است.');
+    }
+
+    const response = await transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, 'inventory.transfer.reverse', key, requestHash({ ...body, id: params.id }));
+      if (claim.previous) return claim.previous;
+
+      const original = await one<{
+        id: string;
+        transfer_number: string | null;
+        variant_id: string | null;
+        source_domain: InventoryDomain | null;
+        destination_domain: InventoryDomain | null;
+        source_warehouse_id: string | null;
+        destination_warehouse_id: string | null;
+        quantity: number | null;
+        reversed_quantity: number;
+        status: string;
+        is_reverse: boolean;
+        ownership_conversion_id: string | null;
+      }>(client, 'SELECT * FROM stock_transfers WHERE id = $1 FOR UPDATE', [params.id]);
+      if (!original) throw notFound();
+      if (original.is_reverse) throw conflict('سند برگشتی خودش قابل برگشت نیست.');
+      if (original.status !== 'completed') throw conflict('فقط انتقال‌های تکمیل‌شده قابل برگشت هستند.');
+      if (!original.variant_id || !original.quantity || !original.source_warehouse_id || !original.destination_warehouse_id) {
+        throw conflict('این سند انتقال ساختار تک‌کالایی ندارد و از مسیر برگشت پشتیبانی نمی‌شود.');
+      }
+
+      const reversible = original.quantity - original.reversed_quantity;
+      if (reversible <= 0) throw conflict('تمام مقدار این انتقال قبلاً برگشت خورده است.');
+      if (body.quantity > reversible) {
+        throw conflict(`حداکثر مقدار قابل برگشت ${reversible} عدد است (فروخته/رزروشده قابل برگشت نیست).`);
+      }
+
+      const srcDomain = original.destination_domain ?? 'retail';
+      const dstDomain = original.source_domain ?? 'wholesale';
+
+      // G4 applied in reverse: only free (not reserved / not damaged) destination stock can return.
+      const srcBal = await one<{ on_hand: number; reserved: number; damaged: number }>(
+        client,
+        `UPDATE stock_balances
+         SET on_hand = on_hand - $4, version = version + 1, updated_at = now()
+         WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3
+           AND on_hand - reserved - damaged >= $4
+         RETURNING on_hand, reserved, damaged`,
+        [original.variant_id, original.destination_warehouse_id, srcDomain, body.quantity],
+      );
+      if (!srcBal) {
+        throw conflict('موجودی آزاد کافی برای برگشت وجود ندارد؛ کالای فروخته‌شده یا رزروشده قابل برگشت نیست.');
+      }
+
+      await client.query(
+        `INSERT INTO stock_balances(variant_id, warehouse_id, inventory_domain) VALUES ($1,$2,$3)
+         ON CONFLICT (variant_id, warehouse_id, inventory_domain) DO NOTHING`,
+        [original.variant_id, original.source_warehouse_id, dstDomain],
+      );
+      await client.query(
+        `UPDATE stock_balances SET on_hand = on_hand + $4, version = version + 1, updated_at = now()
+         WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
+        [original.variant_id, original.source_warehouse_id, dstDomain, body.quantity],
+      );
+
+      // RTRF numbering mirrors the original (RTRF-100, then RTRF-100-2 for later partials).
+      const priorReverses = await one<{ n: string }>(
+        client, 'SELECT count(*)::text AS n FROM stock_transfers WHERE original_transfer_id = $1', [original.id]);
+      const reverseIndex = Number(priorReverses?.n ?? '0');
+      const baseNumber = (original.transfer_number ?? `TRF-${original.id.slice(0, 8)}`).replace(/^TRF/, 'RTRF');
+      const reverseNumber = reverseIndex === 0 ? baseNumber : `${baseNumber}-${reverseIndex + 1}`;
+      const reverseId = randomUUID();
+
+      await client.query(
+        `INSERT INTO stock_transfers(
+          id, reference, transfer_number, variant_id, source_domain, destination_domain,
+          from_warehouse_id, to_warehouse_id, source_warehouse_id, destination_warehouse_id,
+          quantity, status, reason, created_by, actor_id, completed_by, completed_at,
+          is_reverse, original_transfer_id
+        ) VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$6,$7,$8,'completed',$9,$10,$10,$10,now(),true,$11)`,
+        [
+          reverseId, reverseNumber, original.variant_id, srcDomain, dstDomain,
+          original.destination_warehouse_id, original.source_warehouse_id,
+          body.quantity, body.reason, user.id, original.id,
+        ],
+      );
+
+      await client.query(
+        `INSERT INTO stock_movements(id, variant_id, warehouse_id, inventory_domain, on_hand_delta, reason, reference_type, reference_id, actor_id, idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,'stock_transfer',$7,$8,$9)`,
+        [randomUUID(), original.variant_id, original.destination_warehouse_id, srcDomain, -body.quantity,
+          `برگشت ${reverseNumber} بابت انتقال ${original.transfer_number}: ${body.reason}`, reverseId, user.id, `transfer-reverse-out:${reverseId}`],
+      );
+      await client.query(
+        `INSERT INTO stock_movements(id, variant_id, warehouse_id, inventory_domain, on_hand_delta, reason, reference_type, reference_id, actor_id, idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,'stock_transfer',$7,$8,$9)`,
+        [randomUUID(), original.variant_id, original.source_warehouse_id, dstDomain, body.quantity,
+          `ورود برگشتی ${reverseNumber} به ${dstDomain}`, reverseId, user.id, `transfer-reverse-in:${reverseId}`],
+      );
+
+      await client.query(
+        'UPDATE stock_transfers SET reversed_quantity = reversed_quantity + $2, updated_at = now() WHERE id = $1',
+        [original.id, body.quantity],
+      );
+
+      // Returning goods frees the ownership-conversion capacity consumed by the original transfer.
+      if (original.ownership_conversion_id) {
+        await client.query(
+          `UPDATE ownership_conversions SET used_quantity = GREATEST(0, used_quantity - $2), updated_at = now() WHERE id = $1`,
+          [original.ownership_conversion_id, body.quantity],
+        );
+      }
+
+      const out = {
+        id: reverseId,
+        transferNumber: reverseNumber,
+        originalTransferId: original.id,
+        originalTransferNumber: original.transfer_number,
+        status: 'completed',
+        quantity: body.quantity,
+        remainingReversible: reversible - body.quantity,
+      };
+      await audit(client, user.id, 'inventory.transfer_reversed', 'stock_transfer', reverseId,
+        { originalStatus: original.status, reversedBefore: original.reversed_quantity }, out, request.ip);
+      await outbox(client, 'inventory.transfer_reversed', 'stock_transfer', reverseId, out);
+      await notifyByPermission(client, 'inventory:transfer', 'inventory.transfer_reversed.notify', 'stock_transfer', reverseId,
+        `برگشت انتقال ${reverseNumber}`,
+        `${body.quantity} عدد از انتقال ${original.transfer_number} به انبار مبدأ برگشت داده شد.`, 'normal');
+      await completeIdempotency(client, user.id, 'inventory.transfer.reverse', key, out);
+      return out;
+    });
+    return reply.code(201).send(response);
   });
 
   app.get('/api/v1/inventory/transfers', async (request) => {
@@ -1275,6 +1499,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       `SELECT t.id, t.reference, t.transfer_number, t.variant_id, t.source_domain, t.destination_domain,
               t.from_warehouse_id, t.to_warehouse_id, t.source_warehouse_id, t.destination_warehouse_id,
               t.quantity, t.status, t.ownership_conversion_id, t.reason, t.created_at, t.completed_at,
+              t.is_reverse, t.original_transfer_id, t.reversed_quantity, t.batch_reference,
               v.sku, v.sku AS variant_sku, v.size_label, v.color_label, p.name AS product_name, p.owner_type,
               sw.code AS source_warehouse_code, sw.name AS source_warehouse_name,
               dw.code AS destination_warehouse_code, dw.name AS destination_warehouse_name,

@@ -35,3 +35,56 @@ export async function outbox(client: DbClient, eventType: string, aggregateType:
   await client.query('INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload) VALUES ($1,$2,$3,$4,$5)',
     [randomUUID(), eventType, aggregateType, aggregateId, JSON.stringify(payload)]);
 }
+
+/**
+ * Server-backed notifications (section S): create an outbox event and fan a
+ * notification out to a specific user — all inside the caller's transaction.
+ */
+export async function notifyUser(
+  client: DbClient,
+  userId: string,
+  eventType: string,
+  aggregateType: string,
+  aggregateId: string,
+  title: string,
+  body: string,
+  priority: 'low' | 'normal' | 'high' = 'normal',
+) {
+  const eventId = randomUUID();
+  await client.query('INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload) VALUES ($1,$2,$3,$4,$5)',
+    [eventId, eventType, aggregateType, aggregateId, JSON.stringify({ title, body })]);
+  await client.query(
+    `INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (user_id, event_id) DO NOTHING`,
+    [randomUUID(), userId, eventId, title, body, priority]);
+}
+
+/**
+ * Notify every active user holding a permission (e.g. warehouse/admin teams).
+ */
+export async function notifyByPermission(
+  client: DbClient,
+  permissionCode: string,
+  eventType: string,
+  aggregateType: string,
+  aggregateId: string,
+  title: string,
+  body: string,
+  priority: 'low' | 'normal' | 'high' = 'normal',
+) {
+  const eventId = randomUUID();
+  await client.query('INSERT INTO outbox_events(id,event_type,aggregate_type,aggregate_id,payload) VALUES ($1,$2,$3,$4,$5)',
+    [eventId, eventType, aggregateType, aggregateId, JSON.stringify({ title, body })]);
+  const recipients = await client.query<{ id: string }>(
+    `SELECT DISTINCT u.id FROM users u
+     JOIN user_roles ur ON ur.user_id = u.id
+     JOIN role_permissions rp ON rp.role_code = ur.role_code
+     WHERE rp.permission_code = $1 AND u.status = 'active'`,
+    [permissionCode]);
+  for (const row of recipients.rows) {
+    await client.query(
+      `INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (user_id, event_id) DO NOTHING`,
+      [randomUUID(), row.id, eventId, title, body, priority]);
+  }
+}
