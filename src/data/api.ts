@@ -204,6 +204,15 @@ export const productsApi = {
   update: (id: string, payload: unknown) => apiClient.patch<{ id: string; updated: string[] }>(`/products/${id}`, payload),
   status: (id: string, status: "published" | "draft" | "rejected" | "archived") =>
     apiClient.patch<{ id: string; status: string }>(`/products/${id}/status`, { status }),
+  /** Full server detail for the unified create/edit studio — includes inactive variants (Req 38). */
+  adminDetail: (id: string) => authFetch<Record<string, unknown> & {
+    variants: { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number }[];
+  }>(`/admin/products/${id}`),
+  /** Enabling a blank Color×Size matrix cell creates a real variant (Req 26/32). */
+  createVariant: (productId: string, payload: { color?: string; size?: string; weightGrams?: number | null }) =>
+    apiClient.post<{ id: string; sku: string; color: string | null; size: string | null; active: boolean }>(`/products/${productId}/variants`, payload),
+  updateVariant: (productId: string, variantId: string, payload: { active?: boolean; weightGrams?: number | null }) =>
+    apiClient.patch<{ id: string }>(`/products/${productId}/variants/${variantId}`, payload),
   /** Cutout/style-builder state has no dedicated column yet → metadata bucket. */
   cutout: async (id: string, metadata: Record<string, unknown>, cutout: unknown) =>
     apiClient.patch<{ id: string }>(`/products/${id}`, { metadata: { ...metadata, cutout } }),
@@ -547,7 +556,12 @@ export const adminApi = {
   createSmsCampaign: (payload: unknown) => authFetch<unknown>("/admin/sms-campaigns", { method: "POST", body: JSON.stringify(payload) }),
   updateSmsCampaign: (id: string, payload: unknown) => authFetch<unknown>(`/admin/sms-campaigns/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   sendSmsCampaign: (id: string) => authFetch<{ status: string; reason?: string; recipients?: number }>(`/admin/sms-campaigns/${id}/send`, { method: "POST" }),
-  users: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/users"),
+  /** Server-side user directory (Req 19-20): search + filters + pagination run in PostgreSQL. */
+  users: (params?: Record<string, string | number>) => {
+    const q = new URLSearchParams();
+    if (params) for (const [k, v] of Object.entries(params)) { if (v !== "" && v !== undefined) q.set(k, String(v)); }
+    return authFetch<{ items: Record<string, unknown>[]; total: number; limit: number; offset: number }>(`/admin/users?${q.toString()}`);
+  },
   cooperationRequests: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/cooperation-requests"),
   reviewCooperationRequest: (id: string, payload: { status: string; note?: string }) =>
     authFetch<unknown>(`/admin/cooperation-requests/${id}/review`, { method: "POST", body: JSON.stringify(payload) }),
@@ -582,6 +596,49 @@ export const productStructureApi = {
   createTaxonomy: (payload: { kind: "gender" | "season"; code: string; label: string; active?: boolean; position?: number }) =>
     apiClient.post<unknown>("/admin/taxonomies", payload),
   updateTaxonomy: (id: string, payload: unknown) => apiClient.patch<unknown>(`/admin/taxonomies/${id}`, payload),
+};
+
+/* --------------------- product colors (Req 30) --------------------- */
+
+export type ProductColor = { id: string; name: string; hex: string; active: boolean; position: number };
+
+export const productColorsApi = {
+  list: () => publicApi.get<{ items: ProductColor[] }>("/product-colors"),
+  create: (payload: { name: string; hex: string }) => apiClient.post<ProductColor>("/admin/product-colors", payload),
+  update: (id: string, payload: Partial<Pick<ProductColor, "name" | "hex" | "active" | "position">>) =>
+    apiClient.patch<ProductColor>(`/admin/product-colors/${id}`, payload),
+};
+
+/* --------------------- manual sales (Req 13-16) --------------------- */
+
+export type ManualSaleChannel = "website" | "instagram" | "in_person" | "phone" | "whatsapp" | "telegram" | "other";
+export type ManualSaleCreate = {
+  channel: ManualSaleChannel;
+  warehouseId: string;
+  customerId?: string | null;
+  customerName?: string;
+  customerPhone?: string;
+  customerNote?: string;
+  note?: string;
+  discountRial?: string;
+  lines: { variantId: string; quantity: number; unitPriceRial: string }[];
+  payment: { method: "card_to_card" | "cash" | "pos" | "gateway" | "other"; amountRial: string; reference?: string; paidAt?: string; note?: string };
+};
+
+export const manualSalesApi = {
+  list: (params?: Record<string, string | number>) => {
+    const q = new URLSearchParams();
+    if (params) for (const [k, v] of Object.entries(params)) { if (v !== "" && v !== undefined) q.set(k, String(v)); }
+    return authFetch<{ items: Record<string, unknown>[]; total: number; limit: number; offset: number;
+      channels: { channel: string; sales: number; totalRial: string }[] }>(`/admin/manual-sales?${q.toString()}`);
+  },
+  detail: (id: string) => authFetch<Record<string, unknown>>(`/admin/manual-sales/${id}`),
+  create: (payload: ManualSaleCreate, idempotencyKey: string) =>
+    authFetch<{ id: string; reference: string; status: string; payment: { id: string; verificationStatus: string } }>(
+      "/admin/manual-sales", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
+  verifyPayment: (saleId: string, paymentId: string, action: "verify" | "reject", note?: string) =>
+    authFetch<{ id: string; status: string; verificationStatus: string }>(
+      `/admin/manual-sales/${saleId}/payments/${paymentId}/verification`, { method: "POST", body: JSON.stringify({ action, note }) }),
 };
 
 /* --------------------- dynamic specs + size guides --------------------- */

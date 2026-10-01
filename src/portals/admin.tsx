@@ -25,6 +25,8 @@ import { AdminWmsPanel } from "./admin-wms-panel";
 import { FinanceLedgerPanel } from "../components/finance-ledger";
 import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
+import { ManualSalesPanel } from "../components/manual-sales-panel";
+import { UsersDirectoryPanel } from "../components/users-directory";
 import { PromoPanel } from "../components/promo-panel";
 import { CmsCenter } from "./admin-cms";
 import { SupplierChangeReview } from "./supplier-profile-settings";
@@ -195,6 +197,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
     { g: "خرده‌فروشی" },
     { v: "rorders", label: "سفارش‌های خرده", icon: <ShoppingBag size={17} /> },
+    { v: "manual-sales", label: "فروش دستی و خارج از سایت", icon: <ShoppingBag size={17} /> },
     { v: "rproducts", label: "تعریف محصول", icon: <Tags size={17} /> },
     { v: "structure", label: "ساختار محصولات", icon: <Layers size={17} /> },
     { v: "shipping", label: "حمل‌ونقل", icon: <Truck size={17} /> },
@@ -221,6 +224,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { g: "سیستم" },
     { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
     { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
+    { v: "users", label: "فهرست کاربران", icon: <Users size={17} /> },
     { v: "restrictions", label: "محدودیت کاربران", icon: <ShieldAlert size={17} /> },
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
   ];
@@ -239,6 +243,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     buyers: ["مدیریت خریداران عمده", "تأیید عضویت، پلن و وضعیت حساب"],
     plans: ["پلن‌های عضویت عمده", "تعریف سطوح، اعتبار و قابلیت‌ها"],
     rorders: ["سفارش‌های خرده", "آماده‌سازی، ارسال، مرجوعی"],
+    "manual-sales": ["فروش دستی و خارج از سایت", "ثبت فروش اینستاگرام/حضوری/تلفنی با پرداخت کارت‌به‌کارت و کسر موجودی واقعی"],
+    users: ["فهرست کاربران", "جست‌وجو و فیلتر سمت سرور روی نقش، وضعیت، شهر و سوابق خرید"],
     rproducts: ["تعریف محصول", "کاتالوگ کامل، واریانت‌ها، سئو و کانال‌های فروش"],
     shipping: ["حمل‌ونقل", "روش‌های ارسال خرده و عمده"],
     wms: ["انبار و موجودی (WMS)", "موجودی قابل فروش، رزرو، ورودی و آسیب‌دیده — انتقال و رسید"],
@@ -589,6 +595,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
           {/* ---------- Retail modules ---------- */}
           {tab === "rorders" && moduleBoundary("سفارش‌های خرده", <RetailOrders flash={flash} />)}
+          {tab === "manual-sales" && moduleBoundary("فروش دستی", <ManualSalesPanel flash={flash} />)}
+          {tab === "users" && moduleBoundary("فهرست کاربران", <UsersDirectoryPanel flash={flash} />)}
           {tab === "rproducts" && moduleBoundary("تعریف محصول", <ProductStudio flash={flash} />)}
           {tab === "structure" && moduleBoundary("ساختار محصولات", <ProductStructurePanel flash={flash} />)}
           {tab === "mreview" && moduleBoundary("بازبینی بازارچه", <MarketplaceReviewPanel flash={flash} />)}
