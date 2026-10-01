@@ -3,7 +3,7 @@ import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Se
 import { Btn, Card, Checkbox, Drawer, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
 import { inventoryApi, manualSalesApi, productsApi, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
-import { AdminWmsPanel } from "./admin-wms-panel";
+import { WarehouseSettings, type LowStock } from "../components/warehouse-settings";
 import { formatPersianDateTimeFull } from "../data/persian-date";
 import { cn } from "../utils/cn";
 
@@ -57,7 +57,7 @@ type TransferRow = {
   source_warehouse_name?: string | null; destination_warehouse_name?: string | null;
 };
 type ReceiptRow = {
-  id: string; reference: string; variant_id: string | null; quantity: number | null; status: string;
+  id: string; reference: string; warehouse_id: string; variant_id: string | null; quantity: number | null; status: string;
   inventory_domain: string; received_quantity: number | null; missing_quantity: number; batch_reference: string | null;
   supplier_request_id: string | null; created_at: string;
 };
@@ -72,12 +72,12 @@ type F = (msg: string) => void;
  * C: «انبار و نقل‌وانتقالات» — the single warehouse hub.
  * Exactly THREE primary tabs: retail inventory / transfers (incl. reverse) /
  * wholesale (inventory, supplier requests, inbound & QC).
- * Warehouse settings (the original WMS panel, kept as-is) opens from a header
- * button in a drawer — it is intentionally NOT a primary tab.
+ * Configuration lives in a compact drawer; operations remain in their domain tabs.
  */
 export function WarehouseHub({ flash }: { flash: F }) {
   const [tab, setTab] = useState<"retail" | "transfers" | "wholesale">("retail");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [lowStockReport, setLowStockReport] = useState<LowStock[] | null>(null);
   return (
     <div className="animate-[fadeUp_0.35s_ease] space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -94,8 +94,9 @@ export function WarehouseHub({ flash }: { flash: F }) {
       {tab === "retail" && <DomainInventory domain="retail" flash={flash} />}
       {tab === "transfers" && <TransfersCenter flash={flash} />}
       {tab === "wholesale" && <WholesaleCenter flash={flash} />}
+      {lowStockReport && <Modal open title="گزارش موجودی کم — همه انبارها و دامنه‌ها" onClose={() => setLowStockReport(null)}><div className="overflow-x-auto p-4"><p className="text-xs text-[var(--kv-muted)]">حداکثر ۵۰ قلم با کمترین موجودی</p><table className="kv-table w-full text-xs"><thead><tr><th>کد کالا</th><th>انبار</th><th>دامنه</th><th>قابل فروش</th></tr></thead><tbody>{lowStockReport.map((item) => <tr key={`${item.variant_id}-${item.warehouse_id}-${item.inventory_domain}`}><td dir="ltr">{item.sku}</td><td>{item.warehouse_name}</td><td>{item.inventory_domain === "retail" ? "خرده" : "عمده"}</td><td>{fa(item.available)}</td></tr>)}</tbody></table>{!lowStockReport.length && <p className="text-sm">موجودی کم یافت نشد.</p>}</div></Modal>}
       <Drawer open={settingsOpen} onClose={() => setSettingsOpen(false)} title="تنظیمات انبار" wide>
-        <div className="p-4"><AdminWmsPanel /></div>
+        <div className="p-4"><WarehouseSettings onReport={(rows) => { setSettingsOpen(false); setLowStockReport(rows); }} /></div>
       </Drawer>
     </div>
   );
