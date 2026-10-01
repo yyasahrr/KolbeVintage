@@ -247,13 +247,26 @@ export const inventoryApi = {
   },
   lowStock: (threshold = 10) => authFetch<{ items: unknown[] }>(`/inventory/low-stock?threshold=${threshold}`),
   movements: (variantId: string) => authFetch<{ items: unknown[] }>(`/inventory/movements?variantId=${variantId}`),
-  adjust: (payload: { variantId: string; warehouseId: string; delta: number; reason: string; reference: string }, idempotencyKey: string) =>
+  adjust: (payload: { variantId: string; warehouseId: string; delta: number; reason: string; reference: string; inventoryDomain?: "retail" | "wholesale" }, idempotencyKey: string) =>
     authFetch<unknown>("/inventory/adjustments", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
   damaged: (payload: { variantId: string; warehouseId: string; quantity: number; reason: string }) =>
     authFetch<unknown>("/inventory/damaged", { method: "POST", body: JSON.stringify(payload) }),
-  receipt: (payload: { warehouseId: string; variantId: string; quantity: number; reference?: string }, key: string) =>
+  receipt: (payload: { warehouseId: string; variantId: string; quantity: number; reference?: string; inventoryDomain?: "retail" | "wholesale"; batchReference?: string }, key: string) =>
     authFetch<unknown>("/inventory/receipts", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
-  receiveReceipt: (id: string) => authFetch<unknown>(`/inventory/receipts/${id}/receive`, { method: "POST" }),
+  receiveReceipt: (id: string, payload?: { receivedQuantity?: number; note?: string }) =>
+    authFetch<unknown>(`/inventory/receipts/${id}/receive`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+  /** Mode A: official single-variant domain/warehouse transfer (G1-G6). */
+  domainTransfer: (payload: {
+    variantId: string; sourceDomain: "retail" | "wholesale"; destinationDomain: "retail" | "wholesale";
+    sourceWarehouseId: string; destinationWarehouseId: string; quantity: number; reason: string;
+    ownershipConversionId?: string; confirmFullStock?: boolean; batchReference?: string;
+  }, key: string) =>
+    authFetch<Record<string, unknown>>("/inventory/transfers", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
+  approveTransfer: (id: string) => authFetch<unknown>(`/inventory/transfers/${id}/approve`, { method: "POST" }),
+  cancelTransfer: (id: string) => authFetch<unknown>(`/inventory/transfers/${id}/cancel`, { method: "POST" }),
+  /** H: partial/full reverse of a completed transfer (RTRF). */
+  reverseTransfer: (id: string, payload: { quantity: number; reason: string }, key: string) =>
+    authFetch<Record<string, unknown>>(`/inventory/transfers/${id}/reverse`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
   receipts: () => authFetch<{ items: unknown[] }>("/inventory/receipts"),
   transfer: (payload: { fromWarehouseId: string; toWarehouseId: string; lines: { variantId: string; quantity: number }[]; reference?: string }) =>
     authFetch<unknown>("/inventory/transfers", { method: "POST", body: JSON.stringify(payload) }),
@@ -1308,4 +1321,44 @@ export const promotionRulesApi = {
     authFetch<Record<string, unknown>>(`/promotions/rules/${id}`, { method: "DELETE" }),
   resolveVariantPrice: (variantId: string, channel: "retail" | "wholesale" = "retail", paymentMode: "cash" | "four_installments" = "cash") =>
     publicApi.get<Record<string, unknown>>(`/pricing/variants/${variantId}?channel=${channel}&paymentMode=${paymentMode}`),
+  /** A1/A4/A5: per-product promotion snapshot for the «تخفیف و جشنواره» column. */
+  productSummary: (productId: string) => authFetch<{
+    productId: string;
+    activeFestival: { promotionId: string; name: string; endsAt: string | null } | null;
+    activeStandaloneRules: number;
+    suspendedStandaloneRules: number;
+  }>(`/promotions/product-summary?productId=${productId}`),
+  rulesByProduct: (productId: string) => authFetch<{ items: Record<string, unknown>[] }>(`/promotions/rules?productId=${productId}`),
+  createPromotion: (payload: Record<string, unknown>) =>
+    authFetch<Record<string, unknown>>("/promotions", { method: "POST", body: JSON.stringify(payload) }),
+  updatePromotion: (id: string, payload: { active?: boolean; endsAt?: string | null; priority?: number }) =>
+    authFetch<Record<string, unknown>>(`/promotions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+};
+
+/* ---------- supplier supply requests (section I) ---------- */
+export const supplierRequestsApi = {
+  create: (payload: { note?: string; items: Record<string, unknown>[] }, key: string) =>
+    authFetch<Record<string, unknown>>("/supplier-requests", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
+  list: (status?: string) => authFetch<{ items: Record<string, unknown>[] }>(`/supplier-requests${status ? `?status=${status}` : ""}`),
+  detail: (id: string) => authFetch<Record<string, unknown>>(`/supplier-requests/${id}`),
+  review: (id: string, payload: { decision: "approve" | "reject" | "request_revision"; reason?: string }) =>
+    authFetch<Record<string, unknown>>(`/supplier-requests/${id}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  revise: (id: string, payload: { note?: string; items: Record<string, unknown>[] }) =>
+    authFetch<Record<string, unknown>>(`/supplier-requests/${id}/revise`, { method: "POST", body: JSON.stringify(payload) }),
+  dispatch: (id: string, payload: { warehouseId: string; batchReference?: string; carrier?: string; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/supplier-requests/${id}/dispatch`, { method: "POST", body: JSON.stringify(payload) }),
+  close: (id: string) => authFetch<Record<string, unknown>>(`/supplier-requests/${id}/close`, { method: "POST" }),
+};
+
+/* ---------- relational series templates (section K) ---------- */
+export const seriesTemplatesApi = {
+  create: (payload: { productId: string; name: string; description?: string; items: { variantId: string; quantityPerSeries: number }[] }) =>
+    authFetch<Record<string, unknown>>("/series-templates", { method: "POST", body: JSON.stringify(payload) }),
+  list: (productId?: string) => authFetch<{ items: Record<string, unknown>[] }>(`/series-templates${productId ? `?productId=${productId}` : ""}`),
+  detail: (id: string) => authFetch<Record<string, unknown> & {
+    items: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null }[];
+    pairsPerSeries: number; availableSeries: number; name: string; productName: string;
+  }>(`/series-templates/${id}`),
+  update: (id: string, payload: Record<string, unknown>) =>
+    authFetch<Record<string, unknown>>(`/series-templates/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
 };
