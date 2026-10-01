@@ -95,6 +95,22 @@ test('WMS core: receipts honor their domain + discrepancy, transfers enforce G1-
     assert.equal(wholesale.incoming, 80, 'incoming goes to the wholesale domain');
     assert.equal(wholesale.on_hand, 0, 'J: on_hand untouched before receive');
 
+    // Row receipt lookup must filter before LIMIT; a recent unrelated receipt must not mask an older pending one.
+    await pool.query(`INSERT INTO stock_receipts(id, reference, warehouse_id, variant_id, quantity, status, inventory_domain, created_by)
+      SELECT gen_random_uuid(), 'NOISE-' || $1 || '-' || n, $2, $3, 1, 'received', 'retail', $4
+      FROM generate_series(1, 105) n`, [suffix, kolbeWh, supVariant.id, (await pool.query("SELECT created_by FROM stock_receipts WHERE id = $1", [receipt.json().id])).rows[0].created_by]);
+    const receiptPage2 = await app.inject({ method: 'GET', url: `/api/v1/inventory/receipts?variantId=${supVariant.id}&warehouseId=${kolbeWh}&offset=100`, headers: adminHeaders });
+    assert.equal(receiptPage2.json().items.length, 6, 'filtered receipt pagination reaches records beyond the first 100');
+    const lookupUrl = `/api/v1/inventory/receipts?variantId=${supVariant.id}&warehouseId=${kolbeWh}&inventoryDomain=wholesale&status=pending`;
+    const pendingLookup = await app.inject({ method: 'GET', url: lookupUrl, headers: adminHeaders });
+    assert.equal(pendingLookup.statusCode, 200, pendingLookup.body);
+    assert.deepEqual(pendingLookup.json().items.map((item: { id: string }) => item.id), [receipt.json().id]);
+    const wrongDomain = await app.inject({ method: 'GET', url: lookupUrl.replace('wholesale', 'retail'), headers: adminHeaders });
+    assert.equal(wrongDomain.json().items.length, 0);
+    assert.equal((await app.inject({ method: 'GET', url: `${lookupUrl}&offset=1`, headers: adminHeaders })).json().items.length, 0, 'receipt pagination respects filtered results');
+    const invalidLookup = await app.inject({ method: 'GET', url: '/api/v1/inventory/receipts?variantId=invalid', headers: adminHeaders });
+    assert.equal(invalidLookup.statusCode, 400);
+
     const receive = await app.inject({ method: 'POST', url: `/api/v1/inventory/receipts/${receipt.json().id}/receive`,
       headers: adminHeaders, payload: { receivedQuantity: 78 } });
     assert.equal(receive.statusCode, 200, receive.body);
@@ -103,6 +119,7 @@ test('WMS core: receipts honor their domain + discrepancy, transfers enforce G1-
     wholesale = await balance(pool, supVariant.id, kolbeWh, 'wholesale');
     assert.equal(wholesale.on_hand, 78, 'wholesale on_hand gets exactly the received quantity');
     assert.equal(wholesale.incoming, 0);
+    assert.equal((await app.inject({ method: 'GET', url: lookupUrl, headers: adminHeaders })).json().items.length, 0, 'received receipt leaves pending row lookup');
     const retail = await balance(pool, supVariant.id, kolbeWh, 'retail');
     assert.equal(retail.on_hand, 0, 'D1: retail domain untouched by a wholesale receipt');
     const discrepancyEvent = await pool.query(

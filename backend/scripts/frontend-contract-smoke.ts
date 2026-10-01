@@ -8,7 +8,7 @@
  *
  * Run with: npm run test:contract   (inside backend/)
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import net from 'node:net';
@@ -31,6 +31,7 @@ import {
   addDaysIso, formatPersianDate, formatPersianDateTime, isoDateOnly, isoToPersianInput, persianInputToIso,
   todayDateOnly, todayIso,
 } from '../../src/data/persian-date.ts';
+import { adjustmentPreview, pendingForRows } from '../../src/data/warehouse-ux.ts';
 import { fmtRial, fmtToman, rialFromToman, tomanFromRial } from '../../src/data/contracts.ts';
 import {
   cmsApi, financeApi, financeOpsApi, integrationsApi, inventoryApi, invoiceDocsApi, promoApi,
@@ -40,6 +41,15 @@ import {
 /** Pick a free loopback port so a stale server from an earlier run can never hijack the smoke. */
 const freePort = async (start: number) => {
   for (let port = start; port < start + 50; port += 1) {
+    // On Windows a loopback bind can succeed beside a wildcard listener; reject live ports first.
+    const listening = await new Promise<boolean>((resolve) => {
+      const socket = net.connect({ port, host: '127.0.0.1' });
+      socket.setTimeout(500);
+      socket.once('connect', () => { socket.destroy(); resolve(true); });
+      socket.once('error', () => resolve(false));
+      socket.once('timeout', () => { socket.destroy(); resolve(false); });
+    });
+    if (listening) continue;
     const ok = await new Promise<boolean>((resolve) => {
       const probe = net.createServer();
       probe.once('error', () => resolve(false));
@@ -85,17 +95,20 @@ try {
   if (await run('npx', ['tsx', 'src/bootstrap-admin.ts'], { BOOTSTRAP_ADMIN_EMAIL: adminEmail, BOOTSTRAP_ADMIN_PASSWORD: adminPassword }) !== 0) {
     throw new Error('admin bootstrap failed');
   }
-  app = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: process.platform === 'win32' });
+  app = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
   const log: string[] = [];
   app.stdout?.on('data', (chunk) => log.push(String(chunk)));
   app.stderr?.on('data', (chunk) => log.push(String(chunk)));
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  let ready = false;
+  for (let attempt = 0; attempt < 180; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     try {
       const health = await fetch(`${base}/health/ready`);
-      if (health.ok) break;
+      if (health.ok) { ready = true; break; }
     } catch { /* not up yet */ }
   }
+
+  if (!ready) throw new Error(`API did not become ready: ${log.join("").slice(-2000)}`);
 
   // The browser client resolves its base from window.location.origin; in Node we inject it.
   setApiBaseUrl(base);
@@ -289,6 +302,28 @@ try {
   check('stock changes only through WMS adjustment (no PATCH product stock)',
     afterAdjust.totals.available === 16, `available=${afterAdjust.totals.available}`);
 
+  // Warehouse UX: use the real frontend helper and client against the existing receipt ledger.
+  const uxVariant = wmsProduct.variants[0]!.id;
+  const uxRow = { variant_id: uxVariant, warehouse_id: warehouse.id, inventory_domain: 'retail' };
+  const increase = adjustmentPreview({ on_hand: 12, reserved: 2, damaged: 1 }, 'increase', '3');
+  const decrease = adjustmentPreview({ on_hand: 12, reserved: 2, damaged: 1 }, 'decrease', '3');
+  check('structured adjustment calculates signed delta and preview', increase.delta === 3 && increase.next === 15 && decrease.delta === -3 && decrease.next === 9);
+  check('adjustment rejects zero, signed, fractional and nonnumeric quantities', ['0', '-3', '+3', '1.5', 'abc', ''].every((value) => !adjustmentPreview({ on_hand: 12, reserved: 0, damaged: 0 }, 'increase', value).valid));
+  check('adjustment preview protects reserved and damaged stock', !adjustmentPreview({ on_hand: 12, reserved: 8, damaged: 2 }, 'decrease', '3').valid);
+  const pendingA = await inventoryApi.receipt({ warehouseId: warehouse.id, variantId: uxVariant, inventoryDomain: 'retail', quantity: 5, batchReference: 'CTN-UX-A' }, `ux-a-${suffix}`) as { id: string };
+  const pendingB = await inventoryApi.receipt({ warehouseId: warehouse.id, variantId: uxVariant, inventoryDomain: 'retail', quantity: 3, batchReference: 'CTN-UX-B' }, `ux-b-${suffix}`) as { id: string };
+  type Pending = { id: string; variant_id: string; warehouse_id: string; inventory_domain: string; status: string };
+  const pendingList = (await inventoryApi.pendingReceipts({ variantId: uxVariant, warehouseId: warehouse.id, inventoryDomain: 'retail' })).items as Pending[];
+  check('pending receipt lookup matches variant, warehouse, domain and status', pendingList.length === 2 && pendingForRows(pendingList, [uxRow]).length === 2 && pendingForRows(pendingList, [{ ...uxRow, inventory_domain: 'wholesale' }]).length === 0 && pendingForRows(pendingList, [{ ...uxRow, warehouse_id: 'other' }]).length === 0 && pendingForRows(pendingList, [{ ...uxRow, variant_id: 'other' }]).length === 0);
+  const uxBefore = readProductInventory(await inventoryApi.productInventory(wmsProduct.id));
+  await inventoryApi.receiveReceipt(pendingA.id, { receivedQuantity: 4 });
+  const uxAfter = readProductInventory(await inventoryApi.productInventory(wmsProduct.id));
+  check('receive uses existing ledger: on-hand increases by actual, incoming clears expected', uxAfter.items.reduce((sum, row) => sum + row.onHand, 0) === uxBefore.items.reduce((sum, row) => sum + row.onHand, 0) + 4 && uxAfter.totals.incoming === uxBefore.totals.incoming - 5);
+  const remainingReceipts = (await inventoryApi.pendingReceipts({ variantId: uxVariant, warehouseId: warehouse.id, inventoryDomain: 'retail' })).items as Pending[];
+  check('receiving one independent receipt leaves the other pending', remainingReceipts.length === 1 && remainingReceipts[0]!.id === pendingB.id);
+  await inventoryApi.receiveReceipt(pendingB.id, { receivedQuantity: 3 });
+  check('pending receipts disappear after final receive', (await inventoryApi.pendingReceipts({ variantId: uxVariant, warehouseId: warehouse.id, inventoryDomain: 'retail' })).items.length === 0);
+
   // ---------- (11/12/30) promo: Jalali input → ISO → reload → same Jalali ----------
   const couponExpiry = persianInputToIso('۱۴۰۵/۰۷/۱۳')!;
   const coupon = await promoApi.createCoupon({
@@ -481,7 +516,7 @@ try {
   check('frontend contract smoke completed without exceptions', false, String(error instanceof Error ? error.stack ?? error.message : error).slice(0, 400));
 } finally {
   if (app?.pid) {
-    if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(app.pid), '/T', '/F'], { stdio: 'ignore' });
+    if (process.platform === 'win32') app.kill();
     else { try { process.kill(-app.pid, 'SIGKILL'); } catch { /* already gone */ } }
   }
   await server.stop();

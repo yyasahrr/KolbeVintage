@@ -8,7 +8,7 @@
    Pass 2 runs `npm run seed:local` (NODE_ENV=development) and re-checks the data-driven UI.
 
    Run with: LD_LIBRARY_PATH=/tmp/chromedeps/lib:/tmp/chromedeps node scripts/browser-admin-smoke.mjs */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -17,17 +17,27 @@ import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import puppeteer from 'puppeteer-core';
+import { warehouseUxSmoke } from './warehouse-ux-browser.mjs';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const chromePath = process.env.KV_CHROME_PATH ?? '/tmp/chromium';
 const stopProcessTree = (child, signal = 'SIGTERM') => {
   if (!child?.pid) return;
-  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+  if (process.platform === 'win32') { try { child.kill(); } catch { /* gone */ } }
   else { try { process.kill(-child.pid, signal); } catch { /* gone */ } }
 };
 
 /** The smoke owns its stack so every run starts from an as-migrated (empty) database. */
 const freePort = async (start) => {
   for (let port = start; port < start + 60; port += 1) {
+    // On Windows a loopback bind can succeed beside a wildcard listener; reject live ports first.
+    const listening = await new Promise((resolve) => {
+      const socket = net.connect({ port, host: '127.0.0.1' });
+      socket.setTimeout(500);
+      socket.once('connect', () => { socket.destroy(); resolve(true); });
+      socket.once('error', () => resolve(false));
+      socket.once('timeout', () => { socket.destroy(); resolve(false); });
+    });
+    if (listening) continue;
     const ok = await new Promise((resolve) => {
       const probe = net.createServer();
       probe.once('error', () => resolve(false));
@@ -76,7 +86,7 @@ await tolerantStep('npx', ['tsx', 'src/bootstrap-admin.ts'], {
 let apiLog = '';
 let api = null;
 const startApi = async () => {
-  const child = spawn('npx', ['tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: process.platform === 'win32' });
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
   child.stdout.on('data', (chunk) => { apiLog += String(chunk); });
   child.stderr.on('data', (chunk) => { apiLog += String(chunk); });
   for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -104,10 +114,10 @@ const stopApi = async (child) => {
   if (await portBusy(apiPort)) throw new Error(`api port ${apiPort} still busy after graceful stop`);
 };
 api = useExternalStack ? { pid: null } : await startApi();
-const web = useExternalStack ? { pid: null, stdout: null, stderr: null, on: () => {} } : spawn('npm', ['run', 'dev', '--', '--port', String(webPort), '--strictPort'], {
+const web = useExternalStack ? { pid: null, stdout: null, stderr: null, on: () => {} } : spawn(process.execPath, [join(repoRoot, 'node_modules/vite/bin/vite.js'), '--port', String(webPort), '--strictPort'], {
   cwd: repoRoot,
   env: { ...process.env, KV_API_PROXY_TARGET: `http://127.0.0.1:${apiPort}` },
-  stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: process.platform === 'win32',
+  stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true,
 });
 let webLog = '';
 if (web.stdout) { web.stdout.on('data', (chunk) => { webLog += String(chunk); }); web.stderr.on('data', (chunk) => { webLog += String(chunk); }); }
@@ -261,24 +271,25 @@ try {
     body.includes('روش ارسالی ثبت نشده') || body.includes('روش ارسال') , '');
   await shot('02-shipping-empty');
 
-  await openTab('انبار و موجودی');
+  await openTab('انبار و نقل‌وانتقالات');
+  await clickByText('تنظیمات انبار');
   body = await text();
-  checkFresh(freshDb, 'WMS first-run card offers «ایجاد اولین انبار»', () => body.includes('ایجاد اولین انبار'));
+  checkFresh(freshDb, 'WMS first-run card offers «ساخت انبار»', () => body.includes('ساخت انبار'));
   check('WMS copy is Persian (no Low Stock / Movement History leftovers)',
     !/Low Stock|Movement History|Warehouse ID|Variant ID|Delta|Reference|Adjustment|Transfer/.test(body));
   if (freshDb) {
     const createdWarehouse = await setInput('کد انبار', 'KV-MAIN') && await setInput('نام انبار', 'انبار مرکزی');
     check('WMS warehouse form accepts code + Persian name', createdWarehouse);
-    await clickByText('ایجاد اولین انبار');
+    await clickByText('ساخت انبار');
     await sleep(2500);
     body = await text();
-    check('WMS «ایجاد اولین انبار» really creates it and reloads the module',
+    check('WMS «ساخت انبار» really creates it and reloads the module',
       body.includes('KV-MAIN') && body.includes('انبار مرکزی'), body.split('\n').slice(0, 5).join(' | ').slice(0, 120));
     check('WMS first-warehouse button performs a real POST /warehouses',
       sawCall('POST', '/warehouses') && sawCall('GET', '/warehouses'), apiCalls.filter((c) => c.includes('/warehouses')).slice(-3).join(' , '));
   } else {
     const switched = await page.evaluate(() => {
-      const select = document.querySelector('select[aria-label="انتخاب انبار"]');
+      const select = document.querySelector('select[aria-label="انبار انتخاب‌شده"]');
       if (!select) return false;
       const option = [...select.options].find((candidate) => candidate.text.includes('KV-TEH-01'));
       if (!option) return false;
@@ -291,6 +302,7 @@ try {
     check('WMS lists the real warehouses from the server', switched, body.replace(/\n+/g, ' | ').slice(0, 90));
   }
   await shot('03-wms-first-warehouse');
+  await page.keyboard.press('Escape');
 
   await openTab('کوپن و جشنواره');
   body = await text();
@@ -426,32 +438,8 @@ try {
   check('shipping table has no raw ISO dates', !/\d{4}-\d{2}-\d{2}T/.test(body));
   await shot('08-shipping-seeded');
 
-  await openTab('انبار و موجودی');
-  await waitForText('موجودی فیزیکی');
-  // Stock lives in real warehouses: switch to the seeded main warehouse and read its ledger.
-  const switched = await page.evaluate(() => {
-    const select = document.querySelector('select[aria-label="انتخاب انبار"]');
-    if (!select) return false;
-    // Prefer the seeded main warehouse; otherwise whatever warehouse the stack carries.
-    const option = [...select.options].find((candidate) => candidate.text.includes('KV-TEH-01')) ?? select.options[0];
-    if (!option) return false;
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, option.value);
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  });
-  // Wait for a real balance row (not just the table header) to appear for the selected warehouse.
-  let balanceRows = 0;
-  for (let attempt = 0; attempt < 25 && balanceRows === 0; attempt += 1) {
-    await sleep(400);
-    balanceRows = await page.evaluate(() => {
-      const rows = [...document.querySelectorAll('table tbody tr')];
-      return rows.filter((row) => /KV-[A-Z]+-\d+/.test(row.innerText)).length;
-    });
-  }
-  body = await text();
-  check('seeded WMS balances render (on-hand/reserved/damaged/available in Persian)',
-    switched && balanceRows > 0 && body.includes('موجودی فیزیکی') && body.includes('قابل فروش') && body.includes('رزرو شده'),
-    `${balanceRows} balance row(s) — ${body.replace(/\n+/g, ' | ').slice(0, 110)}`);
+  await openTab('انبار و نقل‌وانتقالات');
+  await warehouseUxSmoke({ page, check, apiPort, clickByText, setInput, text, waitForText });
   await shot('09-wms-seeded');
 
   await openTab('تعریف محصول');
@@ -510,7 +498,7 @@ try {
   const allTabs = [
     'برج کنترل', 'سفارش‌های سرور', 'سفارش‌های عمده', 'میز عملیات کلبه', 'محصولات و بازبینی', 'قالب‌های سری کلبه',
     'تأمین‌کنندگان', 'درخواست همکاری', 'خریداران عمده', 'پلن‌های عضویت', 'سفارش‌های خرده', 'تعریف محصول',
-    'حمل‌ونقل', 'انبار و موجودی', 'مشتریان', 'کوپن و جشنواره', 'محتوا', 'پنل پیامک', 'اعلان‌ها', 'مالی و تسویه',
+    'حمل‌ونقل', 'انبار و نقل‌وانتقالات', 'مشتریان', 'کوپن و جشنواره', 'محتوا', 'پنل پیامک', 'اعلان‌ها', 'مالی و تسویه',
     'دفتر کل', 'یکپارچه‌سازی‌ها', 'تیکت و مرجوعی', 'گزارش حسابرسی', 'محدودیت کاربران', 'تنظیمات و دسترسی',
   ];
   const broken = [];
@@ -553,7 +541,9 @@ try {
   check('browser admin smoke completed without exceptions', false, String(error.stack ?? error).slice(0, 400));
   console.error('--- page errors ---\n' + consoleErrors.slice(-8).map((entry) => entry.split('\n').slice(0, 5).join('\n')).join('\n===\n'));
 } finally {
-  await browser.close();
+  // Kill test-owned servers before closing the browser; keep cleanup observable on Windows.
+  if (!useExternalStack) for (const child of [api, web]) stopProcessTree(child, 'SIGKILL');
+  await Promise.race([browser.close(), new Promise((resolve) => setTimeout(() => { browser.process()?.kill(); resolve(); }, 5000))]);
   if (!useExternalStack) {
     for (const child of [api, web]) stopProcessTree(child, 'SIGKILL');
     await socketServer.stop();

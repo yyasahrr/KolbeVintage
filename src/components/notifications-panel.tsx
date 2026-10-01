@@ -31,9 +31,9 @@ export function NotificationsPanel() {
       </div>
       <Card className="overflow-hidden">
         <div className="divide-y divide-[var(--kv-line)]">
-          {(items as {id:string; title:string; body:string; event_type:string; channels:string[]; read_at:string|null; created_at:string}[]).slice(0,50).map(n=>(
+          {(items as {id:string; title:string; body:string; priority:string; read_at:string|null; created_at:string}[]).slice(0,50).map(n=>(
             <div key={n.id} className="flex items-start justify-between gap-3 px-4 py-3">
-              <div className="min-w-0"><p className="text-[13px] font-bold">{n.title} <span className="text-[11px] text-[var(--kv-muted)]">#{n.event_type}</span></p><p className="text-xs text-[var(--kv-muted)] leading-6">{n.body}</p><p className="text-[11px] text-[var(--kv-faint)] tabular-nums">{new Date(n.created_at).toLocaleString("fa-IR")} · {n.channels.join("، ")}</p></div>
+              <div className="min-w-0"><p className="text-[13px] font-bold">{n.title}</p><p className="text-xs text-[var(--kv-muted)] leading-6">{n.body}</p><p className="text-[11px] text-[var(--kv-faint)] tabular-nums">{new Date(n.created_at).toLocaleString("fa-IR")}</p></div>
               <span className={"rounded-full px-2 py-0.5 text-[11px] font-bold " + (n.read_at ? "bg-[var(--kv-surface-2)]" : "bg-[var(--kv-accent)] text-white")}>{n.read_at ? "خوانده" : "جدید"}</span>
             </div>
           ))}
