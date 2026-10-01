@@ -603,6 +603,23 @@ export function AdminServerOrders({ request }: { request: ApiRequest }) {
 
       {/* ================= SECTION 1: ORDERS ================= */}
       {section === "orders" && (
+        <>
+        {/* B: retail vs wholesale deals are two different worlds — hard split up front. */}
+        <div className="flex flex-wrap items-center gap-2">
+          {([["", "همه معاملات"], ["retail", "معاملات خرده"], ["wholesale", "معاملات عمده"]] as const).map(([value, label]) => (
+            <button key={value} type="button" onClick={() => setOrderType(value)}
+              className={`inline-flex min-h-10 items-center gap-2 rounded-lg border px-4 text-sm font-bold transition-colors ${
+                orderType === value
+                  ? "border-[var(--kv-action)] bg-[var(--kv-action)] text-[var(--kv-bg)]"
+                  : "border-[var(--kv-line)] bg-[var(--kv-surface)] hover:bg-[var(--kv-surface-2)]"
+              }`}>{label}</button>
+          ))}
+          {orderType === "wholesale" && (
+            <span className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
+              زنجیره عمده: ثبت VIP ← آماده‌سازی تأمین‌کننده ← ارسال به کلبه ← ورود و QC ← تجمیع ← ارسال نهایی به خریدار (تأمین‌کننده هرگز مستقیم برای VIP نمی‌فرستد).
+            </span>
+          )}
+        </div>
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.9fr)]">
           <div className="min-w-0 rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)]">
             <div className="grid gap-2 border-b border-[var(--kv-line)] p-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -709,6 +726,7 @@ export function AdminServerOrders({ request }: { request: ApiRequest }) {
             </div>}
           </div>
         </div>
+        </>
       )}
 
       {/* ================= SECTION 2: INBOUND SHIPMENTS & QC ================= */}
