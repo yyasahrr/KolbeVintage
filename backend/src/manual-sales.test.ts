@@ -317,3 +317,56 @@ test('product structure: persisted colors, variant matrix cells and admin produc
     await pool.end();
   }
 });
+
+test('variant price override drives retail pricing (Req 25)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { headers, productId, variants } = await setup(app, pool, suffix);
+    await pool.query("UPDATE products SET status = 'published' WHERE id = $1", [productId]);
+
+    // Set the override on one variant only — integer RIAL, persisted on the variant row.
+    const patched = await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}/variants/${variants[0]!.id}`, headers,
+      payload: { priceOverrideRial: '3000000' } });
+    assert.equal(patched.statusCode, 200, patched.body);
+    const detail = await app.inject({ method: 'GET', url: `/api/v1/admin/products/${productId}`, headers });
+    const rows = detail.json().variants as { id: string; price_override_rial: string | null }[];
+    assert.equal(rows.find((v) => v.id === variants[0]!.id)?.price_override_rial, '3000000');
+    assert.equal(rows.find((v) => v.id === variants[1]!.id)?.price_override_rial, null);
+
+    // A real retail checkout prices the overridden variant at the override, the sibling at the base price.
+    const customerId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [customerId, `ov-buyer-${suffix}@example.test`, await argon2.hash('BuyerPassword123456!'), 'Override buyer']);
+    await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2)', [customerId, 'customer']);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login',
+      payload: { identity: `ov-buyer-${suffix}@example.test`, password: 'BuyerPassword123456!' } });
+    assert.equal(login.statusCode, 200, login.body);
+    const order = await app.inject({ method: 'POST', url: '/api/v1/orders',
+      headers: { authorization: `Bearer ${login.json().accessToken as string}`, 'idempotency-key': `ov-${suffix}-1234` },
+      payload: {
+        orderType: 'retail', paymentMode: 'cash',
+        items: [{ variantId: variants[0]!.id, quantity: 2 }, { variantId: variants[1]!.id, quantity: 1 }],
+        shippingAddress: { recipient: 'خریدار تست', phone: '09123456789', province: 'تهران', city: 'تهران',
+          line: 'خیابان آزادی، پلاک ۱۰، واحد ۲', postalCode: '1234567890' },
+      } });
+    assert.equal(order.statusCode, 201, order.body);
+    const orderId = order.json().id as string;
+    const lines = await pool.query('SELECT variant_id, unit_price_rial::text FROM order_lines WHERE order_id = $1', [orderId]);
+    const byVariant = new Map(lines.rows.map((row) => [row.variant_id as string, row.unit_price_rial as string]));
+    assert.equal(byVariant.get(variants[0]!.id), '3000000', 'overridden variant uses the override');
+    assert.equal(byVariant.get(variants[1]!.id), '2500000', 'sibling variant keeps the base retail price');
+
+    // Clearing the override returns the variant to the base price.
+    const cleared = await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}/variants/${variants[0]!.id}`, headers,
+      payload: { priceOverrideRial: null } });
+    assert.equal(cleared.statusCode, 200, cleared.body);
+    const after = await app.inject({ method: 'GET', url: `/api/v1/admin/products/${productId}`, headers });
+    assert.equal((after.json().variants as { id: string; price_override_rial: string | null }[])
+      .find((v) => v.id === variants[0]!.id)?.price_override_rial, null);
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});

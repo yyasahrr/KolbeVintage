@@ -15,6 +15,8 @@ const variantInput = z.object({
   size: z.string().max(50).optional(),
   color: z.string().max(100).optional(),
   weightGrams: z.number().int().min(0).max(1000000).nullable().optional(),
+  // Req 25: optional per-variant retail price override (integer rial).
+  priceOverrideRial: z.string().regex(/^\d{1,15}$/).nullable().optional(),
   attributes: z.record(z.string(), z.string()).default({}),
 });
 const productBody = z.object({
@@ -113,6 +115,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
               p.metadata, p.created_at,
               COALESCE(jsonb_agg(jsonb_build_object('id', v.id, 'sku', v.sku, 'size', v.size_label, 'color', v.color_label,
                 'weightGrams', v.weight_grams,
+                'priceOverrideRial', v.price_override_rial::text,
                 'available', COALESCE(b.available, 0), 'reserved', COALESCE(b.reserved, 0),
                 'incoming', COALESCE(b.incoming, 0), 'damaged', COALESCE(b.damaged, 0))
                 ORDER BY v.sku) FILTER (WHERE v.id IS NOT NULL), '[]'::jsonb) AS variants
@@ -449,6 +452,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     if (!product) throw notFound();
     const variants = await pool.query(
       `SELECT v.id, v.sku, v.size_label AS size, v.color_label AS color, v.weight_grams, v.active, v.attributes,
+              v.price_override_rial::text AS price_override_rial,
               COALESCE(SUM(b.on_hand - b.reserved - b.damaged), 0)::int AS available,
               COALESCE(SUM(b.on_hand), 0)::int AS on_hand
        FROM product_variants v LEFT JOIN stock_balances b ON b.variant_id = v.id
@@ -486,11 +490,12 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       const seq = await one<{ id: string }>(client, "SELECT nextval('sku_sequence')::text AS id");
       const sku = `${product.supplier_id ? 'SP' : 'KV'}-${categoryCode(product.category)}-${seq!.id}`;
       const variantId = randomUUID();
-      await client.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [variantId, id, sku, body.size ?? null, body.color ?? null, body.weightGrams ?? null, JSON.stringify(body.attributes)]);
+      await client.query('INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,price_override_rial,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [variantId, id, sku, body.size ?? null, body.color ?? null, body.weightGrams ?? null, body.priceOverrideRial ?? null, JSON.stringify(body.attributes)]);
       await audit(client, user.id, 'product.variant_created', 'product', id, undefined,
         { variantId, sku, color: body.color ?? null, size: body.size ?? null }, request.ip);
-      return { id: variantId, sku, color: body.color ?? null, size: body.size ?? null, weightGrams: body.weightGrams ?? null, active: true };
+      return { id: variantId, sku, color: body.color ?? null, size: body.size ?? null, weightGrams: body.weightGrams ?? null,
+        priceOverrideRial: body.priceOverrideRial ?? null, active: true };
     });
     return reply.code(201).send(result);
   });
@@ -502,20 +507,24 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const body = z.object({
       weightGrams: z.number().int().min(0).max(1000000).nullable().optional(),
       active: z.boolean().optional(),
+      // Req 25: set/clear the per-variant retail price override (integer rial; null = follow base price).
+      priceOverrideRial: z.string().regex(/^\d{1,15}$/).nullable().optional(),
     }).strict().parse(request.body);
-    if (body.weightGrams === undefined && body.active === undefined) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+    if (body.weightGrams === undefined && body.active === undefined && body.priceOverrideRial === undefined)
+      throw badRequest('تغییری برای ذخیره وجود ندارد.');
     return transaction(pool, async (client) => {
       const product = await one<{ supplier_id: string | null }>(client, 'SELECT supplier_id FROM products WHERE id = $1', [params.id]);
       if (!product) throw notFound();
       const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
       if (!isOwner) requirePermission(user, 'products:write');
-      const variant = await one<{ id: string; weight_grams: number | null; active: boolean }>(client,
-        'SELECT id, weight_grams, active FROM product_variants WHERE id = $1 AND product_id = $2 FOR UPDATE', [params.variantId, params.id]);
+      const variant = await one<{ id: string; weight_grams: number | null; active: boolean; price_override_rial: string | null }>(client,
+        'SELECT id, weight_grams, active, price_override_rial::text FROM product_variants WHERE id = $1 AND product_id = $2 FOR UPDATE', [params.variantId, params.id]);
       if (!variant) throw notFound();
       const updates: string[] = [];
       const values: unknown[] = [params.variantId];
       if (body.weightGrams !== undefined) { values.push(body.weightGrams); updates.push(`weight_grams = $${values.length}`); }
       if (body.active !== undefined) { values.push(body.active); updates.push(`active = $${values.length}`); }
+      if (body.priceOverrideRial !== undefined) { values.push(body.priceOverrideRial); updates.push(`price_override_rial = $${values.length}`); }
       await client.query(`UPDATE product_variants SET ${updates.join(', ')} WHERE id = $1`, values);
       await audit(client, user.id, 'product.variant_updated', 'product', params.id, variant, body, request.ip);
       return { id: params.variantId, ...body };

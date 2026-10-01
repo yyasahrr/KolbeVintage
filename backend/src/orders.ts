@@ -69,6 +69,7 @@ const PAYMENT_RANK = `CASE (SELECT pi.status FROM payment_intents pi WHERE pi.or
 type VariantRow = {
   variant_id: string; sku: string; product_id: string; product_name: string; product_category: string; supplier_id: string | null;
   cash_price_rial: string; installment_price_rial: string | null; wholesale_price_rial: string | null;
+  price_override_rial: string | null;
   status: string; active: boolean; owner_type: string; retail_enabled: boolean; wholesale_enabled: boolean;
   installment_policy: string; wholesale_moq: number | null;
 };
@@ -84,15 +85,17 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     // Status/restriction gates run before the order transaction: a rejected order
     // must leave the audit trail behind (items 11-13), which a rollback would erase.
     const priced = await pool.query<{ id: string; supplier_id: string | null; cash_price_rial: string;
-      installment_price_rial: string | null; wholesale_price_rial: string | null }>(
-      `SELECT v.id, p.supplier_id, p.cash_price_rial::text, p.installment_price_rial::text, p.wholesale_price_rial::text
+      installment_price_rial: string | null; wholesale_price_rial: string | null; price_override_rial: string | null }>(
+      `SELECT v.id, p.supplier_id, p.cash_price_rial::text, p.installment_price_rial::text, p.wholesale_price_rial::text,
+              v.price_override_rial::text
          FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = ANY($1::uuid[])`,
       [body.items.map((item) => item.variantId)]);
     const incomingBySupplier = new Map<string, bigint>();
     for (const item of body.items) {
       const row = priced.rows.find((candidate) => candidate.id === item.variantId);
       if (!row?.supplier_id) continue;
-      const unit = rial((body.orderType === 'wholesale' ? row.wholesale_price_rial : row.cash_price_rial) ?? '0');
+      // Req 25: a variant-level override replaces the product cash price for retail.
+      const unit = rial((body.orderType === 'wholesale' ? row.wholesale_price_rial : row.price_override_rial ?? row.cash_price_rial) ?? '0');
       incomingBySupplier.set(row.supplier_id,
         (incomingBySupplier.get(row.supplier_id) ?? 0n) + unit * BigInt(item.quantity));
     }
@@ -133,7 +136,8 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       const lines: Array<{ id: string; variant: VariantRow; quantity: number; price: bigint; total: bigint }> = [];
       for (const item of body.items) {
         const variant = await one<VariantRow>(client,
-          `SELECT v.id AS variant_id, v.sku, v.active, p.id AS product_id, p.name AS product_name,
+          `SELECT v.id AS variant_id, v.sku, v.active, v.price_override_rial::text AS price_override_rial,
+                  p.id AS product_id, p.name AS product_name,
                   p.category AS product_category,
                   p.supplier_id, p.cash_price_rial, p.installment_price_rial, p.wholesale_price_rial, p.status,
                   p.owner_type, p.retail_enabled, p.wholesale_enabled, p.installment_policy, p.wholesale_moq
@@ -146,9 +150,12 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         if (body.orderType === 'wholesale' && !variant.wholesale_enabled)
           throw new ApiError(403, 'FORBIDDEN', `کالای ${variant.sku} برای فروش عمده فعال نیست.`);
         if (body.orderType === 'wholesale' && limits.sources === 'kolbe' && variant.supplier_id) throw forbidden();
+        // Req 25: variant price override wins over the product base retail price.
+        // The deliberate installment price stays authoritative for 4-installment mode;
+        // the override only replaces the cash price (and its installment fallback).
         const priceValue = body.orderType === 'wholesale' ? variant.wholesale_price_rial
-          : body.paymentMode === 'four_installments' ? variant.installment_price_rial ?? variant.cash_price_rial
-            : variant.cash_price_rial;
+          : body.paymentMode === 'four_installments' ? variant.installment_price_rial ?? variant.price_override_rial ?? variant.cash_price_rial
+            : variant.price_override_rial ?? variant.cash_price_rial;
         if (priceValue === null) throw badRequest(`قیمت فروش برای SKU ${variant.sku} تعریف نشده است.`);
         const price = rial(priceValue);
         if (price === 0n) throw badRequest(`قیمت فروش برای SKU ${variant.sku} معتبر نیست.`);

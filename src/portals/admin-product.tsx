@@ -143,6 +143,65 @@ type Draft = {
 };
 const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [], productTypeId: "", genderCode: "", installmentPolicy: "enabled", wholesaleMoq: "", variantWeights: {} });
 
+type MatrixVariant = {
+  id: string; sku: string; active: boolean; weight_grams: number | null;
+  price_override_rial: string | null; available: number; on_hand: number;
+};
+
+/**
+ * Advanced per-cell variant editor (Req 33, user-approved): weight, variant-level
+ * retail price override (Req 25) and active status for one Color×Size cell.
+ * Everything persists through the real variant APIs.
+ */
+function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onToggleActive, onPatch }: {
+  color: string; size: string; variant: MatrixVariant | null;
+  onClose: () => void; onCreate: () => void; onToggleActive: () => void;
+  onPatch: (payload: { weightGrams?: number | null; priceOverrideRial?: string | null }) => Promise<void> | void;
+}) {
+  const [weight, setWeight] = useState(variant?.weight_grams === null || variant?.weight_grams === undefined ? "" : String(variant.weight_grams));
+  const [overrideToman, setOverrideToman] = useState(variant?.price_override_rial ? String(Math.round(Number(variant.price_override_rial) / 10)) : "");
+  return (
+    <div className="mt-3 rounded-[12px] border border-[var(--kv-accent)]/40 bg-[var(--kv-surface-2)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-[12.5px] font-extrabold">ویرایش واریانت: {color} / {size}</p>
+        <Btn variant="ghost" size="sm" icon={<X size={13} />} onClick={onClose}>بستن</Btn>
+      </div>
+      {!variant ? (
+        <div className="space-y-2">
+          <p className="text-[12px] text-[var(--kv-muted)]">این خانه هنوز واریانت ندارد («—» یعنی وجود ندارد، نه موجودی صفر).</p>
+          <Btn variant="accent" size="sm" icon={<Plus size={14} />} onClick={onCreate}>ساخت واریانت با SKU سرور</Btn>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-[11.5px] text-[var(--kv-muted)]" dir="ltr">{variant.sku} · on-hand {variant.on_hand} · available {variant.available}</p>
+          <div className="flex items-center justify-between rounded-[10px] border border-[var(--kv-line)] px-3 py-2">
+            <span className="text-[12px] font-bold">وضعیت فروش این واریانت</span>
+            <Switch on={variant.active} onToggle={onToggleActive} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="وزن (گرم)" hint="برای محاسبه هزینه ارسال">
+              <Input value={weight} onChange={(v) => setWeight(v.replace(/\D/g, ""))} placeholder="—" />
+            </Field>
+            <Field label="قیمت اختصاصی این واریانت (تومان)" hint="خالی = پیروی از قیمت پایه محصول؛ جدا از موتور تخفیف">
+              <Input value={overrideToman} onChange={(v) => setOverrideToman(v.replace(/\D/g, ""))} placeholder="قیمت پایه" />
+            </Field>
+          </div>
+          <div className="flex gap-2">
+            <Btn variant="accent" size="sm" icon={<Check size={14} />}
+              onClick={() => void onPatch({
+                weightGrams: weight === "" ? null : Number(weight),
+                priceOverrideRial: overrideToman === "" ? null : String(Number(overrideToman) * 10),
+              })}>ذخیره واریانت</Btn>
+            {variant.price_override_rial && (
+              <Btn variant="soft" size="sm" onClick={() => { setOverrideToman(""); void onPatch({ priceOverrideRial: null }); }}>حذف قیمت اختصاصی</Btn>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProductStudio({ flash }: { flash: F }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct, reload } = useStore();
@@ -171,9 +230,11 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [taxonomies, setTaxonomies] = useState<Taxonomy[]>([]);
 
   /* ---------- Unified create/edit mode (Req 38-39) ---------- */
-  type ServerVariant = { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number };
+  type ServerVariant = { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number; price_override_rial: string | null };
   const [editing, setEditing] = useState<{ id: string; metadata: Record<string, unknown> } | null>(null);
   const [editVariants, setEditVariants] = useState<ServerVariant[]>([]);
+  /* Req 33: the advanced per-cell variant editor (weight, price override, status). */
+  const [cellEditor, setCellEditor] = useState<{ color: string; size: string } | null>(null);
   /* Create-mode Color×Size matrix: a switched-off cell means "no variant" (—),
      which is different from a variant with stock 0 (Req 26/32). */
   const [cellOff, setCellOff] = useState<Record<string, boolean>>({});
@@ -761,14 +822,16 @@ export function ProductStudio({ flash }: { flash: F }) {
                             {d.sizes.map((s) => {
                               if (editing) {
                                 const hit = editVariants.find((v) => (v.color ?? "") === c.name && (v.size ?? "") === s);
+                                const isOpen = cellEditor?.color === c.name && cellEditor?.size === s;
                                 return (
                                   <td key={s}>
-                                    <button type="button" onClick={() => void toggleEditCell(c.name, s)}
+                                    <button type="button" onClick={() => setCellEditor(isOpen ? null : { color: c.name, size: s })}
                                       className={cn("min-h-9 w-full rounded-[8px] border px-2 py-1 text-[11px] font-bold",
+                                        isOpen && "ring-2 ring-[var(--kv-accent)]",
                                         !hit ? "border-dashed border-[var(--kv-line)] text-[var(--kv-muted)]"
                                           : hit.active ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)] opacity-50")}
                                       title={hit ? `${hit.sku} · موجودی ${hit.on_hand}` : "ساخت واریانت"}>
-                                      {!hit ? "— (ساخت)" : hit.active ? `فعال · ${hit.on_hand.toLocaleString("fa-IR")}` : "غیرفعال"}
+                                      {!hit ? "— (ساخت)" : `${hit.active ? "فعال" : "غیرفعال"} · ${hit.on_hand.toLocaleString("fa-IR")}${hit.price_override_rial ? " · قیمت ویژه" : ""}`}
                                     </button>
                                   </td>
                                 );
@@ -790,6 +853,26 @@ export function ProductStudio({ flash }: { flash: F }) {
                       </tbody>
                     </table>
                   </div>
+                  {editing && cellEditor && (() => {
+                    const hit = editVariants.find((v) => (v.color ?? "") === cellEditor.color && (v.size ?? "") === cellEditor.size) ?? null;
+                    return (
+                      <VariantAdvancedEditor
+                        key={hit?.id ?? `${cellEditor.color}|${cellEditor.size}`}
+                        color={cellEditor.color} size={cellEditor.size} variant={hit}
+                        onClose={() => setCellEditor(null)}
+                        onCreate={() => void toggleEditCell(cellEditor.color, cellEditor.size)}
+                        onToggleActive={() => void toggleEditCell(cellEditor.color, cellEditor.size)}
+                        onPatch={async (payload) => {
+                          if (!hit) return;
+                          try {
+                            await productsApi.updateVariant(editing.id, hit.id, payload);
+                            flash(`واریانت ${hit.sku} به‌روزرسانی شد`);
+                            await refreshEditVariants();
+                          } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره واریانت"); }
+                        }}
+                      />
+                    );
+                  })()}
                 </div>
               )}
             </>}

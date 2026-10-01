@@ -209,9 +209,9 @@ export const productsApi = {
     variants: { id: string; sku: string; color: string | null; size: string | null; weight_grams: number | null; active: boolean; available: number; on_hand: number }[];
   }>(`/admin/products/${id}`),
   /** Enabling a blank Color×Size matrix cell creates a real variant (Req 26/32). */
-  createVariant: (productId: string, payload: { color?: string; size?: string; weightGrams?: number | null }) =>
+  createVariant: (productId: string, payload: { color?: string; size?: string; weightGrams?: number | null; priceOverrideRial?: string | null }) =>
     apiClient.post<{ id: string; sku: string; color: string | null; size: string | null; active: boolean }>(`/products/${productId}/variants`, payload),
-  updateVariant: (productId: string, variantId: string, payload: { active?: boolean; weightGrams?: number | null }) =>
+  updateVariant: (productId: string, variantId: string, payload: { active?: boolean; weightGrams?: number | null; priceOverrideRial?: string | null }) =>
     apiClient.patch<{ id: string }>(`/products/${productId}/variants/${variantId}`, payload),
   /** Cutout/style-builder state has no dedicated column yet → metadata bucket. */
   cutout: async (id: string, metadata: Record<string, unknown>, cutout: unknown) =>
