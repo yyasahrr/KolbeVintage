@@ -5,8 +5,9 @@ import { productTypesApi, siteApi, type ProductType } from "../data/experience-a
 import {
   LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Factory, Inbox,
   Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, Upload, CircleDollarSign,
-  FlaskConical, Clock, Sun, Moon, LogOut, Send, Store,
+  FlaskConical, Clock, Sun, Moon, LogOut, Send, Store, PackagePlus,
 } from "lucide-react";
+import { SupplierRequestsPortal } from "../components/supplier-requests-portal";
 import { IMG, COLORS, STATUS_LABEL, fmtMoney, fmtNum, nextSku, type SeriesDef } from "../data/catalog";
 void nextSku; // kept for demo preview (?demo=1)
 import { useStore } from "../data/store";
@@ -419,6 +420,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
     { v: "orders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: mySubs.filter((i: any) => (i as any).sub.status === "paid").length || undefined },
     { g: "عملیات" },
     { v: "inventory", label: "موجودی انبار", icon: <Boxes size={17} /> },
+    { v: "supply-requests", label: "درخواست‌های تأمین", icon: <PackagePlus size={17} /> },
     { v: "production", label: "تولید", icon: <Factory size={17} /> },
     { v: "finance", label: "کیف پول و برداشت", icon: <Wallet size={17} /> },
     { v: "bank", label: "اطلاعات مالی و بانکی", icon: <Landmark size={17} />, badge: ops.banks[ME.id]?.status === "verified" ? undefined : 1 },
@@ -756,6 +758,8 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
             </div>
               </div>
           )}
+
+          {tab === "supply-requests" && <SupplierRequestsPortal flash={flash} />}
 
           {tab === "inventory" && (
             <div className="animate-[fadeUp_0.35s_ease]">
