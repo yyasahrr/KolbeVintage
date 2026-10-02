@@ -529,6 +529,13 @@ export const crmApi = {
     authFetch<unknown>(`/admin/crm/contacts/${contactId}/activities`, { method: "POST", body: JSON.stringify(payload) }),
   automations: () => authFetch<{ items: unknown[] }>("/admin/crm/automations"),
   runAutomation: (id: string) => authFetch<unknown>(`/admin/crm/automations/${id}/run`, { method: "POST" }),
+  /* Master phase §5-§10: server read models for the consolidated CRM hub. */
+  retailCustomers: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ total: number; limit: number; offset: number; items: Record<string, unknown>[] }>(`/admin/crm/retail-customers${query(params)}`),
+  summary: () => authFetch<{ kpis: Record<string, number>; generatedAt: string }>("/admin/crm/summary"),
+  suppliers: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ total: number; limit: number; offset: number; items: Record<string, unknown>[] }>(`/admin/crm/suppliers${query(params)}`),
+  user360: (userId: string) => authFetch<Record<string, unknown>>(`/admin/crm/users/${userId}/360`),
 };
 
 /* ---------------------------------- CMS ---------------------------------- */
@@ -1154,7 +1161,7 @@ export type Buyer360Payload = {
 };
 
 export const buyersApi = {
-  list: (params?: Record<string, string | number | undefined>) => authFetch<{ items: Record<string, unknown>[] }>(`/admin/buyers${query(params)}`),
+  list: (params?: Record<string, string | number | undefined>) => authFetch<{ total?: number; items: Record<string, unknown>[] }>(`/admin/buyers${query(params)}`),
   view360: (userId: string) => authFetch<Buyer360Payload>(`/admin/buyers/${userId}/360`),
   updateProfile: (userId: string, payload: unknown, reason?: string) =>
     authFetch<unknown>(`/admin/buyers/${userId}/profile`, { method: "PATCH", body: JSON.stringify({ ...(payload as object), reason }) }),

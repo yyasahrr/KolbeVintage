@@ -25,6 +25,7 @@ import { WarehouseHub } from "./warehouse-hub";
 import { FinanceLedgerPanel } from "../components/finance-ledger";
 import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
+import { CrmRetailPanel } from "../components/crm-retail-panel";
 import { UsersDirectoryPanel } from "../components/users-directory";
 import { PromoPanel } from "../components/promo-panel";
 import { CmsCenter } from "./admin-cms";
@@ -477,7 +478,11 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "wms" && moduleBoundary("انبار و نقل‌وانتقالات", <WarehouseHub flash={flash} initial={hubSub} />)}
           {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
           {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
-            { v: "customers", label: "مشتریان خرده", node: <div className="space-y-5"><CrmPanel /><UsersDirectoryPanel flash={flash} /></div> },
+            { v: "customers", label: "مشتریان خرده", node: <div className="space-y-5">
+              <CrmRetailPanel />
+              <details className="rounded-[14px] border border-[var(--kv-line)] p-4"><summary className="cursor-pointer text-[12.5px] font-bold">مخاطبان CRM و اتوماسیون‌ها (قدیمی)</summary><div className="mt-4"><CrmPanel /></div></details>
+              <details className="rounded-[14px] border border-[var(--kv-line)] p-4"><summary className="cursor-pointer text-[12.5px] font-bold">فهرست همه کاربران سیستم</summary><div className="mt-4"><UsersDirectoryPanel flash={flash} /></div></details>
+            </div> },
             { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
             { v: "suppliers", label: "تأمین‌کنندگان", node: <div className="space-y-5"><SupplierChangeReview flash={flash} /><Supplier360Panel flash={flash} /></div> },
             { v: "marketing", label: "بازاریابی", node: <div className="space-y-5"><SmsCenter flash={flash} /><CrmCenter flash={flash} /></div> },

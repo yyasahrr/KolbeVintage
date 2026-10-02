@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Ban, Check, FileText, Search, ShieldCheck, UserCog } from "lucide-react";
+import { Ban, Check, FileText, HelpCircle, ShieldCheck, UserCog, X } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
 import { buyersApi, membershipLifecycleApi, type Buyer360Payload } from "../data/api";
@@ -16,7 +16,7 @@ const SECTIONS: { v: Section; label: string }[] = [
   { v: "market", label: "حساب و عضویت" },
   { v: "business", label: "کسب‌وکار و مدارک" },
   { v: "purchase", label: "رفتار خرید" },
-  { v: "finance", label: "مالی و اعتبار" },
+  { v: "finance", label: "مالی" },
   { v: "support", label: "پشتیبانی و پیام‌ها" },
   { v: "crm", label: "CRM و تایم‌لاین" },
 ];
@@ -52,12 +52,15 @@ function MiniTable({ head, rows, empty }: { head: string[]; rows: React.ReactNod
  *  audited admin controls (membership, credit, block, labels, notes, documents). */
 export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
   const [list, setList] = useState<Record<string, unknown>[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [listView, setListView] = useState<"all" | "expiring" | "top_buyers" | "low_activity" | "expired_plan">("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [view, setView] = useState<Buyer360Payload | null>(null);
   const [section, setSection] = useState<Section>("market");
   const [error, setError] = useState<string | null>(null);
-  const [credit, setCredit] = useState({ creditLimitRial: "", approvalPolicy: "manual" as "auto" | "manual" | "prepaid", reason: "" });
+  const [whyFor, setWhyFor] = useState<string | null>(null);
   const [blockReason, setBlockReason] = useState("");
   const [labelForm, setLabelForm] = useState({ labelCode: "", note: "" });
   const [noteForm, setNoteForm] = useState({ body: "", visibility: "internal" as "internal" | "support" });
@@ -66,19 +69,18 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
   const [plan, setPlan] = useState({ open: false, planId: "", reason: "" });
   const [plans, setPlans] = useState<Record<string, unknown>[]>([]);
 
+  const PAGE = 25;
   const loadList = useCallback(async () => {
     try {
-      const res = await buyersApi.list({ search: search || undefined, limit: 50 });
-      setList(res.items);
-      if (!selected && res.items[0]) setSelected(String((res.items[0] as { user_id?: string }).user_id ?? (res.items[0] as { id?: string }).id));
+      const res = await buyersApi.list({ search: search || undefined, view: listView, limit: PAGE, offset });
+      setList(res.items); setTotal(Number(res.total ?? res.items.length));
     } catch (e) { setError(e instanceof Error ? e.message : "خطا در بارگذاری خریداران"); }
-  }, [search, selected]);
+  }, [search, listView, offset]);
 
   const loadView = useCallback(async (userId: string) => {
     try {
       const res = await buyersApi.view360(userId);
       setView(res);
-      setCredit((c) => ({ ...c, creditLimitRial: String((res.account as { credit_limit_rial?: string }).credit_limit_rial ?? "0"), approvalPolicy: (String((res.account as { approval_policy?: string }).approval_policy ?? "manual") as "auto" | "manual" | "prepaid") }));
     } catch (e) { setError(e instanceof Error ? e.message : "خطا در دریافت نمای ۳۶۰"); }
   }, []);
 
@@ -102,33 +104,83 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
   const crm = view?.crm;
 
   return (
-    <div className="grid gap-4 animate-[fadeUp_0.35s_ease] lg:grid-cols-[320px_minmax(0,1fr)]">
-      <Card className="h-fit p-4">
-        <div className="mb-3 flex items-center gap-2 text-[13px] font-extrabold"><UserCog size={16} />فهرست خریداران عمده</div>
-        <div className="flex gap-2">
-          <SearchBox placeholder="نام، همراه، ایمیل، کسب‌وکار…" value={search} onChange={setSearch} />
-          <Btn variant="soft" size="sm" icon={<Search size={14} />} onClick={() => void loadList()}>جست‌وجو</Btn>
+    <div className="space-y-4 animate-[fadeUp_0.35s_ease]">
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-[13px] font-extrabold"><UserCog size={16} />خریداران VIP (عمده)</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <SearchBox placeholder="نام، همراه، کسب‌وکار…" value={search} onChange={(v) => { setOffset(0); setSearch(v); }} />
+            <Segmented options={[
+              { v: "all", label: "همه" }, { v: "expiring", label: "نزدیک انقضا" }, { v: "top_buyers", label: "پرخرید" },
+              { v: "low_activity", label: "کم‌فعال" }, { v: "expired_plan", label: "پلن منقضی" },
+            ]} value={listView} onChange={(v) => { setOffset(0); setListView(v as typeof listView); }} />
+          </div>
         </div>
-        <div className="kv-scroll mt-3 max-h-[560px] space-y-1 overflow-y-auto">
-          {!list ? <LoadingState label="در حال بارگذاری…" /> : list.length === 0 ? <Empty title="خریداری یافت نشد" desc="عبارت دیگری را جست‌وجو کنید." /> : list.map((row) => {
-            const id = String(row.user_id ?? row.id);
-            const active = id === selected;
-            return (
-              <button key={id} onClick={() => setSelected(id)}
-                className={`kv-press flex w-full flex-col gap-0.5 rounded-[11px] border px-3 py-2.5 text-right text-[12.5px] ${active ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.07]" : "border-[var(--kv-line)] hover:bg-[var(--kv-surface-2)]"}`}>
-                <span className="flex items-center justify-between gap-2 font-bold">
-                  {text(row.display_name ?? row.business_name, "بدون نام")}
-                  {row.blocked ? <Status value="مسدود" /> : row.membership_status === "active" ? <Status value="فعال" /> : null}
-                </span>
-                <span className="text-[11.5px] text-[var(--kv-muted)] tabular-nums">{text(row.phone)} · {text(row.city, "—")}</span>
-                <span className="text-[11.5px] text-[var(--kv-muted)]">خرید: {rial(row.total_spent_rial ?? 0)} · سفارش: {fmtNum(Number(row.orders ?? 0))}</span>
-              </button>
-            );
-          })}
+        {!list ? <LoadingState label="در حال بارگذاری…" /> : list.length === 0 ? <Empty title="خریداری یافت نشد" desc="عبارت یا نمای دیگری را امتحان کنید." /> : (
+          <div className="kv-scroll mt-4 overflow-x-auto">
+            <table className="w-full min-w-[1020px] text-right text-[12.5px]">
+              <thead>
+                <tr className="text-[11.5px] text-[var(--kv-muted)]">
+                  {["خریدار", "موبایل", "پلن", "انقضای پلن", "سفارش عمده", "سری خریداری‌شده", "ارزش کل خرید", "آخرین سفارش", "رفتار", "عملیات"].map((h) => (
+                    <th key={h} className="pb-2 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--kv-line)]">
+                {list.map((row) => {
+                  const id = String(row.id ?? row.user_id);
+                  const reasons = (row.behavior_reasons as string[]) ?? [];
+                  return (
+                    <tr key={id} className="hover:bg-[var(--kv-surface-2)]/60">
+                      <td className="py-2.5">
+                        <span className="block font-bold">{text(row.display_name ?? row.business_name, "بدون نام")}</span>
+                        <span className="text-[11px] text-[var(--kv-muted)]">{text(row.business_name, "—")} · {text(row.city, "ثبت نشده")}</span>
+                      </td>
+                      <td className="py-2.5 tabular-nums">{text(row.phone, "ثبت نشده")}</td>
+                      <td className="py-2.5">{row.plan_code ? <Status value={String(row.plan_code)} /> : "بدون پلن"}</td>
+                      <td className="py-2.5 tabular-nums">{day(row.plan_ends_at)}</td>
+                      <td className="py-2.5 tabular-nums">{fmtNum(Number(row.wholesale_order_count ?? 0))}</td>
+                      <td className="py-2.5 tabular-nums">{fmtNum(Number(row.series_purchased ?? 0))}</td>
+                      <td className="py-2.5 tabular-nums">{rial(row.total_spent_rial ?? 0)}</td>
+                      <td className="py-2.5 tabular-nums">{day(row.last_order_at)}</td>
+                      <td className="py-2.5">
+                        <span className="relative inline-flex items-center gap-1">
+                          <span className="rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-2.5 py-1 text-[11px] font-bold">{text(row.behavior_label, "—")}</span>
+                          {reasons.length > 0 && (
+                            <button className="text-[var(--kv-muted)] hover:text-[var(--kv-ink)]" title="چرا؟" aria-label="دلایل وضعیت"
+                              onClick={() => setWhyFor(whyFor === id ? null : id)}><HelpCircle size={14} /></button>
+                          )}
+                          {whyFor === id && (
+                            <span className="absolute left-0 top-7 z-30 w-56 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-3 text-right shadow-xl">
+                              {reasons.map((reason) => <span key={reason} className="block py-0.5 text-[11px] text-[var(--kv-muted)]">• {reason}</span>)}
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="py-2.5"><Btn variant="soft" size="sm" onClick={() => { setView(null); setSelected(id); }}>نمای ۳۶۰°</Btn></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="mt-4 flex items-center justify-between text-[12px] text-[var(--kv-muted)]">
+          <span className="tabular-nums">{fmtNum(total)} خریدار · صفحه {fmtNum(Math.floor(offset / PAGE) + 1)}</span>
+          <div className="flex gap-2">
+            <Btn variant="soft" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>قبلی</Btn>
+            <Btn variant="soft" size="sm" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>بعدی</Btn>
+          </div>
         </div>
       </Card>
 
-      <div className="space-y-4">
+      {selected && (
+      <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true">
+      <div className="kv-scroll flex h-full w-full flex-col gap-4 overflow-y-auto bg-[var(--kv-bg)] p-5 shadow-2xl md:max-w-4xl">
+        <div className="flex items-center justify-between">
+          <button onClick={() => { setSelected(null); setView(null); }} className="rounded-full p-1.5 hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+          <span className="text-[12px] text-[var(--kv-muted)]">نمای ۳۶۰ درجه خریدار VIP</span>
+        </div>
         {!view ? <Card className="p-6"><LoadingState label="در حال بارگذاری نمای ۳۶۰ درجه…" /></Card> : (
           <>
             <Card className="p-5">
@@ -213,7 +265,6 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     ["کد اقتصادی", text(account.economic_code ?? account.trade_code, "—")],
                     ["آدرس انبار", text(account.address_line, "—")],
                     ["امتیاز داخلی", text(account.internal_score, "—")],
-                    ["سطح اعتبار", text(account.credit_level, "—")],
                     ["سیاست تسویه", text(account.settlement_policy, "—")],
                   ]} />
                   <div className="flex items-center justify-between border-t border-[var(--kv-line)] pt-4">
@@ -270,20 +321,8 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     ["پرداخت ناموفق", fmtNum(Number(view.finance.failed_payments ?? 0))],
                     ["کیف پول", rial(view.finance.wallet_balance_rial)],
                     ["جمع بازگشت وجه", rial(view.finance.refunded_rial)],
-                    ["سقف اعتبار فعلی", rial(account.credit_limit_rial)],
-                    ["سیاست تأیید", text(account.approval_policy, "manual")],
                   ]} />
-                  <div className="rounded-[12px] border border-[var(--kv-line)] p-4">
-                    <p className="mb-2 text-[12.5px] font-bold">تعیین سقف اعتبار (نیازمند دلیل — ثبت در حسابرسی)</p>
-                    <div className="grid gap-2 sm:grid-cols-4">
-                      <Input placeholder="سقف اعتبار (ریال)" value={credit.creditLimitRial} onChange={(v) => setCredit({ ...credit, creditLimitRial: v.replace(/\D/g, "") })} />
-                      <Select options={["auto", "manual", "prepaid"]} value={credit.approvalPolicy} onChange={(v) => setCredit({ ...credit, approvalPolicy: v as typeof credit.approvalPolicy })} />
-                      <Input placeholder="دلیل" value={credit.reason} onChange={(v) => setCredit({ ...credit, reason: v })} />
-                      <Btn variant="accent" size="sm" disabled={!credit.creditLimitRial || credit.reason.trim().length < 3}
-                        onClick={() => void act("ثبت سقف اعتبار", () => buyersApi.setCreditLimit(String(selected), credit))}>ثبت سقف</Btn>
-                    </div>
-                    <p className="mt-2 text-[11.5px] text-[var(--kv-muted)]">auto: تأیید خودکار تا سقف · manual: هر خرید نیازمند تأیید · prepaid: فقط پیش‌پرداخت.</p>
-                  </div>
+                  {/* VIP = دسترسی مبتنی بر پلن؛ هیچ سیستم اعتبار خریدی در UI وجود ندارد (master §13). */}
                 </div>
               )}
 
@@ -376,6 +415,8 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
           </>
         )}
       </div>
+      </div>
+      )}
 
       <Modal open={document.open} onClose={() => setDocument({ ...document, open: false })} title="ثبت مدرک خریدار">
         <div className="space-y-3">

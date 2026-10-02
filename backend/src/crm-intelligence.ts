@@ -608,15 +608,29 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
     };
   });
 
-  /** Requirement 95 + 108: the CRM 360 view including reviews written by the customer. */
+  /** Requirement 95 + 108 + master §10: the CRM 360 workspace by contact id. */
   app.get('/api/v1/admin/crm/contacts/:id/360', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const contact = await one<Record<string, unknown>>(pool,
+    return buildContact360(pool, id);
+  });
+
+  /** Master §10: same 360 workspace addressed by user id (list rows carry user ids). */
+  app.get('/api/v1/admin/crm/users/:userId/360', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
+    const { userId } = z.object({ userId: z.uuid() }).parse(request.params);
+    const exists = await one<{ id: string }>(pool, 'SELECT id FROM users WHERE id = $1', [userId]);
+    if (!exists) throw notFound();
+    const contactId = await ensureContact(pool as unknown as DbClient, userId);
+    return buildContact360(pool, contactId);
+  });
+
+  async function buildContact360(db: DbPool, id: string) {
+    const contact = await one<Record<string, unknown>>(db,
       `SELECT c.id,c.user_id,c.actor_type,c.segment,c.tags,c.metadata,c.created_at,c.updated_at,
               u.display_name,u.phone,u.email,u.birthday,u.created_at AS registered_at,u.status,
               cp.first_name,cp.last_name,cp.gender,cp.national_id,
-              bp.business_name,bp.city,bp.vip_level,bp.credit_limit_rial,bp.blocked,bp.approval_policy,
+              bp.business_name,bp.city,bp.vip_level,bp.blocked,
               (SELECT max(created_at) FROM user_login_history h WHERE h.user_id = c.user_id AND h.success) AS last_login_at
        FROM crm_contacts c JOIN users u ON u.id = c.user_id
        LEFT JOIN customer_profiles cp ON cp.user_id = c.user_id
@@ -624,33 +638,56 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
        WHERE c.id = $1`, [id]);
     if (!contact) throw notFound();
     const userId = String(contact.user_id);
-    const addresses = await pool.query(
+    const addresses = await db.query(
       'SELECT id,title,recipient,phone,province,city,line,is_default FROM customer_addresses WHERE user_id = $1', [userId]);
-    const membership = await one<Record<string, unknown>>(pool,
+    const membership = await one<Record<string, unknown>>(db,
       `SELECT m.status,m.starts_at,m.ends_at,p.code,p.title,p.tier FROM memberships m
        JOIN membership_plans p ON p.id = m.plan_id WHERE m.user_id = $1 ORDER BY m.created_at DESC LIMIT 1`, [userId]);
-    const labels = await pool.query(
+    const labels = await db.query(
       `SELECT cl.label_code,l.title FROM crm_contact_labels cl JOIN crm_labels l ON l.code = cl.label_code
        WHERE cl.contact_id = $1 AND (cl.expires_at IS NULL OR cl.expires_at > now()) ORDER BY cl.assigned_at DESC`, [id]);
-    const segments = await pool.query(
+    const segments = await db.query(
       `SELECT s.code,s.title FROM crm_segment_members m JOIN crm_segments s ON s.id = m.segment_id WHERE m.user_id = $1`, [userId]);
-    const reviews = await pool.query(
+    const reviews = await db.query(
       `SELECT r.id,r.rating,r.title,r.comment,r.status,r.verified_purchase,r.created_at,p.name AS product_name
        FROM customer_reviews r JOIN products p ON p.id = r.product_id
        WHERE r.user_id = $1 ORDER BY r.created_at DESC LIMIT 20`, [userId]);
-    const notes = await pool.query(
+    const notes = await db.query(
       `SELECT n.id,n.body,n.visibility,n.created_at,u.display_name AS author_name FROM crm_notes n
        LEFT JOIN users u ON u.id = n.author_id WHERE n.contact_id = $1 AND n.deleted_at IS NULL
        ORDER BY n.created_at DESC LIMIT 20`, [id]);
-    const timeline = await pool.query(
+    const timeline = await db.query(
       `SELECT id,event_type,title,source,occurred_at FROM customer_timeline WHERE user_id = $1
        ORDER BY occurred_at DESC LIMIT 50`, [userId]);
-    const consent = await one<Record<string, unknown>>(pool, 'SELECT * FROM customer_consents WHERE user_id = $1', [userId]);
+    const consent = await one<Record<string, unknown>>(db, 'SELECT * FROM customer_consents WHERE user_id = $1', [userId]);
+    /* Master §10: compose the remaining domains (SoT stays with Orders/Tickets/Wishlist). */
+    const orders = await db.query(
+      `SELECT o.id,o.reference,o.order_type,o.status,o.total_rial::text AS total_rial,o.created_at
+       FROM orders o WHERE o.buyer_id = $1 ORDER BY o.created_at DESC LIMIT 20`, [userId]);
+    const tickets = await db.query(
+      `SELECT t.id,t.reference,t.subject,t.category,t.priority,t.status,t.created_at
+       FROM tickets t WHERE t.owner_id = $1 ORDER BY t.created_at DESC LIMIT 20`, [userId]);
+    const wishlist = await db.query(
+      `SELECT wi.id,wi.added_at AS created_at,p.name AS product_name,p.category
+       FROM wishlist_items wi JOIN wishlist_collections wc ON wc.id = wi.collection_id
+       JOIN products p ON p.id = wi.product_id WHERE wc.owner_id = $1
+       ORDER BY wi.added_at DESC LIMIT 30`, [userId]);
+    const kpiRow = await one<Record<string, string>>(db,
+      `SELECT
+         (SELECT count(*) FROM orders o WHERE o.buyer_id = $1 AND o.status <> 'cancelled')::int AS order_count,
+         (SELECT COALESCE(sum(o.total_rial),0) FROM orders o WHERE o.buyer_id = $1 AND o.status <> 'cancelled')::text AS total_spent_rial,
+         (SELECT COALESCE(avg(o.total_rial),0) FROM orders o WHERE o.buyer_id = $1 AND o.status <> 'cancelled')::bigint::text AS average_order_rial,
+         (SELECT max(o.created_at) FROM orders o WHERE o.buyer_id = $1 AND o.status <> 'cancelled')::text AS last_order_at,
+         (SELECT count(*) FROM return_requests rq WHERE rq.requester_id = $1)::int AS returns_count,
+         (SELECT count(*) FROM tickets t WHERE t.owner_id = $1 AND t.status NOT IN ('resolved','closed'))::int AS open_tickets,
+         (SELECT count(*) FROM wishlist_items wi JOIN wishlist_collections wc ON wc.id = wi.collection_id WHERE wc.owner_id = $1)::int AS wishlist_count,
+         (SELECT count(*) FROM customer_reviews r WHERE r.user_id = $1)::int AS review_count`, [userId]);
     return {
       contact, addresses: addresses.rows, membership, labels: labels.rows, segments: segments.rows,
       reviews: reviews.rows, notes: notes.rows, timeline: timeline.rows, consent,
+      orders: orders.rows, tickets: tickets.rows, wishlist: wishlist.rows, kpis: kpiRow,
     };
-  });
+  }
 
   /* --------------- CRM ↔ promotion: campaigns targeted by label/segment --------------- */
   app.post('/api/v1/admin/crm/campaigns', async (request, reply) => {
