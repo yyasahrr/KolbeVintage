@@ -242,8 +242,79 @@ export const filesApi = {
 
 /* ------------------------------ inventory ------------------------------ */
 
+/** §2-§8: explicit series inventory of the central wholesale warehouse. */
+export type SeriesStockRow = {
+  series_template_id: string; template_name: string; template_active: boolean;
+  product_id: string; product_name: string; color_label: string | null;
+  pieces_per_series: number;
+  warehouse_id: string | null; warehouse_name: string | null;
+  owner_type: "kolbe" | "supplier"; supplier_id: string | null; supplier_name: string | null;
+  on_hand: number; reserved: number; incoming: number; damaged: number; sellable: number;
+  tracked: boolean; legacy_available: number; retail_supply_allowed: boolean;
+  items?: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null }[];
+};
+
+export type RetailSupplyRow = {
+  id: string; reference: string; series_template_id: string; template_name: string;
+  product_id: string; product_name: string; color_label: string | null;
+  source_warehouse_id: string; source_warehouse_name: string;
+  destination_warehouse_id: string; destination_warehouse_name: string;
+  series_count: number; pieces_total: number; status: "reserved" | "dispatched" | "received" | "cancelled";
+  note: string; created_by_name: string | null; created_at: string;
+  dispatched_at: string | null; received_at: string | null; cancelled_at: string | null;
+};
+
+export const seriesInventoryApi = {
+  list: (params?: Record<string, string | number>) => {
+    const q = new URLSearchParams();
+    if (params) for (const [k, v] of Object.entries(params)) if (v !== "" && v !== undefined) q.set(k, String(v));
+    return authFetch<{ items: SeriesStockRow[]; total: number }>(`/inventory/series?${q.toString()}`);
+  },
+  stocktake: (payload: {
+    seriesTemplateId: string; warehouseId: string; countedSeries: number;
+    ownerType?: "kolbe" | "supplier"; supplierId?: string; note?: string; idempotencyKey?: string;
+  }) => authFetch<{ onHand?: number; delta?: number; duplicate?: boolean }>("/inventory/series/stocktake", { method: "POST", body: JSON.stringify(payload) }),
+  movements: (params?: Record<string, string | number>) => {
+    const q = new URLSearchParams();
+    if (params) for (const [k, v] of Object.entries(params)) if (v !== "" && v !== undefined) q.set(k, String(v));
+    return authFetch<{ items: {
+      id: string; template_name: string; product_name: string; color_label: string | null;
+      warehouse_name: string; owner_type: string; movement_type: string; quantity: number;
+      reference_type: string | null; note: string; actor_name: string | null; created_at: string;
+    }[] }>(`/inventory/series/movements?${q.toString()}`);
+  },
+  reconciliation: () => authFetch<{
+    untracked_templates: { id: string; name: string; product_name: string; color_label: string | null; derived_available_series: number }[];
+    mixed_purpose_warehouses: { id: string; code: string; name: string; purpose: string }[];
+    templates_without_color: { id: string; name: string; product_name: string }[];
+    note: string;
+  }>("/inventory/series/reconciliation"),
+  setWarehousePurpose: (id: string, purpose: "retail" | "wholesale" | "mixed") =>
+    authFetch<{ id: string; purpose: string }>(`/warehouses/${id}/purpose`, { method: "PATCH", body: JSON.stringify({ purpose }) }),
+};
+
+/** §9-§19: «تأمین خرده از عمده» — break kolbe-owned series into retail pieces (SUP documents). */
+export const retailSuppliesApi = {
+  list: (params?: Record<string, string | number>) => {
+    const q = new URLSearchParams();
+    if (params) for (const [k, v] of Object.entries(params)) if (v !== "" && v !== undefined) q.set(k, String(v));
+    return authFetch<{ items: RetailSupplyRow[]; total: number }>(`/retail-supplies?${q.toString()}`);
+  },
+  detail: (id: string) => authFetch<RetailSupplyRow & {
+    recipe_snapshot: { piecesPerSeries: number; items: { sku: string; sizeLabel: string | null; colorLabel: string | null; quantityPerSeries: number }[] };
+    events: { id: string; event_type: string; note: string; actor_name: string | null; created_at: string }[];
+  }>(`/retail-supplies/${id}`),
+  create: (payload: {
+    seriesTemplateId: string; sourceWarehouseId: string; destinationWarehouseId: string;
+    seriesCount: number; note?: string; idempotencyKey?: string;
+  }) => authFetch<{ id: string; reference: string; status: string; duplicate?: boolean }>("/retail-supplies", { method: "POST", body: JSON.stringify(payload) }),
+  dispatch: (id: string) => authFetch<{ status: string }>(`/retail-supplies/${id}/dispatch`, { method: "POST", body: JSON.stringify({}) }),
+  receive: (id: string) => authFetch<{ status: string }>(`/retail-supplies/${id}/receive`, { method: "POST", body: JSON.stringify({}) }),
+  cancel: (id: string, reason?: string) => authFetch<{ status: string }>(`/retail-supplies/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }),
+};
+
 export const inventoryApi = {
-  warehouses: () => authFetch<{ items: { id: string; code: string; name: string; owner_id: string | null }[] }>("/warehouses"),
+  warehouses: () => authFetch<{ items: { id: string; code: string; name: string; owner_id: string | null; purpose?: "retail" | "wholesale" | "mixed" }[] }>("/warehouses"),
   warehouseDetail: (id: string) => authFetch<{ id: string; code: string; name: string; locations: unknown[]; balances: unknown[] }>(`/warehouses/${id}`),
   createWarehouse: (payload: { code: string; name: string }) => authFetch<{ id: string }>("/warehouses", { method: "POST", body: JSON.stringify(payload) }),
   locations: (warehouseId: string) => authFetch<{ items: unknown[] }>(`/warehouses/${warehouseId}/locations`),

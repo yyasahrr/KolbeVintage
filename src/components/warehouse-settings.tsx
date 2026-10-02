@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { inventoryApi } from "../data/api";
+import { inventoryApi, seriesInventoryApi } from "../data/api";
 import { Btn, Empty, ErrorState, Field, Input, LoadingState } from "./primitives";
 
-type Warehouse = { id: string; code: string; name: string; owner_id: string | null };
+type Warehouse = { id: string; code: string; name: string; owner_id: string | null; purpose?: "retail" | "wholesale" | "mixed" };
 type Location = { id: string; code: string; name: string; active: boolean };
 export type LowStock = { variant_id: string; warehouse_id: string; inventory_domain: string; sku: string; warehouse_name: string; available: number };
 
@@ -45,6 +45,26 @@ export function WarehouseSettings({ onReport }: { onReport: (rows: LowStock[]) =
         {(warehouses ?? []).map((item) => <option key={item.id} value={item.id}>{item.code} — {item.name}</option>)}
       </select></Field>
       {warehouse && <p className="text-sm text-[var(--kv-muted)]">نام: {warehouse.name} · کد: <span dir="ltr">{warehouse.code}</span></p>}
+      {warehouse && (
+        <div className="rounded-lg border border-[var(--kv-line)] p-3">
+          {/* §39/§41: purpose is an explicit, server-enforced property — settings shows and changes it, nothing else. */}
+          <p className="mb-2 text-xs font-bold">کاربری انبار</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {([["wholesale", "عمده (واحد: سری)"], ["retail", "خرده‌فروشی (واحد: عدد)"], ["mixed", "ترکیبی (قدیمی)"]] as const).map(([value, label]) => (
+              <button key={value} disabled={busy}
+                className={(warehouse.purpose ?? "mixed") === value
+                  ? "rounded-full bg-[var(--kv-accent)] px-3 py-1.5 text-[11.5px] font-bold text-white"
+                  : "rounded-full border border-[var(--kv-line)] px-3 py-1.5 text-[11.5px] font-bold text-[var(--kv-muted)] hover:border-[var(--kv-accent)]"}
+                onClick={() => void run(async () => {
+                  await seriesInventoryApi.setWarehousePurpose(warehouse.id, value);
+                  await loadWarehouses();
+                  setNotice("کاربری انبار به‌روزرسانی شد.");
+                })}>{label}</button>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] leading-5 text-[var(--kv-muted)]">سرور عملیات ناسازگار با کاربری انبار را رد می‌کند (مثلاً شمارش سری در انبار خرده). انباری که موجودی ناسازگار دارد قابل تغییر کاربری نیست.</p>
+        </div>
+      )}
       {!warehouses?.length && <Empty title="هنوز انباری ثبت نشده است" desc="اولین انبار را از فرم زیر ایجاد کنید." />}
       <details className="rounded-lg border border-[var(--kv-line)] p-3" open={!warehouses?.length}>
         <summary className="cursor-pointer text-sm font-bold">افزودن انبار</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">

@@ -4,6 +4,7 @@ import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Mod
 import { inventoryApi, manualSalesApi, productsApi, serverRequest, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
 import { AdminServerOrders } from "./admin-server-orders";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
+import { SeriesStockPanel, SupplyOpsPanel, SupplyWizard } from "../components/series-stock-panel";
 import { WarehouseSettings, type LowStock } from "../components/warehouse-settings";
 import { adjustmentPreview, pendingForRows } from "../data/warehouse-ux";
 import { formatPersianDateTimeFull } from "../data/persian-date";
@@ -92,14 +93,8 @@ export function WarehouseHub({ flash }: { flash: F }) {
           value={tab} onChange={setTab}
         />
       </div>
-      {tab === "retail" && <DomainInventory domain="retail" flash={flash} />}
-      {tab === "transfers" && (
-        <div className="space-y-5">
-          <TransfersCenter flash={flash} />
-          {/* §1.2: server inventory-transfer & ownership-conversion ops moved here from «QC و عملیات سرور». */}
-          <AdminServerOrders request={serverRequest} only="inventory-transfers" />
-        </div>
-      )}
+      {tab === "retail" && <RetailInventoryTab flash={flash} />}
+      {tab === "transfers" && <TransfersOpsCenter flash={flash} />}
       {tab === "wholesale" && <WholesaleCenter flash={flash} />}
       {tab === "settings" && (
         <Card className="p-4">
@@ -119,6 +114,76 @@ export function WarehouseHub({ flash }: { flash: F }) {
 }
 
 /* ------------------------------ inventory tables (C1/C3, L/M, O) ------------------------------ */
+
+/** §9/§20: retail replenishment starts at Product level via «تأمین از عمده» — direct receipt is no longer the normal path. */
+function RetailInventoryTab({ flash }: { flash: F }) {
+  const [wizardOpen, setWizardOpen] = useState(false);
+  return (
+    <div className="space-y-4">
+      <Card className="flex flex-wrap items-center justify-between gap-3 p-3">
+        <p className="text-[12px] leading-6 text-[var(--kv-muted)]">
+          تأمین موجودی خرده از انبار مرکزی عمده انجام می‌شود (باز کردن سری کامل). «اصلاح موجودی» فقط برای اصلاح/مرجوعی است.
+        </p>
+        <Btn size="sm" variant="accent" onClick={() => setWizardOpen(true)}>تأمین از عمده</Btn>
+      </Card>
+      <DomainInventory domain="retail" flash={flash} />
+      {wizardOpen && <SupplyWizard flash={flash} onClose={() => setWizardOpen(false)} onDone={async () => undefined} />}
+    </div>
+  );
+}
+
+/** §7/§43: series view is the PRIMARY wholesale representation; piece view stays as advanced detail. */
+function WholesaleInventoryTab({ flash }: { flash: F }) {
+  const [view, setView] = useState<"series" | "pieces">("series");
+  return (
+    <div className="space-y-4">
+      <Segmented options={[{ v: "series", label: "موجودی سری (اصلی)" }, { v: "pieces", label: "اجزای عددی (پیشرفته)" }]} value={view} onChange={setView} />
+      {view === "series" && <SeriesStockPanel flash={flash} />}
+      {view === "pieces" && (
+        <div className="space-y-2">
+          <p className="rounded-[10px] bg-amber-50 px-3 py-2 text-[11.5px] leading-6 text-amber-800">
+            این نما فقط اجزای عددیِ همان سری‌هاست (برای ممیزی)؛ واحد فروش و تأمین در عمده همیشه «سری» است.
+          </p>
+          <DomainInventory domain="wholesale" flash={flash} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+type OpsView = "all" | "supply" | "transfer" | "in_transit" | "needs_receive" | "done" | "cancelled";
+/** §16: transfers tab = operations center — unified views over supplies + inter-warehouse transfers. */
+function TransfersOpsCenter({ flash }: { flash: F }) {
+  const [view, setView] = useState<OpsView>("all");
+  const views: { v: OpsView; label: string }[] = [
+    { v: "all", label: "همه" },
+    { v: "supply", label: "تأمین خرده از عمده" },
+    { v: "transfer", label: "انتقال بین انبارها" },
+    { v: "in_transit", label: "در راه" },
+    { v: "needs_receive", label: "نیازمند دریافت" },
+    { v: "done", label: "تکمیل‌شده" },
+    { v: "cancelled", label: "لغوشده" },
+  ];
+  const supplyStatus: "" | "reserved" | "dispatched" | "received" | "cancelled" =
+    view === "in_transit" || view === "needs_receive" ? "dispatched"
+      : view === "done" ? "received" : view === "cancelled" ? "cancelled" : "";
+  const transferStatuses: string[] | undefined =
+    view === "in_transit" ? ["approved", "in_transit"]
+      : view === "needs_receive" ? ["in_transit"]
+        : view === "done" ? ["completed"] : view === "cancelled" ? ["cancelled"] : undefined;
+  const showSupplies = view !== "transfer";
+  const showTransfers = view !== "supply";
+  return (
+    <div className="space-y-4">
+      <Segmented options={views} value={view} onChange={setView} />
+      {showSupplies && <SupplyOpsPanel flash={flash} status={supplyStatus} />}
+      {showTransfers && <TransfersCenter flash={flash} statusFilter={transferStatuses} hideCreate={view !== "all" && view !== "transfer"} />}
+      {(view === "all" || view === "transfer") && (
+        <AdminServerOrders request={serverRequest} only="inventory-transfers" />
+      )}
+    </div>
+  );
+}
 
 function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; flash: F }) {
   const [rows, setRows] = useState<InvRow[] | null>(null);
@@ -441,7 +506,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                               if (e.target.value === "archive") setArchiveFor(row);
                             }}>
                               <option value="">عملیات ▾</option><option value="details">مشاهده جزئیات</option>
-                              <option value="receipt">ورود کالا</option>
+                              {domain === "wholesale" && <option value="receipt">ورود کالا</option>}
                               {domain === "retail" && <option value="manual">ثبت فروش دستی</option>}
                               <option value="adjust">اصلاح موجودی</option>
                               {row.incoming > 0 && pendingForRows(pendingReceipts, [row]).length > 0 && <option value="receive">دریافت کالای در راه</option>}
@@ -869,7 +934,7 @@ function ReceiveModal({ receipt, row, onClose, onDone, flash }: { receipt: Recei
 
 /* ------------------------------ transfers center (C2/G/H) ------------------------------ */
 
-function TransfersCenter({ flash }: { flash: F }) {
+function TransfersCenter({ flash, statusFilter, hideCreate }: { flash: F; statusFilter?: string[]; hideCreate?: boolean }) {
   const [transfers, setTransfers] = useState<TransferRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -940,10 +1005,11 @@ function TransfersCenter({ flash }: { flash: F }) {
   if (transfers === null) return <LoadingState />;
 
   const skuOptions = [...new Set(inv.filter((r) => r.inventory_domain === srcDomain).map((r) => r.sku))];
+  const visibleTransfers = statusFilter ? transfers.filter((t) => statusFilter.includes(t.status)) : transfers;
 
   return (
     <div className="space-y-4">
-      <Card className="p-4">
+      {!hideCreate && <Card className="p-4">
         <h3 className="mb-3 flex items-center gap-1.5 text-[14px] font-extrabold"><ArrowLeftRight size={15} />انتقال رسمی بین دامنه‌ها / انبارها</h3>
         <div className="grid gap-3 md:grid-cols-3">
           <Field label="دامنه مبدأ">
@@ -975,16 +1041,16 @@ function TransfersCenter({ flash }: { flash: F }) {
           </div>
         )}
         <div className="mt-3"><Btn size="sm" variant="accent" disabled={busy} onClick={() => void createTransfer()}>ثبت انتقال</Btn></div>
-      </Card>
+      </Card>}
 
       <Card className="overflow-hidden">
         <h3 className="flex items-center gap-1.5 border-b border-[var(--kv-border)] p-3 text-[14px] font-extrabold"><Truck size={15} />سوابق نقل‌وانتقال</h3>
-        {transfers.length === 0 ? <Empty title="انتقالی ثبت نشده" desc="اولین انتقال را از فرم بالا بسازید." /> : (
+        {visibleTransfers.length === 0 ? <Empty title="انتقالی ثبت نشده" desc="اولین انتقال را از فرم بالا بسازید." /> : (
           <div className="kv-scroll overflow-x-auto">
             <table className="kv-table min-w-[860px] text-[12.5px]">
               <thead><tr><th>شماره</th><th>کالا</th><th>مسیر</th><th>تعداد</th><th>بسته</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr></thead>
               <tbody>
-                {transfers.map((t) => (
+                {visibleTransfers.map((t) => (
                   <tr key={t.id} className={cn(t.is_reverse && "bg-amber-50/40")}>
                     <td className="font-bold" dir="ltr">{t.transfer_number ?? t.reference}{t.is_reverse && <span className="mr-1 rounded-full bg-amber-100 px-1.5 text-[10px] font-bold text-amber-800">برگشتی</span>}</td>
                     <td>{t.product_name ?? "—"} <span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{t.sku ?? ""}</span></td>
@@ -1073,7 +1139,7 @@ function WholesaleCenter({ flash }: { flash: F }) {
         ]}
         value={sub} onChange={setSub}
       />
-      {sub === "inventory" && <DomainInventory domain="wholesale" flash={flash} />}
+      {sub === "inventory" && <WholesaleInventoryTab flash={flash} />}
       {sub === "requests" && <SupplierRequestsAdmin flash={flash} />}
       {sub === "inbound" && (
         <div className="space-y-5">
