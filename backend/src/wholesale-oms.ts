@@ -1418,6 +1418,524 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
     return reply.code(201).send(result);
   });
 
+  /* ============================ fulfillment (§77-§91) ============================ */
+
+  /** A paid child is ready for consolidation when no allocation is still pending/reserved and no exception is open. */
+  async function refreshChildFulfillment(client: DbClient, childOrderId: string): Promise<string> {
+    const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [childOrderId]);
+    if (!child) throw notFound();
+    const pending = await one<{ count: string }>(client,
+      `SELECT count(*)::text AS count FROM order_source_allocations
+       WHERE child_order_id = $1 AND status IN ('pending','reserved')`, [childOrderId]);
+    const openExceptions = await one<{ count: string }>(client,
+      `SELECT count(*)::text AS count FROM fulfillment_exceptions WHERE child_order_id = $1 AND status = 'open'`, [childOrderId]);
+    let state = child.child_fulfillment ?? 'not_started';
+    if (Number(openExceptions?.count ?? 0) > 0) state = 'exception';
+    else if (child.payment_eligibility === 'paid' && Number(pending?.count ?? 0) === 0
+      && !['consolidated', 'delivered'].includes(state)) {
+      state = 'ready_for_consolidation';
+      // settlement-grade accepted quantity (§91): physical + QC-passed external, minus resolved shortfalls.
+      await client.query(
+        `UPDATE child_order_lines l SET accepted_series = COALESCE((
+             SELECT SUM(CASE WHEN a.source_type = 'supplier_external' THEN a.qc_passed_series ELSE a.quantity END)::int
+             FROM order_source_allocations a
+             WHERE a.line_id = l.id AND a.status IN ('consumed')
+           ), 0), updated_at = now()
+         WHERE l.child_order_id = $1 AND l.status NOT IN ('removed','rejected') AND l.accepted_series IS NULL`,
+        [childOrderId]);
+    }
+    if (state !== child.child_fulfillment) {
+      await client.query('UPDATE orders SET child_fulfillment = $2, updated_at = now() WHERE id = $1', [childOrderId, state]);
+      if (state === 'ready_for_consolidation') {
+        await client.query("UPDATE orders SET wholesale_fulfillment_status = 'awaiting_consolidation' WHERE id = $1", [childOrderId]);
+        await outbox(client, 'child_order.ready_for_consolidation', 'order', childOrderId,
+          { childOrderId, masterOrderId: child.master_order_id });
+      }
+    }
+    return state;
+  }
+
+  async function openException(client: DbClient, input: {
+    masterOrderId: string | null; childOrderId: string; lineId?: string | null; allocationId?: string | null;
+    type: string; quantity?: number | null; note: string; actorId: string;
+  }): Promise<string> {
+    const exceptionId = randomUUID();
+    await client.query(
+      `INSERT INTO fulfillment_exceptions(id, master_order_id, child_order_id, line_id, allocation_id, exception_type, quantity, status, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8,$9)`,
+      [exceptionId, input.masterOrderId, input.childOrderId, input.lineId ?? null, input.allocationId ?? null,
+        input.type, input.quantity ?? null, input.note, input.actorId]);
+    await outbox(client, 'child_order.exception_opened', 'order', input.childOrderId,
+      { childOrderId: input.childOrderId, exceptionId, exceptionType: input.type, quantity: input.quantity ?? null });
+    return exceptionId;
+  }
+
+  /** Warehouse pick for PHYSICAL sources — kolbe stock & supplier stock-at-kolbe: pick → ready, no dispatch/QC (§77-§78). */
+  app.post('/api/v1/wholesale/children/:id/pick', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!child || !child.master_order_id) throw notFound();
+      if (child.payment_eligibility !== 'paid') throw code(409, 'PAYMENT_NOT_READY', 'زیرسفارش هنوز پرداخت نشده است — برداشت مجاز نیست.');
+      const allocations = await client.query<AllocationRow>(
+        `SELECT * FROM order_source_allocations
+         WHERE child_order_id = $1 AND source_type IN ('kolbe_stock','supplier_stock_at_kolbe') AND status = 'reserved'
+         ORDER BY created_at FOR UPDATE`, [id]);
+      if (!allocations.rows.length) throw conflict('تخصیص فیزیکی فعالی برای برداشت وجود ندارد.');
+      for (const alloc of allocations.rows) {
+        const line = await one<LineRow>(client, 'SELECT * FROM child_order_lines WHERE id = $1 FOR UPDATE', [alloc.line_id]);
+        if (!line) continue;
+        // consume the series banding (goods leave sellable wholesale storage into consolidation staging).
+        const reservation = await one<{ id: string; series_count: number }>(client,
+          `SELECT id, series_count FROM order_series_reservations
+           WHERE order_id = $1 AND series_template_id = $2 AND status = 'active' FOR UPDATE`,
+          [id, line.series_template_id]);
+        if (reservation && alloc.warehouse_id) {
+          await applySeriesMovement(client, {
+            templateId: line.series_template_id, warehouseId: alloc.warehouse_id,
+            owner: { ownerType: alloc.source_type === 'kolbe_stock' ? 'kolbe' : 'supplier', supplierId: alloc.owner_supplier_id },
+            movementType: 'consume', onHandDelta: -alloc.quantity, reservedDelta: -alloc.quantity,
+            referenceType: 'order', referenceId: id, actorId: user.id,
+            note: 'برداشت برای تجمیع سفارش مادر', idempotencyKey: `oms-pick:${alloc.id}`,
+          });
+          await client.query("UPDATE order_series_reservations SET status = 'consumed', updated_at = now() WHERE id = $1", [reservation.id]);
+        }
+        // consume the piece-level reservations of this line's physical portion.
+        const perPiece = ((line.commercial_snapshot?.perPiece ?? []) as Array<{ variantId: string }>).map((p) => p.variantId);
+        if (perPiece.length) {
+          const reservations = await client.query<{ id: string; variant_id: string; warehouse_id: string; quantity: number; inventory_domain: string }>(
+            `SELECT r.id, r.variant_id, r.warehouse_id, r.quantity, r.inventory_domain
+             FROM stock_reservations r JOIN order_lines l ON l.id = r.order_line_id
+             WHERE l.order_id = $1 AND l.variant_id = ANY($2::uuid[]) AND r.status = 'active' FOR UPDATE OF r`,
+            [id, perPiece]);
+          for (const res of reservations.rows) {
+            await client.query(
+              `UPDATE stock_balances SET on_hand = on_hand - $4, reserved = GREATEST(0, reserved - $4), version = version + 1, updated_at = now()
+               WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
+              [res.variant_id, res.warehouse_id, res.inventory_domain, res.quantity]);
+            await client.query("UPDATE stock_reservations SET status = 'consumed' WHERE id = $1", [res.id]);
+            await client.query(
+              `INSERT INTO stock_movements(id, variant_id, warehouse_id, inventory_domain, on_hand_delta, reserved_delta, reason, reference_type, reference_id, actor_id, idempotency_key)
+               VALUES ($1,$2,$3,$4,$5,$6,'picked for consolidation','order',$7,$8,$9)`,
+              [randomUUID(), res.variant_id, res.warehouse_id, res.inventory_domain, -res.quantity, -res.quantity, id, user.id, `oms-pick-piece:${res.id}`]);
+          }
+        }
+        await client.query("UPDATE order_source_allocations SET status = 'consumed', updated_at = now() WHERE id = $1", [alloc.id]);
+      }
+      const state = await refreshChildFulfillment(client, id);
+      await audit(client, user.id, 'wholesale_child.picked', 'order', id, undefined,
+        { allocations: allocations.rows.map((a) => a.id) }, request.ip);
+      return { ok: true, childFulfillment: state };
+    });
+  });
+
+  /** Supplier dispatch of ORDER-BOUND external goods → ALWAYS to the central wholesale warehouse (§79-§80). */
+  app.post('/api/v1/wholesale/supplier/children/:id/dispatch', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!user.roles.includes('supplier')) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    // §137: destination is NOT accepted from the client — strict schema rejects any attempt.
+    const body = z.object({ trackingNote: z.string().max(400).optional() }).strict().parse(request.body ?? {});
+    return transaction(pool, async (client) => {
+      const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!child || child.seller_id !== user.id) throw forbidden(); // IDOR guard
+      if (child.payment_eligibility !== 'paid') throw code(409, 'PAYMENT_NOT_READY', 'زیرسفارش هنوز پرداخت نشده است — ارسال مجاز نیست.');
+      const destination = await centralWholesaleWarehouse(client);
+      const allocations = await client.query<AllocationRow>(
+        `SELECT * FROM order_source_allocations
+         WHERE child_order_id = $1 AND source_type = 'supplier_external' AND status = 'reserved' AND dispatched_series = 0
+         ORDER BY created_at FOR UPDATE`, [id]);
+      if (!allocations.rows.length) throw conflict('تخصیص خارجی آماده ارسال وجود ندارد.');
+      for (const alloc of allocations.rows) {
+        await client.query(
+          `UPDATE order_source_allocations SET dispatched_series = quantity, warehouse_id = $2, updated_at = now() WHERE id = $1`,
+          [alloc.id, destination]);
+        await client.query(
+          `UPDATE child_order_lines SET dispatched_series = dispatched_series + $2, updated_at = now() WHERE id = $1`,
+          [alloc.line_id, alloc.quantity]);
+        // capacity is now truly used — consume the reservation (never returns to availableToRequest).
+        if (alloc.capacity_reservation_id) {
+          await settleSupplierCapacityReservation(client, alloc.capacity_reservation_id, 'consumed');
+        }
+      }
+      await client.query(
+        `UPDATE orders SET child_fulfillment = 'dispatched', wholesale_fulfillment_status = 'supplier_dispatched', updated_at = now() WHERE id = $1`, [id]);
+      await client.query(
+        `INSERT INTO order_events(id, order_id, to_status, actor_id, note) VALUES ($1,$2,'paid',$3,$4)`,
+        [randomUUID(), id, user.id, `تأمین‌کننده کالا را به انبار مرکزی کلبه ارسال کرد${body.trackingNote ? ` — ${body.trackingNote}` : ''}`]);
+      await audit(client, user.id, 'wholesale_child.supplier_dispatched', 'order', id, undefined,
+        { destinationWarehouseId: destination, allocations: allocations.rows.map((a) => a.id) }, request.ip);
+      await outbox(client, 'child_order.supplier_dispatched', 'order', id,
+        { childOrderId: id, masterOrderId: child.master_order_id, destinationWarehouseId: destination });
+      return { ok: true, destinationWarehouseId: destination, childFulfillment: 'dispatched' };
+    });
+  });
+
+  /** Warehouse receive of order-bound inbound (§84): received is tracked apart from dispatched. */
+  app.post('/api/v1/wholesale/children/:id/receive', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      allocations: z.array(z.object({
+        allocationId: z.uuid(), receivedSeries: z.number().int().min(0),
+      }).strict()).min(1).max(50),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!child || !child.master_order_id) throw notFound();
+      for (const entry of body.allocations) {
+        const alloc = await one<AllocationRow>(client,
+          `SELECT * FROM order_source_allocations WHERE id = $1 AND child_order_id = $2 FOR UPDATE`,
+          [entry.allocationId, id]);
+        if (!alloc || alloc.source_type !== 'supplier_external') throw notFound();
+        if (alloc.dispatched_series <= 0) throw conflict('این تخصیص هنوز توسط تأمین‌کننده ارسال نشده است.');
+        if (alloc.received_series > 0) throw conflict('رسید این تخصیص قبلاً ثبت شده است.');
+        if (entry.receivedSeries > alloc.dispatched_series) throw badRequest('تعداد رسید از تعداد ارسالی بیشتر است.');
+        await client.query(
+          `UPDATE order_source_allocations SET received_series = $2, updated_at = now() WHERE id = $1`,
+          [alloc.id, entry.receivedSeries]);
+        await client.query(
+          `UPDATE child_order_lines SET received_series = received_series + $2, updated_at = now() WHERE id = $1`,
+          [alloc.line_id, entry.receivedSeries]);
+        if (entry.receivedSeries < alloc.dispatched_series) {
+          await openException(client, {
+            masterOrderId: child.master_order_id, childOrderId: id, lineId: alloc.line_id, allocationId: alloc.id,
+            type: 'lost_inbound', quantity: alloc.dispatched_series - entry.receivedSeries,
+            note: 'کسری در رسید انبار نسبت به تعداد ارسالی تأمین‌کننده', actorId: user.id,
+          });
+        }
+      }
+      await client.query(
+        `UPDATE orders SET child_fulfillment = 'qc_pending', wholesale_fulfillment_status = 'received_at_kolbe', updated_at = now() WHERE id = $1`, [id]);
+      await audit(client, user.id, 'wholesale_child.received', 'order', id, undefined, body, request.ip);
+      await outbox(client, 'child_order.received_at_kolbe', 'order', id, { childOrderId: id });
+      return { ok: true, childFulfillment: 'qc_pending' };
+    });
+  });
+
+  /**
+   * QC of order-bound inbound (§85-§87): passed goods stay ORDER-BOUND — they are NEVER
+   * credited to general supplier stock-at-kolbe (no series_stock_balances / stock_balances write).
+   * Sellers can never QC their own goods (§135).
+   */
+  app.post('/api/v1/wholesale/children/:id/qc', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      allocations: z.array(z.object({
+        allocationId: z.uuid(), passedSeries: z.number().int().min(0), rejectedSeries: z.number().int().min(0),
+      }).strict()).min(1).max(50),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!child || !child.master_order_id) throw notFound();
+      if (child.seller_id === user.id) throw forbidden(); // §135: no self-QC
+      let anyRejected = false;
+      for (const entry of body.allocations) {
+        const alloc = await one<AllocationRow>(client,
+          `SELECT * FROM order_source_allocations WHERE id = $1 AND child_order_id = $2 FOR UPDATE`,
+          [entry.allocationId, id]);
+        if (!alloc || alloc.source_type !== 'supplier_external') throw notFound();
+        if (alloc.received_series <= 0) throw conflict('رسید انبار برای این تخصیص ثبت نشده است.');
+        if (alloc.qc_passed_series + alloc.qc_rejected_series > 0) throw conflict('کنترل کیفیت این تخصیص قبلاً ثبت شده است.');
+        if (entry.passedSeries + entry.rejectedSeries !== alloc.received_series) {
+          throw badRequest('جمع قبول و رد باید دقیقاً برابر تعداد رسیدشده باشد.');
+        }
+        await client.query(
+          `UPDATE order_source_allocations SET qc_passed_series = $2, qc_rejected_series = $3,
+             status = CASE WHEN $2 = quantity THEN 'consumed' ELSE status END, updated_at = now() WHERE id = $1`,
+          [alloc.id, entry.passedSeries, entry.rejectedSeries]);
+        await client.query(
+          `UPDATE child_order_lines SET qc_passed_series = qc_passed_series + $2, qc_rejected_series = qc_rejected_series + $3, updated_at = now()
+           WHERE id = $1`, [alloc.line_id, entry.passedSeries, entry.rejectedSeries]);
+        if (entry.rejectedSeries > 0) {
+          anyRejected = true;
+          await openException(client, {
+            masterOrderId: child.master_order_id, childOrderId: id, lineId: alloc.line_id, allocationId: alloc.id,
+            type: 'qc_rejected', quantity: entry.rejectedSeries,
+            note: 'رد کنترل کیفیت کالای سفارش‌محور — کالا به موجودی عمومی اضافه نمی‌شود', actorId: user.id,
+          });
+        }
+        if (entry.passedSeries < alloc.quantity && entry.rejectedSeries === 0 && alloc.received_series >= alloc.dispatched_series) {
+          // short confirmation shrinkage without rejection → explicit shortage exception, never silent (§88).
+          await openException(client, {
+            masterOrderId: child.master_order_id, childOrderId: id, lineId: alloc.line_id, allocationId: alloc.id,
+            type: 'shortage', quantity: alloc.quantity - entry.passedSeries,
+            note: 'کسری نسبت به تعداد تأییدشده پس از کنترل کیفیت', actorId: user.id,
+          });
+        }
+      }
+      await client.query(
+        `UPDATE orders SET wholesale_fulfillment_status = $2, updated_at = now() WHERE id = $1`,
+        [id, anyRejected ? 'qc_issue' : 'qc_passed']);
+      const state = await refreshChildFulfillment(client, id);
+      await audit(client, user.id, 'wholesale_child.qc', 'order', id, undefined, body, request.ip);
+      await outbox(client, 'child_order.qc_recorded', 'order', id, { childOrderId: id, state });
+      return { ok: true, childFulfillment: state };
+    });
+  });
+
+  /** Ops resolution of a fulfillment exception (§89-§90): refs only — money moves in Prompt 3. */
+  app.post('/api/v1/wholesale/exceptions/:id/resolve', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      resolution: z.enum(['accept_short', 'refund_pending', 'supplier_redelivery', 'written_off']),
+      note: z.string().max(500).optional(),
+    }).strict().parse(request.body);
+    const policy = await omsPolicy(pool);
+    return transaction(pool, async (client) => {
+      const exception = await one<{
+        id: string; master_order_id: string | null; child_order_id: string; line_id: string | null;
+        allocation_id: string | null; exception_type: string; quantity: number | null; status: string;
+      }>(client, 'SELECT * FROM fulfillment_exceptions WHERE id = $1 FOR UPDATE', [id]);
+      if (!exception) throw notFound();
+      if (exception.status !== 'open') throw conflict('این استثنا قبلاً تعیین تکلیف شده است.');
+      const resolutionReference = {
+        resolvedBy: user.id, resolution: body.resolution, note: body.note ?? '',
+        financeFollowUp: body.resolution === 'refund_pending' ? 'prompt3_refund' : null,
+      };
+      await client.query(
+        `UPDATE fulfillment_exceptions SET status = 'resolved', resolution = $2, resolution_reference = $3,
+           resolved_by = $4, resolved_at = now(), updated_at = now() WHERE id = $1`,
+        [id, body.resolution, JSON.stringify(resolutionReference), user.id]);
+      if (exception.allocation_id && (body.resolution === 'accept_short' || body.resolution === 'refund_pending' || body.resolution === 'written_off')) {
+        // close the allocation at its QC-passed quantity; accepted shortfall is explicit, never silent.
+        await client.query(
+          `UPDATE order_source_allocations SET status = 'consumed', updated_at = now()
+           WHERE id = $1 AND status NOT IN ('consumed','released','cancelled')`, [exception.allocation_id]);
+        if (exception.line_id) {
+          await client.query('UPDATE child_order_lines SET accepted_series = NULL, updated_at = now() WHERE id = $1', [exception.line_id]);
+        }
+      }
+      if (body.resolution === 'supplier_redelivery' && exception.allocation_id) {
+        // re-open the inbound leg: supplier dispatches again for the missing quantity.
+        await client.query(
+          `UPDATE order_source_allocations SET dispatched_series = 0, received_series = 0,
+             qc_passed_series = 0, qc_rejected_series = 0, updated_at = now() WHERE id = $1 AND status = 'reserved'`,
+          [exception.allocation_id]);
+      }
+      if (body.resolution === 'refund_pending') {
+        await outbox(client, 'child_order.refund_requested', 'order', exception.child_order_id, {
+          childOrderId: exception.child_order_id, masterOrderId: exception.master_order_id,
+          exceptionId: id, exceptionType: exception.exception_type, quantity: exception.quantity, reason: 'fulfillment_exception',
+        });
+      }
+      const state = await refreshChildFulfillment(client, exception.child_order_id);
+      void policy;
+      await audit(client, user.id, 'wholesale_exception.resolved', 'fulfillment_exception', id, undefined,
+        { resolution: body.resolution }, request.ip);
+      return { ok: true, childFulfillment: state };
+    });
+  });
+
+  /* ============================ consolidation (§93-§102) ============================ */
+
+  app.post('/api/v1/wholesale/masters/:id/consolidation/start', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const result = await transaction(pool, async (client) => {
+      const master = await one<{ id: string; reference: string; composition: string }>(client,
+        'SELECT id, reference, composition FROM master_orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!master) throw notFound();
+      if (master.composition !== 'locked') throw code(409, 'MASTER_COMPOSITION_OPEN', 'ابتدا ترکیب سفارش مادر باید قفل شود.');
+      // §95: denominator = included, non-cancelled children; ALL must be paid + ready (§43 excludes removed/rejected).
+      const children = await client.query<ChildRow>(
+        `SELECT * FROM orders WHERE master_order_id = $1 AND composition_state = 'included' AND status <> 'cancelled'
+         ORDER BY created_at FOR UPDATE`, [id]);
+      if (!children.rows.length) throw conflict('زیرسفارش فعالی برای تجمیع وجود ندارد.');
+      const notReady = children.rows.filter((c) => c.payment_eligibility !== 'paid' || c.child_fulfillment !== 'ready_for_consolidation');
+      if (notReady.length) {
+        throw code(409, 'CONSOLIDATION_NOT_READY',
+          `زیرسفارش‌های ${notReady.map((c) => c.reference).join('، ')} هنوز آماده تجمیع نیستند.`);
+      }
+      // §146: double-start is impossible — UNIQUE(master_order_id).
+      const existing = await one<{ id: string }>(client, 'SELECT id FROM master_consolidations WHERE master_order_id = $1', [id]);
+      if (existing) throw conflict('تجمیع این سفارش مادر قبلاً آغاز شده است.');
+      const consolidationId = randomUUID();
+      const seq = await one<{ n: string }>(client, "SELECT nextval('consolidation_seq')::text AS n");
+      const reference = `CON-${seq!.n}`;
+      await client.query(
+        `INSERT INTO master_consolidations(id, master_order_id, reference, status, expected_children, started_by)
+         VALUES ($1,$2,$3,'started',$4,$5)`, [consolidationId, id, reference, children.rows.length, user.id]);
+      const lines = await client.query<LineRow>(
+        `SELECT l.* FROM child_order_lines l JOIN orders o ON o.id = l.child_order_id
+         WHERE l.master_order_id = $1 AND o.composition_state = 'included' AND o.status <> 'cancelled'
+           AND l.status NOT IN ('removed','rejected')`, [id]);
+      for (const line of lines.rows) {
+        await client.query(
+          `INSERT INTO consolidation_items(id, consolidation_id, child_order_id, line_id, series_template_id, expected_series)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [randomUUID(), consolidationId, line.child_order_id, line.id, line.series_template_id,
+            line.accepted_series ?? line.confirmed_series ?? line.requested_series]);
+      }
+      await audit(client, user.id, 'wholesale_consolidation.started', 'master_consolidation', consolidationId, undefined,
+        { masterOrderId: id, reference, children: children.rows.length }, request.ip);
+      await outbox(client, 'wholesale_master.consolidation_started', 'master_order', id, { masterOrderId: id, consolidationId, reference });
+      return { id: consolidationId, reference, status: 'started', expectedChildren: children.rows.length, items: lines.rows.length };
+    });
+    return reply.code(201).send(result);
+  });
+
+  /** §97: item verification — wrong/duplicate scans are rejected with machine codes. */
+  app.post('/api/v1/wholesale/consolidations/:id/verify-item', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({ lineId: z.uuid() }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const consolidation = await one<{ id: string; status: string }>(client,
+        'SELECT id, status FROM master_consolidations WHERE id = $1 FOR UPDATE', [id]);
+      if (!consolidation) throw notFound();
+      if (consolidation.status !== 'started') throw conflict('تجمیع در وضعیت اسکن اقلام نیست.');
+      const item = await one<{ id: string; verified_at: Date | null; expected_series: number }>(client,
+        'SELECT id, verified_at, expected_series FROM consolidation_items WHERE consolidation_id = $1 AND line_id = $2 FOR UPDATE',
+        [id, body.lineId]);
+      if (!item) throw code(409, 'WRONG_CONSOLIDATION_ITEM', 'این قلم متعلق به این تجمیع نیست.');
+      if (item.verified_at) throw code(409, 'DUPLICATE_CONSOLIDATION_SCAN', 'این قلم قبلاً تأیید شده است.');
+      await client.query(
+        `UPDATE consolidation_items SET verified_series = expected_series, verified_by = $2, verified_at = now() WHERE id = $1`,
+        [item.id, user.id]);
+      const remaining = await one<{ count: string }>(client,
+        'SELECT count(*)::text AS count FROM consolidation_items WHERE consolidation_id = $1 AND verified_at IS NULL', [id]);
+      return { ok: true, remainingItems: Number(remaining?.count ?? 0) };
+    });
+  });
+
+  app.post('/api/v1/wholesale/consolidations/:id/complete', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const consolidation = await one<{ id: string; status: string; master_order_id: string }>(client,
+        'SELECT id, status, master_order_id FROM master_consolidations WHERE id = $1 FOR UPDATE', [id]);
+      if (!consolidation) throw notFound();
+      if (consolidation.status !== 'started') throw conflict('تجمیع در وضعیت تکمیل نیست.');
+      const unverified = await one<{ count: string }>(client,
+        'SELECT count(*)::text AS count FROM consolidation_items WHERE consolidation_id = $1 AND verified_at IS NULL', [id]);
+      if (Number(unverified?.count ?? 0) > 0) {
+        throw code(409, 'CONSOLIDATION_NOT_READY', 'هنوز اقلامی بدون تأیید اسکن باقی مانده است.');
+      }
+      await client.query(
+        `UPDATE master_consolidations SET status = 'consolidated', consolidated_at = now(), updated_at = now() WHERE id = $1`, [id]);
+      await client.query(
+        `UPDATE orders SET child_fulfillment = 'consolidated', wholesale_fulfillment_status = 'consolidated',
+           consolidated_at = COALESCE(consolidated_at, now()), consolidated_by = COALESCE(consolidated_by, $2), updated_at = now()
+         WHERE master_order_id = $1 AND composition_state = 'included' AND status <> 'cancelled'`,
+        [consolidation.master_order_id, user.id]);
+      await audit(client, user.id, 'wholesale_consolidation.completed', 'master_consolidation', id, undefined, undefined, request.ip);
+      await outbox(client, 'wholesale_master.consolidated', 'master_order', consolidation.master_order_id,
+        { masterOrderId: consolidation.master_order_id, consolidationId: id });
+      return { ok: true, status: 'consolidated' };
+    });
+  });
+
+  app.post('/api/v1/wholesale/consolidations/:id/pack', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const consolidation = await one<{ id: string; status: string; master_order_id: string }>(client,
+        'SELECT id, status, master_order_id FROM master_consolidations WHERE id = $1 FOR UPDATE', [id]);
+      if (!consolidation) throw notFound();
+      if (consolidation.status !== 'consolidated') throw conflict('ابتدا تجمیع باید تکمیل شود.');
+      await client.query(
+        `UPDATE master_consolidations SET status = 'ready_for_shipment', packed_at = now(), packed_by = $2, updated_at = now() WHERE id = $1`,
+        [id, user.id]);
+      await client.query(
+        `UPDATE orders SET packed_at = COALESCE(packed_at, now()), updated_at = now()
+         WHERE master_order_id = $1 AND composition_state = 'included' AND status <> 'cancelled'`,
+        [consolidation.master_order_id]);
+      await audit(client, user.id, 'wholesale_consolidation.packed', 'master_consolidation', id, undefined, undefined, request.ip);
+      return { ok: true, status: 'ready_for_shipment' };
+    });
+  });
+
+  /* ============================ final master shipment (§103, §110) ============================ */
+
+  app.post('/api/v1/wholesale/masters/:id/ship', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      carrier: z.string().trim().min(2).max(80),
+      trackingCode: z.string().trim().min(3).max(120),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const master = await one<{ id: string; shipped_at: Date | null }>(client,
+        'SELECT id, shipped_at FROM master_orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!master) throw notFound();
+      if (master.shipped_at) throw conflict('این سفارش مادر قبلاً ارسال شده است.');
+      const consolidation = await one<{ id: string; status: string }>(client,
+        'SELECT id, status FROM master_consolidations WHERE master_order_id = $1 FOR UPDATE', [id]);
+      if (!consolidation || consolidation.status !== 'ready_for_shipment') {
+        throw code(409, 'CONSOLIDATION_NOT_READY', 'تجمیع و بسته‌بندی هنوز کامل نشده است.');
+      }
+      await client.query("UPDATE master_consolidations SET status = 'shipped', updated_at = now() WHERE id = $1", [consolidation.id]);
+      await client.query(
+        `UPDATE master_orders SET carrier = $2, tracking_code = $3, shipped_at = now(), updated_at = now() WHERE id = $1`,
+        [id, body.carrier, body.trackingCode]);
+      const children = await client.query<{ id: string; status: string }>(
+        `SELECT id, status FROM orders WHERE master_order_id = $1 AND composition_state = 'included' AND status <> 'cancelled' FOR UPDATE`, [id]);
+      for (const child of children.rows) {
+        await client.query(
+          `UPDATE orders SET status = 'in_transit', child_fulfillment = 'in_transit',
+             wholesale_fulfillment_status = 'vip_dispatched', vip_dispatched_at = COALESCE(vip_dispatched_at, now()),
+             vip_tracking_code = $2, vip_carrier = $3, updated_at = now() WHERE id = $1`,
+          [child.id, body.trackingCode, body.carrier]);
+        await client.query(
+          `INSERT INTO order_events(id, order_id, from_status, to_status, actor_id, note)
+           VALUES ($1,$2,$3,'in_transit',$4,$5)`,
+          [randomUUID(), child.id, child.status, user.id, `ارسال نهایی سفارش مادر (${body.carrier} — ${body.trackingCode})`]);
+      }
+      await audit(client, user.id, 'wholesale_master.shipped', 'master_order', id, undefined, body, request.ip);
+      await outbox(client, 'wholesale_master.shipped', 'master_order', id,
+        { masterOrderId: id, carrier: body.carrier, trackingCode: body.trackingCode });
+      return { ok: true, shipped: children.rows.length };
+    });
+  });
+
+  app.post('/api/v1/wholesale/masters/:id/deliver', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const master = await one<{ id: string; shipped_at: Date | null; delivered_at: Date | null }>(client,
+        'SELECT id, shipped_at, delivered_at FROM master_orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!master) throw notFound();
+      if (!master.shipped_at) throw conflict('سفارش مادر هنوز ارسال نشده است.');
+      if (master.delivered_at) throw conflict('تحویل این سفارش مادر قبلاً ثبت شده است.');
+      await client.query(
+        `UPDATE master_orders SET delivered_at = now(), status = 'completed', updated_at = now() WHERE id = $1`, [id]);
+      const children = await client.query<{ id: string; status: string }>(
+        `SELECT id, status FROM orders WHERE master_order_id = $1 AND composition_state = 'included' AND status <> 'cancelled' FOR UPDATE`, [id]);
+      for (const child of children.rows) {
+        await client.query(
+          `UPDATE orders SET status = 'delivered', child_fulfillment = 'delivered',
+             wholesale_fulfillment_status = 'delivered', updated_at = now() WHERE id = $1`, [child.id]);
+        await client.query(
+          `INSERT INTO order_events(id, order_id, from_status, to_status, actor_id, note)
+           VALUES ($1,$2,$3,'delivered',$4,'تحویل سفارش مادر به خریدار VIP')`,
+          [randomUUID(), child.id, child.status, user.id]);
+        // §128-§129: finance hook per CHILD. Deliberately NOT postSupplierEarnings —
+        // the legacy blanket wallet credit stays confined to legacy /orders/:id/transitions;
+        // supplier settlement for master-flow children is Prompt 3, fed by this event.
+        await outbox(client, 'child_order.fulfillment_delivered', 'order', child.id,
+          { childOrderId: child.id, masterOrderId: id });
+      }
+      await audit(client, user.id, 'wholesale_master.delivered', 'master_order', id, undefined,
+        { children: children.rows.length }, request.ip);
+      await outbox(client, 'wholesale_master.delivered', 'master_order', id, { masterOrderId: id });
+      return { ok: true, delivered: children.rows.length };
+    });
+  });
+
   /* ============================ deadline sweep (§47-§49/§69-§70) ============================ */
 
   app.post('/api/v1/wholesale/oms/expire-sweep', async (request) => {
