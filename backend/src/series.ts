@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
-import { one, transaction, type DbPool } from './db.js';
+import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { badRequest, forbidden, notFound } from './errors.js';
 
@@ -58,6 +58,19 @@ export async function computeAvailableSeries(pool: DbPool, templateId: string): 
   return Math.max(0, Number(row?.available_series ?? '0'));
 }
 
+
+/** §5: a series belongs to ONE Product+Color — derive color_label from the recipe components. */
+async function deriveTemplateColor(client: DbClient, templateId: string): Promise<void> {
+  await client.query(
+    `UPDATE series_templates t SET color_label = sub.color_label FROM (
+       SELECT i.series_template_id,
+              CASE WHEN count(DISTINCT COALESCE(v.color_label, '∅')) = 1 THEN min(v.color_label) ELSE NULL END AS color_label
+       FROM series_template_items i JOIN product_variants v ON v.id = i.variant_id
+       WHERE i.series_template_id = $1 GROUP BY i.series_template_id
+     ) sub WHERE sub.series_template_id = t.id`,
+    [templateId]);
+}
+
 export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.post('/api/v1/series-templates', async (request, reply) => {
     const user = await principal(request, pool, config);
@@ -95,6 +108,7 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
            VALUES ($1,$2,$3,$4)`,
           [randomUUID(), id, item.variantId, item.quantityPerSeries]);
       }
+      await deriveTemplateColor(client, id);
       const out = { id, name: body.name, productId: body.productId, itemCount: body.items.length };
       await audit(client, user.id, 'series_template.created', 'series_template', id, undefined, out, request.ip);
       return out;
@@ -221,6 +235,7 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
              VALUES ($1,$2,$3,$4)`,
             [randomUUID(), id, item.variantId, item.quantityPerSeries]);
         }
+        await deriveTemplateColor(client, id);
       }
       const out = { id, updated: true };
       await audit(client, user.id, 'series_template.updated', 'series_template', id, undefined, { ...body }, request.ip);

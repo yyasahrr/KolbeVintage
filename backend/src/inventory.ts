@@ -132,7 +132,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     const privileged = user.permissions.includes('inventory:read');
     const supplierOnly = user.roles.includes('supplier') && !privileged;
     const rows = await pool.query(
-      `SELECT id, code, name, owner_id, active, created_at FROM warehouses
+      `SELECT id, code, name, owner_id, active, purpose, created_at FROM warehouses
        WHERE ($1::boolean OR owner_id IS NULL OR owner_id = $2) AND ($2::uuid IS NOT NULL OR true)
        ORDER BY code`,
       [privileged, user.id]);
@@ -147,7 +147,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     if (!row) throw notFound();
     const privileged = user.permissions.includes('inventory:read');
     if (!privileged && row.owner_id !== null && row.owner_id !== user.id) throw notFound();
-    const warehouse = await one(pool, 'SELECT id, code, name, owner_id, active, created_at FROM warehouses WHERE id = $1', [id]);
+    const warehouse = await one(pool, 'SELECT id, code, name, owner_id, active, purpose, created_at FROM warehouses WHERE id = $1', [id]);
     const locations = await pool.query('SELECT id, code, name, active, created_at FROM warehouse_locations WHERE warehouse_id = $1 ORDER BY code', [id]);
     const balances = await pool.query(
       `SELECT b.variant_id, v.sku, p.name AS product_name, b.inventory_domain, b.on_hand, b.reserved, b.incoming, b.damaged,
