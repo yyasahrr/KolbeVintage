@@ -26,6 +26,7 @@ import { FinanceLedgerPanel } from "../components/finance-ledger";
 import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
 import { CrmRetailPanel } from "../components/crm-retail-panel";
+import { CrmSuppliersPanel } from "../components/crm-suppliers-panel";
 import { UsersDirectoryPanel } from "../components/users-directory";
 import { PromoPanel } from "../components/promo-panel";
 import { CmsCenter } from "./admin-cms";
@@ -484,7 +485,11 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
               <details className="rounded-[14px] border border-[var(--kv-line)] p-4"><summary className="cursor-pointer text-[12.5px] font-bold">فهرست همه کاربران سیستم</summary><div className="mt-4"><UsersDirectoryPanel flash={flash} /></div></details>
             </div> },
             { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
-            { v: "suppliers", label: "تأمین‌کنندگان", node: <div className="space-y-5"><SupplierChangeReview flash={flash} /><Supplier360Panel flash={flash} /></div> },
+            { v: "suppliers", label: "تأمین‌کنندگان", node: <div className="space-y-5">
+              <CrmSuppliersPanel />
+              <details className="rounded-[14px] border border-[var(--kv-line)] p-4" open><summary className="cursor-pointer text-[12.5px] font-bold">درخواست‌های تغییر پروفایل تأمین‌کننده</summary><div className="mt-4"><SupplierChangeReview flash={flash} /></div></details>
+              <details className="rounded-[14px] border border-[var(--kv-line)] p-4"><summary className="cursor-pointer text-[12.5px] font-bold">پروفایل ۳۶۰° و مدیریت تأمین‌کننده</summary><div className="mt-4"><Supplier360Panel flash={flash} /></div></details>
+            </div> },
             { v: "marketing", label: "بازاریابی", node: <div className="space-y-5"><SmsCenter flash={flash} /><CrmCenter flash={flash} /></div> },
           ]} />)}
           {tab === "automation" && moduleBoundary("اتوماسیون و n8n", <AutomationCenter flash={flash} />)}
