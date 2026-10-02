@@ -140,6 +140,9 @@ export function registerMarketplaceRoutes(app: FastifyInstance, pool: DbPool, co
       if (product.status === 'archived') throw conflict('محصول بایگانی‌شده قابل بازبینی نیست.');
       if (body.decision === 'approved' && product.supplier_id && !body.documentsChecked)
         throw badRequest('تأیید محصول تأمین‌کننده بدون بررسی مدارک مجاز نیست.');
+      // Master §55: request-changes also needs an explanation the supplier can act on.
+      if (body.decision === 'changes_requested' && !body.reasonCode && !(body.note && body.note.trim().length >= 3))
+        throw badRequest('درخواست اصلاح بدون دلیل یا توضیح مجاز نیست.');
       let reasonLabel: string | null = null;
       if (body.decision === 'rejected') {
         if (!body.reasonCode) throw badRequest('رد محصول بدون انتخاب دلیل مجاز نیست.');
@@ -178,6 +181,29 @@ export function registerMarketplaceRoutes(app: FastifyInstance, pool: DbPool, co
           body.decision === 'approved' ? 'normal' : 'high');
       }
       return { id, reviewId, decision: body.decision, status: nextStatus, reasonCode: body.reasonCode ?? null, reasonLabel };
+    });
+  });
+
+  /** Master §54-§56: archive from the review workspace — server-side + audited.
+   *  Archiving only changes catalogue status; stock is NEVER mutated here. */
+  app.post('/api/v1/admin/marketplace/products/:id/archive', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'marketplace:review');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({ reason: z.string().trim().min(3).max(500) }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const product = await one<{ id: string; status: string; supplier_id: string | null; name: string }>(client,
+        'SELECT id, status, supplier_id, name FROM products WHERE id = $1 FOR UPDATE', [id]);
+      if (!product) throw notFound();
+      if (product.status === 'archived') throw conflict('محصول قبلاً بایگانی شده است.');
+      await client.query(`UPDATE products SET status = 'archived', version = version + 1, updated_at = now() WHERE id = $1`, [id]);
+      await audit(client, user.id, 'product.archived', 'product', id,
+        { status: product.status }, { status: 'archived', reason: body.reason }, request.ip);
+      await outbox(client, 'product.archived', 'product', id, { productId: id, reason: body.reason });
+      if (product.supplier_id) {
+        await notifyUser(client, product.supplier_id, `محصول «${product.name}» بایگانی شد`,
+          `دلیل: ${body.reason}`, 'product.archived', 'product', id, { productId: id }, 'normal');
+      }
+      return { id, status: 'archived' };
     });
   });
 

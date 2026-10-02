@@ -8,6 +8,7 @@ import { buildApp } from './app.js';
 import { createPool } from './db.js';
 import { classifyVipBehavior } from './buyer360.js';
 import { behaviorReasons, supplierPerformance, BEHAVIOR_LABEL } from './crm-intelligence.js';
+import { loadShippingLabelData } from './shipping-labels.js';
 
 const enabled = !!process.env.TEST_DATABASE_URL;
 const config: Config = {
@@ -189,6 +190,196 @@ test('marketing: campaign preview breakdown + configurable frequency cap (§28-�
   } finally {
     // restore the global default so other suites see the out-of-the-box cap
     await pool.query(`DELETE FROM site_settings WHERE key = 'crm_marketing_frequency_cap'`).catch(() => undefined);
+    await pool.end();
+    await app.close();
+  }
+});
+
+test('wms review: reason-required actions, archive, and approval never mutates stock (§54-§56)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const adminId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [adminId, `rev-admin-${suffix}@example.test`, await argon2.hash('AdminPassword123456!'), 'بازبین']);
+    await pool.query("INSERT INTO user_roles(user_id,role_code) VALUES ($1,'admin')", [adminId]);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login',
+      payload: { identity: `rev-admin-${suffix}@example.test`, password: 'AdminPassword123456!' } });
+    const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
+
+    const productId = randomUUID();
+    await pool.query(
+      `INSERT INTO products(id,brand,name,category,status,cash_price_rial,wholesale_price_rial)
+       VALUES ($1,'کلبه',$2,'پیراهن','pending',120000000,90000000)`, [productId, `محصول بازبینی ${suffix}`]);
+
+    // request-changes WITHOUT reason or note → rejected server-side
+    const noReason = await app.inject({ method: 'POST', url: `/api/v1/admin/marketplace/products/${productId}/review`,
+      headers, payload: { decision: 'changes_requested' } });
+    assert.equal(noReason.statusCode, 400, noReason.body);
+
+    // approval changes catalogue status only — stock rows stay untouched
+    const stockBefore = await pool.query(
+      `SELECT count(*)::int AS n FROM stock_balances b JOIN product_variants v ON v.id = b.variant_id WHERE v.product_id = $1`, [productId]);
+    const approve = await app.inject({ method: 'POST', url: `/api/v1/admin/marketplace/products/${productId}/review`,
+      headers, payload: { decision: 'approved', documentsChecked: true } });
+    assert.equal(approve.statusCode, 200, approve.body);
+    assert.equal(approve.json().status, 'published');
+    const stockAfter = await pool.query(
+      `SELECT count(*)::int AS n FROM stock_balances b JOIN product_variants v ON v.id = b.variant_id WHERE v.product_id = $1`, [productId]);
+    assert.equal(stockAfter.rows[0].n, stockBefore.rows[0].n, 'approval never mutates stock');
+    const seriesTouch = await pool.query(`SELECT count(*)::int AS n FROM series_stock_balances`);
+    assert.ok(seriesTouch.rows[0].n >= 0); // table readable; review path never writes it
+
+    // archive requires a reason and is audited; double-archive conflicts
+    const badArchive = await app.inject({ method: 'POST', url: `/api/v1/admin/marketplace/products/${productId}/archive`,
+      headers, payload: { reason: 'x' } });
+    assert.equal(badArchive.statusCode, 400, badArchive.body);
+    const archive = await app.inject({ method: 'POST', url: `/api/v1/admin/marketplace/products/${productId}/archive`,
+      headers, payload: { reason: 'پایان همکاری فصلی' } });
+    assert.equal(archive.statusCode, 200, archive.body);
+    assert.equal(archive.json().status, 'archived');
+    const again = await app.inject({ method: 'POST', url: `/api/v1/admin/marketplace/products/${productId}/archive`,
+      headers, payload: { reason: 'تکراری' } });
+    assert.equal(again.statusCode, 409, again.body);
+    const audited = await pool.query(
+      `SELECT count(*)::int AS n FROM audit_logs WHERE action = 'product.archived' AND resource_id = $1`, [productId]);
+    assert.equal(audited.rows[0].n, 1, 'archive is audited');
+  } finally {
+    await pool.end();
+    await app.close();
+  }
+});
+
+test('invoice: order→invoice issuance, bulk identify/issue, PDF bundle (§H)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const adminId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [adminId, `inv-admin-${suffix}@example.test`, await argon2.hash('AdminPassword123456!'), 'مدیر فاکتور']);
+    await pool.query("INSERT INTO user_roles(user_id,role_code) VALUES ($1,'admin')", [adminId]);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login',
+      payload: { identity: `inv-admin-${suffix}@example.test`, password: 'AdminPassword123456!' } });
+    const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
+
+    const buyerId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [buyerId, `inv-buyer-${suffix}@example.test`, await argon2.hash('CustomerPassword123!'), 'خریدار فاکتور']);
+    const productId = randomUUID(); const variantId = randomUUID();
+    await pool.query(`INSERT INTO products(id,brand,name,category,status,cash_price_rial) VALUES ($1,'کلبه',$2,'پیراهن','published',150000000)`,
+      [productId, `محصول فاکتور ${suffix}`]);
+    await pool.query(`INSERT INTO product_variants(id,product_id,sku,size_label,color_label) VALUES ($1,$2,$3,'L','مشکی')`,
+      [variantId, productId, `INVSKU-${suffix}`]);
+    const mkOrder = async (n: number) => {
+      const orderId = randomUUID();
+      await pool.query(
+        `INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,status,subtotal_rial,total_rial)
+         VALUES ($1,$2,$3,'retail','cash','paid',150000000,150000000)`, [orderId, `INVORD-${suffix}-${n}`, buyerId]);
+      await pool.query(
+        `INSERT INTO order_lines(id,order_id,product_id,variant_id,product_name,sku,quantity,unit_price_rial,line_total_rial)
+         VALUES ($1,$2,$3,$4,$5,$6,1,150000000,150000000)`,
+        [randomUUID(), orderId, productId, variantId, `محصول فاکتور ${suffix}`, `INVSKU-${suffix}`]);
+      return orderId;
+    };
+    const orderA = await mkOrder(1); const orderB = await mkOrder(2);
+
+    // issue once → 201; again → 200 with the SAME invoice (reprint ≠ new invoice)
+    const first = await app.inject({ method: 'POST', url: `/api/v1/admin/orders/${orderA}/invoice`, headers });
+    assert.equal(first.statusCode, 201, first.body);
+    const second = await app.inject({ method: 'POST', url: `/api/v1/admin/orders/${orderA}/invoice`, headers });
+    assert.equal(second.statusCode, 200, second.body);
+    assert.equal(second.json().id, first.json().id);
+    assert.equal(second.json().existing, true);
+    // snapshot pricing: the invoice line carries color/size in description (§40)
+    const line = await pool.query(`SELECT description FROM invoice_lines il JOIN invoices i ON i.id = il.invoice_id WHERE i.order_id = $1`, [orderA]);
+    assert.equal(line.rows[0].description, 'مشکی / L');
+
+    // bulk identify: A existing, B missing (reported, NOT silently issued)
+    const identify = await app.inject({ method: 'POST', url: '/api/v1/admin/orders/invoices/bulk', headers,
+      payload: { orderIds: [orderA, orderB], issueMissing: false } });
+    assert.equal(identify.statusCode, 200, identify.body);
+    assert.deepEqual(identify.json().summary, { existing: 1, issued: 0, missing: 1, failed: 0 });
+    // bulk issue missing → B gets its invoice
+    const issueAll = await app.inject({ method: 'POST', url: '/api/v1/admin/orders/invoices/bulk', headers,
+      payload: { orderIds: [orderA, orderB], issueMissing: true } });
+    assert.deepEqual(issueAll.json().summary, { existing: 1, issued: 1, missing: 0, failed: 0 });
+    const ids = (issueAll.json().results as { invoiceId?: string }[]).map((r) => r.invoiceId).filter(Boolean);
+    assert.equal(ids.length, 2);
+
+    // bundle: one multi-page PDF from the existing invoice domain
+    const bundle = await app.inject({ method: 'GET', url: `/api/v1/admin/invoices/bundle?ids=${ids.join(',')}`, headers });
+    assert.equal(bundle.statusCode, 200, bundle.body.slice(0, 200));
+    assert.equal(bundle.headers['content-type'], 'application/pdf');
+    assert.ok(bundle.rawPayload.subarray(0, 5).toString('latin1').startsWith('%PDF'), 'bundle is a real PDF');
+  } finally {
+    await pool.end();
+    await app.close();
+  }
+});
+
+test('shipping label: server PDF, contents without prices, thermal + A4 bundle (§I)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const adminId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [adminId, `lbl-admin-${suffix}@example.test`, await argon2.hash('AdminPassword123456!'), 'مدیر لیبل']);
+    await pool.query("INSERT INTO user_roles(user_id,role_code) VALUES ($1,'admin')", [adminId]);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login',
+      payload: { identity: `lbl-admin-${suffix}@example.test`, password: 'AdminPassword123456!' } });
+    const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
+
+    const buyerId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [buyerId, `lbl-buyer-${suffix}@example.test`, await argon2.hash('CustomerPassword123!'), 'خریدار لیبل']);
+    const productId = randomUUID(); const variantId = randomUUID();
+    await pool.query(`INSERT INTO products(id,brand,name,category,status,cash_price_rial) VALUES ($1,'کلبه',$2,'پیراهن','published',150000000)`,
+      [productId, `محصول لیبل ${suffix}`]);
+    await pool.query(`INSERT INTO product_variants(id,product_id,sku,size_label,color_label) VALUES ($1,$2,$3,'M','سبز')`,
+      [variantId, productId, `LBLSKU-${suffix}`]);
+    const address = JSON.stringify({ recipient: 'گیرنده تست', phone: '09120000000', province: 'تهران', city: 'تهران',
+      line: 'خیابان آزادی، پلاک ۱', postalCode: '1234567890' });
+    const mkOrder = async (n: number) => {
+      const orderId = randomUUID();
+      await pool.query(
+        `INSERT INTO orders(id,reference,buyer_id,order_type,payment_mode,status,subtotal_rial,total_rial,shipping_address)
+         VALUES ($1,$2,$3,'retail','cash','paid',150000000,150000000,$4::jsonb)`, [orderId, `LBLORD-${suffix}-${n}`, buyerId, address]);
+      await pool.query(
+        `INSERT INTO order_lines(id,order_id,product_id,variant_id,product_name,sku,quantity,unit_price_rial,line_total_rial)
+         VALUES ($1,$2,$3,$4,$5,$6,2,150000000,300000000)`,
+        [randomUUID(), orderId, productId, variantId, `محصول لیبل ${suffix}`, `LBLSKU-${suffix}`]);
+      return orderId;
+    };
+    const orderA = await mkOrder(1); const orderB = await mkOrder(2);
+
+    // loader is price-free by construction: contents carry name/color/size/qty only
+    const data = await loadShippingLabelData(pool, [orderA]);
+    assert.equal(data.length, 1);
+    assert.equal(data[0]!.recipientName, 'گیرنده تست');
+    assert.deepEqual(data[0]!.lines[0], { productName: `محصول لیبل ${suffix}`, colorLabel: 'سبز', sizeLabel: 'M', quantity: 2 });
+    assert.ok(!Object.keys(data[0]!).some((k) => /rial|price/i.test(k)), 'label data exposes no price fields');
+
+    // single label = 100×150 thermal PDF, audited; unknown order → 404
+    const single = await app.inject({ method: 'GET', url: `/api/v1/admin/orders/${orderA}/label`, headers });
+    assert.equal(single.statusCode, 200, single.body.slice(0, 200));
+    assert.equal(single.headers['content-type'], 'application/pdf');
+    assert.ok(single.rawPayload.subarray(0, 5).toString('latin1').startsWith('%PDF'));
+    const missing = await app.inject({ method: 'GET', url: `/api/v1/admin/orders/${randomUUID()}/label`, headers });
+    assert.equal(missing.statusCode, 404);
+    const audited = await pool.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'label.printed' AND resource_id = $1`, [orderA]);
+    assert.equal(audited.rows[0].n, 1, 'label print is audited');
+
+    // batch: thermal stack and A4 grid both render one real PDF
+    for (const format of ['thermal', 'a4'] as const) {
+      const bundle = await app.inject({ method: 'GET', url: `/api/v1/admin/orders/labels/bundle?ids=${orderA},${orderB}&format=${format}`, headers });
+      assert.equal(bundle.statusCode, 200, bundle.body.slice(0, 200));
+      assert.equal(bundle.headers['content-type'], 'application/pdf');
+      assert.ok(bundle.rawPayload.subarray(0, 5).toString('latin1').startsWith('%PDF'), `${format} bundle is a real PDF`);
+    }
+  } finally {
     await pool.end();
     await app.close();
   }

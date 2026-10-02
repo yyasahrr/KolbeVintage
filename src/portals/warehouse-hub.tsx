@@ -588,7 +588,12 @@ function SaleScopeModal({ target, onClose, onDone, flash }: {
   target: { row: InvRow; productLevel: boolean }; onClose: () => void; onDone: () => void; flash: F;
 }) {
   const { row } = target;
-  const [scope, setScope] = useState<"variant" | "color" | "product">(target.productLevel ? "product" : "variant");
+  /* Master §G: the entry context LOCKS the scope — a product-row action confirms the
+   * product scope only (no representative variant!), a variant action confirms exactly
+   * that variant. Wider scopes are a secondary, explicit opt-in (variant entry only). */
+  const locked: "variant" | "product" = target.productLevel ? "product" : "variant";
+  const [scope, setScope] = useState<"variant" | "color" | "product">(locked);
+  const [advanced, setAdvanced] = useState(false);
   const [enable, setEnable] = useState(() => {
     if (target.productLevel) return !row.retail_enabled;
     return !(row.variant_sale_enabled ?? true) || !row.retail_enabled ? true : false;
@@ -617,14 +622,16 @@ function SaleScopeModal({ target, onClose, onDone, flash }: {
     <Modal open onClose={onClose} title="وضعیت فروش خرده">
       <h3 className="mb-1 text-[15px] font-extrabold">وضعیت فروش — {row.product_name}</h3>
       <p className="mb-3 text-[12px] leading-6 text-[var(--kv-muted)]">
-        دامنهٔ تغییر را دقیق انتخاب کنید؛ توقف یک تنوع هرگز کل محصول را متوقف نمی‌کند. قابل فروش بودن نهایی را سرور محاسبه می‌کند (محصول فعال + تنوع فعال + غیرآرشیو + قیمت معتبر).
+        {locked === "product"
+          ? "این عملیات روی کل محصول اعمال می‌شود (همهٔ رنگ‌ها و سایزها). قابل فروش بودن نهایی را سرور محاسبه می‌کند."
+          : "این عملیات فقط روی همین تنوع اعمال می‌شود؛ توقف یک تنوع هرگز کل محصول را متوقف نمی‌کند. قابل فروش بودن نهایی را سرور محاسبه می‌کند."}
       </p>
       <div className="space-y-2">
         {([
-          ["variant", `فقط همین تنوع — ${row.color_label ?? "—"} / ${row.size_label ?? "—"}`, `وضعیت فعلی: ${(row.variant_sale_enabled ?? true) ? "فعال" : "متوقف"}`],
-          ["color", `همهٔ تنوع‌های رنگ «${row.color_label ?? "—"}»`, "یک عملیات سروری برای همهٔ سایزهای این رنگ"],
-          ["product", "کل محصول (کلید اصلی)", `وضعیت فعلی محصول: ${row.retail_enabled ? "فعال" : "متوقف"}`],
-        ] as const).map(([value, label, hint]) => (
+          ...(locked === "variant" ? [["variant", `فقط همین تنوع — ${row.color_label ?? "—"} / ${row.size_label ?? "—"}`, `وضعیت فعلی: ${(row.variant_sale_enabled ?? true) ? "فعال" : "متوقف"}`] as const] : []),
+          ...(locked === "variant" && advanced ? [["color", `همهٔ تنوع‌های رنگ «${row.color_label ?? "—"}»`, "یک عملیات سروری برای همهٔ سایزهای این رنگ"] as const] : []),
+          ...(locked === "product" || advanced ? [["product", "کل محصول (کلید اصلی)", `وضعیت فعلی محصول: ${row.retail_enabled ? "فعال" : "متوقف"}`] as const] : []),
+        ] as readonly (readonly ["variant" | "color" | "product", string, string])[]).map(([value, label, hint]) => (
           <button key={value} className={cn("w-full rounded-[12px] border p-3 text-right",
             scope === value ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/5" : "border-[var(--kv-line)]")}
             onClick={() => setScope(value)} disabled={value === "color" && !row.color_label}>
@@ -632,6 +639,11 @@ function SaleScopeModal({ target, onClose, onDone, flash }: {
             <p className="text-[11px] text-[var(--kv-muted)]">{hint}</p>
           </button>
         ))}
+        {locked === "variant" && !advanced && (
+          <button className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline" onClick={() => setAdvanced(true)}>
+            تغییر دامنه (پیشرفته): رنگ یا کل محصول…
+          </button>
+        )}
         <Segmented options={[{ v: "stop", label: "توقف فروش" }, { v: "start", label: "فعال‌سازی فروش" }]}
           value={enable ? "start" : "stop"} onChange={(v) => setEnable(v === "start")} />
         <p className="rounded-[10px] bg-amber-50 px-3 py-2 text-[12px] font-bold leading-6 text-amber-800">

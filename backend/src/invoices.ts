@@ -10,6 +10,7 @@ import { audit, outbox } from './operations.js';
 import { nextDocumentReference } from './references.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { getFile } from './storage.js';
+import { PDFDocument } from 'pdf-lib';
 import { defaultTemplateVersionId, storeInvoicePdf, storeInvoiceSnapshot } from './invoice-templates.js';
 import { postJournalEntry } from './ledger.js';
 
@@ -211,6 +212,94 @@ export function registerInvoiceRoutes(app: FastifyInstance, pool: DbPool, config
       .send(bytes);
   });
 
+  /* ============ Master §H: canonical order→invoice issuance (server PDF) ============ */
+
+  /** Issue (or return the existing) invoice for an order. Reprint ≠ new invoice:
+   *  the issuance path is issueInvoiceForOrder with its order_id dedupe. */
+  app.post('/api/v1/admin/orders/:orderId/invoice', async (request, reply) => {
+    const actor = await principal(request, pool, config); requirePermission(actor, 'invoices:write');
+    const { orderId } = z.object({ orderId: z.uuid() }).parse(request.params);
+    const result = await transaction(pool, async (client) => {
+      const existing = await one<{ id: string; reference: string }>(client,
+        'SELECT id,reference FROM invoices WHERE order_id = $1 LIMIT 1', [orderId]);
+      if (existing) return { ...existing, existing: true };
+      const issued = await issueInvoiceForOrder(client, orderId);
+      if (!issued) throw notFound();
+      await audit(client, actor.id, 'invoice.issued_for_order', 'invoice', issued.id, undefined, { orderId }, request.ip);
+      return { ...issued, existing: false };
+    });
+    return reply.code(result.existing ? 200 : 201).send(result);
+  });
+
+  /** Bulk: identify existing invoices, report missing, optionally issue them.
+   *  One API call; each order settles in its own transaction so one failure
+   *  never poisons the batch — per-item results, no silent fake invoices. */
+  app.post('/api/v1/admin/orders/invoices/bulk', async (request) => {
+    const actor = await principal(request, pool, config); requirePermission(actor, 'invoices:write');
+    const body = z.object({
+      orderIds: z.array(z.uuid()).min(1).max(100),
+      issueMissing: z.boolean().default(false),
+    }).strict().parse(request.body);
+    const results: { orderId: string; outcome: 'existing' | 'issued' | 'missing' | 'failed';
+      invoiceId?: string; reference?: string; error?: string }[] = [];
+    for (const orderId of body.orderIds) {
+      try {
+        const row = await transaction(pool, async (client) => {
+          const existing = await one<{ id: string; reference: string }>(client,
+            'SELECT id,reference FROM invoices WHERE order_id = $1 LIMIT 1', [orderId]);
+          if (existing) return { orderId, outcome: 'existing' as const, invoiceId: existing.id, reference: existing.reference };
+          if (!body.issueMissing) return { orderId, outcome: 'missing' as const };
+          const issued = await issueInvoiceForOrder(client, orderId);
+          if (!issued) return { orderId, outcome: 'failed' as const, error: 'سفارش یافت نشد.' };
+          await audit(client, actor.id, 'invoice.issued_for_order', 'invoice', issued.id, undefined, { orderId, bulk: true }, request.ip);
+          return { orderId, outcome: 'issued' as const, invoiceId: issued.id, reference: issued.reference };
+        });
+        results.push(row);
+      } catch (error) {
+        results.push({ orderId, outcome: 'failed', error: error instanceof Error ? error.message : 'خطا' });
+      }
+    }
+    return {
+      results,
+      summary: {
+        existing: results.filter((r) => r.outcome === 'existing').length,
+        issued: results.filter((r) => r.outcome === 'issued').length,
+        missing: results.filter((r) => r.outcome === 'missing').length,
+        failed: results.filter((r) => r.outcome === 'failed').length,
+      },
+    };
+  });
+
+  /** Multi-invoice bundle PDF (pdf-lib copyPages) for bulk printing. Reprints are
+   *  audited and never create new financial documents. */
+  app.get('/api/v1/admin/invoices/bundle', async (request, reply) => {
+    const actor = await principal(request, pool, config); requirePermission(actor, 'invoices:read');
+    const { ids } = z.object({ ids: z.string().min(1).max(4000) }).parse(request.query);
+    const list = [...new Set(ids.split(',').map((item) => item.trim()).filter(Boolean))].slice(0, 50);
+    for (const id of list) z.uuid().parse(id);
+    const merged = await PDFDocument.create();
+    const included: string[] = [];
+    for (const id of list) {
+      const invoice = await one<{ id: string; reference: string }>(pool, 'SELECT id, reference FROM invoices WHERE id = $1', [id]);
+      if (!invoice) continue;
+      const stored = await transaction(pool, (client) => storeInvoicePdf(client, id, actor.id));
+      const file = await one<{ storage_key: string }>(pool, 'SELECT storage_key FROM files WHERE id = $1', [stored.fileId]);
+      if (!file) continue;
+      const source = await PDFDocument.load(await getFile(file.storage_key));
+      const pages = await merged.copyPages(source, source.getPageIndices());
+      for (const page of pages) merged.addPage(page);
+      included.push(invoice.reference);
+    }
+    if (!included.length) throw notFound();
+    await transaction(pool, (client) => audit(client, actor.id, 'invoice.bundle_printed', 'invoice_bundle', included.join(','),
+      undefined, { count: included.length }, request.ip));
+    const bytes = await merged.save();
+    return reply.header('Content-Type', 'application/pdf')
+      .header('Content-Disposition', `inline; filename="invoices-bundle-${included.length}.pdf"`)
+      .header('Cache-Control', 'private, max-age=0, must-revalidate')
+      .send(Buffer.from(bytes));
+  });
+
   app.post('/api/v1/invoices', async (request, reply) => {
     const actor = await principal(request, pool, config); requirePermission(actor, 'invoices:write');
     const body = createBody.parse(request.body);
@@ -364,11 +453,17 @@ export async function issueInvoiceForOrder(client: PoolClient, orderId: string) 
   const existing = await one<{ id: string; reference: string }>(client,
     'SELECT id,reference FROM invoices WHERE order_id = $1 LIMIT 1', [orderId]);
   if (existing) return existing;
-  const lines = await client.query<{ product_name: string; sku: string; quantity: number; unit_price_rial: string; line_total_rial: string }>(
-    'SELECT product_name,sku,quantity,unit_price_rial,line_total_rial FROM order_lines WHERE order_id = $1 ORDER BY id', [orderId]);
+  const lines = await client.query<{ product_name: string; sku: string; quantity: number; unit_price_rial: string;
+    line_total_rial: string; color_label: string | null; size_label: string | null }>(
+    `SELECT l.product_name,l.sku,l.quantity,l.unit_price_rial,l.line_total_rial,v.color_label,v.size_label
+     FROM order_lines l LEFT JOIN product_variants v ON v.id = l.variant_id
+     WHERE l.order_id = $1 ORDER BY l.id`, [orderId]);
   const totals = computeTotals({
     lines: lines.rows.map((item) => ({
-      sku: item.sku, productName: item.product_name, description: '', quantity: item.quantity,
+      sku: item.sku, productName: item.product_name,
+      // Master §40: the invoice line carries color/size next to name + SKU.
+      description: [item.color_label, item.size_label].filter(Boolean).join(' / '),
+      quantity: item.quantity,
       unitPriceRial: item.unit_price_rial, discountRial: '0', taxRial: '0',
     })),
     discountRial: order.discount_rial, taxRial: '0', shippingRial: order.shipping_rial, servicesFeeRial: '0',
@@ -390,8 +485,11 @@ export async function issueInvoiceForOrder(client: PoolClient, orderId: string) 
   for (const [index, item] of lines.rows.entries()) {
     await client.query(
       `INSERT INTO invoice_lines(id,invoice_id,line_no,sku,product_name,description,quantity,unit_price_rial,discount_rial,tax_rial,line_total_rial)
-       VALUES ($1,$2,$3,$4,$5,'', $6,$7,0,0,$8)`,
-      [randomUUID(), invoiceId, index + 1, item.sku, item.product_name, item.quantity, item.unit_price_rial, item.line_total_rial]);
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9)`,
+      [randomUUID(), invoiceId, index + 1, item.sku, item.product_name,
+        // Master §40: color/size travel with the line (snapshot, not catalogue lookups).
+        [item.color_label, item.size_label].filter(Boolean).join(' / '),
+        item.quantity, item.unit_price_rial, item.line_total_rial]);
   }
   await client.query(`INSERT INTO invoice_events(id,invoice_id,event_type,note,new_value) VALUES ($1,$2,'created',$3,$4)`,
     [randomUUID(), invoiceId, `فاکتور خودکار سفارش ${order.reference}`, JSON.stringify({ reference, orderId })]);

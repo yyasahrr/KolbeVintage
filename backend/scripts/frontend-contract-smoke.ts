@@ -530,8 +530,11 @@ try {
   check('orders hub has exactly 3 tabs: خرده / عمده کلبه / عمده تأمین‌کنندگان',
     (hubTabs.match(/label: "سفارشات /g) ?? []).length === 3 && hubTabs.includes('سفارشات خرده') &&
     hubTabs.includes('سفارشات عمده کلبه') && hubTabs.includes('سفارشات عمده تأمین‌کنندگان'));
-  check('shipping label print targets 100×150mm and tracking writes go through the shipments domain',
-    ordersHubSrc.includes('size: 100mm 150mm') && ordersHubSrc.includes('trackingApi.createShipment') &&
+  const labelEngineSrc = readFileSync(join(repoRoot, 'backend/src/shipping-labels.ts'), 'utf8');
+  check('shipping labels are SERVER PDFs (100×150mm thermal + A4 grid, price-free) and tracking writes go through the shipments domain',
+    ordersHubSrc.includes('trackingApi.labelPath') && ordersHubSrc.includes('trackingApi.labelsBundlePath') &&
+    !ordersHubSrc.includes('document.write') && labelEngineSrc.includes('283.46') &&
+    !labelEngineSrc.includes('_rial') && ordersHubSrc.includes('trackingApi.createShipment') &&
     ordersHubSrc.includes('trackingApi.updateShipment'));
   check('bulk invoice print reuses the existing invoice domain (no parallel invoice renderer)',
     ordersHubSrc.includes('invoicesApi.list({ orderId') && !ordersHubSrc.includes('INV-'));

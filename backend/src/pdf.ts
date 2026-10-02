@@ -22,7 +22,8 @@ const MUTED = rgb(0.42, 0.45, 0.5);
 const LINE = rgb(0.85, 0.86, 0.88);
 
 let fontPromise: Promise<Uint8Array> | null = null;
-function loadFontBytes() {
+/** Shared embedded Persian font (also used by the shipping-label renderer). */
+export function loadFontBytes() {
   fontPromise ??= readFile(new URL('../assets/fonts/DejaVuSans.ttf', import.meta.url));
   return fontPromise;
 }

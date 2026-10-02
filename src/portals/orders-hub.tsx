@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardList, FileText, Package, Printer, RefreshCw, Tag, Truck } from "lucide-react";
 import { Btn, Checkbox, Drawer, Empty, ErrorState, LoadingState, Modal, SearchBox, Segmented, Textarea } from "../components/primitives";
-import { invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi } from "../data/api";
+import { authBlobUrl, invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi } from "../data/api";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { ManualOrderForm } from "../components/manual-order-form";
 import { TrackingCenter } from "../components/tracking-center";
@@ -123,87 +123,11 @@ type OrderDetail = OrderRow & {
   fulfillments?: { id: string; reference: string; brand_name: string | null; status: string; dispatched_at: string | null; arrived_at: string | null; accepted_at: string | null }[];
 };
 
-/* ----------------------------- print helpers (§35-§37) ----------------------------- */
-
-const esc = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-
-function openPrintWindow(title: string, css: string, body: string) {
-  const win = window.open("", "_blank", "width=960,height=720");
-  if (!win) { alert("مرورگر اجازه باز کردن پنجره چاپ را نداد."); return; }
-  win.document.write(`<!doctype html><html dir="rtl" lang="fa"><head><meta charset="utf-8" /><title>${esc(title)}</title><style>${css}</style></head><body>${body}</body></html>`);
-  win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 400);
-}
-
-const INVOICE_CSS = `
-  * { box-sizing: border-box; font-family: Tahoma, 'Vazirmatn', sans-serif; }
-  body { margin: 0; color: #1b2335; }
-  .invoice { page-break-after: always; padding: 14mm 12mm; }
-  .invoice:last-child { page-break-after: auto; }
-  .head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1b2335; padding-bottom: 6mm; margin-bottom: 6mm; }
-  h1 { font-size: 16pt; margin: 0; } .meta { font-size: 9pt; color: #555; text-align: left; }
-  table { width: 100%; border-collapse: collapse; font-size: 9.5pt; margin-top: 4mm; }
-  th, td { border: 1px solid #c9c9c9; padding: 2.5mm 2mm; text-align: right; }
-  th { background: #f1ece2; } .totals { margin-top: 5mm; width: 60mm; margin-right: auto; font-size: 10pt; }
-  .totals div { display: flex; justify-content: space-between; padding: 1.5mm 0; }
-  .totals .grand { border-top: 1.5px solid #1b2335; font-weight: bold; }
-  .missing { padding: 10mm; font-size: 11pt; color: #8a1f1f; }
-  @page { size: A4; margin: 0; }
-`;
-
-const LABEL_CSS = `
-  * { box-sizing: border-box; font-family: Tahoma, 'Vazirmatn', sans-serif; }
-  body { margin: 0; }
-  .label { width: 100mm; height: 150mm; padding: 6mm; page-break-after: always; display: flex; flex-direction: column; gap: 3mm; color: #111; }
-  .label:last-child { page-break-after: auto; }
-  .brand { display: flex; justify-content: space-between; border-bottom: 2px solid #111; padding-bottom: 2.5mm; font-weight: bold; }
-  .ref { font-size: 15pt; font-weight: 800; letter-spacing: 1px; }
-  .block { border: 1px solid #999; border-radius: 2mm; padding: 2.5mm; font-size: 9.5pt; }
-  .block b { display: block; font-size: 8pt; color: #666; margin-bottom: 1mm; }
-  .track { font-size: 12pt; font-weight: 800; text-align: center; border: 2px dashed #111; padding: 3mm; border-radius: 2mm; }
-  .items { flex: 1; overflow: hidden; font-size: 8.5pt; }
-  @page { size: 100mm 150mm; margin: 0; }
-`;
-
-function labelHtml(detail: OrderDetail): string {
-  const addr = detail.shipping_address ?? {};
-  const items = detail.lines.slice(0, 6).map((l) => `<div>• ${esc(l.product_name)} (${esc(l.sku)}) ×${fa(l.quantity)}</div>`).join("");
-  const more = detail.lines.length > 6 ? `<div>و ${fa(detail.lines.length - 6)} قلم دیگر…</div>` : "";
-  return `<div class="label">
-    <div class="brand"><span>کلبه وینتیج</span><span>${esc(formatPersianDateTimeFull(detail.created_at))}</span></div>
-    <div class="ref">${esc(detail.reference)}</div>
-    <div class="block"><b>گیرنده</b>${esc(addr.recipient ?? detail.buyer_name ?? "—")} — ${esc(addr.phone ?? detail.buyer_phone ?? "—")}<br/>${esc(addr.province ?? "")}، ${esc(addr.city ?? "")}، ${esc(addr.line ?? "")}<br/>کد پستی: ${esc(addr.postalCode ?? "—")}</div>
-    <div class="block"><b>مبدأ</b>انبار کلبه وینتیج</div>
-    <div class="block"><b>روش ارسال / حامل</b>${esc(detail.shipping_name ?? "—")} — ${esc(detail.shipment_carrier ?? "—")}</div>
-    <div class="track">رهگیری: ${esc(detail.tracking_code ?? "ثبت نشده")}</div>
-    <div class="items"><b>اقلام (${fa(detail.lines.length)}):</b>${items}${more}</div>
-  </div>`;
-}
+/* Shipping labels + invoices are SERVER-rendered PDFs (Master Spec): the legacy
+   about:blank client-side HTML print path was removed; the browser only opens
+   authenticated blob URLs produced by the backend PDF engines. */
 
 type InvoiceSummary = { id: string; reference: string; status: string; total_rial: string; issue_date: string | null; created_at: string };
-type InvoiceDetail = InvoiceSummary & {
-  buyer: { name?: string; displayName?: string; phone?: string } | null;
-  subtotal_rial: string; discount_rial: string; shipping_rial: string; paid_rial: string; remaining_rial: string;
-  lines: { line_no: number; title: string; sku: string | null; quantity: number; unit_price_rial: string; total_rial: string }[];
-};
-
-function invoiceHtml(inv: InvoiceDetail, fallbackBuyer: string): string {
-  const buyer = inv.buyer?.name ?? inv.buyer?.displayName ?? fallbackBuyer;
-  const rows = inv.lines.map((l) => `<tr><td>${fa(l.line_no)}</td><td>${esc(l.title)}${l.sku ? ` <small>(${esc(l.sku)})</small>` : ""}</td><td>${fa(l.quantity)}</td><td>${esc(toman(l.unit_price_rial))}</td><td>${esc(toman(l.total_rial))}</td></tr>`).join("");
-  return `<div class="invoice">
-    <div class="head"><div><h1>کلبه وینتیج</h1><div>فاکتور فروش</div></div>
-    <div class="meta">شماره: ${esc(inv.reference)}<br/>تاریخ: ${esc(formatPersianDateTimeFull(inv.issue_date ?? inv.created_at))}<br/>خریدار: ${esc(buyer)}</div></div>
-    <table><thead><tr><th>#</th><th>شرح</th><th>تعداد</th><th>مبلغ واحد</th><th>جمع</th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="totals">
-      <div><span>جمع اقلام</span><span>${esc(toman(inv.subtotal_rial))}</span></div>
-      <div><span>تخفیف</span><span>${esc(toman(inv.discount_rial))}</span></div>
-      <div><span>هزینه ارسال</span><span>${esc(toman(inv.shipping_rial))}</span></div>
-      <div class="grand"><span>مبلغ نهایی</span><span>${esc(toman(inv.total_rial))}</span></div>
-      <div><span>پرداخت‌شده</span><span>${esc(toman(inv.paid_rial))}</span></div>
-    </div>
-  </div>`;
-}
 
 /* ----------------------------- small UI pieces ----------------------------- */
 
@@ -384,15 +308,32 @@ function OrderDrawer({ orderId, onClose, onChanged, onTracking }: {
     } catch (err) { setActionError(err instanceof Error ? err.message : "عملیات ناموفق بود."); }
     finally { setSaving(false); }
   };
-  const printLabel = () => { if (detail) openPrintWindow(`لیبل ${detail.reference}`, LABEL_CSS, labelHtml(detail)); };
+  /** Master Spec: shipping label = separate operational server PDF (100×150mm thermal),
+   *  package contents included, NO prices. */
+  const printLabel = async () => {
+    if (!detail) return;
+    try {
+      const url = await authBlobUrl(trackingApi.labelPath(detail.id));
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) { setActionError(err instanceof Error ? err.message : "دریافت لیبل ناموفق بود."); }
+  };
+  /** Master §H: canonical path = Invoice domain + server PDF. If the order has no
+   *  invoice yet, [صدور فاکتور] issues it through issueInvoiceForOrder (deduped);
+   *  reprint opens the same invoice reference — it never creates a second financial document. */
   const printInvoice = async () => {
     if (!detail) return;
     try {
       const list = await invoicesApi.list({ orderId: detail.id }) as { items: InvoiceSummary[] };
-      const first = list.items[0];
-      if (!first) { setActionError("برای این سفارش فاکتوری در سیستم فاکتور صادر نشده است."); return; }
-      const inv = await invoicesApi.get(first.id) as InvoiceDetail;
-      openPrintWindow(`فاکتور ${inv.reference}`, INVOICE_CSS, invoiceHtml(inv, detail.buyer_name ?? "—"));
+      let invoiceRef = list.items[0] as { id: string; reference: string } | undefined;
+      if (!invoiceRef) {
+        const issued = await invoicesApi.issueForOrder(detail.id);
+        invoiceRef = { id: issued.id, reference: issued.reference };
+      }
+      const url = await authBlobUrl(`/invoices/${invoiceRef.id}/pdf`);
+      const win = window.open(url, "_blank");
+      if (!win) setActionError("مرورگر اجازه باز کردن PDF را نداد.");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err) { setActionError(err instanceof Error ? err.message : "دریافت فاکتور ناموفق بود."); }
   };
 
@@ -509,8 +450,8 @@ function OrderDrawer({ orderId, onClose, onChanged, onTracking }: {
                 <Btn size="sm" variant="soft" onClick={() => onTracking({ id: detail.id, reference: detail.reference, tracking_code: detail.tracking_code, shipment_carrier: detail.shipment_carrier })} icon={<Tag size={14} />}>
                   {detail.tracking_code ? "ویرایش رهگیری" : "+ ثبت رهگیری"}
                 </Btn>
-                <Btn size="sm" variant="soft" onClick={() => void printInvoice()} icon={<FileText size={14} />}>چاپ فاکتور</Btn>
-                <Btn size="sm" variant="soft" onClick={printLabel} icon={<Printer size={14} />}>چاپ لیبل</Btn>
+                <Btn size="sm" variant="soft" onClick={() => void printInvoice()} icon={<FileText size={14} />}>فاکتور (PDF)</Btn>
+                <Btn size="sm" variant="soft" onClick={() => void printLabel()} icon={<Printer size={14} />}>لیبل (PDF)</Btn>
               </div>
             </section>
           </>
@@ -582,28 +523,40 @@ const PRINT_CAP = 30;
 async function bulkPrintLabels(ids: string[], setBusy: (b: boolean) => void, setError: (m: string | null) => void) {
   setBusy(true); setError(null);
   try {
-    const details: OrderDetail[] = [];
-    for (const id of ids.slice(0, PRINT_CAP)) details.push(await ordersApi.get(id) as OrderDetail);
-    openPrintWindow("لیبل‌های ارسال", LABEL_CSS, details.map(labelHtml).join(""));
-  } catch (err) { setError(err instanceof Error ? err.message : "چاپ لیبل ناموفق بود."); }
+    // Master Spec formats: thermal stack (one 100×150mm page per order) or A4 grid (4 labels per page).
+    const useA4 = window.confirm("چیدمان A4 (۴ لیبل در هر برگ)؟\n«تأیید» = شبکه A4 — «انصراف» = حرارتی ۱۰×۱۵ تک‌برگ");
+    const url = await authBlobUrl(trackingApi.labelsBundlePath(ids.slice(0, PRINT_CAP), useA4 ? "a4" : "thermal"));
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (err) { setError(err instanceof Error ? err.message : "دریافت لیبل‌ها ناموفق بود."); }
   finally { setBusy(false); }
 }
 
+/** Master §H bulk: one server call identifies existing invoices and reports the
+ *  missing ones (no silent fake invoices); issuing the missing ones is an explicit
+ *  second confirmation; the output is a server-rendered multi-page PDF bundle. */
 async function bulkPrintInvoices(rows: { id: string; reference: string; buyer_name: string | null }[], setBusy: (b: boolean) => void, setError: (m: string | null) => void) {
   setBusy(true); setError(null);
   try {
-    const pages: string[] = [];
-    const missing: string[] = [];
-    for (const row of rows.slice(0, PRINT_CAP)) {
-      const list = await invoicesApi.list({ orderId: row.id }) as { items: InvoiceSummary[] };
-      const first = list.items[0];
-      if (!first) { missing.push(row.reference); continue; }
-      const inv = await invoicesApi.get(first.id) as InvoiceDetail;
-      pages.push(invoiceHtml(inv, row.buyer_name ?? "—"));
+    const slice = rows.slice(0, PRINT_CAP);
+    const refOf = new Map(slice.map((row) => [row.id, row.reference]));
+    let res = await invoicesApi.bulkForOrders(slice.map((row) => row.id), false);
+    const missing = res.results.filter((r) => r.outcome === "missing");
+    if (missing.length && window.confirm(`برای ${missing.length.toLocaleString("fa-IR")} سفارش فاکتور صادر نشده است. همین حالا فاکتور رسمی صادر شود؟`)) {
+      res = await invoicesApi.bulkForOrders(slice.map((row) => row.id), true);
     }
-    if (missing.length) pages.push(`<div class="invoice missing">برای سفارش‌های زیر فاکتوری در سیستم فاکتور صادر نشده است:<br/>${missing.map(esc).join("، ")}</div>`);
-    if (!pages.length) { setError("برای هیچ‌کدام از سفارش‌های انتخابی فاکتور صادر نشده است."); return; }
-    openPrintWindow("چاپ گروهی فاکتورها", INVOICE_CSS, pages.join(""));
+    const invoiceIds = res.results.map((r) => r.invoiceId).filter((id): id is string => Boolean(id));
+    const stillMissing = res.results.filter((r) => r.outcome === "missing").map((r) => refOf.get(r.orderId) ?? r.orderId);
+    const failed = res.results.filter((r) => r.outcome === "failed");
+    if (!invoiceIds.length) { setError("برای هیچ‌کدام از سفارش‌های انتخابی فاکتوری موجود نیست."); return; }
+    const url = await authBlobUrl(invoicesApi.bundlePath(invoiceIds));
+    const win = window.open(url, "_blank");
+    if (!win) setError("مرورگر اجازه باز کردن PDF را نداد.");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    const report: string[] = [];
+    if (stillMissing.length) report.push(`بدون فاکتور: ${stillMissing.join("، ")}`);
+    if (failed.length) report.push(`ناموفق: ${failed.map((f) => `${refOf.get(f.orderId) ?? f.orderId} (${f.error ?? ""})`).join("، ")}`);
+    if (report.length) setError(report.join(" · "));
   } catch (err) { setError(err instanceof Error ? err.message : "چاپ فاکتور ناموفق بود."); }
   finally { setBusy(false); }
 }
@@ -691,7 +644,7 @@ function WholesaleTab({ scope }: { scope: "kolbe" | "supplier" }) {
           <b className="text-[12px]">{fa(selected.size)} انتخاب‌شده</b>
           <Btn size="sm" onClick={() => setBulkOpen(true)}>تغییر وضعیت گروهی</Btn>
           <Btn size="sm" variant="soft" disabled={busy} icon={<FileText size={14} />} onClick={() => void bulkPrintInvoices(selectedRows, setBusy, setBulkError)}>چاپ فاکتورها</Btn>
-          <Btn size="sm" variant="soft" disabled={busy} icon={<Printer size={14} />} onClick={() => void bulkPrintLabels([...selected], setBusy, setBulkError)}>چاپ لیبل‌ها</Btn>
+          <Btn size="sm" variant="soft" disabled={busy} icon={<Printer size={14} />} onClick={() => void bulkPrintLabels([...selected], setBusy, setBulkError)}>لیبل‌ها (PDF)</Btn>
           {bulkError && <span className="text-[11px] font-bold text-[var(--kv-danger)]">{bulkError}</span>}
         </div>
       )}
@@ -827,7 +780,7 @@ function RetailTab() {
           <b className="text-[12px]">{fa(selected.size)} سفارش انتخاب‌شده</b>
           <Btn size="sm" onClick={() => setBulkOpen(true)}>تغییر وضعیت گروهی</Btn>
           <Btn size="sm" variant="soft" disabled={busy} icon={<FileText size={14} />} onClick={() => void bulkPrintInvoices(selectedRows, setBusy, setBulkError)}>چاپ فاکتورها</Btn>
-          <Btn size="sm" variant="soft" disabled={busy} icon={<Printer size={14} />} onClick={() => void bulkPrintLabels([...selected], setBusy, setBulkError)}>چاپ لیبل‌ها</Btn>
+          <Btn size="sm" variant="soft" disabled={busy} icon={<Printer size={14} />} onClick={() => void bulkPrintLabels([...selected], setBusy, setBulkError)}>لیبل‌ها (PDF)</Btn>
           {bulkError && <span className="text-[11px] font-bold text-[var(--kv-danger)]">{bulkError}</span>}
         </div>
       )}

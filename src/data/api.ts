@@ -449,6 +449,14 @@ export const invoicesApi = {
   pay: (id: string, payload: { amountRial: string; method?: string; traceCode?: string; note?: string }) =>
     authFetch<unknown>(`/invoices/${id}/payments`, { method: "POST", body: JSON.stringify(payload) }),
   pdfUrl: (id: string) => `${getApiBaseUrl()}/api/v1/invoices/${id}/pdf`,
+  /* Master §H: canonical order→invoice issuance + multi-invoice bundle (server PDFs). */
+  issueForOrder: (orderId: string) =>
+    authFetch<{ id: string; reference: string; existing: boolean }>(`/admin/orders/${orderId}/invoice`, { method: "POST" }),
+  bulkForOrders: (orderIds: string[], issueMissing: boolean) =>
+    authFetch<{ results: { orderId: string; outcome: "existing" | "issued" | "missing" | "failed"; invoiceId?: string; reference?: string; error?: string }[];
+      summary: { existing: number; issued: number; missing: number; failed: number } }>(
+      "/admin/orders/invoices/bulk", { method: "POST", body: JSON.stringify({ orderIds, issueMissing }) }),
+  bundlePath: (invoiceIds: string[]) => `/admin/invoices/bundle?ids=${invoiceIds.join(",")}`,
 };
 
 /* --------------------------- wallet / settlements --------------------------- */
@@ -878,6 +886,7 @@ export const marketplaceApi = {
   review: (id: string, payload: { decision: "approved" | "rejected" | "changes_requested"; documentsChecked?: boolean; checklist?: Record<string, boolean>; reasonCode?: string; note?: string }) =>
     apiClient.post<unknown>(`/admin/marketplace/products/${id}/review`, payload),
   adminResubmit: (id: string) => apiClient.post<unknown>(`/admin/marketplace/products/${id}/resubmit`),
+  archive: (id: string, reason: string) => apiClient.post<unknown>(`/admin/marketplace/products/${id}/archive`, { reason }),
   supplierProducts: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return apiClient.get<{ items: unknown[] }>(`/supplier/products?${q.toString()}`);
@@ -1255,6 +1264,10 @@ export const trackingApi = {
   shipment: (id: string) => authFetch<{ shipment: Record<string, unknown>; timeline: Record<string, unknown>[] }>(`/admin/shipments/${id}`),
   createShipment: (payload: unknown) => authFetch<unknown>("/admin/shipments", { method: "POST", body: JSON.stringify(payload) }),
   updateShipment: (id: string, payload: unknown) => authFetch<unknown>(`/admin/shipments/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  /* Master Spec: server-rendered shipping labels (100x150mm thermal single, A4 batch grid). */
+  labelPath: (orderId: string) => `/admin/orders/${orderId}/label`,
+  labelsBundlePath: (orderIds: string[], format: "thermal" | "a4" = "thermal") =>
+    `/admin/orders/labels/bundle?ids=${orderIds.join(",")}&format=${format}`,
   addEvent: (id: string, payload: { status: string; location?: string | null; occurredAt: string; source?: string; rawReference?: string | null; confidence?: number; note?: string | null }) =>
     authFetch<{ eventId: string; reviewStatus: string }>(`/admin/shipments/${id}/events`, { method: "POST", body: JSON.stringify(payload) }),
   imports: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/tracking/imports"),

@@ -21,7 +21,7 @@ const STATUS_LABEL: Record<string, string> = { draft: "پیش‌نویس", pendi
 export function MarketplaceReviewPanel({ flash }: { flash: F }) {
   const [items, setItems] = useState<MarketplaceProduct[] | null>(null);
   const [reasons, setReasons] = useState<ReviewReason[]>([]);
-  const [status, setStatus] = useState<"pending" | "rejected" | "all">("pending");
+  const [status, setStatus] = useState<"pending" | "draft" | "published" | "rejected" | "archived" | "all">("pending");
   const [query, setQuery] = useState("");
   const [sel, setSel] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -78,6 +78,7 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
   const review = async () => {
     if (!detail) return;
     if (decision === "rejected" && !reasonCode) { flash("رد محصول بدون انتخاب دلیل مجاز نیست"); return; }
+    if (decision === "changes_requested" && !reasonCode && note.trim().length < 3) { flash("درخواست اصلاح بدون دلیل یا توضیح مجاز نیست"); return; }
     setBusy(true);
     try {
       await marketplaceApi.review(detail.id, {
@@ -95,7 +96,10 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
     <div className="animate-[fadeUp_0.35s_ease]">
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <div className="min-w-[220px] flex-1"><SearchBox value={query} onChange={setQuery} placeholder="جست‌وجوی نام محصول، برند یا تأمین‌کننده…" /></div>
-        <Segmented<"pending" | "rejected" | "all"> options={[{ v: "pending", label: "صف بازبینی" }, { v: "rejected", label: "ردشده‌ها" }, { v: "all", label: "همه" }]} value={status} onChange={setStatus} />
+        <Segmented<"pending" | "draft" | "published" | "rejected" | "archived" | "all"> options={[
+          { v: "pending", label: "در انتظار بررسی" }, { v: "draft", label: "نیازمند اصلاح" }, { v: "published", label: "فعال (منتشر)" },
+          { v: "rejected", label: "ردشده" }, { v: "archived", label: "آرشیوشده" }, { v: "all", label: "همه" },
+        ]} value={status} onChange={setStatus} />
         <Btn variant="soft" size="sm" icon={<RefreshCw size={14} />} onClick={() => void load()}>به‌روزرسانی</Btn>
       </div>
       {error && <div className="mb-4"><ErrorState message={error} onRetry={() => void load()} /></div>}
@@ -157,7 +161,7 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
                     <Segmented<"approved" | "rejected" | "changes_requested"> options={[{ v: "approved", label: "تأیید و انتشار" }, { v: "changes_requested", label: "نیازمند اصلاح" }, { v: "rejected", label: "رد" }]} value={decision} onChange={setDecision} />
                   </Field>
                   {decision !== "approved" && (
-                    <Field label={decision === "rejected" ? "دلیل رد (الزامی)" : "دلیل (اختیاری)"} hint="متن دلیل برای تأمین‌کننده ارسال و در سوابق ثبت می‌شود">
+                    <Field label={decision === "rejected" ? "دلیل رد (الزامی)" : "دلیل اصلاح (الزامی — یا توضیح بنویسید)"} hint="متن دلیل برای تأمین‌کننده ارسال و در سوابق ثبت می‌شود">
                       <Select options={["انتخاب دلیل…", ...reasons.filter((r) => r.active).map((r) => r.label)]} value={reasons.find((r) => r.code === reasonCode)?.label ?? "انتخاب دلیل…"} onChange={(label) => setReasonCode(reasons.find((r) => r.label === label)?.code ?? "")} />
                     </Field>
                   )}
@@ -167,6 +171,13 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
                     <Btn variant={decision === "approved" ? "accent" : "soft"} size="sm" disabled={busy} icon={decision === "approved" ? <Check size={14} /> : <X size={14} />} onClick={() => void review()}>ثبت بازبینی</Btn>
                     {(detail.status === "rejected" || detail.status === "draft") && (
                       <Btn variant="soft" size="sm" disabled={busy} icon={<RotateCcw size={14} />} onClick={() => void (async () => { try { await marketplaceApi.adminResubmit(detail.id); flash("محصول دوباره به صف بازبینی برگشت"); await load(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()}>ارسال مجدد به صف</Btn>
+                    )}
+                    {detail.status !== "archived" && (
+                      <Btn variant="soft" size="sm" disabled={busy} onClick={() => void (async () => {
+                        if (note.trim().length < 3) { flash("برای بایگانی، دلیل را در «توضیح بازبین» بنویسید"); return; }
+                        try { await marketplaceApi.archive(detail.id, note.trim()); flash("محصول بایگانی شد (بدون هیچ تغییری در موجودی)"); await load(); }
+                        catch (e) { flash(e instanceof Error ? e.message : "خطا"); }
+                      })()}>بایگانی با دلیل</Btn>
                     )}
                   </div>
                 </div>
