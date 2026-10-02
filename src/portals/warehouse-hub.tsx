@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarketplaceReviewPanel } from "../components/marketplace-review-panel";
-import { CatalogHub } from "../components/catalog-hub";
+import { CatalogHub, CategoryProfilesPanel } from "../components/catalog-hub";
 import { AdminSupplierInboundsPanel, AdminSupplierStockPanel } from "../components/supplier-wholesale-panel";
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
@@ -84,7 +84,10 @@ type F = (msg: string) => void;
 export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | null }) {
   // §2 deep link: legacy wproducts/mreview routes land on انبار عمده → محصولات و بازبینی.
   const [tab, setTab] = useState<"goods" | "retail" | "transfers" | "wholesale" | "settings">(initial === "wholesale-review" ? "wholesale" : "goods");
-  useEffect(() => { if (initial === "wholesale-review") setTab("wholesale"); }, [initial]);
+  useEffect(() => {
+    if (initial === "wholesale-review") setTab("wholesale");
+    if (initial === "goods") setTab("goods"); // legacy «تعریف محصول» sidebar entry
+  }, [initial]);
   const [lowStockReport, setLowStockReport] = useState<LowStock[] | null>(null);
   return (
     <div className="animate-[fadeUp_0.35s_ease] space-y-4">
@@ -115,6 +118,10 @@ export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | 
             </div>
           </div>
           <WarehouseSettings onReport={(rows) => setLowStockReport(rows)} />
+          <div className="mt-5 border-t border-[var(--kv-line)] pt-5">
+            {/* §8-§10: category profiles are CONFIGURATION — they belong here, not in operational tabs. */}
+            <CategoryProfilesPanel flash={flash} />
+          </div>
         </Card>
       )}
       {lowStockReport && <Modal open title="گزارش موجودی کم — همه انبارها و دامنه‌ها" onClose={() => setLowStockReport(null)}><div className="overflow-x-auto p-4"><p className="text-xs text-[var(--kv-muted)]">حداکثر ۵۰ قلم با کمترین موجودی</p><table className="kv-table w-full text-xs"><thead><tr><th>کد کالا</th><th>انبار</th><th>دامنه</th><th>قابل فروش</th></tr></thead><tbody>{lowStockReport.map((item) => <tr key={`${item.variant_id}-${item.warehouse_id}-${item.inventory_domain}`}><td dir="ltr">{item.sku}</td><td>{item.warehouse_name}</td><td>{item.inventory_domain === "retail" ? "خرده" : "عمده"}</td><td>{fa(item.available)}</td></tr>)}</tbody></table>{!lowStockReport.length && <p className="text-sm">موجودی کم یافت نشد.</p>}</div></Modal>}

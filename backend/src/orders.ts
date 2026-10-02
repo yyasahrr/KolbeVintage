@@ -638,6 +638,18 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
           line.variant.owner_type === 'kolbe';
 
         // Reserve strictly from the matching inventory_domain ('retail' vs 'wholesale')
+        //
+        // PROMPT-1 §53 (documented limitation, OMS redesign deferred to Prompt 2):
+        // this path reserves supplier-wholesale lines from piece-level stock_balances and
+        // assumes the goods already sit in a kolbe warehouse. It CANNOT represent
+        // source-specific allocation. Prompt 2 must route wholesale allocation through
+        // source-aware APIs instead:
+        //   A kolbe series stock            → series_stock_balances (owner=kolbe)
+        //   B supplier stock-at-kolbe       → series_stock_balances (owner=supplier) + §50 conversion/settlement
+        //   C declared external capacity    → reserveSupplierCapacity()/settleSupplierCapacityReservation()
+        //                                     (supplier-offers.ts — NEVER stock_reservations)
+        //   D order-bound cross-dock        → supplier_fulfillments Model D (below, L~2010)
+        // Until then this adapter stays as-is so existing VIP checkout keeps working.
         const balance = await one<{ warehouse_id: string }>(
           client,
           `SELECT b.warehouse_id

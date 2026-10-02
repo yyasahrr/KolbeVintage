@@ -17,6 +17,7 @@ import { DiscountManager } from "../components/discount-manager";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, ProductTypesManager, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
+import { catalogOpsApi } from "../data/api";
 import { Btn, Card, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea, SearchBox, LoadingState, ErrorState } from "../components/primitives";
 import { cn } from "../utils/cn";
 
@@ -229,9 +230,21 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [inventoryFor, setInventoryFor] = useState<Product | null>(null);
   const [discountFor, setDiscountFor] = useState<Product | null>(null);
   const [types, setTypes] = useState<ProductType[]>([]);
+  /** §8: when the category has a configured profile, CATEGORY is the schema source of truth
+   *  and the legacy product-type picker disappears (legacy data stays via the server adapter). */
+  const [catSchema, setCatSchema] = useState<{ configured: boolean; allowedSizes: string[]; sizeGuide: { name: string } | null } | null>(null);
   const [vibeOptions, setVibeOptions] = useState<{ slug: string; name: string }[]>([]);
   const [typesOpen, setTypesOpen] = useState(false);
   const loadTypes = () => { if (!isDemo) productTypesApi.list().then((r) => setTypes(r.items)).catch(() => setTypes([])); };
+  useEffect(() => {
+    if (isDemo || !d.category.trim()) { setCatSchema(null); return; }
+    let alive = true;
+    catalogOpsApi.categorySchema(d.category.trim())
+      .then((r) => { if (alive) setCatSchema({ configured: r.configured, allowedSizes: r.allowedSizes ?? [], sizeGuide: r.sizeGuide }); })
+      .catch(() => { if (alive) setCatSchema(null); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d.category, isDemo]);
   useEffect(() => { loadTypes(); if (!isDemo) siteApi.vibes().then((r) => setVibeOptions(r.items)).catch(() => undefined); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   const [specsFor, setSpecsFor] = useState<Product | null>(null);
   const [productTypes, setProductTypes] = useState<StructureProductType[]>([]);
@@ -505,13 +518,14 @@ export function ProductStudio({ flash }: { flash: F }) {
     ...products.flatMap((p) => p.colors ?? []),
   ].filter((color) => Boolean(color?.id)).map((color) => [color.name, color])).values());
   const list = products.filter((p) => !q.trim() || (p.name ?? "").includes(q.trim()) || (p.sku ?? "").includes(q.trim()));
+  const categoryDriven = !!catSchema?.configured; // §8: category profile overrides the legacy type system
   const issues = [
-    !isDemo && !d.productTypeId && "نوع محصول",
+    !isDemo && !categoryDriven && !d.productTypeId && "نوع محصول",
     !d.name.trim() && "نام محصول", !d.colors.length && "دست‌کم یک رنگ", !d.sizes.length && "سایزها",
     !d.retailOn && !d.wholesaleOn && "یک کانال فروش", d.retailOn && !(Number(d.retail) > 0) && "قیمت خرده",
     d.retailOn && d.installment && !(Number(d.installment) > 0) && "قیمت چهارقسطه معتبر",
     d.wholesaleOn && !seriesComplete(d.series) && "سری‌های عمده (قیمت، حداقل و رنگ)", !d.images.length && "دست‌کم یک تصویر",
-    !isDemo && types.length > 0 && !d.typeCode && "نوع محصول",
+    !isDemo && !categoryDriven && types.length > 0 && !d.typeCode && "نوع محصول",
     ...missingRequiredSpecs(selectedType, d.specs).map((label) => `مشخصه «${label}»`),
   ].filter(Boolean) as string[];
 
@@ -715,7 +729,14 @@ export function ProductStudio({ flash }: { flash: F }) {
                 </div>
               )}
               <div className="grid gap-3 sm:grid-cols-3">
-                {typeOptions.length > 0 && (
+                {categoryDriven && (
+                  <Field label="قالب دسته‌بندی" hint={`سایزهای مجاز و مشخصات از پروفایل دسته‌بندی «${d.category}» می‌آیند${catSchema?.sizeGuide ? ` · راهنمای سایز: ${catSchema.sizeGuide.name}` : ""}`}>
+                    <div className="flex h-11 items-center rounded-[11px] border border-emerald-200 bg-emerald-50 px-3 text-[12px] font-bold text-emerald-800">
+                      دسته‌بندی منبع ساختار است{catSchema?.allowedSizes.length ? ` — سایزها: ${catSchema.allowedSizes.join("، ")}` : ""}
+                    </div>
+                  </Field>
+                )}
+                {!categoryDriven && typeOptions.length > 0 && (
                   <Field label="نوع محصول" hint="سایزها و قالب مشخصات از نوع محصول می‌آیند">
                     <Select options={["انتخاب کنید", ...typeOptions.map((t) => t.name)]}
                       value={typeOptions.find((t) => t.id === d.productTypeId || t.code === d.typeCode)?.name ?? "انتخاب کنید"}

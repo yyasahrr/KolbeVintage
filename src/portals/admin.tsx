@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Radar, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check,
-  ShieldCheck, Sun, Moon, LogOut, Warehouse, Crown, Tags, Contact,
+  ShieldCheck, Sun, Moon, LogOut, Warehouse, Crown, Contact,
   LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2, Workflow, Star, Sparkles,
 } from "lucide-react";
 import { fmtMoney, fmtNum } from "../data/catalog";
@@ -9,7 +9,6 @@ import { useStore } from "../data/store";
 import { KOLBE, SUB_STATUS, isTerminal, type VipPlan } from "../data/platform";
 import { Btn, Card, Status, SearchBox, Timeline, Field, Input, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
 import { ShippingAdmin } from "./admin-retail";
-import { ProductStudio } from "./admin-product";
 import { FinanceCenter, PlansCenter, RestrictionsCenter, ApplicationsCenter } from "./admin-ops";
 import { SmsCenter } from "./admin-growth";
 
@@ -148,6 +147,8 @@ const TAB_REDIRECT: Record<string, string> = {
   // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
   wproducts: "wms:wholesale-review",
   mreview: "wms:wholesale-review",
+  // ---- Prompt-1 §14: product definition lives at انبار و موجودی → کالاها ----
+  rproducts: "wms:goods",
 };
 
 /** Small canonical-hub shell: one business capability, sub-tabs inside (§1).
@@ -243,7 +244,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "applications", label: "درخواست همکاری", icon: <FileSignature size={17} />, badge: badge(summary?.pendingSupplierActions, ops.applications.filter((a) => a.status === "new").length) },
     { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
     { g: "خرده‌فروشی و محصول" },
-    { v: "rproducts", label: "تعریف محصول", icon: <Tags size={17} /> },
     { v: "structure", label: "ساختار محصولات و سری‌ها", icon: <Layers size={17} /> },
     { v: "crm", label: "مرکز CRM", icon: <Contact size={17} /> },
     { v: "promo", label: "کوپن و جشنواره", icon: <TicketPercent size={17} /> },
@@ -470,7 +470,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           )}
 
           {/* ---------- Retail modules ---------- */}
-          {tab === "rproducts" && moduleBoundary("تعریف محصول", <ProductStudio flash={flash} />)}
           {tab === "structure" && moduleBoundary("ساختار محصولات و سری‌ها", <HubTabs tabs={[
             { v: "structure", label: "ساختار محصولات", node: <ProductStructurePanel flash={flash} /> },
             { v: "series", label: "قالب‌های سری کلبه", node: <SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /> },

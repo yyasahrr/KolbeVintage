@@ -11,11 +11,11 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PackagePlus, RefreshCw } from "lucide-react";
-import { Btn, Card, Empty, ErrorState, Field, LoadingState, SearchBox, Segmented, WorkspaceModal } from "./primitives";
+import { Btn, Card, Empty, ErrorState, Field, LoadingState, Modal, SearchBox, Segmented, WorkspaceModal } from "./primitives";
 import { MarketplaceReviewPanel } from "./marketplace-review-panel";
 import { ProductStudio } from "../portals/admin-product";
 import {
-  catalogOpsApi, inventoryApi, productsApi, seriesTemplatesApi,
+  catalogOpsApi, inventoryApi, productsApi, seriesTemplatesApi, sizeGuidesApi, specsApi,
   type AdminProductRow, type NeedsSetupRow,
 } from "../data/api";
 import { cn } from "../utils/cn";
@@ -350,6 +350,114 @@ function AllProductsPanel({ mode }: { mode: "active" | "archived" }) {
           <span className="text-[11.5px] text-[var(--kv-muted)]">صفحه {fa(page + 1)} از {fa(Math.ceil(total / limit))}</span>
           <Btn size="sm" variant="ghost" disabled={(page + 1) * limit >= total} onClick={() => setPage((p) => p + 1)}>بعدی</Btn>
         </div>
+      )}
+    </Card>
+  );
+}
+
+/* ------------------------------ §8-§10: category profiles (configuration) ------------------------------ */
+
+/** Category = source of truth: spec template + size guide + allowed sizes per category.
+ *  Rendered inside the hub's SETTINGS tab (configuration-only area). */
+export function CategoryProfilesPanel({ flash }: { flash: F }) {
+  const [profiles, setProfiles] = useState<Record<string, unknown>[] | null>(null);
+  const [templates, setTemplates] = useState<{ id: string; name: string }[]>([]);
+  const [guides, setGuides] = useState<{ id: string; name: string }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ category: string; specTemplateId: string; sizeGuideId: string; sizes: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    setError(null);
+    Promise.all([
+      catalogOpsApi.categoryProfiles(),
+      specsApi.templates().catch(() => ({ items: [] as unknown[] })),
+      sizeGuidesApi.adminList().catch(() => ({ items: [] as unknown[] })),
+    ]).then(([p, t, g]) => {
+      setProfiles(p.items);
+      setTemplates((t.items as { id: string; name: string }[]).filter((x) => x?.id));
+      setGuides((g.items as { id: string; name: string }[]).filter((x) => x?.id));
+    }).catch((e) => setError(e instanceof Error ? e.message : "خطا"));
+  }, []);
+  useEffect(load, [load]);
+
+  if (error) return <ErrorState message={error} onRetry={load} />;
+  if (!profiles) return <LoadingState label="در حال دریافت پروفایل دسته‌بندی‌ها..." />;
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-bold">پروفایل دسته‌بندی‌ها (منبع ساختار محصول)</h3>
+          <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
+            دسته‌بندی تعیین می‌کند چه مشخصاتی الزامی است، چه سایزهایی مجازند و کدام راهنمای سایز نمایش داده می‌شود.
+            «نوع محصول» قدیمی فقط برای داده‌های قبلی نگه داشته شده است.
+          </p>
+        </div>
+        <Btn size="sm" variant="accent" onClick={() => setEditing({ category: "", specTemplateId: "", sizeGuideId: "", sizes: "" })}>پروفایل جدید</Btn>
+      </div>
+      {!profiles.length && <Empty title="پروفایلی تعریف نشده" desc="برای هر دسته‌بندی، قالب مشخصات و سایزهای مجاز را تعریف کنید." />}
+      {profiles.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="kv-table w-full text-xs">
+            <thead><tr><th>دسته‌بندی</th><th>قالب مشخصات</th><th>راهنمای سایز</th><th>سایزهای مجاز</th><th>محصولات</th><th>اقدام</th></tr></thead>
+            <tbody>
+              {profiles.map((p) => (
+                <tr key={String(p.id)}>
+                  <td className="font-bold">{String(p.category)}</td>
+                  <td>{String(p.spec_template_name ?? "—")}</td>
+                  <td>{String(p.size_guide_name ?? "—")}</td>
+                  <td dir="ltr">{Array.isArray(p.allowed_sizes) && p.allowed_sizes.length ? (p.allowed_sizes as string[]).join("، ") : "آزاد"}</td>
+                  <td>{fa(Number(p.product_count ?? 0))}</td>
+                  <td><Btn size="sm" variant="soft" onClick={() => setEditing({
+                    category: String(p.category),
+                    specTemplateId: String(p.spec_template_id ?? ""),
+                    sizeGuideId: String(p.size_guide_id ?? ""),
+                    sizes: Array.isArray(p.allowed_sizes) ? (p.allowed_sizes as string[]).join(",") : "",
+                  })}>ویرایش</Btn></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {editing && (
+        <Modal open onClose={() => setEditing(null)} title="پروفایل دسته‌بندی">
+          <h3 className="mb-3 text-sm font-bold">پروفایل دسته‌بندی</h3>
+          <div className="space-y-3">
+            <Field label="نام دسته‌بندی (همان مقدار فیلد دسته‌بندی محصول)">
+              <input className={cn(NUM_CLS, "w-full")} value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })} aria-label="دسته‌بندی" />
+            </Field>
+            <Field label="قالب مشخصات فنی">
+              <select className={SELECT_CLS} value={editing.specTemplateId} onChange={(e) => setEditing({ ...editing, specTemplateId: e.target.value })} aria-label="قالب مشخصات">
+                <option value="">بدون قالب</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </Field>
+            <Field label="راهنمای سایز">
+              <select className={SELECT_CLS} value={editing.sizeGuideId} onChange={(e) => setEditing({ ...editing, sizeGuideId: e.target.value })} aria-label="راهنمای سایز">
+                <option value="">بدون راهنما</option>
+                {guides.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            </Field>
+            <Field label="سایزهای مجاز (با ویرگول جدا کنید؛ خالی = آزاد)" hint="مثال: S,M,L,XL">
+              <input dir="ltr" className={cn(NUM_CLS, "w-full")} value={editing.sizes} onChange={(e) => setEditing({ ...editing, sizes: e.target.value })} aria-label="سایزهای مجاز" />
+            </Field>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Btn variant="ghost" onClick={() => setEditing(null)}>انصراف</Btn>
+            <Btn variant="accent" disabled={busy || !editing.category.trim()} onClick={async () => {
+              setBusy(true);
+              try {
+                await catalogOpsApi.saveCategoryProfile(editing.category.trim(), {
+                  specTemplateId: editing.specTemplateId || null,
+                  sizeGuideId: editing.sizeGuideId || null,
+                  allowedSizes: editing.sizes.split(",").map((x) => x.trim()).filter(Boolean),
+                });
+                flash("پروفایل دسته‌بندی ذخیره شد.");
+                setEditing(null); load();
+              } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } finally { setBusy(false); }
+            }}>{busy ? "..." : "ذخیره"}</Btn>
+          </div>
+        </Modal>
       )}
     </Card>
   );
