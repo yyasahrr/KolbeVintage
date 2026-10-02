@@ -9,6 +9,7 @@ import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } fro
 import { badRequest, conflict, notFound } from './errors.js';
 import { issueInvoiceForOrder } from './invoices.js';
 import { ACCOUNTS, postJournalEntry } from './ledger.js';
+import { applyChildPaymentAllocations } from './wholesale-oms.js';
 
 const limitsSchema = z.object({
   sources: z.enum(['all', 'kolbe']).default('all'),
@@ -114,6 +115,12 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
         { membershipId: intent.membership_id, userId: membership.user_id, endsAt: endsAt.toISOString() });
       await outbox(client, 'membership.activated', 'membership', intent.membership_id,
         { membershipId: intent.membership_id, userId: membership.user_id, endsAt: endsAt.toISOString(), renewal: Boolean(renewal) });
+    }
+    if (!intent.order_id && !intent.membership_id) {
+      // Prompt 2 (§57-§62): master-flow intents target children via payment_allocations.
+      await applyChildPaymentAllocations(client, {
+        intentId: intent.id, providerReference: payment.providerReference, paidAt: payment.paidAt,
+      });
     }
     await audit(client, null, 'payment.verified', 'payment_intent', intent.id, { status: 'pending' },
       { status: 'succeeded', provider: payment.provider, providerReference: payment.providerReference });
@@ -242,17 +249,21 @@ export function registerPaymentRoutes(app: FastifyInstance, pool: DbPool, config
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        const intent = await one<{ id: string; reference: string; amount_rial: string; status: string; provider: string; provider_reference: string | null; buyer_id: string | null; membership_user_id: string | null; order_type: string | null; payment_mode: string | null }>(client,
-          `SELECT p.id,p.reference,p.amount_rial,p.status,p.provider,p.provider_reference,o.buyer_id,m.user_id AS membership_user_id,o.order_type,o.payment_mode
+        const intent = await one<{ id: string; reference: string; amount_rial: string; status: string; provider: string; provider_reference: string | null; buyer_id: string | null; membership_user_id: string | null; order_type: string | null; payment_mode: string | null; purpose: string; master_buyer_id: string | null }>(client,
+          `SELECT p.id,p.reference,p.amount_rial,p.status,p.provider,p.provider_reference,o.buyer_id,m.user_id AS membership_user_id,o.order_type,o.payment_mode,p.purpose,mo.buyer_id AS master_buyer_id
            FROM payment_intents p LEFT JOIN orders o ON o.id = p.order_id
-           LEFT JOIN memberships m ON m.id = p.membership_id WHERE p.id = $1 FOR UPDATE OF p`, [id]);
-        if (!intent || (intent.buyer_id !== user.id && intent.membership_user_id !== user.id)) throw notFound();
+           LEFT JOIN memberships m ON m.id = p.membership_id
+           LEFT JOIN master_orders mo ON mo.id = p.master_order_id WHERE p.id = $1 FOR UPDATE OF p`, [id]);
+        if (!intent || (intent.buyer_id !== user.id && intent.membership_user_id !== user.id && intent.master_buyer_id !== user.id)) throw notFound();
         if (intent.status !== 'pending') throw conflict('درخواست پرداخت فعال نیست.');
         const adapter = adapters[intent.provider];
         if (!adapter) throw conflict('درگاه این روش پرداخت هنوز فعال نیست.');
-        if (adapter.providerCode === 'zibal' && (intent.order_type !== 'retail' || intent.payment_mode !== 'cash'))
+        // Prompt 2: child/batch intents are wholesale cash by construction (§57).
+        const effectiveOrderType = intent.order_type ?? (intent.purpose === 'child_order' || intent.purpose === 'child_batch' ? 'wholesale' : null);
+        const effectivePaymentMode = intent.payment_mode ?? (intent.purpose === 'child_order' || intent.purpose === 'child_batch' ? 'cash' : null);
+        if (adapter.providerCode === 'zibal' && (effectiveOrderType !== 'retail' || effectivePaymentMode !== 'cash'))
           throw conflict('زیبال فقط برای خرید نقدی خرده‌فروشی فعال است.');
-        if (adapter.providerCode === 'nextpay' && (intent.order_type !== 'wholesale' || intent.payment_mode !== 'cash'))
+        if (adapter.providerCode === 'nextpay' && (effectiveOrderType !== 'wholesale' || effectivePaymentMode !== 'cash'))
           throw conflict('نکست‌پی فقط برای خرید نقدی عمده فعال است.');
         if (intent.provider_reference) {
           await client.query('COMMIT');

@@ -24,6 +24,7 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, type Principal } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
+import type { PoolClient } from 'pg';
 import { rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { assertNotRestricted } from './console.js';
@@ -32,8 +33,9 @@ import { resolveVariantPrice } from './promotions.js';
 import { loadSeriesComposition } from './series.js';
 import { applySeriesMovement, buildRecipeSnapshot } from './series-inventory.js';
 import {
-  availableToRequest, reserveSupplierCapacity, settleSupplierCapacityReservation,
+  availableToRequest, expireSupplierCapacityReservations, reserveSupplierCapacity, settleSupplierCapacityReservation,
 } from './supplier-offers.js';
+import { issueInvoiceForOrder } from './invoices.js';
 import { quoteShipping } from './shipping.js';
 import { markCartConverted } from './cart.js';
 
@@ -263,6 +265,151 @@ async function appendNegotiation(client: DbClient, lineId: string, entry: Record
   await client.query(
     `UPDATE child_order_lines SET negotiation_history = negotiation_history || $2::jsonb, updated_at = now() WHERE id = $1`,
     [lineId, JSON.stringify([{ ...entry, at: new Date().toISOString() }])]);
+}
+
+/* ----------------------------- payment application (§57-§62, §128) ----------------------------- */
+
+/**
+ * Called by applyVerifiedPayment (payments.ts) for intents whose targets live in
+ * payment_allocations (single-child AND batch intents of the master flow).
+ * Runs inside the SAME transaction as the gateway verification — children flip to
+ * paid atomically (§60). A child whose eligibility lapsed between redirect and
+ * callback is NOT paid: it gets a payment_late_callback exception + refund-required
+ * outbox instead — never an oversell (§61-§62).
+ */
+export async function applyChildPaymentAllocations(client: PoolClient, input: {
+  intentId: string; providerReference: string; paidAt: Date;
+}): Promise<{ paidChildren: string[]; exceptionChildren: string[] }> {
+  const allocations = await client.query<{ id: string; child_order_id: string; amount_rial: string; status: string }>(
+    `SELECT id, child_order_id, amount_rial::text AS amount_rial, status FROM payment_allocations
+     WHERE payment_intent_id = $1 ORDER BY created_at FOR UPDATE`, [input.intentId]);
+  const paidChildren: string[] = [];
+  const exceptionChildren: string[] = [];
+  for (const alloc of allocations.rows) {
+    if (alloc.status !== 'pending') continue;
+    const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [alloc.child_order_id]);
+    const payable = !!child && child.status === 'pending_payment' && child.payment_eligibility === 'ready'
+      && (!child.payment_due_at || new Date(child.payment_due_at) > input.paidAt);
+    if (payable) {
+      await client.query(
+        `UPDATE orders SET status = 'paid', paid_at = $2, payment_eligibility = 'paid',
+           child_fulfillment = 'preparing', updated_at = now() WHERE id = $1`,
+        [alloc.child_order_id, input.paidAt]);
+      await client.query(
+        `INSERT INTO order_events(id, order_id, from_status, to_status, note)
+         VALUES ($1,$2,'pending_payment','paid',$3)`,
+        [randomUUID(), alloc.child_order_id, `پرداخت زیرسفارش تأیید شد: ${input.providerReference}`]);
+      await client.query("UPDATE payment_allocations SET status = 'succeeded', updated_at = now() WHERE id = $1", [alloc.id]);
+      // paid holds never expire: clear both the allocation TTL and the capacity TTL.
+      await client.query(
+        `UPDATE order_source_allocations SET reservation_expires_at = NULL, updated_at = now()
+         WHERE child_order_id = $1 AND status = 'reserved'`, [alloc.child_order_id]);
+      await client.query(
+        `UPDATE supplier_capacity_reservations SET expires_at = NULL, updated_at = now()
+         WHERE id IN (SELECT capacity_reservation_id FROM order_source_allocations
+                      WHERE child_order_id = $1 AND capacity_reservation_id IS NOT NULL AND status = 'reserved')`,
+        [alloc.child_order_id]);
+      // §128: finance hook — per-child event; Prompt 3 consumes it. Legacy order.paid kept for compat.
+      await outbox(client, 'child_order.payment_verified', 'order', alloc.child_order_id,
+        { childOrderId: alloc.child_order_id, masterOrderId: child!.master_order_id,
+          paymentIntentId: input.intentId, amountRial: alloc.amount_rial });
+      await outbox(client, 'order.paid', 'order', alloc.child_order_id,
+        { orderId: alloc.child_order_id, paymentIntentId: input.intentId });
+      // §106: one invoice per child (INV-xxxx-NN) — existing engine, dedup by order_id.
+      await issueInvoiceForOrder(client, alloc.child_order_id);
+      paidChildren.push(alloc.child_order_id);
+    } else {
+      await client.query("UPDATE payment_allocations SET status = 'exception', updated_at = now() WHERE id = $1", [alloc.id]);
+      await client.query(
+        `INSERT INTO fulfillment_exceptions(id, master_order_id, child_order_id, exception_type, status, note)
+         VALUES ($1,$2,$3,'payment_late_callback','open',$4)`,
+        [randomUUID(), child?.master_order_id ?? null, alloc.child_order_id,
+          `پرداخت پس از انقضای مهلت رزرو رسید (${input.providerReference}) — نیازمند استرداد؛ موجودی مجدداً رزرو نشده است.`]);
+      await outbox(client, 'child_order.refund_requested', 'order', alloc.child_order_id,
+        { childOrderId: alloc.child_order_id, masterOrderId: child?.master_order_id ?? null,
+          paymentIntentId: input.intentId, amountRial: alloc.amount_rial, reason: 'payment_late_callback' });
+      await outbox(client, 'child_order.exception_opened', 'order', alloc.child_order_id,
+        { childOrderId: alloc.child_order_id, exceptionType: 'payment_late_callback' });
+      exceptionChildren.push(alloc.child_order_id);
+    }
+  }
+  return { paidChildren, exceptionChildren };
+}
+
+/* ----------------------------- TTL expiry sweep (§47-§49, §69) ----------------------------- */
+
+async function expireChild(client: DbClient, child: ChildRow, actorId: string | null): Promise<void> {
+  const lines = await client.query<LineRow>(
+    `SELECT * FROM child_order_lines WHERE child_order_id = $1 AND status NOT IN ('removed','rejected') FOR UPDATE`,
+    [child.id]);
+  for (const line of lines.rows) {
+    const held = await client.query<{ id: string }>(
+      `SELECT id FROM order_source_allocations WHERE line_id = $1 AND status IN ('pending','reserved')`, [line.id]);
+    await releaseLineHolds(client, line, actorId ?? child.buyer_id, 'انقضای مهلت پرداخت — آزادسازی رزرو');
+    if (held.rows.length) {
+      await client.query(
+        `UPDATE order_source_allocations SET status = 'expired', updated_at = now() WHERE id = ANY($1::uuid[])`,
+        [held.rows.map((r) => r.id)]);
+    }
+  }
+  await client.query(
+    `UPDATE orders SET payment_eligibility = 'expired', child_fulfillment = 'not_started', updated_at = now() WHERE id = $1`,
+    [child.id]);
+  // stale intents can never pay (§49): fail every pending intent that references this child.
+  const intents = await client.query<{ payment_intent_id: string }>(
+    `SELECT DISTINCT pa.payment_intent_id FROM payment_allocations pa
+     JOIN payment_intents pi ON pi.id = pa.payment_intent_id
+     WHERE pa.child_order_id = $1 AND pi.status = 'pending'`, [child.id]);
+  for (const row of intents.rows) {
+    await client.query("UPDATE payment_intents SET status = 'failed' WHERE id = $1 AND status = 'pending'", [row.payment_intent_id]);
+    await client.query(
+      "UPDATE payment_allocations SET status = 'cancelled', updated_at = now() WHERE payment_intent_id = $1 AND status = 'pending'",
+      [row.payment_intent_id]);
+  }
+  await client.query(
+    `INSERT INTO order_events(id, order_id, from_status, to_status, actor_id, note)
+     VALUES ($1,$2,'pending_payment','pending_payment',$3,'مهلت پرداخت زیرسفارش منقضی و رزروها آزاد شد')`,
+    [randomUUID(), child.id, actorId]);
+  await outbox(client, 'child_order.payment_expired', 'order', child.id,
+    { childOrderId: child.id, masterOrderId: child.master_order_id });
+}
+
+/** Deadline sweep: payment TTL expiry + supplier respond_by timeout + capacity reservation TTL. */
+export async function runWholesaleOmsSweep(pool: DbPool, actorId: string | null): Promise<{
+  expiredChildren: number; timedOutLines: number; expiredCapacityReservations: number;
+}> {
+  const policy = await omsPolicy(pool);
+  return transaction(pool, async (client) => {
+    // 1) children whose READY window lapsed → EXPIRED + full release (§48).
+    const dueChildren = await client.query<ChildRow>(
+      `SELECT * FROM orders
+       WHERE master_order_id IS NOT NULL AND status = 'pending_payment'
+         AND payment_eligibility = 'ready' AND payment_due_at IS NOT NULL AND payment_due_at < now()
+       ORDER BY payment_due_at FOR UPDATE SKIP LOCKED LIMIT 100`);
+    for (const child of dueChildren.rows) await expireChild(client, child, actorId);
+
+    // 2) supplier respond_by timeout → TIMED_OUT lines; buyer decides next (§70, no auto-alternate).
+    const dueLines = await client.query<LineRow & { respond_by: Date }>(
+      `SELECT l.*, o.supplier_respond_by AS respond_by FROM child_order_lines l
+       JOIN orders o ON o.id = l.child_order_id
+       WHERE l.status = 'awaiting_supplier' AND o.status = 'pending_payment'
+         AND o.supplier_respond_by IS NOT NULL AND o.supplier_respond_by < now()
+       ORDER BY o.supplier_respond_by FOR UPDATE OF l SKIP LOCKED LIMIT 200`);
+    const touchedChildren = new Set<string>();
+    for (const line of dueLines.rows) {
+      await client.query("UPDATE child_order_lines SET status = 'timed_out', updated_at = now() WHERE id = $1", [line.id]);
+      await appendNegotiation(client, line.id, { type: 'supplier_timeout' });
+      touchedChildren.add(line.child_order_id);
+    }
+    for (const childId of touchedChildren) {
+      await recomputeChild(client, childId, policy);
+      await outbox(client, 'child_order.supplier_timeout', 'order', childId, { childOrderId: childId });
+    }
+
+    // 3) Prompt-1 capacity reservation TTL sweep (frees reserved_external).
+    const expiredCapacity = await expireSupplierCapacityReservations(client);
+    return { expiredChildren: dueChildren.rows.length, timedOutLines: dueLines.rows.length, expiredCapacityReservations: expiredCapacity };
+  });
 }
 
 /* ----------------------------- allowedActions (§140/§201) ----------------------------- */
@@ -1166,5 +1313,120 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       await outbox(client, 'wholesale_master.locked', 'master_order', id, { masterOrderId: id });
       return { ok: true, composition: 'locked', shippingQuote: quoteSnapshot };
     });
+  });
+
+  /* ============================ payment intents (§46-§60, §139) ============================ */
+
+  /** Shared guard: the HARD payment gate. Throws machine codes; never bypassable, not even for admin (§139). */
+  async function assertChildPayable(client: DbClient, child: ChildRow | null, buyerId: string): Promise<ChildRow> {
+    if (!child || !child.master_order_id) throw notFound();
+    if (child.buyer_id !== buyerId) throw forbidden();
+    if (child.status !== 'pending_payment' || child.payment_eligibility === 'paid') {
+      throw code(409, 'CHILD_ALREADY_PAID', 'این زیرسفارش قبلاً پرداخت شده یا بسته است.');
+    }
+    if (child.payment_eligibility === 'expired') {
+      throw code(409, 'SUPPLY_RESERVATION_EXPIRED', 'مهلت پرداخت این زیرسفارش منقضی و رزروها آزاد شده است.');
+    }
+    if (child.payment_eligibility !== 'ready') {
+      const reason = child.payment_eligibility === 'blocked_buyer_decision'
+        ? code(409, 'COUNTER_OFFER_PENDING', 'پیشنهاد جایگزین تأمین‌کننده در انتظار تصمیم شماست.')
+        : code(409, child.payment_eligibility === 'blocked_exception' ? 'FULFILLMENT_EXCEPTION_OPEN' : 'PAYMENT_NOT_READY',
+          'پرداخت این زیرسفارش هنوز آماده نیست — تأمین همه اقلام باید قطعی شود.');
+      throw reason;
+    }
+    if (child.payment_due_at && new Date(child.payment_due_at) <= new Date()) {
+      await expireChild(client, child, buyerId);
+      throw code(409, 'SUPPLY_RESERVATION_EXPIRED', 'مهلت پرداخت این زیرسفارش منقضی شد و رزروها آزاد شدند.');
+    }
+    return child;
+  }
+
+  async function createOmsIntent(client: DbClient, input: {
+    masterOrderId: string; purpose: 'child_order' | 'child_batch';
+    children: Array<{ id: string; amount: bigint }>;
+  }): Promise<{ intentId: string; reference: string; amountRial: string }> {
+    // §143: one active intent per child — the partial unique index is the authority.
+    const existing = await client.query<{ child_order_id: string }>(
+      `SELECT child_order_id FROM payment_allocations
+       WHERE child_order_id = ANY($1::uuid[]) AND status = 'pending'`,
+      [input.children.map((c) => c.id)]);
+    if (existing.rows.length) {
+      throw code(409, 'PAYMENT_INTENT_EXISTS', 'برای یک یا چند زیرسفارش درخواست پرداخت فعالی وجود دارد.');
+    }
+    const total = input.children.reduce((sum, child) => sum + child.amount, 0n);
+    if (total <= 0n) throw badRequest('مبلغ پرداخت معتبر نیست.');
+    const intentId = randomUUID();
+    const seq = await one<{ n: string }>(client, "SELECT nextval('order_reference_seq')::text AS n");
+    await client.query(
+      `INSERT INTO payment_intents(id, reference, provider, amount_rial, status, master_order_id, purpose)
+       VALUES ($1,$2,'nextpay',$3,'pending',$4,$5)`,
+      [intentId, `PAY-${seq!.n}`, total.toString(), input.masterOrderId, input.purpose]);
+    // §59: allocations MUST sum exactly to the intent amount — enforced by construction here,
+    // re-verified at webhook time by amount equality in applyVerifiedPayment.
+    for (const child of input.children) {
+      await client.query(
+        `INSERT INTO payment_allocations(id, payment_intent_id, child_order_id, amount_rial, status)
+         VALUES ($1,$2,$3,$4,'pending')`,
+        [randomUUID(), intentId, child.id, child.amount.toString()]);
+    }
+    return { intentId, reference: `PAY-${seq!.n}`, amountRial: total.toString() };
+  }
+
+  /** Individual child payment intent — READY children only (§54). */
+  app.post('/api/v1/wholesale/children/:id/payment-intent', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const result = await transaction(pool, async (client) => {
+      const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
+      const payable = await assertChildPayable(client, child, user.id);
+      const intent = await createOmsIntent(client, {
+        masterOrderId: payable.master_order_id!, purpose: 'child_order',
+        children: [{ id: payable.id, amount: rial(payable.total_rial) }],
+      });
+      await audit(client, user.id, 'wholesale_child.payment_intent', 'order', id, undefined,
+        { intentId: intent.intentId, amountRial: intent.amountRial }, request.ip);
+      return { ...intent, children: [{ id: payable.id, reference: payable.reference, amountRial: payable.total_rial }] };
+    });
+    return reply.code(201).send(result);
+  });
+
+  /** Batch payment: ONE gateway transaction across several READY children of one master (§57-§58). */
+  app.post('/api/v1/wholesale/masters/:id/batch-payment-intent', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({
+      childIds: z.array(z.uuid()).min(1).max(40)
+        .refine((ids) => new Set(ids).size === ids.length, 'هر زیرسفارش فقط یک بار مجاز است.'),
+    }).strict().parse(request.body);
+    const result = await transaction(pool, async (client) => {
+      const master = await one<{ id: string; buyer_id: string }>(client,
+        'SELECT id, buyer_id FROM master_orders WHERE id = $1 FOR UPDATE', [id]);
+      if (!master) throw notFound();
+      if (master.buyer_id !== user.id) throw forbidden();
+      const children: Array<{ id: string; amount: bigint; reference: string; total: string }> = [];
+      for (const childId of body.childIds) {
+        const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [childId]);
+        if (!child || child.master_order_id !== id) throw notFound();  // same master, same buyer, same currency/method
+        const payable = await assertChildPayable(client, child, user.id);
+        children.push({ id: payable.id, amount: rial(payable.total_rial), reference: payable.reference, total: payable.total_rial });
+      }
+      const intent = await createOmsIntent(client, { masterOrderId: id, purpose: 'child_batch', children });
+      await audit(client, user.id, 'wholesale_master.batch_payment_intent', 'master_order', id, undefined,
+        { intentId: intent.intentId, childIds: body.childIds, amountRial: intent.amountRial }, request.ip);
+      return { ...intent, children: children.map((c) => ({ id: c.id, reference: c.reference, amountRial: c.total })) };
+    });
+    return reply.code(201).send(result);
+  });
+
+  /* ============================ deadline sweep (§47-§49/§69-§70) ============================ */
+
+  app.post('/api/v1/wholesale/oms/expire-sweep', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!isOps(user)) throw forbidden();
+    const result = await runWholesaleOmsSweep(pool, user.id);
+    await transaction(pool, async (client) => {
+      await audit(client, user.id, 'wholesale_oms.sweep', 'wholesale_oms', randomUUID(), undefined, result, request.ip);
+    });
+    return result;
   });
 }
