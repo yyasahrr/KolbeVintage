@@ -33,6 +33,34 @@ const documentBody = z.object({
   fileId: z.uuid().nullable().optional(),
 }).strict();
 
+/* §15 master phase: explainable VIP behavior (plan-aware), computed from real data. */
+type VipRow = { order_count: unknown; wholesale_order_count: unknown; last_order_at: unknown; created_at: unknown;
+  plan_code: unknown; plan_status: unknown; plan_ends_at: unknown; total_spent_rial: unknown };
+const VIP_BEHAVIOR_LABEL: Record<string, string> = {
+  new: 'VIP جدید', active: 'VIP فعال', loyal: 'VIP وفادار', heavy: 'VIP پرخرید', high_value: 'VIP پرارزش',
+  low_activity: 'کم‌فعال', at_risk: 'در خطر ریزش', renewal_due: 'نزدیک تمدید', plan_expired: 'پلن منقضی',
+};
+export function classifyVipBehavior(row: VipRow) {
+  const orders = Number(row.wholesale_order_count ?? 0);
+  const lastDays = row.last_order_at ? Math.floor((Date.now() - new Date(String(row.last_order_at)).getTime()) / 86_400_000) : null;
+  const endsDays = row.plan_ends_at ? Math.ceil((new Date(String(row.plan_ends_at)).getTime() - Date.now()) / 86_400_000) : null;
+  const spent = BigInt(String(row.total_spent_rial ?? '0'));
+  const reasons: string[] = [];
+  if (orders) reasons.push(`${orders.toLocaleString('fa-IR')} سفارش عمده`);
+  if (lastDays !== null) reasons.push(`آخرین سفارش ${lastDays.toLocaleString('fa-IR')} روز قبل`);
+  if (endsDays !== null) reasons.push(endsDays >= 0 ? `${endsDays.toLocaleString('fa-IR')} روز تا پایان پلن` : 'پلن منقضی شده');
+  if (spent > 0n) reasons.push(`ارزش کل خرید ${(spent / 10n).toLocaleString('fa-IR')} تومان`);
+  let state = 'active';
+  if (!row.plan_code && row.plan_status) state = 'plan_expired';
+  else if (endsDays !== null && endsDays <= 30) state = 'renewal_due';
+  else if (spent >= 5_000_000_000n) state = 'high_value';
+  else if (orders >= 10) state = 'heavy';
+  else if (orders >= 5 && lastDays !== null && lastDays <= 60) state = 'loyal';
+  else if (orders >= 2 && lastDays !== null && lastDays > 90) state = 'at_risk';
+  else if (orders === 0 || lastDays === null || lastDays > 90) state = orders === 0 ? 'new' : 'low_activity';
+  return { state, label: VIP_BEHAVIOR_LABEL[state]!, reasons };
+}
+
 export function registerBuyerRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   /** Buyer list (VIP + wholesale) with the numbers an operator scans first. */
   app.get('/api/v1/admin/buyers', async (request) => {
@@ -40,16 +68,28 @@ export function registerBuyerRoutes(app: FastifyInstance, pool: DbPool, config: 
     const query = z.object({
       search: z.string().max(120).optional(),
       actorType: z.enum(['all', 'vip', 'wholesale_buyer', 'customer']).default('all'),
+      // §14-§15 master phase: server-backed saved views for the VIP CRM tab.
+      view: z.enum(['all', 'expiring', 'top_buyers', 'low_activity', 'expired_plan']).default('all'),
       limit: z.coerce.number().int().min(1).max(200).default(50),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
     }).parse(request.query);
     const rows = await pool.query(
-      `SELECT u.id, u.display_name, u.phone, u.email, u.created_at,
+      `WITH base AS (
+       SELECT u.id, u.display_name, u.phone, u.email, u.created_at,
               c.actor_type, c.segment, c.tags,
-              bp.business_name, bp.city, bp.vip_level, bp.credit_limit_rial, bp.blocked,
+              bp.business_name, bp.city, bp.vip_level, bp.blocked,
               (SELECT code FROM membership_plans p JOIN memberships m ON m.plan_id = p.id
                 WHERE m.user_id = u.id AND m.status = 'active' ORDER BY m.created_at DESC LIMIT 1) AS plan_code,
+              (SELECT m.starts_at FROM memberships m WHERE m.user_id = u.id AND m.status = 'active' ORDER BY m.created_at DESC LIMIT 1) AS plan_starts_at,
               (SELECT m.ends_at FROM memberships m WHERE m.user_id = u.id AND m.status = 'active' ORDER BY m.created_at DESC LIMIT 1) AS plan_ends_at,
+              (SELECT m.status FROM memberships m WHERE m.user_id = u.id ORDER BY m.created_at DESC LIMIT 1) AS plan_status,
               (SELECT count(*)::int FROM orders o WHERE o.buyer_id = u.id AND o.status <> 'cancelled') AS order_count,
+              (SELECT count(*)::int FROM orders o WHERE o.buyer_id = u.id AND o.status <> 'cancelled' AND o.order_type = 'wholesale') AS wholesale_order_count,
+              (SELECT max(o.created_at) FROM orders o WHERE o.buyer_id = u.id AND o.status <> 'cancelled') AS last_order_at,
+              -- §14/§22: سری خریداری‌شده از رزروهای واقعی سری (نه حدس از قطعات)
+              (SELECT COALESCE(sum(r.series_count),0)::int FROM order_series_reservations r
+                 JOIN orders o ON o.id = r.order_id
+                WHERE o.buyer_id = u.id AND r.status IN ('active','consumed')) AS series_purchased,
               (SELECT COALESCE(sum(o.total_rial),0)::text FROM orders o WHERE o.buyer_id = u.id AND o.status <> 'cancelled') AS total_spent_rial
        FROM users u
        LEFT JOIN crm_contacts c ON c.user_id = u.id
@@ -57,9 +97,28 @@ export function registerBuyerRoutes(app: FastifyInstance, pool: DbPool, config: 
        WHERE ($1::text IS NULL OR u.display_name ILIKE '%' || $1 || '%' OR u.phone ILIKE '%' || $1 || '%'
               OR u.email ILIKE '%' || $1 || '%' OR bp.business_name ILIKE '%' || $1 || '%')
          AND ($2 = 'all' OR COALESCE(c.actor_type, 'customer') = $2)
-       ORDER BY total_spent_rial DESC NULLS LAST, u.created_at DESC LIMIT $3`,
-      [query.search ?? null, query.actorType, query.limit]);
-    return { items: rows.rows.map((row) => ({ ...row, total_spent_rial: _rial(row.total_spent_rial), credit_limit_rial: _rial(row.credit_limit_rial ?? '0') })) };
+       )
+       SELECT *, count(*) OVER()::int AS total_rows FROM base
+       WHERE CASE $5
+               WHEN 'expiring' THEN (plan_ends_at IS NOT NULL AND plan_ends_at BETWEEN now() AND now() + interval '30 days')
+               WHEN 'top_buyers' THEN total_spent_rial::numeric > 0
+               WHEN 'low_activity' THEN (last_order_at IS NULL OR last_order_at < now() - interval '90 days')
+               WHEN 'expired_plan' THEN (plan_code IS NULL AND plan_status IS NOT NULL)
+               ELSE true END
+       ORDER BY total_spent_rial::numeric DESC NULLS LAST, created_at DESC LIMIT $3 OFFSET $4`,
+      [query.search ?? null, query.actorType, query.limit, query.offset, query.view]);
+    const total = rows.rows.length ? Number(rows.rows[0]!.total_rows) : 0;
+    return {
+      total, limit: query.limit, offset: query.offset,
+      /* §13: VIP has NO purchase credit — credit_limit_rial is intentionally NOT returned by
+       * this list; VIPs buy with their own money. (Legacy DB field remains untouched.) */
+      items: rows.rows.map((row) => {
+        const { total_rows: _t, ...rest } = row as Record<string, unknown>;
+        const behavior = classifyVipBehavior(row as VipRow);
+        return { ...rest, total_spent_rial: _rial(String(row.total_spent_rial ?? '0')),
+          behavior: behavior.state, behavior_label: behavior.label, behavior_reasons: behavior.reasons };
+      }),
+    };
   });
 
   /** The 360 payload: every canonical fact about the buyer, nothing duplicated. */

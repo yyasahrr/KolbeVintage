@@ -256,6 +256,69 @@ const ruleBody = z.object({
   requiresApproval: z.boolean().default(false),
 }).strict();
 
+/* ---------- Master phase §7-§8/§18: explainable behavior thresholds + reasons ---------- */
+/** Fixed defaults for the LIST column; the configurable engine remains crm_label_rules. */
+export const BEHAVIOR = {
+  highValueRial: 500_000_000n, // ≥ ۵۰ میلیون تومان historical spend
+  loyalOrders: 5, loyalRecencyDays: 60,
+  atRiskDays: 90, inactiveDays: 180, returnedGapDays: 90,
+  activeDays: 90, newDays: 30,
+} as const;
+export const BEHAVIOR_LABEL: Record<string, string> = {
+  new: 'جدید', active: 'فعال', loyal: 'وفادار', high_value: 'پرارزش',
+  at_risk: 'در خطر ریزش', inactive: 'غیرفعال', returned: 'بازگشته',
+};
+type BehaviorRow = { behavior: unknown; order_count: unknown; total_spent: unknown; last_order_at: unknown;
+  prev_order_at: unknown; created_at: unknown; returns: unknown };
+const faDays = (iso: unknown) => iso ? Math.floor((Date.now() - new Date(String(iso)).getTime()) / 86_400_000) : null;
+/** Evidence («چرا؟») — real numbers behind the primary state, never a black box. */
+export function behaviorReasons(row: BehaviorRow): string[] {
+  const reasons: string[] = [];
+  const orders = Number(row.order_count ?? 0);
+  const sinceLast = faDays(row.last_order_at);
+  const spentToman = BigInt(String(row.total_spent ?? 0)) / 10n;
+  if (orders > 0) reasons.push(`${orders.toLocaleString('fa-IR')} سفارش موفق`);
+  if (sinceLast !== null) reasons.push(`آخرین خرید ${sinceLast.toLocaleString('fa-IR')} روز قبل`);
+  if (spentToman > 0n) reasons.push(`مجموع خرید ${spentToman.toLocaleString('fa-IR')} تومان`);
+  const age = faDays(row.created_at);
+  if (orders === 0 && age !== null) reasons.push(`بدون خرید از زمان عضویت (${age.toLocaleString('fa-IR')} روز)`);
+  if (String(row.behavior) === 'returned' && row.prev_order_at) {
+    const gap = Math.floor((new Date(String(row.last_order_at)).getTime() - new Date(String(row.prev_order_at)).getTime()) / 86_400_000);
+    reasons.push(`بازگشت پس از ${gap.toLocaleString('fa-IR')} روز بی‌خریدی`);
+  }
+  if (Number(row.returns ?? 0) > 0) reasons.push(`${Number(row.returns).toLocaleString('fa-IR')} مرجوعی`);
+  return reasons;
+}
+
+type SupplierPerfRow = { cooperation_status: unknown; activity_status: unknown; active_products: unknown;
+  total_sales: unknown; sold_lines: unknown; qc_accepted: unknown; qc_rejected: unknown; cancelled_lines: unknown };
+export const SUPPLIER_PERF_LABEL: Record<string, string> = {
+  new: 'همکاری جدید', excellent: 'ممتاز', reliable: 'قابل اعتماد', top_seller: 'پرفروش',
+  low_activity: 'کم‌فعال', needs_review: 'نیازمند بررسی', qc_weak: 'QC ضعیف', suspended: 'تعلیق‌شده',
+};
+/** §18: supplier performance — one primary state + visible evidence, from REAL data. */
+export function supplierPerformance(row: SupplierPerfRow) {
+  const qcA = Number(row.qc_accepted ?? 0); const qcR = Number(row.qc_rejected ?? 0);
+  const qcTotal = qcA + qcR;
+  const qcPassRate = qcTotal ? Math.round((qcA / qcTotal) * 100) : null;
+  const sales = BigInt(String(row.total_sales ?? 0));
+  const soldLines = Number(row.sold_lines ?? 0);
+  const products = Number(row.active_products ?? 0);
+  const reasons: string[] = [];
+  if (qcPassRate !== null) reasons.push(`نرخ قبولی QC: ${qcPassRate.toLocaleString('fa-IR')}٪ (${qcTotal.toLocaleString('fa-IR')} بازرسی)`);
+  if (soldLines) reasons.push(`${soldLines.toLocaleString('fa-IR')} ردیف فروش ثبت‌شده`);
+  reasons.push(`${products.toLocaleString('fa-IR')} محصول فعال`);
+  let state = 'reliable';
+  if (String(row.activity_status) === 'suspended' || String(row.cooperation_status) === 'suspended') state = 'suspended';
+  else if (qcPassRate !== null && qcPassRate < 80) state = 'qc_weak';
+  else if (String(row.activity_status) !== 'active' && row.activity_status) state = 'needs_review';
+  else if (soldLines === 0 && products === 0) state = 'low_activity';
+  else if (soldLines === 0) state = 'new';
+  else if (qcPassRate !== null && qcPassRate >= 95 && sales > 0n) state = 'excellent';
+  else if (sales >= 1_000_000_000n) state = 'top_seller';
+  return { state, label: SUPPLIER_PERF_LABEL[state]!, qcPassRate, reasons };
+}
+
 export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   /* ------------------------------- labels ------------------------------- */
   app.get('/api/v1/admin/crm/labels', async (request) => {
@@ -692,6 +755,184 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
   });
 
   /** Outbox-driven listing so operators can see what the automation layer sees. */
+  /* ================= MASTER PHASE PART B/§5-§8: CRM read models ================= */
+  /* Behavior is RULE-BASED and EXPLAINABLE: one primary state + evidence reasons.
+   * Thresholds are module constants (the configurable engine remains crm_label_rules);
+   * the SQL CASE below uses the SAME thresholds so filters/pagination stay server-side. */
+
+  /** §6-§8: paginated retail-customer list with server-computed behavior + evidence. */
+  app.get('/api/v1/admin/crm/retail-customers', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
+    const query = z.object({
+      search: z.string().trim().max(120).optional(),
+      behavior: z.enum(['new', 'active', 'loyal', 'high_value', 'at_risk', 'inactive', 'returned']).optional(),
+      city: z.string().trim().max(60).optional(),
+      accountStatus: z.enum(['active', 'suspended']).optional(),
+      sort: z.enum(['newest', 'spend', 'orders', 'last_activity']).default('newest'),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+    }).parse(request.query);
+    const sortSql: Record<string, string> = {
+      newest: 'created_at DESC', spend: 'total_spent DESC', orders: 'order_count DESC',
+      last_activity: 'last_activity_at DESC NULLS LAST',
+    };
+    const rows = await pool.query(
+      `WITH base AS (
+         SELECT u.id, u.display_name, u.phone, u.email, u.birthday, u.status AS account_status, u.created_at,
+                cp.first_name, cp.last_name, cp.gender,
+                (SELECT a.province FROM customer_addresses a WHERE a.user_id = u.id ORDER BY a.is_default DESC LIMIT 1) AS province,
+                (SELECT a.city FROM customer_addresses a WHERE a.user_id = u.id ORDER BY a.is_default DESC LIMIT 1) AS city,
+                COALESCE(os.order_count, 0) AS order_count, COALESCE(os.total_spent, 0)::bigint AS total_spent,
+                COALESCE(os.average_order, 0)::bigint AS average_order,
+                os.last_order_at, prev.prev_order_at,
+                COALESCE(rr.returns, 0) AS returns,
+                (SELECT count(*)::int FROM tickets t WHERE t.owner_id = u.id) AS ticket_count,
+                (SELECT count(*)::int FROM customer_reviews r WHERE r.user_id = u.id) AS review_count,
+                GREATEST(
+                  (SELECT max(h.created_at) FROM user_login_history h WHERE h.user_id = u.id AND h.success),
+                  os.last_order_at,
+                  (SELECT max(ct.occurred_at) FROM customer_timeline ct WHERE ct.user_id = u.id)
+                ) AS last_activity_at
+         FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id AND ur.role_code = 'customer'
+         LEFT JOIN customer_profiles cp ON cp.user_id = u.id
+         LEFT JOIN LATERAL (
+           SELECT count(*)::int AS order_count, sum(o.total_rial) AS total_spent,
+                  avg(o.total_rial) AS average_order, max(o.created_at) AS last_order_at
+           FROM orders o WHERE o.buyer_id = u.id AND o.status <> 'cancelled'
+         ) os ON true
+         LEFT JOIN LATERAL (
+           SELECT max(o2.created_at) AS prev_order_at FROM orders o2
+           WHERE o2.buyer_id = u.id AND o2.status <> 'cancelled' AND o2.created_at < os.last_order_at
+         ) prev ON true
+         LEFT JOIN LATERAL (SELECT count(*)::int AS returns FROM return_requests rq WHERE rq.requester_id = u.id) rr ON true
+         WHERE NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.status = 'active')
+       ), classified AS (
+         SELECT b.*,
+                CASE
+                  WHEN b.total_spent >= ${BEHAVIOR.highValueRial} THEN 'high_value'
+                  WHEN b.order_count >= ${BEHAVIOR.loyalOrders} AND b.last_order_at >= now() - interval '${BEHAVIOR.loyalRecencyDays} days' THEN 'loyal'
+                  WHEN b.order_count >= 2 AND b.last_order_at < now() - interval '${BEHAVIOR.atRiskDays} days'
+                       AND b.last_order_at >= now() - interval '${BEHAVIOR.inactiveDays} days' THEN 'at_risk'
+                  WHEN b.order_count >= 2 AND b.last_order_at >= now() - interval '30 days'
+                       AND b.prev_order_at IS NOT NULL AND b.prev_order_at < now() - interval '${BEHAVIOR.returnedGapDays} days' THEN 'returned'
+                  WHEN b.order_count >= 1 AND b.last_order_at >= now() - interval '${BEHAVIOR.activeDays} days' THEN 'active'
+                  WHEN b.created_at >= now() - interval '${BEHAVIOR.newDays} days' THEN 'new'
+                  ELSE 'inactive'
+                END AS behavior
+         FROM base b
+       )
+       SELECT *, count(*) OVER()::int AS total_rows FROM classified
+       WHERE ($1::text IS NULL OR display_name ILIKE '%' || $1 || '%' OR phone ILIKE '%' || $1 || '%' OR email ILIKE '%' || $1 || '%')
+         AND ($2::text IS NULL OR behavior = $2)
+         AND ($3::text IS NULL OR city ILIKE '%' || $3 || '%' OR province ILIKE '%' || $3 || '%')
+         AND ($4::text IS NULL OR account_status = $4)
+       ORDER BY ${sortSql[query.sort]}, id
+       LIMIT $5 OFFSET $6`,
+      [query.search ?? null, query.behavior ?? null, query.city ?? null, query.accountStatus ?? null, query.limit, query.offset]);
+    const total = rows.rows.length ? Number(rows.rows[0]!.total_rows) : 0;
+    return {
+      total, limit: query.limit, offset: query.offset,
+      items: rows.rows.map((row) => {
+        const { total_rows: _t, ...rest } = row as Record<string, unknown>;
+        return {
+          ...rest,
+          total_spent: asRial(String(row.total_spent ?? 0)), average_order: asRial(String(row.average_order ?? 0)),
+          behavior: row.behavior, behavior_label: BEHAVIOR_LABEL[String(row.behavior)] ?? String(row.behavior),
+          behavior_reasons: behaviorReasons(row as BehaviorRow),
+        };
+      }),
+    };
+  });
+
+  /** §5: CRM header KPIs + action center — every number from real persisted data. */
+  app.get('/api/v1/admin/crm/summary', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
+    const kpi = await one<Record<string, string>>(pool, `
+      SELECT
+        (SELECT count(DISTINCT o.buyer_id) FROM orders o WHERE o.status <> 'cancelled' AND o.created_at >= now() - interval '90 days')::int AS active_customers,
+        (SELECT count(*) FROM memberships m WHERE m.status = 'active')::int AS active_vip,
+        (SELECT count(*) FROM supplier_profiles sp WHERE sp.cooperation_status = 'approved' AND COALESCE(sp.activity_status,'active') = 'active')::int AS active_suppliers,
+        (SELECT count(*) FROM (
+           SELECT o.buyer_id, max(o.created_at) AS last_order FROM orders o WHERE o.status <> 'cancelled' GROUP BY o.buyer_id
+           HAVING count(*) >= 2 AND max(o.created_at) < now() - interval '${BEHAVIOR.atRiskDays} days'
+              AND max(o.created_at) >= now() - interval '${BEHAVIOR.inactiveDays} days') x)::int AS at_risk,
+        (SELECT count(*) FROM users u WHERE u.birthday IS NOT NULL AND u.status = 'active'
+           AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM (now() AT TIME ZONE 'Asia/Tehran')))::int AS birthdays_this_month,
+        (SELECT count(*) FROM carts c WHERE c.status = 'active' AND c.user_id IS NOT NULL
+           AND c.updated_at < now() - interval '24 hours'
+           AND EXISTS (SELECT 1 FROM cart_items ci WHERE ci.cart_id = c.id))::int AS abandoned_carts,
+        (SELECT count(*) FROM memberships m WHERE m.status = 'active' AND m.ends_at IS NOT NULL
+           AND m.ends_at BETWEEN now() AND now() + interval '30 days')::int AS vip_expiring,
+        (SELECT count(DISTINCT l.supplier_id) FROM order_lines l
+           WHERE l.supplier_id IS NOT NULL AND l.qc_status = 'rejected'
+             AND EXISTS (SELECT 1 FROM orders o WHERE o.id = l.order_id AND o.created_at >= now() - interval '60 days'))::int AS suppliers_qc_flagged`);
+    return { kpis: kpi, generatedAt: new Date().toISOString() };
+  });
+
+  /** §17-§18: supplier CRM list — real performance metrics + explainable status. */
+  app.get('/api/v1/admin/crm/suppliers', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'suppliers:manage');
+    const query = z.object({
+      search: z.string().trim().max(120).optional(),
+      view: z.enum(['all', 'needs_review', 'qc_weak', 'top_sales', 'low_activity']).default('all'),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+    }).parse(request.query);
+    const rows = await pool.query(
+      `WITH base AS (
+         SELECT s.user_id, s.brand_name, s.legal_name, s.cooperation_status, s.activity_status, s.activity_reason,
+                u.display_name, u.phone, u.email,
+                (SELECT count(*)::int FROM products p WHERE p.supplier_id = s.user_id AND p.status = 'published') AS active_products,
+                COALESCE(sales.total_sales, 0)::bigint AS total_sales,
+                COALESCE(sales.sold_lines, 0) AS sold_lines,
+                COALESCE(qc.accepted, 0) AS qc_accepted, COALESCE(qc.rejected, 0) AS qc_rejected,
+                COALESCE(series.on_hand, 0) AS series_on_hand, COALESCE(series.incoming, 0) AS series_incoming,
+                COALESCE(sr.series_sold, 0) AS series_sold,
+                (SELECT count(*)::int FROM tickets t WHERE t.owner_id = s.user_id AND t.status <> 'closed') AS open_tickets,
+                COALESCE(cncl.cancelled, 0) AS cancelled_lines
+         FROM supplier_profiles s JOIN users u ON u.id = s.user_id
+         LEFT JOIN LATERAL (
+           SELECT sum(l.line_total_rial) AS total_sales, count(*)::int AS sold_lines
+           FROM order_lines l JOIN orders o ON o.id = l.order_id
+           WHERE l.supplier_id = s.user_id AND o.status NOT IN ('cancelled', 'returned')) sales ON true
+         LEFT JOIN LATERAL (
+           SELECT count(*) FILTER (WHERE l.qc_status IN ('accepted','partially_accepted'))::int AS accepted,
+                  count(*) FILTER (WHERE l.qc_status = 'rejected')::int AS rejected
+           FROM order_lines l WHERE l.supplier_id = s.user_id AND l.qc_status <> 'pending') qc ON true
+         LEFT JOIN LATERAL (
+           SELECT sum(b.on_hand)::int AS on_hand, sum(b.incoming)::int AS incoming
+           FROM series_stock_balances b WHERE b.owner_type = 'supplier' AND b.supplier_id = s.user_id) series ON true
+         LEFT JOIN LATERAL (
+           SELECT sum(r.series_count)::int AS series_sold FROM order_series_reservations r
+           WHERE r.supplier_id = s.user_id AND r.status = 'consumed') sr ON true
+         LEFT JOIN LATERAL (
+           SELECT count(*)::int AS cancelled FROM order_lines l JOIN orders o ON o.id = l.order_id
+           WHERE l.supplier_id = s.user_id AND o.status = 'cancelled') cncl ON true
+       )
+       SELECT *, count(*) OVER()::int AS total_rows FROM base
+       WHERE ($1::text IS NULL OR brand_name ILIKE '%' || $1 || '%' OR display_name ILIKE '%' || $1 || '%' OR phone ILIKE '%' || $1 || '%')
+         AND CASE $2
+               WHEN 'needs_review' THEN (qc_rejected > 0 OR activity_status <> 'active')
+               WHEN 'qc_weak' THEN (qc_rejected > 0 AND qc_rejected * 100 > (qc_accepted + qc_rejected) * 20)
+               WHEN 'top_sales' THEN total_sales > 0
+               WHEN 'low_activity' THEN (active_products = 0 OR sold_lines = 0)
+               ELSE true END
+       ORDER BY CASE WHEN $2 = 'top_sales' THEN total_sales END DESC NULLS LAST, total_sales DESC, user_id
+       LIMIT $3 OFFSET $4`,
+      [query.search ?? null, query.view, query.limit, query.offset]);
+    const total = rows.rows.length ? Number(rows.rows[0]!.total_rows) : 0;
+    return {
+      total, limit: query.limit, offset: query.offset,
+      items: rows.rows.map((row) => {
+        const { total_rows: _t, ...rest } = row as Record<string, unknown>;
+        const perf = supplierPerformance(row as SupplierPerfRow);
+        return { ...rest, total_sales: asRial(String(row.total_sales ?? 0)),
+          qc_pass_rate: perf.qcPassRate, performance: perf.state, performance_label: perf.label, performance_reasons: perf.reasons };
+      }),
+    };
+  });
+
   app.get('/api/v1/admin/crm/upcoming-events', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
     const rows = await pool.query(
