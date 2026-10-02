@@ -257,7 +257,8 @@ async function recomputeChildTotals(client: DbClient, childOrderId: string): Pro
   let discount = lineDiscount + planDiscount;
   if (discount > subtotal) discount = subtotal;
   await client.query(
-    `UPDATE orders SET subtotal_rial = $2, discount_rial = $3, total_rial = $2 - $3 + shipping_rial, updated_at = now()
+    `UPDATE orders SET subtotal_rial = $2::bigint, discount_rial = $3::bigint,
+       total_rial = $2::bigint - $3::bigint + shipping_rial, updated_at = now()
      WHERE id = $1`, [childOrderId, subtotal.toString(), discount.toString()]);
 }
 
@@ -1183,15 +1184,15 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         const perPiece = (line.commercial_snapshot?.perPiece ?? []) as Array<{ variantId: string; qps: number }>;
         for (const piece of perPiece) {
           await client.query(
-            `UPDATE order_lines SET quantity = $3,
-               discount_amount_rial = (discount_amount_rial / NULLIF(quantity, 0)) * $3,
-               line_total_rial = unit_price_rial * $3
+            `UPDATE order_lines SET quantity = $3::int,
+               discount_amount_rial = (discount_amount_rial / NULLIF(quantity, 0)) * $3::bigint,
+               line_total_rial = unit_price_rial * $3::bigint
              WHERE order_id = $1 AND variant_id = $2`,
             [line.child_order_id, piece.variantId, piece.qps * proposed]);
         }
         await client.query(
-          `UPDATE child_order_lines SET status = 'confirmed', confirmed_series = $2,
-             line_total_rial = unit_series_price_rial * $2, decided_at = now(), updated_at = now() WHERE id = $1`,
+          `UPDATE child_order_lines SET status = 'confirmed', confirmed_series = $2::int,
+             line_total_rial = unit_series_price_rial * $2::bigint, decided_at = now(), updated_at = now() WHERE id = $1`,
           [lineId, proposed]);
         await appendNegotiation(client, lineId, { type: 'buyer_accepted_counter', series: proposed, by: user.id });
         await recomputeChildTotals(client, line.child_order_id);
