@@ -8,6 +8,7 @@ import {
   FlaskConical, Clock, Sun, Moon, LogOut, Send, Store, PackagePlus,
 } from "lucide-react";
 import { SupplierRequestsPortal } from "../components/supplier-requests-portal";
+import { SupplierConsignmentPanel, SupplierOffersPanel } from "../components/supplier-wholesale-panel";
 import { IMG, COLORS, STATUS_LABEL, fmtMoney, fmtNum, nextSku, type SeriesDef } from "../data/catalog";
 void nextSku; // kept for demo preview (?demo=1)
 import { useStore } from "../data/store";
@@ -420,6 +421,8 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
     { v: "orders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: mySubs.filter((i: any) => (i as any).sub.status === "paid").length || undefined },
     { g: "عملیات" },
     { v: "inventory", label: "موجودی انبار", icon: <Boxes size={17} /> },
+    { v: "wholesale-offers", label: "پیشنهاد و ظرفیت عمده", icon: <Layers size={17} /> },
+    { v: "consignment", label: "موجودی نزد کلبه", icon: <Package size={17} /> },
     { v: "supply-requests", label: "درخواست‌های تأمین", icon: <PackagePlus size={17} /> },
     { v: "production", label: "تولید", icon: <Factory size={17} /> },
     { v: "finance", label: "کیف پول و برداشت", icon: <Wallet size={17} /> },
@@ -759,6 +762,10 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
               </div>
           )}
 
+          {/* §28-§34: offers + declared capacity (commitment, NOT kolbe stock). */}
+          {tab === "wholesale-offers" && <div className="animate-[fadeUp_0.35s_ease]"><SupplierOffersPanel flash={flash} /></div>}
+          {/* §23-B/§25-§27/§37: consignment — inbounds, verified stock at kolbe, returns. */}
+          {tab === "consignment" && <div className="animate-[fadeUp_0.35s_ease]"><SupplierConsignmentPanel flash={flash} /></div>}
           {tab === "supply-requests" && <SupplierRequestsPortal flash={flash} />}
 
           {tab === "inventory" && (

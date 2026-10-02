@@ -7,7 +7,7 @@ import { IMG, fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE, BUYER_ADDRESS, limitsOf, describeLimits, type VipPlan } from "../data/platform";
 import { useOps } from "../data/ops";
-import { AdminApiError, apiClient, membershipApi, ordersApi, seriesTemplatesApi, type OrderSummary } from "../data/api";
+import { AdminApiError, apiClient, membershipApi, ordersApi, seriesTemplatesApi, supplierOffersApi, type OrderSummary } from "../data/api";
 import { ParentOrderCard, SupplierChip } from "../components/orders";
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Swatch, Stepper, Empty, Input, Segmented, Field } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -125,6 +125,11 @@ export function VipPDP({ p, canSee, role, serverBacked, onBack, onAdd, onAuth, o
   // K: real VIP series come from the server (series_templates). null = loading.
   const [srv, setSrv] = useState<ServerSeries[] | null>(serverBacked ? null : []);
   const [srvError, setSrvError] = useState<string | null>(null);
+  // §36: two availability sources, never merged — verified kolbe stock vs declared supplier capacity.
+  const [avail, setAvail] = useState<{
+    kolbeSeries: number;
+    external: { availableToRequest: number; stockAtKolbe: number; freshness: string; leadTimeDays: number }[];
+  } | null>(null);
   const loadServerSeries = async () => {
     setSrvError(null);
     try {
@@ -136,6 +141,20 @@ export function VipPDP({ p, canSee, role, serverBacked, onBack, onAdd, onAuth, o
       }));
       setSrv(list);
       onSeriesLoaded?.(list);
+      // Availability split is additive display data — failures must not break ordering.
+      try {
+        const availability = await supplierOffersApi.availability(p.id) as {
+          kolbeStock?: { availableSeries: number }[];
+          supplierOffers?: { externalAvailableToRequest?: number; stockAtKolbeSeries?: number; freshness?: string; leadTimeDays?: number }[];
+        };
+        setAvail({
+          kolbeSeries: (availability.kolbeStock ?? []).reduce((sum, row) => sum + Math.max(0, row.availableSeries), 0),
+          external: (availability.supplierOffers ?? []).map((o) => ({
+            availableToRequest: o.externalAvailableToRequest ?? 0, stockAtKolbe: o.stockAtKolbeSeries ?? 0,
+            freshness: o.freshness ?? "stale", leadTimeDays: o.leadTimeDays ?? 0,
+          })),
+        });
+      } catch { setAvail(null); }
     } catch (e) { setSrvError(e instanceof Error ? e.message : "خطا در دریافت سری‌های این محصول"); }
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -249,6 +268,27 @@ export function VipPDP({ p, canSee, role, serverBacked, onBack, onAdd, onAuth, o
               ))}
             </div>
           </div>}
+
+          {/* §36: kolbe verified stock and supplier declared capacity shown SEPARATELY with confidence. */}
+          {serverBacked && avail && (avail.kolbeSeries > 0 || avail.external.length > 0) && (
+            <div className="mt-3 space-y-1.5 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-3.5 py-2.5 text-[12px]">
+              <p className="flex items-center justify-between">
+                <span>آمادهٔ ارسال از انبار کلبه <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">تأییدشده</span></span>
+                <b className="tabular-nums">{fmtNum(avail.kolbeSeries)} سری</b>
+              </p>
+              {avail.external.filter((o) => o.availableToRequest > 0).map((o, i) => (
+                <p key={i} className="flex items-center justify-between text-[var(--kv-muted)]">
+                  <span>
+                    قابل درخواست از تأمین‌کننده <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                      {o.freshness === "fresh" || o.freshness === "acceptable" ? "اعلامی — نیازمند تأیید تأمین" : "اعلام قدیمی — فقط استعلام"}
+                    </span>
+                    {o.leadTimeDays > 0 && <span className="ms-1 text-[10.5px]">({fmtNum(o.leadTimeDays)} روز آماده‌سازی)</span>}
+                  </span>
+                  <b className="tabular-nums">{fmtNum(o.availableToRequest)} سری</b>
+                </p>
+              ))}
+            </div>
+          )}
 
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <div>

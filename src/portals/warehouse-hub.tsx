@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarketplaceReviewPanel } from "../components/marketplace-review-panel";
 import { CatalogHub } from "../components/catalog-hub";
+import { AdminSupplierInboundsPanel, AdminSupplierStockPanel } from "../components/supplier-wholesale-panel";
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
 import { inventoryApi, manualSalesApi, productsApi, serverRequest, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
@@ -1210,13 +1211,14 @@ function ReverseModal({ transfer, onClose, onDone, flash }: { transfer: Transfer
 /* ------------------------------ wholesale center (C3/I/J/QC) ------------------------------ */
 
 function WholesaleCenter({ flash, initialSub }: { flash: F; initialSub?: "review" }) {
-  const [sub, setSub] = useState<"inventory" | "review" | "requests" | "inbound">(initialSub ?? "inventory");
+  const [sub, setSub] = useState<"inventory" | "supplier-stock" | "review" | "requests" | "inbound">(initialSub ?? "inventory");
   useEffect(() => { if (initialSub) setSub(initialSub); }, [initialSub]);
   return (
     <div className="space-y-4">
       <Segmented
         options={[
           { v: "inventory", label: "موجودی عمده" },
+          { v: "supplier-stock", label: "موجودی تأمین‌کنندگان" },
           { v: "review", label: "محصولات و بازبینی" },
           { v: "requests", label: "درخواست‌های تأمین‌کنندگان" },
           { v: "inbound", label: "ورودی انبار و QC" },
@@ -1224,12 +1226,16 @@ function WholesaleCenter({ flash, initialSub }: { flash: F; initialSub?: "review
         value={sub} onChange={setSub}
       />
       {sub === "inventory" && <WholesaleInventoryTab flash={flash} />}
+      {/* §23-B/§43/§50: consigned supplier stock (owner=supplier) + returns review + ownership conversion. */}
+      {sub === "supplier-stock" && <AdminSupplierStockPanel flash={flash} />}
       {/* §2 + §55: the ONE canonical wholesale product review queue (ex wproducts + ex بازبینی بازارچه). */}
       {sub === "review" && <MarketplaceReviewPanel flash={flash} />}
       {sub === "requests" && <SupplierRequestsAdmin flash={flash} />}
       {sub === "inbound" && (
         <div className="space-y-5">
           {/* §1.2 + §21: supplier inbound shipments / QC inspections — Central WHOLESALE warehouse only. */}
+          {/* §26-§27: consignment inbound queue (approve → receive → QC) — the canonical supplier inbound path. */}
+          <AdminSupplierInboundsPanel flash={flash} />
           <AdminServerOrders request={serverRequest} only="inbound-qc" />
           <InboundReceipts flash={flash} />
         </div>

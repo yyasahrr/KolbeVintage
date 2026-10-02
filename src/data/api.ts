@@ -1573,10 +1573,11 @@ export const catalogOpsApi = {
 };
 
 export type SupplierOfferRow = Record<string, unknown> & {
-  id: string; product_id: string; product_name?: string; color_label: string | null; status: string;
-  min_order_series: number; max_order_series: number | null; declared_capacity: number;
-  reserved_external: number; safety_buffer: number; available_to_request: number;
-  freshness: string; capacity_confirmed_at: string | null; fulfillment_mode: string;
+  id: string; productId: string; productName?: string; supplierName?: string; colorLabel: string | null;
+  seriesTemplateId: string | null; seriesTemplateName: string | null; status: string;
+  minOrderSeries: number; maxOrderSeries: number | null; declaredCapacity: number;
+  reservedExternal: number; safetyBuffer: number; availableToRequest: number;
+  freshness: string; capacityConfirmedAt: string | null; fulfillmentMode: string; wholesalePriceRial: string | null;
 };
 export type SupplierInboundRow = Record<string, unknown> & {
   id: string; reference: string; status: string; expected_series: number;

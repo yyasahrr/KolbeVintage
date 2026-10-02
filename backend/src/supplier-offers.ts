@@ -139,8 +139,9 @@ type OfferRow = {
 function offerView(row: OfferRow, cfg: FreshnessConfig, opts?: { privacy?: boolean }) {
   return {
     id: row.id,
+    // §55: privacy shape hides the supplier's identity entirely (id AND name).
     supplierId: opts?.privacy ? undefined : row.supplier_id,
-    supplierName: row.supplier_name,
+    supplierName: opts?.privacy ? undefined : row.supplier_name,
     productId: row.product_id,
     productName: row.product_name,
     productStatus: row.product_status,
