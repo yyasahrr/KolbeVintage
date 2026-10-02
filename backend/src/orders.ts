@@ -16,6 +16,7 @@ import { recordRedemption, resolveCouponDiscount, resolveFestivalDiscount, type 
 import { quoteShipping } from './shipping.js';
 import { resolveVariantPrice, type ResolvedVariantPrice } from './promotions.js';
 import { loadSeriesComposition } from './series.js';
+import { applySeriesMovement, buildRecipeSnapshot } from './series-inventory.js';
 
 const defaultShippingAddress = {
   recipient: 'تحویل در انبار/آدرس ثبت‌شده',
@@ -578,8 +579,9 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       await client.query(
         `INSERT INTO orders(
           id, reference, buyer_id, order_type, payment_mode, subtotal_rial, discount_rial, shipping_rial,
-          shipping_method_id, total_rial, shipping_address, pricing_snapshot, fulfillment_via, inventory_domain, wholesale_fulfillment_status
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'kolbe_warehouse',$13,$14)`,
+          shipping_method_id, total_rial, shipping_address, pricing_snapshot, fulfillment_via, inventory_domain, wholesale_fulfillment_status,
+          series_snapshot
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'kolbe_warehouse',$13,$14,$15)`,
         [
           orderId,
           reference,
@@ -595,6 +597,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
           JSON.stringify(pricingSnapshot),
           requiredDomain,
           initialWholesaleStatus,
+          seriesSnapshot ? JSON.stringify({ series: seriesSnapshot }) : null,
         ],
       );
 
@@ -693,6 +696,40 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
            VALUES ($1,$2,$3,$4,$5,'order reservation','order',$6,$7,$8)`,
           [randomUUID(), line.variant.variant_id, balance.warehouse_id, requiredDomain, line.quantity, orderId, user.id, `reserve:${line.id}`],
         );
+      }
+
+      // §36/§46: wholesale orders reserve INTACT series when explicit series stock is tracked.
+      // Component piece reservations above stay the physical bookkeeping; this is the series-unit
+      // banding of the same goods — one of two concurrent buyers of the last series must fail here.
+      if (body.series?.length) {
+        for (const entry of body.series) {
+          const tracked = await one<{ c: string }>(
+            client, 'SELECT count(*)::text AS c FROM series_stock_balances WHERE series_template_id = $1', [entry.seriesTemplateId]);
+          if (Number(tracked?.c ?? '0') === 0) continue; // legacy untracked template → component-level availability only
+          const seriesRow = await one<{
+            warehouse_id: string; owner_type: 'kolbe' | 'supplier'; supplier_id: string | null;
+          }>(
+            client,
+            `SELECT warehouse_id, owner_type, supplier_id
+             FROM series_stock_balances
+             WHERE series_template_id = $1 AND on_hand - reserved - damaged >= $2
+             ORDER BY on_hand - reserved - damaged DESC LIMIT 1 FOR UPDATE`,
+            [entry.seriesTemplateId, entry.count]);
+          if (!seriesRow) throw conflict('سری کامل قابل فروش برای این قالب کافی نیست.');
+          const recipeSnapshot = await buildRecipeSnapshot(client, entry.seriesTemplateId);
+          await applySeriesMovement(client, {
+            templateId: entry.seriesTemplateId, warehouseId: seriesRow.warehouse_id,
+            owner: { ownerType: seriesRow.owner_type, supplierId: seriesRow.supplier_id },
+            movementType: 'reserve', reservedDelta: entry.count, recipeSnapshot,
+            referenceType: 'order', referenceId: orderId, actorId: user.id,
+            idempotencyKey: `series-reserve:${orderId}:${entry.seriesTemplateId}`,
+          });
+          await client.query(
+            `INSERT INTO order_series_reservations(id, order_id, series_template_id, warehouse_id, owner_type, supplier_id, series_count, recipe_snapshot)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [randomUUID(), orderId, entry.seriesTemplateId, seriesRow.warehouse_id, seriesRow.owner_type, seriesRow.supplier_id,
+              entry.count, JSON.stringify(recipeSnapshot)]);
+        }
       }
 
       await client.query(
@@ -1104,6 +1141,31 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
               `${status}:${reservation.id}`,
             ],
           );
+        }
+
+        // §36: mirror the series-unit reservations — release on cancel, consume on dispatch.
+        const seriesReservations = await client.query<{
+          id: string; series_template_id: string; warehouse_id: string;
+          owner_type: 'kolbe' | 'supplier'; supplier_id: string | null; series_count: number;
+        }>(
+          `SELECT id, series_template_id, warehouse_id, owner_type, supplier_id, series_count
+           FROM order_series_reservations WHERE order_id = $1 AND status = 'active' FOR UPDATE`,
+          [id]);
+        for (const sr of seriesReservations.rows) {
+          const consumeSeries = status === 'in_transit' || status === 'shipped';
+          await applySeriesMovement(client, {
+            templateId: sr.series_template_id, warehouseId: sr.warehouse_id,
+            owner: { ownerType: sr.owner_type, supplierId: sr.supplier_id },
+            movementType: consumeSeries ? 'consume' : 'release',
+            onHandDelta: consumeSeries ? -sr.series_count : undefined,
+            reservedDelta: -sr.series_count,
+            referenceType: 'order', referenceId: id, actorId: user.id,
+            note: consumeSeries ? 'ارسال سفارش عمده (مصرف سری)' : 'لغو سفارش عمده (آزادسازی سری)',
+            idempotencyKey: `series-${status}:${sr.id}`,
+          });
+          await client.query(
+            `UPDATE order_series_reservations SET status = $2, updated_at = now() WHERE id = $1`,
+            [sr.id, consumeSeries ? 'consumed' : 'released']);
         }
       }
 
@@ -1751,6 +1813,69 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
          WHERE id = $1`,
         [shipment.supplier_fulfillment_id, overallStatus],
       );
+
+      // §22-§24/§48: supplier supply of series-based products is accounted in SERIES units.
+      // Only FULLY passed series (bottleneck over accepted components, per the order-time recipe
+      // snapshot) enter sellable series stock at the destination wholesale warehouse — rejected or
+      // damaged pieces can never produce an intact series. Mirrors the piece-level handoff above:
+      // consume the supplier-side series reservation, credit Kolbe-side on_hand+reserved.
+      const orderSeriesRow = await one<{ series_snapshot: unknown }>(
+        client, 'SELECT series_snapshot FROM orders WHERE id = $1', [shipment.order_id]);
+      const snapshotSeries = ((orderSeriesRow?.series_snapshot as { series?: Array<{
+        seriesTemplateId: string; name: string; count: number;
+        components: Array<{ variantId: string; sku: string; quantityPerSeries: number }>;
+      }> } | null)?.series) ?? [];
+      if (snapshotSeries.length > 0) {
+        const fulfillment = await one<{ supplier_id: string }>(
+          client, 'SELECT supplier_id FROM supplier_fulfillments WHERE id = $1', [shipment.supplier_fulfillment_id]);
+        for (const entry of snapshotSeries) {
+          if (!entry.components.length) continue;
+          let passedSeries = Number.POSITIVE_INFINITY;
+          let touchesThisShipment = false;
+          for (const comp of entry.components) {
+            const line = inspectedLines.find((l) => l.variantId === comp.variantId);
+            if (line) touchesThisShipment = true;
+            passedSeries = Math.min(passedSeries, Math.floor((line?.acceptedQuantity ?? 0) / comp.quantityPerSeries));
+          }
+          if (!touchesThisShipment) continue;
+          passedSeries = Math.min(Number.isFinite(passedSeries) ? passedSeries : 0, entry.count);
+
+          // Goods physically left the supplier warehouse: consume any series reservation held there.
+          const priorReservations = await client.query<{
+            id: string; warehouse_id: string; owner_type: 'kolbe' | 'supplier'; supplier_id: string | null; series_count: number;
+          }>(
+            `SELECT id, warehouse_id, owner_type, supplier_id, series_count FROM order_series_reservations
+             WHERE order_id = $1 AND series_template_id = $2 AND status = 'active' AND warehouse_id <> $3 FOR UPDATE`,
+            [shipment.order_id, entry.seriesTemplateId, shipment.destination_warehouse_id]);
+          for (const prior of priorReservations.rows) {
+            await applySeriesMovement(client, {
+              templateId: entry.seriesTemplateId, warehouseId: prior.warehouse_id,
+              owner: { ownerType: prior.owner_type, supplierId: prior.supplier_id },
+              movementType: 'consume', onHandDelta: -prior.series_count, reservedDelta: -prior.series_count,
+              referenceType: 'inbound_shipment', referenceId: shipment.id, actorId: user.id,
+              note: `خروج سری از انبار تأمین‌کننده طی محموله ${shipment.shipment_number}`,
+              idempotencyKey: `series-inbound-consume:${shipment.id}:${prior.id}`,
+            });
+            await client.query(
+              "UPDATE order_series_reservations SET status = 'consumed', updated_at = now() WHERE id = $1", [prior.id]);
+          }
+
+          if (passedSeries <= 0) continue;
+          await applySeriesMovement(client, {
+            templateId: entry.seriesTemplateId, warehouseId: shipment.destination_warehouse_id,
+            owner: { ownerType: 'supplier', supplierId: fulfillment?.supplier_id ?? null },
+            movementType: 'receipt', onHandDelta: passedSeries, reservedDelta: passedSeries,
+            referenceType: 'inbound_shipment', referenceId: shipment.id, actorId: user.id,
+            note: `دریافت ${passedSeries} سری کامل تأییدشده در QC از محموله ${shipment.shipment_number}`,
+            idempotencyKey: `series-qc:${shipment.id}:${entry.seriesTemplateId}`,
+          });
+          await client.query(
+            `INSERT INTO order_series_reservations(id, order_id, series_template_id, warehouse_id, owner_type, supplier_id, series_count, recipe_snapshot)
+             VALUES ($1,$2,$3,$4,'supplier',$5,$6,$7)`,
+            [randomUUID(), shipment.order_id, entry.seriesTemplateId, shipment.destination_warehouse_id,
+              fulfillment?.supplier_id ?? null, passedSeries, JSON.stringify(entry)]);
+        }
+      }
 
       // Check all supplier lines of the order to determine next order wholesale_fulfillment_status
       const allOrderSupplierLines = await client.query<{ qc_status: string; received_at_kolbe: Date | null }>(

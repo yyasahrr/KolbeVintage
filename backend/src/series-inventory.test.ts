@@ -5,6 +5,7 @@ import argon2 from 'argon2';
 import type { Config } from './config.js';
 import { buildApp } from './app.js';
 import { createPool } from './db.js';
+import { applyVerifiedPayment } from './payments.js';
 
 const enabled = !!process.env.TEST_DATABASE_URL;
 const config: Config = {
@@ -27,6 +28,7 @@ async function makeAdmin(app: Awaited<ReturnType<typeof buildApp>>, pool: Return
 async function makeSeriesWorld(app: Awaited<ReturnType<typeof buildApp>>, headers: Record<string, string>, suffix: string) {
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers,
     payload: { brand: 'Kolbe', name: `سری تست ${suffix}`, category: 'کت', cashPriceRial: '9000000',
+      wholesalePriceRial: '4000000', wholesaleEnabled: true,
       variants: [{ size: 'M', color: 'مشکی' }, { size: 'L', color: 'مشکی' }] } });
   assert.equal(product.statusCode, 201, product.body);
   const productId = product.json().id as string;
@@ -166,6 +168,88 @@ test('series reconciliation: untracked templates reported with derived estimate,
     assert.equal(row?.tracked, false);
     assert.equal(row?.on_hand, 0);
     assert.equal(row?.legacy_available, 1);
+    await app.close();
+  } finally { await pool.end(); }
+});
+
+test('wholesale order reserves INTACT tracked series; cancel releases; series-level oversell blocked', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { headers } = await makeAdmin(app, pool, suffix);
+    const world = await makeSeriesWorld(app, headers, suffix);
+    await app.inject({ method: 'PATCH', url: `/api/v1/warehouses/${world.warehouseId}/purpose`, headers, payload: { purpose: 'wholesale' } });
+    await app.inject({ method: 'PATCH', url: `/api/v1/products/${world.productId}/status`, headers, payload: { status: 'published' } });
+
+    // Component pieces cover 2 series (v0=4 @2/series, v1=2 @1/series) …
+    for (const [i, qty] of [[0, 4], [1, 2]] as const) {
+      await app.inject({ method: 'POST', url: '/api/v1/inventory/adjustments', headers: { ...headers, 'idempotency-key': `ord-${suffix}-${i}` },
+        payload: { variantId: world.variants[i]!.id, warehouseId: world.warehouseId, delta: qty, inventoryDomain: 'wholesale', reason: 'initial stock', reference: `ord-${suffix}-${i}` } });
+    }
+    // … but only ONE physically intact series was counted (the rest are loose pieces).
+    const count = await app.inject({ method: 'POST', url: '/api/v1/inventory/series/stocktake', headers,
+      payload: { seriesTemplateId: world.templateId, warehouseId: world.warehouseId, countedSeries: 1 } });
+    assert.equal(count.statusCode, 201, count.body);
+
+    // VIP buyer with active membership.
+    const vipId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [vipId, `series-vip-${suffix}@kolbe.test`, await argon2.hash('StrongPass123456!'), 'خریدار سری']);
+    await pool.query("INSERT INTO user_roles(user_id, role_code) VALUES ($1,'customer')", [vipId]);
+    const vipLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login',
+      payload: { identity: `series-vip-${suffix}@kolbe.test`, password: 'StrongPass123456!' } });
+    const vipHeaders = { authorization: `Bearer ${vipLogin.json().accessToken as string}` };
+    const plan = await app.inject({ method: 'POST', url: '/api/v1/plans', headers, payload: {
+      code: `sinv-${suffix}`, title: 'پلن سری', annualPriceRial: '10000000',
+      limits: { sources: 'all', maxOrdersPerMonth: 50, maxOrderValueRial: '50000000000', maxSuppliersPerOrder: 10, discountPercent: 0, prioritySupport: false },
+    } });
+    assert.equal(plan.statusCode, 201, plan.body);
+    const membership = await app.inject({ method: 'POST', url: '/api/v1/memberships',
+      headers: { ...vipHeaders, 'idempotency-key': `sinv-mem-${suffix}` }, payload: { planId: plan.json().id } });
+    assert.equal(membership.statusCode, 201, membership.body);
+    await applyVerifiedPayment(pool, {
+      provider: 'verified-test-adapter', providerEventId: `sinv-evt-${suffix}`, providerReference: `sinv-ref-${suffix}`,
+      intentId: membership.json().paymentIntentId, amountRial: '10000000', paidAt: new Date(),
+    });
+
+    // 2 series: components WOULD allow it, but explicit intact-series stock says only 1 → 409 (§36/§46).
+    const tooMany = await app.inject({ method: 'POST', url: '/api/v1/orders',
+      headers: { ...vipHeaders, 'idempotency-key': `sinv-fail-${suffix}` },
+      payload: { orderType: 'wholesale', series: [{ seriesTemplateId: world.templateId, count: 2 }] } });
+    assert.equal(tooMany.statusCode, 409, tooMany.body);
+
+    // 1 series succeeds: explicit series reserved AND component pieces reserved.
+    const order = await app.inject({ method: 'POST', url: '/api/v1/orders',
+      headers: { ...vipHeaders, 'idempotency-key': `sinv-ok-${suffix}` },
+      payload: { orderType: 'wholesale', series: [{ seriesTemplateId: world.templateId, count: 1 }] } });
+    assert.equal(order.statusCode, 201, order.body);
+    const orderId = order.json().id as string;
+
+    const afterReserve = await app.inject({ method: 'GET', url: `/api/v1/inventory/series?warehouseId=${world.warehouseId}`, headers });
+    const reservedRow = (afterReserve.json().items as Array<{ series_template_id: string; on_hand: number; reserved: number; sellable: number }>)
+      .find((r) => r.series_template_id === world.templateId);
+    assert.equal(reservedRow?.on_hand, 1);
+    assert.equal(reservedRow?.reserved, 1);
+    assert.equal(reservedRow?.sellable, 0);
+    // series snapshot persisted on the order itself (§37)
+    const snap = await pool.query('SELECT series_snapshot FROM orders WHERE id = $1', [orderId]);
+    assert.ok(snap.rows[0]?.series_snapshot, 'orders.series_snapshot written');
+
+    // cancel → series reservation released, movement ledger shows reserve + release.
+    const cancel = await app.inject({ method: 'POST', url: `/api/v1/orders/${orderId}/transitions`, headers,
+      payload: { status: 'cancelled', reason: 'انصراف مشتری در تست' } });
+    assert.equal(cancel.statusCode, 200, cancel.body);
+    const afterCancel = await app.inject({ method: 'GET', url: `/api/v1/inventory/series?warehouseId=${world.warehouseId}`, headers });
+    const releasedRow = (afterCancel.json().items as Array<{ series_template_id: string; reserved: number; sellable: number }>)
+      .find((r) => (r as { series_template_id: string }).series_template_id === world.templateId);
+    assert.equal(releasedRow?.reserved, 0);
+    assert.equal(releasedRow?.sellable, 1);
+    const moves = await app.inject({ method: 'GET', url: `/api/v1/inventory/series/movements?seriesTemplateId=${world.templateId}&referenceType=order`, headers });
+    const types = (moves.json().items as Array<{ movement_type: string }>).map((m) => m.movement_type);
+    assert.ok(types.includes('reserve') && types.includes('release'), `ledger has reserve+release: ${types.join(',')}`);
+    const reservationRow = await pool.query("SELECT status FROM order_series_reservations WHERE order_id = $1", [orderId]);
+    assert.equal(reservationRow.rows[0]?.status, 'released');
     await app.close();
   } finally { await pool.end(); }
 });
