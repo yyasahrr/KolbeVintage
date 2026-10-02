@@ -88,7 +88,8 @@ export async function seriesBalanceForUpdate(
 export async function applySeriesMovement(client: DbClient, input: {
   templateId: string; warehouseId: string; owner: SeriesOwner;
   movementType: 'stocktake' | 'receipt' | 'reserve' | 'release' | 'consume' | 'dispatch_break'
-    | 'incoming' | 'incoming_receive' | 'incoming_cancel' | 'qc_reject' | 'adjust';
+    | 'incoming' | 'incoming_receive' | 'incoming_cancel' | 'qc_reject' | 'adjust'
+    | 'return_out' | 'conversion_out' | 'conversion_in';
   onHandDelta?: number; reservedDelta?: number; incomingDelta?: number; damagedDelta?: number;
   recipeSnapshot?: RecipeSnapshot | null;
   referenceType?: string; referenceId?: string; note?: string; actorId?: string | null;

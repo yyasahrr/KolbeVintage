@@ -8,6 +8,7 @@ import { asRial, rial } from './money.js';
 import { audit, outbox } from './operations.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { validateSpecifications, type SpecField } from './profile.js';
+import { validateCategoryRequirements } from './product-lifecycle.js';
 import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
 import { resolveVariantPrice } from './promotions.js';
 
@@ -463,6 +464,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     }
 
     if (body.productTypeId) await assertTypeSizes(pool, body.productTypeId, body.variants.map((v) => v.size ?? undefined));
+    // §8: Category is the source of truth for the NEW flow — allowed sizes + required specs
+    // come from the category profile (product_type stays only as deprecated legacy data).
+    await validateCategoryRequirements(pool, body.category, body.specifications, body.variants.map((v) => v.size));
     if (body.genderCode) await assertTaxonomy(pool, 'gender', body.genderCode);
     for (const season of new Set(body.seasons)) await assertTaxonomy(pool, 'season', season);
 
@@ -494,8 +498,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial,metadata,
            product_type_code,specifications,gender,seasons,vibes,installment_enabled,discount_percent,
            product_type_id,owner_type,retail_enabled,wholesale_enabled,installment_policy,wholesale_moq,gender_code,
-           sale_terms,allow_installments,disable_installments_on_discount)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+           sale_terms,allow_installments,disable_installments_on_discount,inventory_setup)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
         [
           productId,
           isSupplierOnly ? user.id : null,
@@ -525,6 +529,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
           JSON.stringify(saleTerms),
           allowInstallments,
           disableInstallmentsOnDiscount,
+          // §16: admin-defined KOLBE products start in «نیازمند راه‌اندازی» (pending);
+          // supplier catalog submissions have no Kolbe stock profile to configure.
+          isSupplierOnly ? 'configured' : 'pending',
         ],
       );
       for (const season of seasons) {
