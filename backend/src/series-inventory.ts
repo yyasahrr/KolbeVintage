@@ -418,4 +418,273 @@ export function registerSeriesInventoryRoutes(app: FastifyInstance, pool: DbPool
       return { id, purpose: body.purpose };
     });
   });
+
+  // ================================================================ §9-§19: retail supply
+  // «تأمین خرده از عمده» = breaking kolbe-owned intact series from the central wholesale
+  // warehouse into pieces at a retail warehouse. ALL pieces of a broken series go to retail —
+  // loose wholesale stock does not exist as a state (§12).
+
+  /** Per-component piece movement helper for the supply document. */
+  async function moveSupplyPieces(client: DbClient, input: {
+    supply: { id: string; reference: string; source_warehouse_id: string; destination_warehouse_id: string; series_count: number; recipe_snapshot: RecipeSnapshot };
+    phase: 'dispatch' | 'receive';
+    actorId: string;
+  }) {
+    const { supply, phase } = input;
+    for (const item of supply.recipe_snapshot.items) {
+      const pieces = item.quantityPerSeries * supply.series_count;
+      if (phase === 'dispatch') {
+        // Source wholesale: pieces leave with the broken series.
+        const out = await client.query(
+          `UPDATE stock_balances SET on_hand = on_hand - $3, version = version + 1, updated_at = now()
+           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'wholesale' AND on_hand - reserved - damaged >= $3
+           RETURNING variant_id`,
+          [item.variantId, supply.source_warehouse_id, pieces]);
+        if (!out.rowCount) throw conflict(`موجودی عددی ${item.sku} در انبار عمده برای باز کردن سری کافی نیست.`);
+        await client.query(
+          `INSERT INTO stock_movements(id, variant_id, warehouse_id, inventory_domain, on_hand_delta, reason, reference_type, reference_id, actor_id, idempotency_key)
+           VALUES ($1,$2,$3,'wholesale',$4,$5,'retail_supply',$6,$7,$8)`,
+          [randomUUID(), item.variantId, supply.source_warehouse_id, -pieces,
+            `باز کردن سری و ارسال به خرده (${supply.reference})`, supply.id, input.actorId, `sup-dispatch-out:${supply.id}:${item.variantId}`]);
+        // Destination retail: pieces are IN TRANSIT (incoming), on_hand must NOT rise yet (§14).
+        await client.query(
+          `INSERT INTO stock_balances(variant_id, warehouse_id, inventory_domain, incoming)
+           VALUES ($1,$2,'retail',$3)
+           ON CONFLICT (variant_id, warehouse_id, inventory_domain)
+           DO UPDATE SET incoming = stock_balances.incoming + $3, version = stock_balances.version + 1, updated_at = now()`,
+          [item.variantId, supply.destination_warehouse_id, pieces]);
+        await client.query(
+          `INSERT INTO stock_movements(id, variant_id, warehouse_id, inventory_domain, incoming_delta, reason, reference_type, reference_id, actor_id, idempotency_key)
+           VALUES ($1,$2,$3,'retail',$4,$5,'retail_supply',$6,$7,$8)`,
+          [randomUUID(), item.variantId, supply.destination_warehouse_id, pieces,
+            `در راه به انبار خرده (${supply.reference})`, supply.id, input.actorId, `sup-dispatch-in:${supply.id}:${item.variantId}`]);
+      } else {
+        const got = await client.query(
+          `UPDATE stock_balances SET incoming = incoming - $3, on_hand = on_hand + $3, version = version + 1, updated_at = now()
+           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'retail' AND incoming >= $3
+           RETURNING variant_id`,
+          [item.variantId, supply.destination_warehouse_id, pieces]);
+        if (!got.rowCount) throw conflict(`مقدار در راه ${item.sku} با سند تأمین نمی‌خواند.`);
+        await client.query(
+          `INSERT INTO stock_movements(id, variant_id, warehouse_id, inventory_domain, on_hand_delta, incoming_delta, reason, reference_type, reference_id, actor_id, idempotency_key)
+           VALUES ($1,$2,$3,'retail',$4,$5,$6,'retail_supply',$7,$8,$9)`,
+          [randomUUID(), item.variantId, supply.destination_warehouse_id, pieces, -pieces,
+            `دریافت در انبار خرده (${supply.reference})`, supply.id, input.actorId, `sup-receive:${supply.id}:${item.variantId}`]);
+      }
+    }
+  }
+
+  async function loadSupplyForUpdate(client: DbClient, id: string) {
+    const supply = await one<{
+      id: string; reference: string; series_template_id: string; product_id: string; product_name: string;
+      color_label: string | null; source_warehouse_id: string; destination_warehouse_id: string;
+      series_count: number; pieces_total: number; recipe_snapshot: RecipeSnapshot; status: string;
+    }>(client, 'SELECT * FROM retail_supply_orders WHERE id = $1 FOR UPDATE', [id]);
+    if (!supply) throw notFound();
+    return supply;
+  }
+
+  async function supplyEvent(client: DbClient, supplyId: string, eventType: string, note: string, actorId: string) {
+    await client.query(
+      'INSERT INTO retail_supply_events(id, supply_id, event_type, note, actor_id) VALUES ($1,$2,$3,$4,$5)',
+      [randomUUID(), supplyId, eventType, note, actorId]);
+  }
+
+  // create = reserve (§14: Draft→Reserved collapsed server-side — the document is born reserved)
+  app.post('/api/v1/retail-supplies', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:adjust');
+    const body = z.object({
+      seriesTemplateId: z.uuid(),
+      sourceWarehouseId: z.uuid(),
+      destinationWarehouseId: z.uuid(),
+      seriesCount: z.number().int().min(1).max(500),
+      note: z.string().trim().max(500).optional(),
+      idempotencyKey: z.string().trim().min(8).max(120).optional(),
+    }).parse(request.body);
+
+    const result = await transaction(pool, async (client) => {
+      if (body.idempotencyKey) {
+        const dupe = await one<{ id: string; reference: string }>(
+          client, 'SELECT id, reference FROM retail_supply_orders WHERE idempotency_key = $1', [body.idempotencyKey]);
+        if (dupe) return { ...dupe, duplicate: true as const };
+      }
+      await assertWarehousePurpose(client, body.sourceWarehouseId, 'wholesale');
+      await assertWarehousePurpose(client, body.destinationWarehouseId, 'retail');
+      if (body.sourceWarehouseId === body.destinationWarehouseId) throw badRequest('انبار مبدأ و مقصد نمی‌توانند یکی باشند.');
+      const context = await resolveTemplateOwnerContext(client, body.seriesTemplateId);
+      if (!context.active) throw badRequest('قالب سری غیرفعال است.');
+
+      // §8 HARD RULE: only kolbe-owned series may supply retail. Supplier-owned rows are invisible
+      // to this flow and any attempt is rejected here, server-side — there is no UI bypass.
+      const supplierOnly = await one<{ c: string }>(client,
+        `SELECT count(*)::text AS c FROM series_stock_balances
+         WHERE series_template_id = $1 AND warehouse_id = $2 AND owner_type = 'supplier' AND on_hand - reserved - damaged >= $3`,
+        [body.seriesTemplateId, body.sourceWarehouseId, body.seriesCount]);
+      const balance = await one<{ on_hand: number; reserved: number; damaged: number }>(client,
+        `SELECT on_hand, reserved, damaged FROM series_stock_balances
+         WHERE series_template_id = $1 AND warehouse_id = $2 AND owner_type = 'kolbe'`,
+        [body.seriesTemplateId, body.sourceWarehouseId]);
+      const sellable = balance ? balance.on_hand - balance.reserved - balance.damaged : 0;
+      if (sellable < body.seriesCount) {
+        if (Number(supplierOnly?.c ?? '0') > 0) {
+          throw forbidden('این سری‌ها متعلق به تأمین‌کننده‌اند (امانی) و فقط برای فروش عمده VIP مجازند؛ تأمین خرده فقط از سری‌های مالکیت کلبه ممکن است.');
+        }
+        throw conflict(balance
+          ? `سری کامل کلبه‌ایِ قابل فروش کافی نیست (قابل فروش: ${Math.max(0, sellable)} سری).`
+          : 'برای این قالب در انبار مبدأ موجودی سری شمارش‌شده ثبت نشده است؛ ابتدا شمارش سری (stocktake) انجام دهید.');
+      }
+
+      const snapshot = await buildRecipeSnapshot(client, body.seriesTemplateId);
+      const piecesTotal = snapshot.piecesPerSeries * body.seriesCount;
+      const id = randomUUID();
+      const seq = await one<{ num: string }>(client, "SELECT nextval('retail_supply_seq')::text AS num");
+      const reference = `SUP-${seq!.num}`;
+      await applySeriesMovement(client, {
+        templateId: body.seriesTemplateId, warehouseId: body.sourceWarehouseId,
+        owner: { ownerType: 'kolbe', supplierId: null },
+        movementType: 'reserve', reservedDelta: body.seriesCount, recipeSnapshot: snapshot,
+        referenceType: 'retail_supply', referenceId: id, actorId: user.id,
+        note: `رزرو برای تأمین خرده ${reference}`, idempotencyKey: `sup-reserve:${id}`,
+      });
+      await client.query(
+        `INSERT INTO retail_supply_orders(id, reference, series_template_id, product_id, product_name, color_label,
+           source_warehouse_id, destination_warehouse_id, series_count, pieces_total, recipe_snapshot, status, idempotency_key, note, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'reserved',$12,$13,$14)`,
+        [id, reference, body.seriesTemplateId, context.product_id, context.product_name, snapshot.colorLabel,
+          body.sourceWarehouseId, body.destinationWarehouseId, body.seriesCount, piecesTotal,
+          JSON.stringify(snapshot), body.idempotencyKey ?? null, body.note ?? '', user.id]);
+      await supplyEvent(client, id, 'created', `سند تأمین ${reference} ثبت و ${body.seriesCount} سری رزرو شد.`, user.id);
+      await audit(client, user.id, 'retail_supply.created', 'retail_supply', id, undefined,
+        { reference, seriesCount: body.seriesCount, piecesTotal }, request.ip);
+      return { id, reference, status: 'reserved', seriesCount: body.seriesCount, piecesTotal };
+    });
+    return reply.code('duplicate' in result ? 200 : 201).send(result);
+  });
+
+  // dispatch = the irreversible break (§12/§14): series leave wholesale, pieces go in transit to retail.
+  app.post('/api/v1/retail-supplies/:id/dispatch', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:adjust');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const supply = await loadSupplyForUpdate(client, id);
+      if (supply.status !== 'reserved') throw conflict(`سند در وضعیت «${supply.status}» قابل ارسال نیست.`);
+      await applySeriesMovement(client, {
+        templateId: supply.series_template_id, warehouseId: supply.source_warehouse_id,
+        owner: { ownerType: 'kolbe', supplierId: null },
+        movementType: 'dispatch_break', onHandDelta: -supply.series_count, reservedDelta: -supply.series_count,
+        recipeSnapshot: supply.recipe_snapshot,
+        referenceType: 'retail_supply', referenceId: supply.id, actorId: user.id,
+        note: `باز کردن سری و ارسال (${supply.reference})`, idempotencyKey: `sup-dispatch:${supply.id}`,
+      });
+      await moveSupplyPieces(client, { supply, phase: 'dispatch', actorId: user.id });
+      await client.query(
+        "UPDATE retail_supply_orders SET status = 'dispatched', dispatched_at = now() WHERE id = $1", [supply.id]);
+      await supplyEvent(client, supply.id, 'dispatched',
+        `${supply.series_count} سری باز شد و ${supply.pieces_total} عدد به سمت انبار خرده در راه است.`, user.id);
+      await audit(client, user.id, 'retail_supply.dispatched', 'retail_supply', supply.id, undefined,
+        { reference: supply.reference }, request.ip);
+      return { id: supply.id, reference: supply.reference, status: 'dispatched' };
+    });
+  });
+
+  // receive (§14): incoming → on_hand at the retail destination.
+  app.post('/api/v1/retail-supplies/:id/receive', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:adjust');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const supply = await loadSupplyForUpdate(client, id);
+      if (supply.status !== 'dispatched') throw conflict(`سند در وضعیت «${supply.status}» قابل دریافت نیست.`);
+      await moveSupplyPieces(client, { supply, phase: 'receive', actorId: user.id });
+      await client.query(
+        "UPDATE retail_supply_orders SET status = 'received', received_at = now() WHERE id = $1", [supply.id]);
+      await supplyEvent(client, supply.id, 'received',
+        `${supply.pieces_total} عدد در انبار خرده دریافت و قابل فروش شد.`, user.id);
+      await audit(client, user.id, 'retail_supply.received', 'retail_supply', supply.id, undefined,
+        { reference: supply.reference }, request.ip);
+      return { id: supply.id, reference: supply.reference, status: 'received' };
+    });
+  });
+
+  // cancel (§19): only BEFORE the break — releases the reservation. After dispatch there is no
+  // automatic reverse (16 pieces do not silently become 2 intact series again); Repack is out of scope.
+  app.post('/api/v1/retail-supplies/:id/cancel', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:adjust');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({ reason: z.string().trim().max(500).optional() }).parse(request.body ?? {});
+    return transaction(pool, async (client) => {
+      const supply = await loadSupplyForUpdate(client, id);
+      if (supply.status !== 'reserved') {
+        throw conflict('بعد از باز شدن سری، لغو خودکار ممکن نیست؛ اصلاح فقط با سند معکوس/شمارش جدید انجام می‌شود.');
+      }
+      await applySeriesMovement(client, {
+        templateId: supply.series_template_id, warehouseId: supply.source_warehouse_id,
+        owner: { ownerType: 'kolbe', supplierId: null },
+        movementType: 'release', reservedDelta: -supply.series_count,
+        referenceType: 'retail_supply', referenceId: supply.id, actorId: user.id,
+        note: `لغو سند تأمین ${supply.reference}`, idempotencyKey: `sup-cancel:${supply.id}`,
+      });
+      await client.query(
+        "UPDATE retail_supply_orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [supply.id]);
+      await supplyEvent(client, supply.id, 'cancelled', body.reason ?? 'سند تأمین قبل از باز شدن سری لغو شد.', user.id);
+      await audit(client, user.id, 'retail_supply.cancelled', 'retail_supply', supply.id, undefined,
+        { reference: supply.reference, reason: body.reason ?? null }, request.ip);
+      return { id: supply.id, reference: supply.reference, status: 'cancelled' };
+    });
+  });
+
+  // unified list for the operations center (§16)
+  app.get('/api/v1/retail-supplies', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:read');
+    const query = z.object({
+      status: z.enum(['reserved', 'dispatched', 'received', 'cancelled']).optional(),
+      search: z.string().trim().max(120).optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+      offset: z.coerce.number().int().min(0).default(0),
+    }).parse(request.query);
+    const rows = await pool.query(
+      `SELECT s.id, s.reference, s.series_template_id, t.name AS template_name, s.product_id, s.product_name,
+              s.color_label, s.source_warehouse_id, ws.name AS source_warehouse_name,
+              s.destination_warehouse_id, wd.name AS destination_warehouse_name,
+              s.series_count, s.pieces_total, s.status, s.note, s.created_by, u.display_name AS created_by_name,
+              s.created_at, s.dispatched_at, s.received_at, s.cancelled_at,
+              count(*) OVER()::text AS total
+       FROM retail_supply_orders s
+       JOIN series_templates t ON t.id = s.series_template_id
+       JOIN warehouses ws ON ws.id = s.source_warehouse_id
+       JOIN warehouses wd ON wd.id = s.destination_warehouse_id
+       LEFT JOIN users u ON u.id = s.created_by
+       WHERE ($1::text IS NULL OR s.status = $1)
+         AND ($2::text IS NULL OR s.reference ILIKE '%' || $2 || '%' OR s.product_name ILIKE '%' || $2 || '%')
+       ORDER BY s.created_at DESC LIMIT $3 OFFSET $4`,
+      [query.status ?? null, query.search ?? null, query.limit, query.offset]);
+    const total = Number((rows.rows[0] as { total?: string } | undefined)?.total ?? '0');
+    return { items: rows.rows.map(({ total: _t, ...row }: Record<string, unknown>) => row), total, limit: query.limit, offset: query.offset };
+  });
+
+  // document detail + real-event timeline (§17)
+  app.get('/api/v1/retail-supplies/:id', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'inventory:read');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const supply = await one<Record<string, unknown>>(pool,
+      `SELECT s.*, t.name AS template_name, ws.name AS source_warehouse_name, wd.name AS destination_warehouse_name,
+              u.display_name AS created_by_name
+       FROM retail_supply_orders s
+       JOIN series_templates t ON t.id = s.series_template_id
+       JOIN warehouses ws ON ws.id = s.source_warehouse_id
+       JOIN warehouses wd ON wd.id = s.destination_warehouse_id
+       LEFT JOIN users u ON u.id = s.created_by
+       WHERE s.id = $1`, [id]);
+    if (!supply) throw notFound();
+    const events = await pool.query(
+      `SELECT e.id, e.event_type, e.note, e.actor_id, u.display_name AS actor_name, e.created_at
+       FROM retail_supply_events e LEFT JOIN users u ON u.id = e.actor_id
+       WHERE e.supply_id = $1 ORDER BY e.created_at`, [id]);
+    return { ...supply, events: events.rows };
+  });
 }

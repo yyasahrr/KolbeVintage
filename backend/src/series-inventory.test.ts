@@ -253,3 +253,110 @@ test('wholesale order reserves INTACT tracked series; cancel releases; series-le
     await app.close();
   } finally { await pool.end(); }
 });
+
+test('retail supply: reserve → dispatch(break, ALL pieces to retail incoming) → receive; cancel rules; owner/purpose guards', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { headers } = await makeAdmin(app, pool, suffix);
+    const world = await makeSeriesWorld(app, headers, suffix);
+    await app.inject({ method: 'PATCH', url: `/api/v1/warehouses/${world.warehouseId}/purpose`, headers, payload: { purpose: 'wholesale' } });
+    const whR = await app.inject({ method: 'POST', url: '/api/v1/warehouses', headers, payload: { code: `RW-${suffix.toUpperCase()}`, name: 'انبار خرده' } });
+    const retailWh = whR.json().id as string;
+    await app.inject({ method: 'PATCH', url: `/api/v1/warehouses/${retailWh}/purpose`, headers, payload: { purpose: 'retail' } });
+
+    for (const [i, qty] of [[0, 4], [1, 2]] as const) {
+      await app.inject({ method: 'POST', url: '/api/v1/inventory/adjustments', headers: { ...headers, 'idempotency-key': `sup-${suffix}-${i}` },
+        payload: { variantId: world.variants[i]!.id, warehouseId: world.warehouseId, delta: qty, inventoryDomain: 'wholesale', reason: 'initial stock', reference: `sup-${suffix}-${i}` } });
+    }
+    await app.inject({ method: 'POST', url: '/api/v1/inventory/series/stocktake', headers,
+      payload: { seriesTemplateId: world.templateId, warehouseId: world.warehouseId, countedSeries: 2 } });
+
+    // purpose guard: destination must be a retail warehouse
+    const wrongDest = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers,
+      payload: { seriesTemplateId: world.templateId, sourceWarehouseId: world.warehouseId, destinationWarehouseId: world.warehouseId, seriesCount: 1 } });
+    assert.equal(wrongDest.statusCode, 400, wrongDest.body);
+
+    // create (reserve) 1 series — idempotent
+    const key = `sup-create-${suffix}`;
+    const create = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers,
+      payload: { seriesTemplateId: world.templateId, sourceWarehouseId: world.warehouseId, destinationWarehouseId: retailWh, seriesCount: 1, idempotencyKey: key } });
+    assert.equal(create.statusCode, 201, create.body);
+    const supplyId = create.json().id as string;
+    assert.match(create.json().reference as string, /^SUP-\d+$/);
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers,
+      payload: { seriesTemplateId: world.templateId, sourceWarehouseId: world.warehouseId, destinationWarehouseId: retailWh, seriesCount: 1, idempotencyKey: key } });
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(replay.json().duplicate, true);
+
+    // reserved at series level; retail on_hand must NOT move at creation (§14)
+    const series1 = await app.inject({ method: 'GET', url: `/api/v1/inventory/series?warehouseId=${world.warehouseId}`, headers });
+    const s1 = (series1.json().items as Array<{ series_template_id: string; reserved: number; sellable: number }>).find((r) => r.series_template_id === world.templateId);
+    assert.equal(s1?.reserved, 1);
+    assert.equal(s1?.sellable, 1);
+    const retailBefore = await pool.query("SELECT on_hand, incoming FROM stock_balances WHERE warehouse_id = $1 AND inventory_domain = 'retail'", [retailWh]);
+    assert.equal(retailBefore.rows.length, 0, 'no retail rows before dispatch');
+
+    // oversell: a second supply of 2 series must fail (sellable=1)
+    const over = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers,
+      payload: { seriesTemplateId: world.templateId, sourceWarehouseId: world.warehouseId, destinationWarehouseId: retailWh, seriesCount: 2 } });
+    assert.equal(over.statusCode, 409, over.body);
+
+    // dispatch = break: series −1, wholesale pieces −recipe, retail incoming +recipe (on_hand still 0)
+    const dispatch = await app.inject({ method: 'POST', url: `/api/v1/retail-supplies/${supplyId}/dispatch`, headers });
+    assert.equal(dispatch.statusCode, 200, dispatch.body);
+    const series2 = await app.inject({ method: 'GET', url: `/api/v1/inventory/series?warehouseId=${world.warehouseId}`, headers });
+    const s2 = (series2.json().items as Array<{ series_template_id: string; on_hand: number; reserved: number }>).find((r) => r.series_template_id === world.templateId);
+    assert.equal(s2?.on_hand, 1);
+    assert.equal(s2?.reserved, 0);
+    for (const [i, expWholesale, expIncoming] of [[0, 2, 2], [1, 1, 1]] as const) {
+      const w = await pool.query("SELECT on_hand FROM stock_balances WHERE variant_id=$1 AND warehouse_id=$2 AND inventory_domain='wholesale'", [world.variants[i]!.id, world.warehouseId]);
+      assert.equal(w.rows[0]?.on_hand, expWholesale, `wholesale pieces after break v${i}`);
+      const r = await pool.query("SELECT on_hand, incoming FROM stock_balances WHERE variant_id=$1 AND warehouse_id=$2 AND inventory_domain='retail'", [world.variants[i]!.id, retailWh]);
+      assert.equal(r.rows[0]?.incoming, expIncoming, `retail incoming v${i}`);
+      assert.equal(r.rows[0]?.on_hand, 0, `retail on_hand stays 0 until receive v${i}`);
+    }
+
+    // cancel after break is forbidden (§19)
+    const lateCancel = await app.inject({ method: 'POST', url: `/api/v1/retail-supplies/${supplyId}/cancel`, headers, payload: {} });
+    assert.equal(lateCancel.statusCode, 409, lateCancel.body);
+
+    // receive: incoming → on_hand
+    const receive = await app.inject({ method: 'POST', url: `/api/v1/retail-supplies/${supplyId}/receive`, headers });
+    assert.equal(receive.statusCode, 200, receive.body);
+    for (const [i, exp] of [[0, 2], [1, 1]] as const) {
+      const r = await pool.query("SELECT on_hand, incoming FROM stock_balances WHERE variant_id=$1 AND warehouse_id=$2 AND inventory_domain='retail'", [world.variants[i]!.id, retailWh]);
+      assert.equal(r.rows[0]?.on_hand, exp);
+      assert.equal(r.rows[0]?.incoming, 0);
+    }
+
+    // cancel-before-break releases the reservation (§19)
+    const second = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers,
+      payload: { seriesTemplateId: world.templateId, sourceWarehouseId: world.warehouseId, destinationWarehouseId: retailWh, seriesCount: 1 } });
+    assert.equal(second.statusCode, 201, second.body);
+    const cancel = await app.inject({ method: 'POST', url: `/api/v1/retail-supplies/${second.json().id}/cancel`, headers, payload: { reason: 'تست لغو' } });
+    assert.equal(cancel.statusCode, 200, cancel.body);
+    const series3 = await app.inject({ method: 'GET', url: `/api/v1/inventory/series?warehouseId=${world.warehouseId}`, headers });
+    const s3 = (series3.json().items as Array<{ series_template_id: string; on_hand: number; reserved: number }>).find((r) => r.series_template_id === world.templateId);
+    assert.equal(s3?.on_hand, 1);
+    assert.equal(s3?.reserved, 0);
+
+    // §8: supplier-owned series can NEVER feed retail — 403 even when stock exists
+    const supplierId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [supplierId, `sup-owner-${suffix}@example.test`, await argon2.hash('SupplierPass123456!'), 'تأمین‌کننده']);
+    await pool.query('UPDATE products SET supplier_id = $2 WHERE id = $1', [world.productId, supplierId]);
+    // move the remaining kolbe-owned intact series to the supplier (ownership correction, test setup)
+    await pool.query("UPDATE series_stock_balances SET owner_type='supplier', supplier_id=$2 WHERE series_template_id=$1 AND owner_type='kolbe'", [world.templateId, supplierId]);
+    const forbiddenSupply = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers,
+      payload: { seriesTemplateId: world.templateId, sourceWarehouseId: world.warehouseId, destinationWarehouseId: retailWh, seriesCount: 1 } });
+    assert.equal(forbiddenSupply.statusCode, 403, forbiddenSupply.body);
+
+    // timeline (§17): real events recorded in order
+    const detail = await app.inject({ method: 'GET', url: `/api/v1/retail-supplies/${supplyId}`, headers });
+    const events = (detail.json().events as Array<{ event_type: string }>).map((e) => e.event_type);
+    assert.deepEqual(events, ['created', 'dispatched', 'received']);
+    await app.close();
+  } finally { await pool.end(); }
+});
