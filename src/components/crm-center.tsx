@@ -46,7 +46,9 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
   const [noteDraft, setNoteDraft] = useState<{ body: string; visibility: "internal" | "team" }>({ body: "", visibility: "internal" });
   const [dryRun, setDryRun] = useState<{ matchCount: number; sample: Record<string, unknown>[] } | null>(null);
   const [campaign, setCampaign] = useState({ title: "", message: "", segmentId: "", labelCode: "", send: false });
-  const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
+  const [cap, setCap] = useState({ maxPerWindow: 2, windowDays: 7 });
+  type CampaignPreview = Awaited<ReturnType<typeof crmIntelApi.createCampaign>>;
+  const [preview, setPreview] = useState<CampaignPreview | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -69,6 +71,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
   }, [contactSearch, flash]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void crmIntelApi.marketingSettings().then((r) => setCap(r.frequencyCap)).catch(() => undefined); }, []);
   useEffect(() => { void loadContacts(); }, [loadContacts]);
 
   const openContact = async (id: string) => {
@@ -365,6 +368,19 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
                   })}>ارسال با رعایت رضایت</Btn>
                 <span className="text-[11.5px] text-[var(--kv-muted)]">کاربران بدون رضایت بازاریابی یا در فهرست عدم تماس حذف می‌شوند.</span>
               </div>
+              <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
+                <p className="mb-2 text-[12px] font-bold">سقف تکرار پیام تبلیغاتی (پیامک عملیاتی هرگز محدود نمی‌شود)</p>
+                <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                  <span>حداکثر</span>
+                  <Input value={String(cap.maxPerWindow)} onChange={(v) => setCap({ ...cap, maxPerWindow: Number(v.replace(/\D/g, "")) || 0 })} />
+                  <span>کمپین در</span>
+                  <Input value={String(cap.windowDays)} onChange={(v) => setCap({ ...cap, windowDays: Number(v.replace(/\D/g, "")) || 1 })} />
+                  <span>روز</span>
+                  <Btn variant="soft" size="sm" onClick={() => void run("ذخیره سقف تکرار", async () => {
+                    const res = await crmIntelApi.saveMarketingSettings(cap); setCap(res.frequencyCap);
+                  })}>ذخیره</Btn>
+                </div>
+              </div>
             </div>
           </Card>
           <Card className="p-5">
@@ -372,6 +388,24 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
             {!preview ? <Empty title="پیش‌نمایشی گرفته نشده" desc="با «پیش‌نمایش تطابق» تعداد و نمونه کاربران را ببینید." /> : (
               <>
                 <p className="text-[13px] font-bold">{text(preview.matchMessage)}</p>
+                {preview.breakdown && (
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-[11.5px] sm:grid-cols-3">
+                    {([
+                      ["مخاطبان Match", preview.breakdown.matched],
+                      ["قابل ارسال", preview.breakdown.eligible],
+                      ["بدون رضایت (opt-out)", preview.breakdown.optedOut],
+                      ["عدم تماس (DNC)", preview.breakdown.doNotContact],
+                      ["شماره نامعتبر", preview.breakdown.invalidPhone],
+                      ["حساب معلق", preview.breakdown.suspended],
+                      [`سقف تکرار (${fmtNum(preview.breakdown.frequencyCap.maxPerWindow)} در ${fmtNum(preview.breakdown.frequencyCap.windowDays)} روز)`, preview.breakdown.capped],
+                    ] as [string, number][]).map(([label, value]) => (
+                      <div key={label} className="rounded-[10px] bg-[var(--kv-surface-2)]/70 px-2.5 py-2">
+                        <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
+                        <p className="font-extrabold tabular-nums">{fmtNum(Number(value ?? 0))}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="mt-2 space-y-1.5 text-[12px]">
                   {(preview.sample as Record<string, unknown>[]).map((row) => (
                     <div key={String(row.userId)} className="flex items-center justify-between border-b border-dashed border-[var(--kv-line)] pb-1.5">

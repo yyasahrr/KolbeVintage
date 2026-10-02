@@ -241,6 +241,51 @@ export async function consentedRecipients(client: DbClient, userIds: string[]) {
   return rows.rows;
 }
 
+/* ---------- Master §26-§29: marketing suppression breakdown + frequency cap ---------- */
+export type MarketingCap = { maxPerWindow: number; windowDays: number };
+export const DEFAULT_MARKETING_CAP: MarketingCap = { maxPerWindow: 2, windowDays: 7 };
+
+export async function loadMarketingCap(db: DbPool | DbClient): Promise<MarketingCap> {
+  const row = await one<{ value: MarketingCap }>(db, `SELECT value FROM site_settings WHERE key = 'crm_marketing_frequency_cap'`, []);
+  const value = row?.value as Partial<MarketingCap> | undefined;
+  return {
+    maxPerWindow: Number.isInteger(value?.maxPerWindow) ? Number(value!.maxPerWindow) : DEFAULT_MARKETING_CAP.maxPerWindow,
+    windowDays: Number.isInteger(value?.windowDays) ? Number(value!.windowDays) : DEFAULT_MARKETING_CAP.windowDays,
+  };
+}
+
+/** Buckets every matched user into eligible / suppressed-with-reason (explainable preview).
+ *  Suppression: opt-out, do-not-contact, invalid phone, suspended account, frequency cap.
+ *  The cap counts only CAMPAIGN marketing SMS (crm.campaign_sms) — operational SMS is never
+ *  affected, and automations keep their own built-in daily caps. */
+export async function classifyAudience(client: DbClient, userIds: string[], cap: MarketingCap) {
+  const empty = { eligible: [] as { id: string; phone: string; display_name: string }[],
+    optedOut: 0, doNotContact: 0, invalidPhone: 0, suspended: 0, capped: 0 };
+  if (!userIds.length) return empty;
+  const rows = await client.query<{ id: string; phone: string | null; display_name: string; status: string;
+    marketing_sms: boolean; dnc: boolean; recent_marketing: number }>(
+    `SELECT u.id, u.phone, u.display_name, u.status,
+            COALESCE(c.marketing_sms, false) AS marketing_sms,
+            COALESCE(c.do_not_contact, false) AS dnc,
+            (SELECT count(*)::int FROM sms_deliveries d
+              JOIN outbox_events e ON e.id = d.event_id AND e.event_type = 'crm.campaign_sms' AND e.aggregate_type = 'sms_campaign'
+              WHERE d.user_id = u.id AND d.category = 'marketing'
+                AND d.status IN ('queued','sending','sent')
+                AND d.created_at >= now() - ($2 || ' days')::interval) AS recent_marketing
+     FROM users u LEFT JOIN customer_consents c ON c.user_id = u.id
+     WHERE u.id = ANY($1::uuid[])`, [userIds, String(cap.windowDays)]);
+  const out = { ...empty, eligible: [] as { id: string; phone: string; display_name: string }[] };
+  for (const row of rows.rows) {
+    if (row.status !== 'active') { out.suspended += 1; continue; }
+    if (!row.phone || !/^09\d{9}$/.test(row.phone)) { out.invalidPhone += 1; continue; }
+    if (row.dnc) { out.doNotContact += 1; continue; }
+    if (!row.marketing_sms) { out.optedOut += 1; continue; }
+    if (cap.maxPerWindow > 0 && Number(row.recent_marketing) >= cap.maxPerWindow) { out.capped += 1; continue; }
+    out.eligible.push({ id: row.id, phone: row.phone, display_name: row.display_name });
+  }
+  return out;
+}
+
 const ruleBody = z.object({
   code: z.string().trim().regex(/^[a-z0-9_-]{3,40}$/),
   title: z.string().trim().min(2).max(140),
@@ -719,8 +764,11 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
            WHERE cl.label_code = $1 AND (cl.expires_at IS NULL OR cl.expires_at > now())`, [body.labelCode]);
         userIds = members.rows.map((row) => row.user_id);
       }
-      // Requirement 143: consent gate + do-not-contact are applied before counting.
-      const consented = await consentedRecipients(client, userIds);
+      // Requirement 143 + master §29: consent gate, DNC, invalid phone, suspension and
+      // the configurable frequency cap are all applied BEFORE counting — with a breakdown.
+      const cap = await loadMarketingCap(client);
+      const buckets = await classifyAudience(client, userIds, cap);
+      const consented = buckets.eligible;
       const blocked = userIds.length - consented.length;
       const campaignId = randomUUID();
       const status = body.send && consented.length ? 'queued' : 'draft';
@@ -752,7 +800,14 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
           userId: row.id, displayName: row.display_name ?? '',
           phone: row.phone ? `${row.phone.slice(0, 4)}***${row.phone.slice(-2)}` : null,
         })),
-        matchMessage: `این کمپین روی ${consented.length.toLocaleString('fa-IR')} کاربر Match می‌شود (${blocked.toLocaleString('fa-IR')} کاربر به دلیل نبود رضایت حذف شدند).`,
+        matchMessage: `این کمپین روی ${consented.length.toLocaleString('fa-IR')} کاربر Match می‌شود (${blocked.toLocaleString('fa-IR')} کاربر حذف شدند).`,
+        // Master §28: explainable preview — matched vs eligible with per-reason buckets.
+        breakdown: {
+          matched: userIds.length, eligible: consented.length,
+          optedOut: buckets.optedOut, doNotContact: buckets.doNotContact,
+          invalidPhone: buckets.invalidPhone, suspended: buckets.suspended, capped: buckets.capped,
+          frequencyCap: cap,
+        },
       };
     });
     return reply.code(body.send ? 201 : 200).send({ ...audience, dryRun: !body.send });
@@ -968,6 +1023,30 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
           qc_pass_rate: perf.qcPassRate, performance: perf.state, performance_label: perf.label, performance_reasons: perf.reasons };
       }),
     };
+  });
+
+  /** Master §29: configurable marketing frequency cap (stored in site_settings). */
+  app.get('/api/v1/admin/crm/marketing-settings', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'campaigns:manage');
+    return { frequencyCap: await loadMarketingCap(pool) };
+  });
+
+  app.put('/api/v1/admin/crm/marketing-settings', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'campaigns:manage');
+    const body = z.object({
+      maxPerWindow: z.number().int().min(0).max(20),
+      windowDays: z.number().int().min(1).max(90),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const before = await loadMarketingCap(client);
+      await client.query(
+        `INSERT INTO site_settings(key,value,updated_by) VALUES ('crm_marketing_frequency_cap',$1::jsonb,$2)
+         ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_by = $2, updated_at = now()`,
+        [JSON.stringify(body), user.id]);
+      await audit(client, user.id, 'crm.marketing_settings_updated', 'site_setting', 'crm_marketing_frequency_cap',
+        before, body, request.ip);
+      return { frequencyCap: body };
+    });
   });
 
   app.get('/api/v1/admin/crm/upcoming-events', async (request) => {

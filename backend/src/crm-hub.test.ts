@@ -126,3 +126,70 @@ test('crm read models: retail list pagination/filter, summary KPIs, supplier + V
     await app.close();
   }
 });
+
+test('marketing: campaign preview breakdown + configurable frequency cap (§28-§29)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const adminId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [adminId, `mkt-admin-${suffix}@example.test`, await argon2.hash('AdminPassword123456!'), 'مدیر بازاریابی']);
+    await pool.query("INSERT INTO user_roles(user_id,role_code) VALUES ($1,'admin')", [adminId]);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login',
+      payload: { identity: `mkt-admin-${suffix}@example.test`, password: 'AdminPassword123456!' } });
+    const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
+
+    // settings roundtrip (audited, stored in site_settings)
+    const put = await app.inject({ method: 'PUT', url: '/api/v1/admin/crm/marketing-settings', headers,
+      payload: { maxPerWindow: 1, windowDays: 7 } });
+    assert.equal(put.statusCode, 200, put.body);
+    const got = await app.inject({ method: 'GET', url: '/api/v1/admin/crm/marketing-settings', headers });
+    assert.deepEqual((got.json() as { frequencyCap: unknown }).frequencyCap, { maxPerWindow: 1, windowDays: 7 });
+
+    // two customers under one label: one consented, one opted out
+    const label = `mkt_${suffix}`;
+    await pool.query(`INSERT INTO crm_labels(code,title,kind) VALUES ($1,'کمپین تست','manual')`, [label]);
+    const mk = async (phoneTail: string, consent: boolean) => {
+      const uid = randomUUID();
+      await pool.query('INSERT INTO users(id,email,phone,password_hash,display_name) VALUES ($1,$2,$3,$4,$5)',
+        [uid, `mkt-${phoneTail}-${suffix}@example.test`, `091234${phoneTail}`, await argon2.hash('CustomerPassword123!'), `مشتری ${phoneTail}`]);
+      await pool.query("INSERT INTO user_roles(user_id,role_code) VALUES ($1,'customer')", [uid]);
+      const cid = randomUUID();
+      await pool.query('INSERT INTO crm_contacts(id,user_id) VALUES ($1,$2)', [cid, uid]);
+      await pool.query(`INSERT INTO crm_contact_labels(contact_id,label_code,source) VALUES ($1,$2,'manual')`, [cid, label]);
+      if (consent) await pool.query(`INSERT INTO customer_consents(user_id,marketing_sms) VALUES ($1,true)`, [uid]);
+      return uid;
+    };
+    const tail = suffix.replace(/\D/g, '9').padEnd(5, '0').slice(0, 5);
+    const consentedId = await mk(tail, true);
+    await mk(String((Number(tail) + 1) % 100000).padStart(5, '0'), false);
+
+    // dry-run: breakdown shows matched=2, eligible=1, optedOut=1
+    const preview = await app.inject({ method: 'POST', url: '/api/v1/admin/crm/campaigns', headers,
+      payload: { title: 'کمپین تست', message: 'پیام آزمایشی کمپین', labelCode: label, dryRun: true, send: false } });
+    assert.equal(preview.statusCode, 200, preview.body);
+    const b1 = (preview.json() as { breakdown: Record<string, number> }).breakdown;
+    assert.equal(b1.matched, 2); assert.equal(b1.eligible, 1);
+    assert.equal(b1.optedOut, 1); assert.equal(b1.capped, 0);
+
+    // real send consumes the cap (maxPerWindow=1) → next preview buckets the user as capped
+    const send = await app.inject({ method: 'POST', url: '/api/v1/admin/crm/campaigns', headers,
+      payload: { title: 'کمپین ارسال', message: 'پیام ارسال واقعی', labelCode: label, dryRun: false, send: true } });
+    assert.equal(send.statusCode, 201, send.body);
+    const after = await app.inject({ method: 'POST', url: '/api/v1/admin/crm/campaigns', headers,
+      payload: { title: 'کمپین دوم', message: 'پیام دوم آزمایشی', labelCode: label, dryRun: true, send: false } });
+    const b2 = (after.json() as { breakdown: Record<string, number> }).breakdown;
+    assert.equal(b2.capped, 1, JSON.stringify(b2));
+    assert.equal(b2.eligible, 0);
+
+    // operational SMS is never affected by the cap: deliveries written were category='marketing' only
+    const cats = await pool.query(`SELECT DISTINCT category FROM sms_deliveries WHERE user_id = $1`, [consentedId]);
+    assert.deepEqual(cats.rows.map((r: { category: string }) => r.category), ['marketing']);
+  } finally {
+    // restore the global default so other suites see the out-of-the-box cap
+    await pool.query(`DELETE FROM site_settings WHERE key = 'crm_marketing_frequency_cap'`).catch(() => undefined);
+    await pool.end();
+    await app.close();
+  }
+});

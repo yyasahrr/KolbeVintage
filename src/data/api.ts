@@ -1215,8 +1215,12 @@ export const crmIntelApi = {
   behavior: (contactId: string) => authFetch<Record<string, unknown>>(`/admin/crm/contacts/${contactId}/behavior`),
   view360: (contactId: string) => authFetch<Record<string, unknown>>(`/admin/crm/contacts/${contactId}/360`),
   createCampaign: (payload: { title: string; message: string; segmentId?: string | null; labelCode?: string | null; dryRun?: boolean; send?: boolean }) =>
-    authFetch<{ campaignId: string; recipients: number; blockedByConsent: number; audienceLabel: string; status: string; dryRun: boolean; matchMessage: string; sample: Record<string, unknown>[] }>(
+    authFetch<{ campaignId: string; recipients: number; blockedByConsent: number; audienceLabel: string; status: string; dryRun: boolean; matchMessage: string; sample: Record<string, unknown>[];
+      breakdown?: { matched: number; eligible: number; optedOut: number; doNotContact: number; invalidPhone: number; suspended: number; capped: number; frequencyCap: { maxPerWindow: number; windowDays: number } } }>(
       "/admin/crm/campaigns", { method: "POST", body: JSON.stringify(payload) }),
+  marketingSettings: () => authFetch<{ frequencyCap: { maxPerWindow: number; windowDays: number } }>("/admin/crm/marketing-settings"),
+  saveMarketingSettings: (payload: { maxPerWindow: number; windowDays: number }) =>
+    authFetch<{ frequencyCap: { maxPerWindow: number; windowDays: number } }>("/admin/crm/marketing-settings", { method: "PUT", body: JSON.stringify(payload) }),
   conditionFields: () => authFetch<{ fields: string[]; operators: string[] }>("/admin/crm/condition-fields"),
   contacts: (params?: Record<string, string | number | undefined>) => authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/contacts${query(params)}`),
   upcomingEvents: (limit = 30) => authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/upcoming-events${query({ limit })}`),
