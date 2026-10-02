@@ -25,7 +25,7 @@ const createBody = z.object({
   items: itemsSchema,
 });
 
-export async function loadSeriesComposition(pool: DbPool, templateId: string) {
+export async function loadSeriesComposition(pool: DbPool | DbClient, templateId: string) {
   const template = await one<{
     id: string; product_id: string; name: string; description: string; active: boolean;
     product_name: string;

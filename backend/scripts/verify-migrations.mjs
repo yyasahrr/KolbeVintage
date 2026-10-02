@@ -43,7 +43,7 @@ try {
   check(rows.length === new Set(names).size, 'no duplicate migration rows (one file = one row)');
 
   // Integration (Agent 6): the merged inventory is the union of every agent's migrations.
-  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql'];
+  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql','064_wholesale_master_oms.sql'];
   check(JSON.stringify(names) === JSON.stringify(expectedAll),
     'full merged inventory applied in name order', names.length === expectedAll.length ? '' : `got ${names.length} files`);
   const reserved = names.filter((name) => /^02[5-9]_/.test(name));
@@ -78,6 +78,14 @@ try {
     'product_variants.retail_sale_enabled added (062)');
   check(await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name = 'orders' AND column_name IN ('sales_channel','series_snapshot')") === 2,
     'orders.sales_channel + orders.series_snapshot added (062)');
+
+  // Prompt 2 (064): Master/Child wholesale OMS tables + child columns on orders.
+  check(await count("SELECT count(*)::int AS count FROM information_schema.tables WHERE table_name IN ('master_orders','child_order_lines','order_source_allocations','payment_allocations','master_consolidations','consolidation_items','fulfillment_exceptions')") === 7,
+    'all 7 master/child OMS tables exist (064)');
+  check(await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name='orders' AND column_name IN ('master_order_id','seller_id','supply_status','payment_eligibility','child_fulfillment','composition_state')") === 6,
+    'orders child-order columns added (064)');
+  check(await count("SELECT count(*)::int AS count FROM pg_constraint WHERE conrelid='payment_intents'::regclass AND conname='payment_intents_target_check' AND pg_get_constraintdef(oid) LIKE '%<= 1%'") === 1,
+    'payment_intents target CHECK relaxed to at-most-one (064)');
 
   // Upgrade from the last pre-dedupe schema with conflicting size mappings and
   // products. 050z must snapshot dependents before the published 051 deletes.
