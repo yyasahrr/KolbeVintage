@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
-import { inventoryApi, manualSalesApi, productsApi, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
+import { inventoryApi, manualSalesApi, productsApi, serverRequest, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
+import { AdminServerOrders } from "./admin-server-orders";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { WarehouseSettings, type LowStock } from "../components/warehouse-settings";
 import { adjustmentPreview, pendingForRows } from "../data/warehouse-ux";
@@ -92,7 +93,13 @@ export function WarehouseHub({ flash }: { flash: F }) {
         />
       </div>
       {tab === "retail" && <DomainInventory domain="retail" flash={flash} />}
-      {tab === "transfers" && <TransfersCenter flash={flash} />}
+      {tab === "transfers" && (
+        <div className="space-y-5">
+          <TransfersCenter flash={flash} />
+          {/* §1.2: server inventory-transfer & ownership-conversion ops moved here from «QC و عملیات سرور». */}
+          <AdminServerOrders request={serverRequest} only="inventory-transfers" />
+        </div>
+      )}
       {tab === "wholesale" && <WholesaleCenter flash={flash} />}
       {tab === "settings" && (
         <Card className="p-4">
@@ -1068,7 +1075,13 @@ function WholesaleCenter({ flash }: { flash: F }) {
       />
       {sub === "inventory" && <DomainInventory domain="wholesale" flash={flash} />}
       {sub === "requests" && <SupplierRequestsAdmin flash={flash} />}
-      {sub === "inbound" && <InboundReceipts flash={flash} />}
+      {sub === "inbound" && (
+        <div className="space-y-5">
+          {/* §1.2 + §21: supplier inbound shipments / QC inspections — Central WHOLESALE warehouse only. */}
+          <AdminServerOrders request={serverRequest} only="inbound-qc" />
+          <InboundReceipts flash={flash} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1202,7 +1215,11 @@ function InboundReceipts({ flash }: { flash: F }) {
 
   const reload = useCallback(async () => {
     setError(null);
-    try { setRows((await inventoryApi.receipts()).items as unknown as ReceiptRow[]); }
+    try {
+      // §21: this view belongs to the CENTRAL WHOLESALE warehouse — retail receipts must not appear here.
+      const items = (await inventoryApi.receipts()).items as unknown as ReceiptRow[];
+      setRows(items.filter((row) => row.inventory_domain === 'wholesale'));
+    }
     catch (e) { setError(e instanceof Error ? e.message : "خطا در بارگذاری رسیدها"); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);

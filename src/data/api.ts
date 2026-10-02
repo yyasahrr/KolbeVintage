@@ -25,6 +25,9 @@ import {
 } from "./contracts";
 
 export { AdminApiError, getApiBaseUrl, setApiBaseUrl };
+
+/** Shared authenticated request for admin panels that are mounted outside AdminConsole (canonical hubs). */
+export const serverRequest: ApiRequest = (path, init) => apiClient.request(path, init);
 export type { ApiRequest };
 
 /* ------------------------------ session ------------------------------ */

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardList, FileText, Package, Printer, RefreshCw, Tag, Truck } from "lucide-react";
 import { Btn, Checkbox, Drawer, Empty, ErrorState, LoadingState, Modal, SearchBox, Segmented, Textarea } from "../components/primitives";
 import { invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi } from "../data/api";
-import { CHANNEL_LABEL } from "../components/manual-sales-panel";
+import { CHANNEL_LABEL, ManualSalesPanel } from "../components/manual-sales-panel";
+import { TrackingCenter } from "../components/tracking-center";
 import { formatPersianDateTimeFull } from "../data/persian-date";
 import { cn } from "../utils/cn";
 
@@ -899,6 +900,8 @@ function RetailTab() {
 
 export function OrdersHub() {
   const [tab, setTab] = useState<"retail" | "kolbe" | "supplier">("retail");
+  const [trackingOpen, setTrackingOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const tabs = useMemo(() => ([
     { v: "retail" as const, label: "سفارشات خرده" },
     { v: "kolbe" as const, label: "سفارشات عمده کلبه" },
@@ -909,10 +912,25 @@ export function OrdersHub() {
       <div className="flex flex-wrap items-center gap-3">
         <span className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-[var(--kv-surface-2)]"><ClipboardList size={18} /></span>
         <Segmented options={tabs} value={tab} onChange={setTab} />
+        <div className="mr-auto flex flex-wrap gap-2">
+          {/* §31: manual sale lives inside مرکز سفارشات (retail). §1.3: operational tracking lives here too. */}
+          {tab === "retail" && <Btn size="sm" onClick={() => setManualOpen(true)}>+ ثبت سفارش دستی</Btn>}
+          <Btn size="sm" variant="soft" icon={<Truck size={14} />} onClick={() => setTrackingOpen(true)}>مرکز رهگیری مرسوله‌ها</Btn>
+        </div>
       </div>
       {tab === "retail" && <RetailTab />}
       {tab === "kolbe" && <WholesaleTab scope="kolbe" key="kolbe" />}
       {tab === "supplier" && <WholesaleTab scope="supplier" key="supplier" />}
+      {trackingOpen && (
+        <Drawer open onClose={() => setTrackingOpen(false)} title="مرکز رهگیری مرسوله‌ها" wide>
+          <div className="p-5"><TrackingCenter flash={() => undefined} /></div>
+        </Drawer>
+      )}
+      {manualOpen && (
+        <Drawer open onClose={() => setManualOpen(false)} title="ثبت فروش / سفارش دستی" wide>
+          <div className="p-5"><ManualSalesPanel flash={() => undefined} /></div>
+        </Drawer>
+      )}
     </div>
   );
 }

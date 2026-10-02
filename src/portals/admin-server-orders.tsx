@@ -156,10 +156,13 @@ const money = (value: string | undefined) => value ? `${new Intl.NumberFormat("f
 const date = (value: string) => new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 const makeIdemKey = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-export function AdminServerOrders({ request, hideOrders = false }: { request: ApiRequest; hideOrders?: boolean }) {
-  // hideOrders: the orders experience moved to OrdersHub (3-tab OMS); this screen keeps inbound QC,
-  // inventory transfers and server promotions — nothing is deleted, only de-duplicated.
-  const [section, setSection] = useState<"orders" | "inbound-qc" | "inventory-transfers" | "server-promotions">(hideOrders ? "inbound-qc" : "orders");
+type ServerOpsSection = "orders" | "inbound-qc" | "inventory-transfers" | "server-promotions";
+
+export function AdminServerOrders({ request, hideOrders = false, only }: { request: ApiRequest; hideOrders?: boolean; only?: ServerOpsSection }) {
+  // §1.2: the old «QC و عملیات سرور» top-level entry is gone. Each capability now mounts inside
+  // its canonical domain hub via `only` (inbound-qc → WMS wholesale, inventory-transfers → WMS
+  // transfers, server-promotions → کوپن و جشنواره). Nothing is deleted, only relocated.
+  const [section, setSection] = useState<ServerOpsSection>(only ?? (hideOrders ? "inbound-qc" : "orders"));
 
   // 1. Orders state
   const [orders, setOrders] = useState<Order[]>([]);
@@ -536,7 +539,7 @@ export function AdminServerOrders({ request, hideOrders = false }: { request: Ap
     <section aria-label="سفارش‌های واقعی" className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h2 className="text-lg font-bold">سفارش‌های ثبت‌شده در سرور</h2><p className="text-xs text-[var(--kv-muted)]">مرتب‌سازی، فیلتر و مبالغ همگی از پایگاه‌داده می‌آیند.</p></div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className={only ? "hidden" : "flex flex-wrap items-center gap-2"}>
           {!hideOrders && <button
             type="button"
             onClick={() => setSection("orders")}
