@@ -169,6 +169,43 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
     return { items: rows.rows, total: Number(total?.n ?? 0) };
   });
 
+  /* ---------- §44: admin «همه کالاها / آرشیو» read model (server-backed pagination/search) ---------- */
+
+  app.get('/api/v1/admin/products', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'products:write');
+    const query = z.object({
+      q: z.string().trim().max(120).optional(),
+      status: z.enum(['all', 'active', 'archived']).default('active'),
+      owner: z.enum(['all', 'kolbe', 'supplier']).default('all'),
+      setup: z.enum(['all', 'pending', 'configured']).default('all'),
+      limit: z.coerce.number().int().min(1).max(100).default(30),
+      offset: z.coerce.number().int().min(0).default(0),
+    }).parse(request.query ?? {});
+    const where = `($1::text IS NULL OR p.name ILIKE '%' || $1 || '%' OR p.brand ILIKE '%' || $1 || '%' OR p.category ILIKE '%' || $1 || '%')
+         AND ($2 = 'all' OR ($2 = 'archived' AND p.status = 'archived') OR ($2 = 'active' AND p.status <> 'archived'))
+         AND ($3 = 'all' OR p.owner_type = $3)
+         AND ($4 = 'all' OR p.inventory_setup = $4)`;
+    const params = [query.q ?? null, query.status, query.owner, query.setup];
+    const rows = await pool.query(
+      `SELECT p.id, p.name, p.brand, p.category, p.status, p.owner_type, p.supplier_id, u.display_name AS supplier_name,
+              p.retail_enabled, p.wholesale_enabled, p.inventory_setup, p.created_at,
+              (SELECT count(*)::int FROM product_variants v WHERE v.product_id = p.id AND v.active) AS variant_count,
+              -- §16/§44: numbers are only meaningful once the profile is configured; UI shows «—» for pending.
+              (SELECT COALESCE(sum(b.on_hand - b.reserved - b.damaged), 0)::int FROM stock_balances b
+                 JOIN product_variants v ON v.id = b.variant_id
+               WHERE v.product_id = p.id AND b.inventory_domain = 'retail') AS retail_available,
+              (SELECT COALESCE(sum(s.on_hand - s.reserved), 0)::int FROM series_stock_balances s
+                 JOIN series_templates t ON t.id = s.series_template_id
+               WHERE t.product_id = p.id AND s.owner_type = 'kolbe') AS wholesale_series_available,
+              (SELECT count(*)::int FROM supplier_offers o WHERE o.product_id = p.id AND o.status = 'active') AS active_offers
+       FROM products p LEFT JOIN users u ON u.id = p.supplier_id
+       WHERE ${where}
+       ORDER BY p.created_at DESC, p.id DESC LIMIT $5 OFFSET $6`, [...params, query.limit, query.offset]);
+    const total = await one<{ n: string }>(pool,
+      `SELECT count(*)::text AS n FROM products p WHERE ${where}`, params);
+    return { items: rows.rows, total: Number(total?.n ?? 0) };
+  });
+
   /* ---------- §17-§20: inventory setup — the ONLY bridge from definition to stock ---------- */
 
   const retailSetup = z.object({

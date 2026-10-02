@@ -247,6 +247,32 @@ export function Modal({ open, onClose, children, max = "max-w-[560px]", title = 
   );
 }
 
+/** §60: LARGE operational editors live in a centered workspace modal — ~90vw (max 1360px) × ~90vh,
+ *  fixed header, scrollable body, full-screen on mobile. Right-side drawers are forbidden for these. */
+export function WorkspaceModal({ open, onClose, title, subtitle, children, footer }: {
+  open: boolean; onClose: () => void; title: string; subtitle?: string; children: ReactNode; footer?: ReactNode;
+}) {
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[85] flex items-center justify-center sm:p-4">
+      <div className="absolute inset-0 bg-[#0E1527]/55 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <div ref={ref} role="dialog" aria-modal="true" aria-label={title}
+        className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)] sm:h-[90vh] sm:w-[90vw] sm:max-w-[1360px] sm:rounded-[24px] sm:border sm:border-[var(--kv-line)]">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--kv-line)] px-5 py-4">
+          <div>
+            <h2 className="text-sm font-bold">{title}</h2>
+            {subtitle && <p className="mt-0.5 text-[11.5px] leading-5 text-[var(--kv-muted)]">{subtitle}</p>}
+          </div>
+          <button data-autofocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+        {footer && <div className="shrink-0 border-t border-[var(--kv-line)] px-5 py-3">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
 /** Full-screen media viewer with the same dialog focus rules (trap, Escape, restore); arrow keys via onKey. */
 export function Lightbox({ open, onClose, label, children, onKey, caption, z = "z-[80]" }: { open: boolean; onClose: () => void; label: string; children: ReactNode;
   onKey?: (event: KeyboardEvent) => void; caption?: ReactNode; z?: string }) {

@@ -130,7 +130,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
               p.product_type_id, p.installment_policy, p.wholesale_moq, p.gender_code, p.gender,
               p.seasons, p.vibes, p.specifications, p.installment_enabled, p.discount_percent, p.supplier_id,
               p.allow_installments, p.disable_installments_on_discount, p.sale_terms,
-              p.metadata, p.created_at,
+              p.metadata, p.created_at, p.status, p.inventory_setup,
               COALESCE(jsonb_agg(jsonb_build_object(
                 'id', v.id,
                 'sku', v.sku,
@@ -209,6 +209,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         allowInstallments: row.allow_installments,
         disableInstallmentsOnDiscount: row.disable_installments_on_discount,
         saleTerms: row.sale_terms,
+        // §16: 'pending' renders as «—» (profile not configured) — distinct from a real 0.
+        inventorySetup: (row as unknown as { inventory_setup?: string }).inventory_setup ?? 'configured',
+        productStatus: (row as unknown as { status?: string }).status,
         retailAvailableStock: totalRetailAvailable,
         metadata: row.metadata,
         variants: enrichedVariants,

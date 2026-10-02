@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarketplaceReviewPanel } from "../components/marketplace-review-panel";
+import { CatalogHub } from "../components/catalog-hub";
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
 import { inventoryApi, manualSalesApi, productsApi, serverRequest, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
@@ -81,7 +82,7 @@ type F = (msg: string) => void;
  */
 export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | null }) {
   // §2 deep link: legacy wproducts/mreview routes land on انبار عمده → محصولات و بازبینی.
-  const [tab, setTab] = useState<"retail" | "transfers" | "wholesale" | "settings">(initial === "wholesale-review" ? "wholesale" : "retail");
+  const [tab, setTab] = useState<"goods" | "retail" | "transfers" | "wholesale" | "settings">(initial === "wholesale-review" ? "wholesale" : "goods");
   useEffect(() => { if (initial === "wholesale-review") setTab("wholesale"); }, [initial]);
   const [lowStockReport, setLowStockReport] = useState<LowStock[] | null>(null);
   return (
@@ -89,6 +90,7 @@ export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Segmented
           options={[
+            { v: "goods", label: "کالاها" },
             { v: "retail", label: "خرده‌فروشی" },
             { v: "transfers", label: "نقل‌وانتقالات" },
             { v: "wholesale", label: "انبار عمده" },
@@ -97,6 +99,8 @@ export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | 
           value={tab} onChange={setTab}
         />
       </div>
+      {/* §14: کالاها = single home of product definition + lifecycle (تعریف/نیازمند راه‌اندازی/بازبینی/همه/آرشیو). */}
+      {tab === "goods" && <CatalogHub flash={flash} />}
       {tab === "retail" && <RetailInventoryTab flash={flash} />}
       {tab === "transfers" && <TransfersOpsCenter flash={flash} />}
       {tab === "wholesale" && <WholesaleCenter flash={flash} initialSub={initial === "wholesale-review" ? "review" : undefined} />}

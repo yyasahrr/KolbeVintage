@@ -1539,3 +1539,88 @@ export const seriesTemplatesApi = {
   update: (id: string, payload: Record<string, unknown>) =>
     authFetch<Record<string, unknown>>(`/series-templates/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
 };
+
+/* ------------------- Prompt-1: product lifecycle + supplier wholesale (§14-§44) ------------------- */
+
+export type NeedsSetupRow = {
+  id: string; name: string; brand: string | null; category: string; status: string;
+  retail_enabled: boolean; wholesale_enabled: boolean; inventory_setup: string; created_at: string; variant_count: number;
+};
+export type AdminProductRow = NeedsSetupRow & {
+  owner_type: string; supplier_id: string | null; supplier_name: string | null;
+  retail_available: number; wholesale_series_available: number; active_offers: number;
+};
+
+/** §14-§20: کالاها — definition→setup lifecycle + the §44 admin product read model. */
+export const catalogOpsApi = {
+  needsSetup: (params?: Record<string, string | number>) =>
+    authFetch<{ items: NeedsSetupRow[]; total: number }>(`/admin/products/needs-setup${query(params)}`),
+  adminProducts: (params?: Record<string, string | number>) =>
+    authFetch<{ items: AdminProductRow[]; total: number }>(`/admin/products${query(params)}`),
+  /** §19: audited opening stock — the ONLY bridge from «تعریف» to «موجودی». Server re-validates everything. */
+  inventorySetup: (productId: string, payload: {
+    retail?: { warehouseId: string; mode: "zero" | "equal" | "per_variant"; quantity?: number; perVariant?: { variantId: string; quantity: number }[] };
+    wholesale?: { warehouseId: string; seriesTemplateId: string; seriesCount: number };
+  }, idempotencyKey: string) =>
+    authFetch<Record<string, unknown>>(`/admin/products/${productId}/inventory-setup`,
+      { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
+  categoryProfiles: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/category-profiles"),
+  saveCategoryProfile: (category: string, payload: Record<string, unknown>) =>
+    authFetch<Record<string, unknown>>(`/admin/category-profiles/${encodeURIComponent(category)}`, { method: "PUT", body: JSON.stringify(payload) }),
+  categorySchema: (category: string) =>
+    authFetch<{ category: string; configured: boolean; specFields: Record<string, unknown>[]; sizeGuide: { id: string; name: string } | null; allowedSizes: string[] }>(
+      `/catalog/categories/${encodeURIComponent(category)}/schema`),
+};
+
+export type SupplierOfferRow = Record<string, unknown> & {
+  id: string; product_id: string; product_name?: string; color_label: string | null; status: string;
+  min_order_series: number; max_order_series: number | null; declared_capacity: number;
+  reserved_external: number; safety_buffer: number; available_to_request: number;
+  freshness: string; capacity_confirmed_at: string | null; fulfillment_mode: string;
+};
+export type SupplierInboundRow = Record<string, unknown> & {
+  id: string; reference: string; status: string; expected_series: number;
+  received_series: number | null; shortage_series: number; passed_series: number | null; rejected_series: number | null;
+  product_name?: string; supplier_name?: string; color_label?: string | null; created_at: string;
+};
+
+/** §28-§34: supplier wholesale offers + declared external capacity (NEVER kolbe stock). */
+export const supplierOffersApi = {
+  list: (params?: Record<string, string | number>) => authFetch<{ items: SupplierOfferRow[] }>(`/supplier/offers${query(params)}`),
+  upsert: (payload: Record<string, unknown>) => authFetch<SupplierOfferRow>("/supplier/offers", { method: "POST", body: JSON.stringify(payload) }),
+  capacity: (offerId: string, payload: { declaredCapacity?: number; confirmOnly?: boolean }) =>
+    authFetch<{ id: string; declaredCapacity: number; availableToRequest: number; freshness: string }>(
+      `/supplier/offers/${offerId}/capacity`, { method: "POST", body: JSON.stringify(payload) }),
+  setStatus: (offerId: string, status: "active" | "paused" | "archived") =>
+    authFetch<{ id: string; status: string }>(`/supplier/offers/${offerId}/status`, { method: "POST", body: JSON.stringify({ status }) }),
+  /** §36: marketplace availability — kolbe stock vs declared capacity, never merged. */
+  availability: (productId: string) => authFetch<Record<string, unknown>>(`/products/${productId}/wholesale-availability`),
+};
+
+/** §25-§27, §35, §37: consignment inbound → QC → stock-at-kolbe → returns (+§50 stock ownership conversion). */
+export const supplierConsignmentApi = {
+  createInbound: (payload: Record<string, unknown>) =>
+    authFetch<{ id: string; reference: string }>("/supplier/inbounds", { method: "POST", body: JSON.stringify(payload) }),
+  inbounds: (params?: Record<string, string | number>) => authFetch<{ items: SupplierInboundRow[] }>(`/supplier/inbounds${query(params)}`),
+  dispatch: (inboundId: string, payload?: { batchReference?: string }) =>
+    authFetch<Record<string, unknown>>(`/supplier/inbounds/${inboundId}/dispatch`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+  cancel: (inboundId: string) => authFetch<Record<string, unknown>>(`/supplier/inbounds/${inboundId}/cancel`, { method: "POST", body: JSON.stringify({}) }),
+  review: (inboundId: string, payload: { decision: "approve" | "reject"; warehouseId?: string; reason?: string }) =>
+    authFetch<Record<string, unknown>>(`/admin/supplier-inbounds/${inboundId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  receive: (inboundId: string, payload: { receivedSeries: number; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/admin/supplier-inbounds/${inboundId}/receive`, { method: "POST", body: JSON.stringify(payload) }),
+  qc: (inboundId: string, payload: { passedSeries: number; rejectedSeries: number; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/admin/supplier-inbounds/${inboundId}/qc`, { method: "POST", body: JSON.stringify(payload) }),
+  /** §23-B/§43: WMS-grade supplier stock at kolbe (owner=supplier, custodian=kolbe). */
+  supplierStock: (params?: Record<string, string | number>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/supplier-stock${query(params)}`),
+  createReturn: (payload: Record<string, unknown>) =>
+    authFetch<{ id: string; reference: string }>("/supplier/stock-returns", { method: "POST", body: JSON.stringify(payload) }),
+  returns: (params?: Record<string, string | number>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/supplier/stock-returns${query(params)}`),
+  reviewReturn: (returnId: string, payload: { decision: "approve" | "reject" | "complete"; reason?: string }) =>
+    authFetch<Record<string, unknown>>(`/admin/supplier-returns/${returnId}/review`, { method: "POST", body: JSON.stringify(payload) }),
+  /** §50: audited series-stock ownership conversion (supplier → kolbe) — never a silent flip. */
+  convertOwnership: (payload: Record<string, unknown>) =>
+    authFetch<Record<string, unknown>>("/admin/inventory/series-ownership-conversions", { method: "POST", body: JSON.stringify(payload) }),
+};

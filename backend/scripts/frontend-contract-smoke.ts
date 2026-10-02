@@ -506,10 +506,14 @@ try {
     vipSrc.includes('availableSeries') && !vipSrc.includes('p.stock >=') && !vipSrc.includes('p.stock <'));
   const hubHead = hubSrc.slice(hubSrc.indexOf('export function WarehouseHub'), hubSrc.indexOf('tab === "retail"'));
   const hubOptions = hubHead.slice(hubHead.indexOf('options={['), hubHead.indexOf(']}'));
-  // §3: settings became the FOURTH primary tab (supersedes the old header-drawer design).
-  check('warehouse hub has exactly 4 primary tabs incl. تنظیمات انبار — no settings drawer remains',
-    (hubOptions.match(/\{ v: "/g) ?? []).length === 4 && hubOptions.includes('تنظیمات انبار') &&
-    !hubSrc.includes('<Drawer open={settingsOpen}'));
+  // Prompt-1 §14: کالاها became the FIFTH primary tab (product definition + lifecycle moved into the hub).
+  check('warehouse hub has exactly 5 primary tabs incl. کالاها + تنظیمات انبار — no settings drawer remains',
+    (hubOptions.match(/\{ v: "/g) ?? []).length === 5 && hubOptions.includes('کالاها') &&
+    hubOptions.includes('تنظیمات انبار') && !hubSrc.includes('<Drawer open={settingsOpen}'));
+  const catalogHubSrc = readFileSync(join(repoRoot, 'src/components/catalog-hub.tsx'), 'utf8');
+  check('کالاها hub has the §14 sub-views and NO owner picker in the definition flow',
+    ['تعریف محصول', 'نیازمند راه‌اندازی', 'بازبینی تأمین‌کنندگان', 'همه کالاها', 'آرشیو'].every((t) => catalogHubSrc.includes(t)) &&
+    !catalogHubSrc.includes('مالک محصول'));
 
   // ---------- OMS: 3-tab orders hub contracts (§18-§41) ----------
   const omsAdmin = await authApi.login({ identity: adminEmail, password: adminPassword });
