@@ -12,7 +12,8 @@ import { asRial } from './money.js';
  * website orders (orders/order_lines/payment_intents/shipments) and manual sales
  * (manual_sales/manual_sale_payments). This endpoint is a READ MODEL ONLY — it
  * reconciles them for the OMS console without creating a second order system.
- * Sales channel: website orders are the 'website' channel by definition; manual
+ * Sales channel: orders carry orders.sales_channel ('website' for checkout, the
+ * commercial channel for §31 manual orders); legacy manual
  * sales carry their own commercial channel (§22). Writes keep flowing through
  * the existing domains (checkout, manual-sales API, transitions, shipments).
  */
@@ -40,7 +41,7 @@ export function registerOmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
       `WITH unified AS (
          SELECT 'order'::text AS kind, o.id, o.reference, o.created_at,
                 u.display_name AS buyer_name, u.phone AS buyer_phone,
-                'website'::text AS channel,
+                o.sales_channel AS channel,
                 (SELECT count(*)::int FROM order_lines l WHERE l.order_id = o.id) AS lines_count,
                 o.total_rial::text AS total_rial,
                 CASE WHEN o.payment_mode = 'four_installments' THEN 'installments' ELSE 'gateway' END AS payment_method,

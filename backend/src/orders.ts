@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
@@ -838,7 +839,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     const privileged = user.permissions.includes('orders:read');
     const orderBy = SORT_SQL[query.sort];
     const rows = await pool.query(
-      `SELECT o.id, o.reference, o.buyer_id, o.status, o.order_type, o.payment_mode,
+      `SELECT o.id, o.reference, o.buyer_id, o.status, o.order_type, o.payment_mode, o.sales_channel,
               o.subtotal_rial, o.discount_rial, o.shipping_rial, o.total_rial,
               o.fulfillment_via, o.wholesale_fulfillment_status, o.consolidated_at, o.vip_dispatched_at,
               o.created_at, o.updated_at,
@@ -1223,6 +1224,192 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
 
   // §34: bulk status change — ONE backend request, per-item results with readable
   // reasons; a failing order never rolls back the orders that were valid.
+  /**
+   * §31-§35: manual/offline sale = a REAL retail order on the canonical pipeline.
+   * No parallel sale system: pricing via the canonical resolver, stock via normal order
+   * reservations, consumption via the SAME transition core (exactly once), full audit.
+   */
+  app.post('/api/v1/admin/manual-orders', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'sales:manage');
+    const body = z.object({
+      customer: z.object({
+        customerId: z.uuid().optional(),
+        name: z.string().trim().min(2).max(120).optional(),
+        mobile: z.string().trim().regex(/^09\d{9}$/, 'شماره موبایل معتبر نیست.').optional(),
+      }).refine((c) => c.customerId || (c.name && c.mobile), 'مشتری موجود یا نام+موبایل لازم است.'),
+      channel: z.enum(['instagram', 'in_person', 'whatsapp', 'telegram', 'phone', 'other']),
+      warehouseId: z.uuid(),
+      items: z.array(z.object({ variantId: z.uuid(), quantity: z.number().int().min(1).max(100) }).strict()).min(1).max(50)
+        .refine((items) => new Set(items.map((i) => i.variantId)).size === items.length, 'هر تنوع فقط یک بار مجاز است.'),
+      payment: z.object({
+        method: z.enum(['cash', 'card_to_card', 'gateway', 'cod']),
+        status: z.enum(['paid', 'pending']),
+        reference: z.string().trim().max(120).optional(),
+      }),
+      deliverNow: z.boolean().default(false),
+      note: z.string().trim().max(1000).optional(),
+      shippingAddress: z.object({
+        recipient: z.string().trim().min(2).max(120),
+        phone: z.string().regex(/^09\d{9}$/),
+        province: z.string().trim().min(2).max(120),
+        city: z.string().trim().min(2).max(120),
+        line: z.string().trim().min(10).max(500),
+        postalCode: z.string().regex(/^\d{10}$/),
+      }).optional(),
+    }).strict().parse(request.body);
+    const key = request.headers['idempotency-key'];
+    if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');
+    if (body.payment.method === 'card_to_card' && body.payment.status === 'paid' && !body.payment.reference?.trim()) {
+      throw badRequest('برای کارت‌به‌کارت پرداخت‌شده، کد پیگیری لازم است.');
+    }
+    if (body.deliverNow && body.payment.status !== 'paid') {
+      throw badRequest('تحویل حضوری فقط برای سفارش پرداخت‌شده ممکن است.');
+    }
+
+    const response = await transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, 'manual_order.create', key, requestHash(body));
+      if (claim.previous) return { reused: true, body: claim.previous };
+
+      // retail warehouse only (§40)
+      const warehouse = await one<{ id: string; name: string; purpose: string }>(
+        client, 'SELECT id, name, purpose FROM warehouses WHERE id = $1 AND active = true', [body.warehouseId]);
+      if (!warehouse) throw badRequest('انبار انتخاب‌شده معتبر یا فعال نیست.');
+      if (warehouse.purpose === 'wholesale') throw badRequest('فروش دستی خرده از انبار عمده مجاز نیست.');
+
+      // §32: customer find-or-create by mobile (canonical users table, role customer)
+      let buyerId = body.customer.customerId ?? null;
+      let customerCreated = false;
+      if (!buyerId) {
+        const existing = await one<{ id: string }>(client, 'SELECT id FROM users WHERE phone = $1', [body.customer.mobile]);
+        if (existing) buyerId = existing.id;
+        else {
+          buyerId = randomUUID();
+          await client.query(
+            'INSERT INTO users(id, phone, password_hash, display_name) VALUES ($1,$2,$3,$4)',
+            [buyerId, body.customer.mobile, await argon2.hash(randomUUID()), body.customer.name]);
+          await client.query('INSERT INTO user_roles(user_id, role_code) VALUES ($1,$2)', [buyerId, 'customer']);
+          customerCreated = true;
+        }
+      } else {
+        const exists = await one<{ id: string }>(client, 'SELECT id FROM users WHERE id = $1', [buyerId]);
+        if (!exists) throw badRequest('مشتری انتخاب‌شده یافت نشد.');
+      }
+
+      const orderId = randomUUID();
+      const sequence = await one<{ number: string }>(client, "SELECT nextval('order_reference_seq')::text AS number");
+      const reference = `KV-${sequence!.number}`;
+      const customerDisplay = body.customer.name ?? '';
+      const address = body.shippingAddress ?? {
+        recipient: customerDisplay || 'مشتری حضوری',
+        phone: body.customer.mobile ?? '09000000000',
+        province: 'تهران', city: 'تهران',
+        line: body.channel === 'in_person' ? 'تحویل حضوری در فروشگاه کلبه' : 'آدرس ثبت‌نشده — هماهنگی تلفنی',
+        postalCode: '0000000000',
+      };
+
+      // order shell FIRST (order_lines FK), totals updated after pricing the lines.
+      await client.query(
+        `INSERT INTO orders(id, reference, buyer_id, order_type, payment_mode, subtotal_rial, discount_rial, shipping_rial,
+           total_rial, shipping_address, pricing_snapshot, fulfillment_via, inventory_domain, sales_channel)
+         VALUES ($1,$2,$3,'retail','cash','0','0','0','0',$4,$5,'kolbe_warehouse','retail',$6)`,
+        [orderId, reference, buyerId, JSON.stringify(address),
+          JSON.stringify({ source: 'manual_order', channel: body.channel, createdBy: user.id }), body.channel]);
+
+      let subtotal = 0n;
+      let discountTotal = 0n;
+      const lineRows: Array<{ id: string; variantId: string; sku: string; quantity: number }> = [];
+      for (const item of body.items) {
+        const variant = await one<{
+          id: string; sku: string; active: boolean; retail_sale_enabled: boolean;
+          product_id: string; product_name: string; status: string; owner_type: string; retail_enabled: boolean; supplier_id: string | null;
+        }>(client,
+          `SELECT v.id, v.sku, v.active, v.retail_sale_enabled, p.id AS product_id, p.name AS product_name,
+                  p.status, p.owner_type, p.retail_enabled, p.supplier_id
+           FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = $1`, [item.variantId]);
+        if (!variant || !variant.active || variant.status !== 'published') throw badRequest('تنوع انتخاب‌شده معتبر یا منتشرشده نیست.');
+        if (variant.owner_type !== 'kolbe') throw forbidden(`کالای ${variant.sku} متعلق به تأمین‌کننده است و در خرده قابل فروش نیست.`);
+        if (!variant.retail_enabled || !variant.retail_sale_enabled) {
+          throw forbidden(`فروش خرده ${variant.sku} متوقف است؛ ابتدا وضعیت فروش را فعال کنید.`);
+        }
+
+        // §33: canonical retail pricing — same resolver as the website checkout.
+        const resolved = await resolveVariantPrice(client, item.variantId, { orderType: 'retail', paymentMode: 'cash' });
+        const basePrice = rial(resolved.basePrice);
+        if (basePrice === 0n) throw badRequest(`قیمت فروش ${variant.sku} معتبر نیست.`);
+        const unitDiscount = rial(resolved.discountAmount);
+        const finalUnit = rial(resolved.finalPrice);
+        const lineTotal = finalUnit * BigInt(item.quantity);
+        subtotal += basePrice * BigInt(item.quantity);
+        discountTotal += unitDiscount * BigInt(item.quantity);
+
+        const lineId = randomUUID();
+        // §34: inventory through the NORMAL order path — reserve now, consume on dispatch.
+        const updated = await client.query(
+          `UPDATE stock_balances SET reserved = reserved + $3, version = version + 1, updated_at = now()
+           WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'retail'
+             AND on_hand - reserved - damaged >= $3`,
+          [item.variantId, body.warehouseId, item.quantity]);
+        if (!updated.rowCount) throw conflict(`موجودی قابل فروش ${variant.sku} در انبار «${warehouse.name}» کافی نیست.`);
+
+        await client.query(
+          `INSERT INTO order_lines(id, order_id, product_id, variant_id, supplier_id, product_name, sku, quantity,
+             base_unit_price_rial, unit_price_rial, discount_amount_rial, line_total_rial,
+             applied_promotion_rule_id, pricing_snapshot, qc_status, received_at_kolbe, inventory_domain)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'accepted',now(),'retail')`,
+          [lineId, orderId, variant.product_id, variant.id, variant.supplier_id, variant.product_name, variant.sku,
+            item.quantity, basePrice.toString(), finalUnit.toString(), (unitDiscount * BigInt(item.quantity)).toString(),
+            lineTotal.toString(), resolved.matchedRule?.id ?? null,
+            JSON.stringify({ source: 'manual_order', channel: body.channel, resolved }),
+          ]);
+        await client.query(
+          `INSERT INTO stock_reservations(id, order_line_id, variant_id, warehouse_id, inventory_domain, quantity, status)
+           VALUES ($1,$2,$3,$4,'retail',$5,'active')`,
+          [randomUUID(), lineId, variant.id, body.warehouseId, item.quantity]);
+        await client.query(
+          `INSERT INTO stock_movements(id, variant_id, warehouse_id, inventory_domain, reserved_delta, reason, reference_type, reference_id, actor_id, idempotency_key)
+           VALUES ($1,$2,$3,'retail',$4,'order reservation','order',$5,$6,$7)`,
+          [randomUUID(), variant.id, body.warehouseId, item.quantity, orderId, user.id, `reserve:${lineId}`]);
+        lineRows.push({ id: lineId, variantId: variant.id, sku: variant.sku, quantity: item.quantity });
+      }
+
+      const total = subtotal - discountTotal;
+      await client.query(
+        'UPDATE orders SET subtotal_rial = $2, discount_rial = $3, total_rial = $4, updated_at = now() WHERE id = $1',
+        [orderId, subtotal.toString(), discountTotal.toString(), total.toString()]);
+      await client.query(
+        `INSERT INTO order_events(id, order_id, to_status, actor_id, note) VALUES ($1,$2,'pending_payment',$3,$4)`,
+        [randomUUID(), orderId, user.id, `ثبت سفارش دستی (${body.channel})${body.note ? ` — ${body.note}` : ''}`]);
+
+      // §34: lifecycle through the SAME transition core — payment gate, reservation
+      // consumption and audit identical to website orders; consumption happens exactly once.
+      const methodLabel: Record<string, string> = { cash: 'نقدی', card_to_card: 'کارت‌به‌کارت', gateway: 'درگاه', cod: 'پرداخت در محل' };
+      if (body.payment.status === 'paid') {
+        const payNote = `پرداخت ${methodLabel[body.payment.method]}${body.payment.reference ? ` — پیگیری: ${body.payment.reference}` : ''}`;
+        await applyOrderTransitionCore(client as unknown as PoolClient, user, orderId, 'paid', payNote, request.ip);
+        if (body.deliverNow) {
+          await applyOrderTransitionCore(client as unknown as PoolClient, user, orderId, 'processing', 'آماده‌سازی فروش حضوری', request.ip);
+          await applyOrderTransitionCore(client as unknown as PoolClient, user, orderId, 'shipped', 'تحویل حضوری به مشتری', request.ip);
+          await applyOrderTransitionCore(client as unknown as PoolClient, user, orderId, 'delivered', 'تحویل حضوری تکمیل شد', request.ip);
+        }
+      }
+
+      await audit(client, user.id, 'manual_order.created', 'order', orderId, undefined,
+        { reference, channel: body.channel, totalRial: total.toString(), paymentMethod: body.payment.method,
+          paymentStatus: body.payment.status, deliverNow: body.deliverNow, customerCreated, lines: lineRows.length }, request.ip);
+
+      const result = {
+        id: orderId, reference, salesChannel: body.channel,
+        status: body.deliverNow ? 'delivered' : body.payment.status === 'paid' ? 'paid' : 'pending_payment',
+        buyerId, customerCreated,
+        subtotalRial: subtotal.toString(), discountRial: discountTotal.toString(), totalRial: total.toString(),
+      };
+      await completeIdempotency(client, user.id, 'manual_order.create', key, result);
+      return { reused: false, body: result };
+    });
+    return reply.code(response.reused ? 200 : 201).send(response.body);
+  });
+
   app.post('/api/v1/orders/bulk-transitions', async (request) => {
     const user = await principal(request, pool, config);
     requirePermission(user, 'orders:transition');

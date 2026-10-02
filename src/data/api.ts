@@ -755,6 +755,23 @@ export type ManualSaleCreate = {
   payment: { method: "card_to_card" | "cash" | "pos" | "gateway" | "other"; amountRial: string; reference?: string; paidAt?: string; note?: string };
 };
 
+/** §31-§35: manual sale = a REAL retail order (canonical pipeline, server-side pricing). */
+export type ManualOrderCreate = {
+  customer: { customerId?: string; name?: string; mobile?: string };
+  channel: "instagram" | "in_person" | "whatsapp" | "telegram" | "phone" | "other";
+  warehouseId: string;
+  items: { variantId: string; quantity: number }[];
+  payment: { method: "cash" | "card_to_card" | "gateway" | "cod"; status: "paid" | "pending"; reference?: string };
+  deliverNow?: boolean;
+  note?: string;
+};
+export const manualOrdersApi = {
+  create: (payload: ManualOrderCreate, idempotencyKey: string) =>
+    authFetch<{ id: string; reference: string; salesChannel: string; status: string; buyerId: string;
+      customerCreated: boolean; subtotalRial: string; discountRial: string; totalRial: string }>(
+      "/admin/manual-orders", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
+};
+
 export const manualSalesApi = {
   list: (params?: Record<string, string | number>) => {
     const q = new URLSearchParams();

@@ -446,3 +446,84 @@ test('sale status scopes: variant stop never stops the product; color scope is o
     await app.close();
   } finally { await pool.end(); }
 });
+
+test('manual order: real retail order with canonical pricing, find-or-create customer, exact-once consumption', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { headers } = await makeAdmin(app, pool, suffix);
+    const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers,
+      payload: { brand: 'Kolbe', name: `دستی ${suffix}`, category: 'کت', cashPriceRial: '3000000',
+        variants: [{ size: 'M', color: 'مشکی' }, { size: 'L', color: 'مشکی' }] } });
+    const productId = product.json().id as string;
+    const variants = product.json().variants as Array<{ id: string; sku: string }>;
+    await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}/status`, headers, payload: { status: 'published' } });
+    const wh = await app.inject({ method: 'POST', url: '/api/v1/warehouses', headers, payload: { code: `MO-${suffix.toUpperCase()}`, name: 'انبار خرده دستی' } });
+    const whId = wh.json().id as string;
+    await app.inject({ method: 'PATCH', url: `/api/v1/warehouses/${whId}/purpose`, headers, payload: { purpose: 'retail' } });
+    await app.inject({ method: 'POST', url: '/api/v1/inventory/adjustments', headers: { ...headers, 'idempotency-key': `mo-${suffix}` },
+      payload: { variantId: variants[0]!.id, warehouseId: whId, delta: 5, inventoryDomain: 'retail', reason: 'initial stock', reference: `mo-${suffix}` } });
+
+    const mobile = `0912${suffix.replace(/\D/g, '1').slice(0, 7).padEnd(7, '3')}`;
+    const key = `mo-create-${suffix}`;
+    // in-person, paid cash, delivered now → one atomic flow through the canonical transition core
+    const create = await app.inject({ method: 'POST', url: '/api/v1/admin/manual-orders', headers: { ...headers, 'idempotency-key': key },
+      payload: { customer: { name: `مشتری ${suffix}`, mobile }, channel: 'in_person', warehouseId: whId,
+        items: [{ variantId: variants[0]!.id, quantity: 2 }], payment: { method: 'cash', status: 'paid' }, deliverNow: true } });
+    assert.equal(create.statusCode, 201, create.body);
+    assert.equal(create.json().status, 'delivered');
+    assert.equal(create.json().customerCreated, true);
+    assert.equal(create.json().totalRial, '6000000', 'canonical pricing: 2 × cash price');
+    const orderId = create.json().id as string;
+
+    // idempotent replay returns the SAME order (no double consumption)
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/admin/manual-orders', headers: { ...headers, 'idempotency-key': key },
+      payload: { customer: { name: `مشتری ${suffix}`, mobile }, channel: 'in_person', warehouseId: whId,
+        items: [{ variantId: variants[0]!.id, quantity: 2 }], payment: { method: 'cash', status: 'paid' }, deliverNow: true } });
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(replay.json().id, orderId);
+
+    // stock consumed exactly once via the normal order lifecycle
+    const bal = await pool.query("SELECT on_hand, reserved FROM stock_balances WHERE variant_id=$1 AND warehouse_id=$2 AND inventory_domain='retail'", [variants[0]!.id, whId]);
+    assert.equal(bal.rows[0]?.on_hand, 3);
+    assert.equal(bal.rows[0]?.reserved, 0);
+
+    // customer exists with the mobile; a second order reuses it
+    const customer = await pool.query('SELECT id FROM users WHERE phone = $1', [mobile]);
+    assert.equal(customer.rows.length, 1);
+    const second = await app.inject({ method: 'POST', url: '/api/v1/admin/manual-orders', headers: { ...headers, 'idempotency-key': `mo2-${suffix}` },
+      payload: { customer: { name: `مشتری ${suffix}`, mobile }, channel: 'instagram', warehouseId: whId,
+        items: [{ variantId: variants[0]!.id, quantity: 1 }], payment: { method: 'cod', status: 'pending' } } });
+    assert.equal(second.statusCode, 201, second.body);
+    assert.equal(second.json().customerCreated, false);
+    assert.equal(second.json().status, 'pending_payment');
+    // pending order reserves, does not consume
+    const bal2 = await pool.query("SELECT on_hand, reserved FROM stock_balances WHERE variant_id=$1 AND warehouse_id=$2 AND inventory_domain='retail'", [variants[0]!.id, whId]);
+    assert.equal(bal2.rows[0]?.on_hand, 3);
+    assert.equal(bal2.rows[0]?.reserved, 1);
+
+    // manual orders appear in the canonical orders list WITH sales_channel
+    const list = await app.inject({ method: 'GET', url: '/api/v1/orders?scope=admin&limit=50', headers });
+    assert.equal(list.statusCode, 200, list.body);
+    const items = list.json().items as Array<{ id: string; sales_channel?: string }>;
+    const mine = items.find((o) => o.id === orderId);
+    assert.ok(mine, 'manual order listed beside website orders');
+    assert.equal(mine?.sales_channel, 'in_person');
+
+    // guards: variant with stopped sale → 403; wholesale-purpose warehouse → 400
+    await app.inject({ method: 'POST', url: '/api/v1/products/sale-status-scoped', headers,
+      payload: { scope: 'variant', enabled: false, variantIds: [variants[0]!.id] } });
+    const blocked = await app.inject({ method: 'POST', url: '/api/v1/admin/manual-orders', headers: { ...headers, 'idempotency-key': `mo3-${suffix}` },
+      payload: { customer: { name: `مشتری ${suffix}`, mobile }, channel: 'phone', warehouseId: whId,
+        items: [{ variantId: variants[0]!.id, quantity: 1 }], payment: { method: 'cash', status: 'paid' } } });
+    assert.equal(blocked.statusCode, 403, blocked.body);
+    const whW = await app.inject({ method: 'POST', url: '/api/v1/warehouses', headers, payload: { code: `MOW-${suffix.toUpperCase()}`, name: 'انبار عمده دستی' } });
+    await app.inject({ method: 'PATCH', url: `/api/v1/warehouses/${whW.json().id}/purpose`, headers, payload: { purpose: 'wholesale' } });
+    const wrongWh = await app.inject({ method: 'POST', url: '/api/v1/admin/manual-orders', headers: { ...headers, 'idempotency-key': `mo4-${suffix}` },
+      payload: { customer: { name: `مشتری ${suffix}`, mobile }, channel: 'phone', warehouseId: whW.json().id,
+        items: [{ variantId: variants[1]!.id, quantity: 1 }], payment: { method: 'cash', status: 'paid' } } });
+    assert.equal(wrongWh.statusCode, 400, wrongWh.body);
+    await app.close();
+  } finally { await pool.end(); }
+});

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardList, FileText, Package, Printer, RefreshCw, Tag, Truck } from "lucide-react";
 import { Btn, Checkbox, Drawer, Empty, ErrorState, LoadingState, Modal, SearchBox, Segmented, Textarea } from "../components/primitives";
 import { invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi } from "../data/api";
-import { CHANNEL_LABEL, ManualSalesPanel } from "../components/manual-sales-panel";
+import { CHANNEL_LABEL } from "../components/manual-sales-panel";
+import { ManualOrderForm } from "../components/manual-order-form";
 import { TrackingCenter } from "../components/tracking-center";
 import { formatPersianDateTimeFull } from "../data/persian-date";
 import { cn } from "../utils/cn";
@@ -902,6 +903,7 @@ export function OrdersHub() {
   const [tab, setTab] = useState<"retail" | "kolbe" | "supplier">("retail");
   const [trackingOpen, setTrackingOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
+  const [retailReload, setRetailReload] = useState(0);
   const tabs = useMemo(() => ([
     { v: "retail" as const, label: "سفارشات خرده" },
     { v: "kolbe" as const, label: "سفارشات عمده کلبه" },
@@ -918,7 +920,7 @@ export function OrdersHub() {
           <Btn size="sm" variant="soft" icon={<Truck size={14} />} onClick={() => setTrackingOpen(true)}>مرکز رهگیری مرسوله‌ها</Btn>
         </div>
       </div>
-      {tab === "retail" && <RetailTab />}
+      {tab === "retail" && <RetailTab key={retailReload} />}
       {tab === "kolbe" && <WholesaleTab scope="kolbe" key="kolbe" />}
       {tab === "supplier" && <WholesaleTab scope="supplier" key="supplier" />}
       {trackingOpen && (
@@ -927,8 +929,9 @@ export function OrdersHub() {
         </Drawer>
       )}
       {manualOpen && (
-        <Drawer open onClose={() => setManualOpen(false)} title="ثبت فروش / سفارش دستی" wide>
-          <div className="p-5"><ManualSalesPanel flash={() => undefined} /></div>
+        <Drawer open onClose={() => { setManualOpen(false); setRetailReload((n) => n + 1); }} title="ثبت سفارش دستی (سفارش واقعی)" wide>
+          {/* §31-§35: creates a REAL order on the canonical pipeline; legacy «ثبت‌دستی» records stay readable in the unified retail list. */}
+          <div className="p-5"><ManualOrderForm /></div>
         </Drawer>
       )}
     </div>
