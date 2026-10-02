@@ -34,7 +34,7 @@ import {
 import { adjustmentPreview, pendingForRows } from '../../src/data/warehouse-ux.ts';
 import { fmtRial, fmtToman, rialFromToman, tomanFromRial } from '../../src/data/contracts.ts';
 import {
-  cmsApi, financeApi, financeOpsApi, integrationsApi, inventoryApi, invoiceDocsApi, promoApi,
+  cmsApi, financeApi, financeOpsApi, integrationsApi, inventoryApi, invoiceDocsApi, manualOrdersApi, promoApi,
   shippingApi, supplier360Api,
 } from '../../src/data/api.ts';
 
@@ -535,6 +535,58 @@ try {
     ordersHubSrc.includes('trackingApi.updateShipment'));
   check('bulk invoice print reuses the existing invoice domain (no parallel invoice renderer)',
     ordersHubSrc.includes('invoicesApi.list({ orderId') && !ordersHubSrc.includes('INV-'));
+
+  // ---------- §31-§35: manual sale = REAL order on the canonical pipeline ----------
+  const moVariant = wmsProduct.variants.find((v) => v.color === 'مشکی' && v.size === 'M')!;
+  const moBalancesBefore = normalizeStockBalances(await inventoryApi.balances({ warehouseId: warehouse.id, productId: wmsProduct.id }));
+  const moBefore = moBalancesBefore.find((row) => row.variantId === moVariant.id)!;
+  const moMobile = `0912${String(Date.now()).slice(-7)}`;
+  const moKey = `smoke-mo-${suffix}`;
+  const manualOrder = await manualOrdersApi.create({
+    customer: { name: 'مشتری اسموک قرارداد', mobile: moMobile },
+    channel: 'in_person', warehouseId: warehouse.id,
+    items: [{ variantId: moVariant.id, quantity: 1 }],
+    payment: { method: 'cash', status: 'paid' }, deliverNow: true,
+  }, moKey);
+  check('manualOrdersApi.create → real delivered order with SERVER-side canonical pricing',
+    manualOrder.status === 'delivered' && manualOrder.customerCreated === true && manualOrder.totalRial === '18500000',
+    `${manualOrder.reference} total=${manualOrder.totalRial}`);
+  const manualReplay = await manualOrdersApi.create({
+    customer: { name: 'مشتری اسموک قرارداد', mobile: moMobile },
+    channel: 'in_person', warehouseId: warehouse.id,
+    items: [{ variantId: moVariant.id, quantity: 1 }],
+    payment: { method: 'cash', status: 'paid' }, deliverNow: true,
+  }, moKey);
+  check('manual order create is idempotent (same key → same order, no double consumption)',
+    manualReplay.id === manualOrder.id && manualReplay.reference === manualOrder.reference);
+  const moBalancesAfter = normalizeStockBalances(await inventoryApi.balances({ warehouseId: warehouse.id, productId: wmsProduct.id }));
+  const moAfter = moBalancesAfter.find((row) => row.variantId === moVariant.id)!;
+  check('in-person paid+delivered consumed stock exactly ONCE through the normal order lifecycle',
+    moAfter.onHand === moBefore.onHand - 1 && moAfter.reserved === moBefore.reserved,
+    `on_hand ${moBefore.onHand}→${moAfter.onHand} reserved ${moBefore.reserved}→${moAfter.reserved}`);
+  const moPending = await manualOrdersApi.create({
+    customer: { name: 'مشتری اسموک قرارداد', mobile: moMobile },
+    channel: 'instagram', warehouseId: warehouse.id,
+    items: [{ variantId: moVariant.id, quantity: 1 }],
+    payment: { method: 'cod', status: 'pending' },
+  }, `smoke-mo2-${suffix}`);
+  const moBalancesPending = normalizeStockBalances(await inventoryApi.balances({ warehouseId: warehouse.id, productId: wmsProduct.id }));
+  const moPendingRow = moBalancesPending.find((row) => row.variantId === moVariant.id)!;
+  check('pending manual order reserves only (reuses existing customer, no consumption yet)',
+    moPending.status === 'pending_payment' && moPending.customerCreated === false &&
+    moPendingRow.onHand === moAfter.onHand && moPendingRow.reserved === moAfter.reserved + 1);
+  const moSales = await omsApi.retailSales({ limit: 20 });
+  const moSalesRow = (moSales.items as { id?: unknown; kind?: unknown; channel?: unknown }[]).find((row) => row.id === manualOrder.id);
+  check('manual order listed beside website orders with its REAL commercial channel',
+    moSalesRow?.kind === 'order' && moSalesRow?.channel === 'in_person');
+  const moList = await ordersApi.list({ orderType: 'retail', limit: '20' }) as unknown as { items: { id: string; sales_channel?: string }[] };
+  const moListRow = moList.items.find((row) => row.id === manualOrder.id);
+  check('GET /orders rows expose sales_channel for the hub list', moListRow?.sales_channel === 'in_person');
+  const manualFormSrc = readFileSync(join(repoRoot, 'src/components/manual-order-form.tsx'), 'utf8');
+  check('manual-order form posts the REAL order endpoint and never asks for a client-side price',
+    manualFormSrc.includes('manualOrdersApi.create') && !manualFormSrc.includes('unitPrice') && !manualFormSrc.includes('priceRial'));
+  check('OrdersHub drawer mounts ManualOrderForm — legacy manual-sale CREATE panel no longer offered',
+    ordersHubSrc.includes('<ManualOrderForm />') && !ordersHubSrc.includes('<ManualSalesPanel'));
 
   setAccessToken(null);
 } catch (error) {

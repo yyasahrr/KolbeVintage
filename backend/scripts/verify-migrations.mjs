@@ -43,7 +43,7 @@ try {
   check(rows.length === new Set(names).size, 'no duplicate migration rows (one file = one row)');
 
   // Integration (Agent 6): the merged inventory is the union of every agent's migrations.
-  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql'];
+  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql'];
   check(JSON.stringify(names) === JSON.stringify(expectedAll),
     'full merged inventory applied in name order', names.length === expectedAll.length ? '' : `got ${names.length} files`);
   const reserved = names.filter((name) => /^02[5-9]_/.test(name));
@@ -69,6 +69,15 @@ try {
     'four integrity triggers installed', expectedTriggers.filter((n) => !triggers.includes(n)).join(',') || 'all present');
   check(await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name = 'invoices' AND column_name IN ('snapshot','template_version_id','pdf_file_id')") === 3,
     'invoice snapshot/version/pdf columns present');
+  // §2-§8/§27-§35 (062): explicit series inventory + warehouse purpose + variant sale flag + sales channel.
+  check(await count("SELECT count(*)::int AS count FROM information_schema.tables WHERE table_name IN ('series_stock_balances','series_stock_movements','order_series_reservations','retail_supply_orders','retail_supply_events')") === 5,
+    'all 5 series-inventory/retail-supply tables exist (062)');
+  check(await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name = 'warehouses' AND column_name = 'purpose'") === 1,
+    'warehouses.purpose added (062)');
+  check(await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name = 'product_variants' AND column_name = 'retail_sale_enabled'") === 1,
+    'product_variants.retail_sale_enabled added (062)');
+  check(await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name = 'orders' AND column_name IN ('sales_channel','series_snapshot')") === 2,
+    'orders.sales_channel + orders.series_snapshot added (062)');
 
   // Upgrade from the last pre-dedupe schema with conflicting size mappings and
   // products. 050z must snapshot dependents before the published 051 deletes.
