@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MarketplaceReviewPanel } from "../components/marketplace-review-panel";
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
 import { inventoryApi, manualSalesApi, productsApi, serverRequest, supplierRequestsApi, type ManualSaleCreate } from "../data/api";
@@ -78,8 +79,10 @@ type F = (msg: string) => void;
  * wholesale (inventory, supplier requests, inbound & QC) / warehouse settings.
  * Settings is configuration-only (§4); operations stay in their domain tabs.
  */
-export function WarehouseHub({ flash }: { flash: F }) {
-  const [tab, setTab] = useState<"retail" | "transfers" | "wholesale" | "settings">("retail");
+export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | null }) {
+  // §2 deep link: legacy wproducts/mreview routes land on انبار عمده → محصولات و بازبینی.
+  const [tab, setTab] = useState<"retail" | "transfers" | "wholesale" | "settings">(initial === "wholesale-review" ? "wholesale" : "retail");
+  useEffect(() => { if (initial === "wholesale-review") setTab("wholesale"); }, [initial]);
   const [lowStockReport, setLowStockReport] = useState<LowStock[] | null>(null);
   return (
     <div className="animate-[fadeUp_0.35s_ease] space-y-4">
@@ -96,7 +99,7 @@ export function WarehouseHub({ flash }: { flash: F }) {
       </div>
       {tab === "retail" && <RetailInventoryTab flash={flash} />}
       {tab === "transfers" && <TransfersOpsCenter flash={flash} />}
-      {tab === "wholesale" && <WholesaleCenter flash={flash} />}
+      {tab === "wholesale" && <WholesaleCenter flash={flash} initialSub={initial === "wholesale-review" ? "review" : undefined} />}
       {tab === "settings" && (
         <Card className="p-4">
           <div className="mb-4 flex items-center gap-2 border-b border-[var(--kv-line)] pb-3">
@@ -1190,19 +1193,23 @@ function ReverseModal({ transfer, onClose, onDone, flash }: { transfer: Transfer
 
 /* ------------------------------ wholesale center (C3/I/J/QC) ------------------------------ */
 
-function WholesaleCenter({ flash }: { flash: F }) {
-  const [sub, setSub] = useState<"inventory" | "requests" | "inbound">("inventory");
+function WholesaleCenter({ flash, initialSub }: { flash: F; initialSub?: "review" }) {
+  const [sub, setSub] = useState<"inventory" | "review" | "requests" | "inbound">(initialSub ?? "inventory");
+  useEffect(() => { if (initialSub) setSub(initialSub); }, [initialSub]);
   return (
     <div className="space-y-4">
       <Segmented
         options={[
           { v: "inventory", label: "موجودی عمده" },
+          { v: "review", label: "محصولات و بازبینی" },
           { v: "requests", label: "درخواست‌های تأمین‌کنندگان" },
           { v: "inbound", label: "ورودی انبار و QC" },
         ]}
         value={sub} onChange={setSub}
       />
       {sub === "inventory" && <WholesaleInventoryTab flash={flash} />}
+      {/* §2 + §55: the ONE canonical wholesale product review queue (ex wproducts + ex بازبینی بازارچه). */}
+      {sub === "review" && <MarketplaceReviewPanel flash={flash} />}
       {sub === "requests" && <SupplierRequestsAdmin flash={flash} />}
       {sub === "inbound" && (
         <div className="space-y-5">

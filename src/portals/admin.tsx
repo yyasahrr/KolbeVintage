@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Radar, Package, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check, X, Ban, Eye,
-  ShieldCheck, Sun, Moon, LogOut, Warehouse, Users, Crown, Tags, Contact,
+  Radar, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check,
+  ShieldCheck, Sun, Moon, LogOut, Warehouse, Crown, Tags, Contact,
   LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2, Workflow, Star, Sparkles,
 } from "lucide-react";
-import { STATUS_LABEL, fmtMoney, fmtNum } from "../data/catalog";
+import { fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE, SUB_STATUS, isTerminal, type VipPlan } from "../data/platform";
-import { SupplierChip } from "../components/orders";
-import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
+import { Btn, Card, Status, SearchBox, Timeline, Field, Input, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
 import { ShippingAdmin } from "./admin-retail";
 import { ProductStudio } from "./admin-product";
 import { FinanceCenter, PlansCenter, RestrictionsCenter, ApplicationsCenter } from "./admin-ops";
@@ -16,7 +15,7 @@ import { SmsCenter } from "./admin-growth";
 
 import { SeriesTemplateManager } from "./series-templates";
 import { useOps } from "../data/ops";
-import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent, Boxes, FileText, Download, Globe2, FileVideo2 } from "lucide-react";
+import { Layers, FileSignature, ShieldAlert, TicketPercent, Boxes, FileText, Download, Globe2, FileVideo2 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { AdminApiError, apiClient, isAuthenticated, inventoryApi, onAuthExpired, shippingApi, type ApiRequest } from "../data/api";
 import { normalizeWarehouses } from "../data/contracts";
@@ -39,7 +38,6 @@ import { TicketBoardPanel } from "../components/ticket-board-panel";
 import { useDialogFocus } from "../components/focus-trap";
 import { ProductStructurePanel } from "../components/product-structure-panel";
 import { ImportCenterPanel } from "../components/import-center-panel";
-import { MarketplaceReviewPanel } from "../components/marketplace-review-panel";
 import { Supplier360Panel } from "../components/supplier-360";
 import { InvoiceDocumentsPanel } from "../components/invoice-docs";
 import { FinanceOpsPanel } from "../components/finance-ops";
@@ -136,15 +134,25 @@ const TAB_REDIRECT: Record<string, string> = {
   "manual-sales": "server-orders", // manual sales live inside مرکز سفارشات
   shipping: "settings",          // shipping CONFIG belongs to settings
   tracking: "server-orders",     // operational tracking belongs to the Orders hub
-  "crm-center": "crm", buyers360: "crm",
   "finance-ledger": "finance", "finance-wallet": "finance",
   "promo-safety": "promo",
   series: "structure",           // series templates = product structure configuration
+  // ---- CRM consolidation (master phase §1): one top-level «مرکز CRM» ----
+  users: "crm:customers",        // فهرست کاربران → CRM / مشتریان خرده
+  buyers: "crm:vip",             // خریداران عمده → CRM / خریداران VIP
+  suppliers: "crm:suppliers",    // تأمین‌کنندگان ۳۶۰° → CRM / تأمین‌کنندگان
+  sms: "crm:marketing",          // پنل پیامک → CRM / بازاریابی
+  "crm-center": "crm:marketing", buyers360: "crm:vip",
+  // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
+  wproducts: "wms:wholesale-review",
+  mreview: "wms:wholesale-review",
 };
 
-/** Small canonical-hub shell: one business capability, sub-tabs inside (§1). */
-function HubTabs({ tabs }: { tabs: { v: string; label: string; node: React.ReactNode }[] }) {
-  const [active, setActive] = useState(tabs[0]!.v);
+/** Small canonical-hub shell: one business capability, sub-tabs inside (§1).
+ *  `initial` enables legacy-route deep links (e.g. users → crm:customers). */
+function HubTabs({ tabs, initial }: { tabs: { v: string; label: string; node: React.ReactNode }[]; initial?: string | null }) {
+  const [active, setActive] = useState(initial && tabs.some((t) => t.v === initial) ? initial : tabs[0]!.v);
+  useEffect(() => { if (initial && tabs.some((t) => t.v === initial)) setActive(initial); }, [initial]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="space-y-4 animate-[fadeUp_0.35s_ease]">
       <Segmented options={tabs.map(({ v, label }) => ({ v, label }))} value={active} onChange={setActive} />
@@ -155,7 +163,7 @@ function HubTabs({ tabs }: { tabs: { v: string; label: string; node: React.React
 
 function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; setDark: (v: boolean) => void; request: ApiRequest; onLogout: () => void }) {
   const store = useStore();
-  const { products, orders, buyers, plans, accounts, setStatus, setBuyer, upsertPlan, removePlan, setTicketStatus } = store;
+  const { products, orders, buyers, plans, accounts, upsertPlan, removePlan, setTicketStatus } = store;
   const pending = products.filter((p) => p.status === "pending");
   const allSubs = orders.flatMap((o) => (o.subOrders ?? []).map((sub) => ({ parent: o, sub })));
   const kolbeSubs = allSubs.filter(
@@ -209,11 +217,15 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   };
 
   const [tab, setTab] = useState("server-orders");
-  const go = useCallback((next: string) => setTab(TAB_REDIRECT[next] ?? next), []);
+  // deep-link sub-tab inside a hub (legacy redirects like users → crm:customers)
+  const [hubSub, setHubSub] = useState<string | null>(null);
+  const go = useCallback((next: string) => {
+    const target = TAB_REDIRECT[next] ?? next;
+    const [hub, sub] = target.split(":");
+    setTab(hub!); setHubSub(sub ?? null);
+  }, []);
   const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
-  const [side, setSide] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [buyerSel, setBuyerSel] = useState<string | null>(null);
   const [planEdit, setPlanEdit] = useState<VipPlan | null>(null);
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
@@ -224,13 +236,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { g: "نمای کلی" },
     { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: badge(summary ? summary.pendingProducts + summary.pendingSupplierActions + summary.pendingMemberships : undefined, pending.length + kolbePending.length + pendingBuyers.length) },
     { g: "بازار عمده" },
-    { v: "wproducts", label: "محصولات و بازبینی", icon: <Package size={17} />, badge: badge(summary?.pendingProducts, pending.length) },
-    { v: "mreview", label: "بازبینی بازارچه (سرور)", icon: <ShieldCheck size={17} /> },
     { v: "imports", label: "مرکز ورود داده", icon: <Download size={17} /> },
-    { v: "suppliers", label: "تأمین‌کنندگان ۳۶۰°", icon: <Store size={17} /> },
     { v: "supplier-docs", label: "اسناد و صورت‌حساب", icon: <ReceiptText size={17} /> },
     { v: "applications", label: "درخواست همکاری", icon: <FileSignature size={17} />, badge: badge(summary?.pendingSupplierActions, ops.applications.filter((a) => a.status === "new").length) },
-    { v: "buyers", label: "خریداران عمده", icon: <Users size={17} />, badge: badge(summary?.pendingMemberships, pendingBuyers.length) },
     { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
     { g: "خرده‌فروشی و محصول" },
     { v: "rproducts", label: "تعریف محصول", icon: <Tags size={17} /> },
@@ -240,7 +248,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
     { v: "seo", label: "مرکز SEO", icon: <Globe2 size={17} /> },
     { v: "media", label: "مجله و رسانه‌ها", icon: <FileVideo2 size={17} /> },
-    { v: "sms", label: "پنل پیامک", icon: <MessageSquareText size={17} /> },
     { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
     { v: "finance", label: "مرکز مالی", icon: <Wallet size={17} />, badge: badge(summary?.pendingWithdrawals, ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length) },
     { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
@@ -251,7 +258,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { g: "سیستم" },
     { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
     { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
-    { v: "users", label: "فهرست کاربران", icon: <Users size={17} /> },
     { v: "restrictions", label: "محدودیت کاربران", icon: <ShieldAlert size={17} /> },
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
   ];
@@ -311,7 +317,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
       <nav className="kv-scroll flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
         {nav.map((n, i) =>
           "g" in n ? <p key={i} className="px-3 pb-1 pt-4 text-[11px] font-bold text-[var(--kv-faint)]">{n.g}</p> : (
-            <button key={n.v} onClick={() => { go(n.v); setDrawer(false); setSide(null); }}
+            <button key={n.v} onClick={() => { go(n.v); setDrawer(false); }}
               className={cn("kv-press flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-[13px] font-semibold",
                 tab === n.v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
               {n.icon}{n.label}
@@ -394,14 +400,14 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                       </button>
                     ))}
                     {pending.map((p) => (
-                      <button key={p.id} onClick={() => { go("wproducts"); setSide(p.id); }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
+                      <button key={p.id} onClick={() => go("wproducts")} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
                         <span className="h-8 w-1 shrink-0 rounded-full bg-[#D6A94E]" />
                         <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">بازبینی «{p.name}»</p><p className="truncate text-xs text-[var(--kv-muted)]">{p.supplier} · {fmtMoney(p.wholesaleFrom)} / سری</p></div>
                         <Status value="در انتظار تأیید" />
                       </button>
                     ))}
                     {pendingBuyers.map((b) => (
-                      <button key={b.id} onClick={() => { go("buyers"); setBuyerSel(b.id); }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
+                      <button key={b.id} onClick={() => go("buyers")} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
                         <span className="h-8 w-1 shrink-0 rounded-full bg-[#1B2A4A]" />
                         <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">عضویت عمده «{b.name}»</p><p className="truncate text-xs text-[var(--kv-muted)]">{b.city} · مدارک بارگذاری شده</p></div>
                         <Status value="در انتظار تأیید" />
@@ -418,126 +424,10 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             </div>
           )}
 
-          {/* ---------- Wholesale orders ---------- */}
-          {/* ---------- Wholesale products / review ---------- */}
-          {tab === "wproducts" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_340px]">
-              <Card className="overflow-hidden">
-                <div className="kv-scroll overflow-x-auto">
-                  <table className="kv-table min-w-[760px]">
-                    <thead><tr><th>محصول</th><th>مالک</th><th>قیمت سری از</th><th>حداقل</th><th>موجودی</th><th>وضعیت</th><th></th></tr></thead>
-                    <tbody>
-                      {[...pending, ...products.filter((p) => p.status !== "pending")].map((p) => (
-                        <tr key={p.id} className={cn(side === p.id && "bg-[var(--kv-accent)]/[0.05]")}>
-                          <td><span className="flex items-center gap-2.5"><img src={p.images?.[0] ?? undefined} alt="" className="h-10 w-9 rounded-lg object-cover" /><b className="whitespace-nowrap">{p.name}</b></span></td>
-                          <td><SupplierChip id={p.supplierId} name={p.supplier} /></td>
-                          <td className="font-bold tabular-nums">{fmtMoney(p.wholesaleFrom)}</td>
-                          <td className="tabular-nums">{fmtNum(p.moq)} سری</td>
-                          <td className="tabular-nums">{fmtNum(p.stock)}</td>
-                          <td><Status value={p.status === "published" ? "فعال" : STATUS_LABEL[p.status ?? "published"]} /></td>
-                          <td><button onClick={() => setSide(p.id)} className="inline-flex items-center gap-1 text-[12.5px] font-bold text-[var(--kv-accent)] hover:underline"><Eye size={13} />بازبینی</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="flex items-center justify-between border-t border-[var(--kv-line)] px-5 py-3 text-xs text-[var(--kv-muted)]">
-                  <span>{fmtNum(products.length)} محصول · {fmtNum(pending.length)} در صف بازبینی</span>
-                  <Btn variant="soft" size="sm" disabled={pending.length === 0} onClick={() => { pending.forEach((p) => setStatus(p.id, "published")); flash(`${fmtNum(pending.length)} محصول تأیید و در بازارچه منتشر شد`); }}>تأیید همه موارد صف</Btn>
-                </div>
-              </Card>
-              <Card className="h-fit p-5">
-                {!side ? <Empty title="محصولی انتخاب نشده" desc="روی «بازبینی» هر سطر بزنید." /> : (() => {
-                  const p = products.find((x) => x.id === side);
-                  if (!p) return <Empty title="محصولی انتخاب نشده" desc="روی «بازبینی» هر سطر بزنید." />;
-                  return (
-                    <div>
-                      <img src={p.images?.[0] ?? undefined} alt="" className="aspect-[16/10] w-full rounded-[12px] object-cover" />
-                      <h3 className="mt-3 text-[15px] font-extrabold">{p.name}</h3>
-                      <p className="text-xs text-[var(--kv-muted)]">{p.sku} · {p.supplier}</p>
-                      <div className="mt-3 space-y-1.5 text-[12.5px]">
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">قیمت سری</span><b className="tabular-nums">{fmtMoney(p.wholesaleFrom)}</b></div>
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">حداقل سفارش</span><b className="tabular-nums">{fmtNum(p.moq)} سری</b></div>
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تعداد سری</span><b className="tabular-nums">{fmtNum(p.series.length)}</b></div>
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">وضعیت</span><Status value={p.status === "published" ? "فعال" : STATUS_LABEL[p.status ?? "published"]} /></div>
-                      </div>
-                      <div className="mt-3 space-y-2 border-t border-[var(--kv-line)] pt-3">{p.series.map((series) => <div key={series.id} className="rounded-[10px] bg-[var(--kv-surface-2)]/60 p-3 text-[11.5px]"><p className="font-bold">{series.name} · {fmtNum(series.pieces)} تکه · {series.available ? "فعال" : "غیرفعال"}</p><p className="mt-1 text-[var(--kv-muted)]">{Object.entries(series.composition).filter(([, n]) => n > 0).map(([s, n]) => `${s}×${fmtNum(n)}`).join("، ")}</p><p className="mt-1 font-semibold">{fmtMoney(series.pricePerSeries)} / سری · حداقل {fmtNum(series.moqSeries)} سری</p><p className="mt-1 text-[var(--kv-muted)]">رنگ‌های مجاز: {(series.colorIds ?? p.colors.map((c) => c.id)).map((id) => p.colors.find((c) => c.id === id)?.name ?? id).join("، ")}</p></div>)}</div>
-                      <p className="mt-3 text-[12px] leading-6 text-[var(--kv-muted)]">{p.desc}</p>
-                      <div className="mt-4 grid grid-cols-2 gap-2">
-                        {p.status === "published" ? (
-                          <Btn variant="soft" size="sm" className="col-span-2" onClick={() => { setStatus(p.id, "draft"); flash("محصول از بازارچه عمده خارج شد"); }} icon={<Ban size={14} />}>توقف نمایش در بازارچه</Btn>
-                        ) : (
-                          <>
-                            <Btn variant="accent" size="sm" onClick={() => { setStatus(p.id, "published"); flash(`«${p.name}» تأیید و در بازارچه عمده منتشر شد`); }} icon={<Check size={14} />}>تأیید و انتشار</Btn>
-                            <Btn variant="soft" size="sm" disabled={p.status === "rejected"} onClick={() => { setStatus(p.id, "rejected"); flash("به تأمین‌کننده برگشت خورد"); }} icon={<X size={14} />}>رد</Btn>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </Card>
-            </div>
-          )}
-
-          {tab === "suppliers" && <div className="mb-4">{moduleBoundary("تغییرات حساس تأمین‌کنندگان", <SupplierChangeReview flash={flash} />)}</div>}
-          {/* ---------- Suppliers (360°: items 11-14) ---------- */}
-          {tab === "suppliers" && moduleBoundary("تأمین‌کنندگان ۳۶۰°", <Supplier360Panel flash={flash} />)}
+          {/* wproducts/mreview consolidated into WMS → انبار عمده → محصولات و بازبینی (§2) */}
           {tab === "supplier-docs" && moduleBoundary("اسناد و صورت‌حساب", <InvoiceDocumentsPanel flash={flash} />)}
 
-          {/* ---------- Buyers ---------- */}
-          {tab === "buyers" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_340px]">
-              <Card className="overflow-hidden">
-                <div className="kv-scroll overflow-x-auto">
-                  <table className="kv-table min-w-[760px]">
-                    <thead><tr><th>خریدار</th><th>شهر</th><th>پلن</th><th>سفارش‌ها</th><th>ارزش خرید</th><th>وضعیت</th><th></th></tr></thead>
-                    <tbody>
-                      {buyers.map((b) => (
-                        <tr key={b.id} className={cn(buyerSel === b.id && "bg-[var(--kv-accent)]/[0.05]")}>
-                          <td><b>{b.name}</b><span className="block text-[11px] text-[var(--kv-muted)]">از {b.since} · {b.contact}</span></td><td>{b.city}</td>
-                          <td><span className="rounded-full bg-[var(--kv-surface-2)] px-2.5 py-1 text-[11px] font-bold">{plans.find((p) => p.id === b.planId)?.name ?? b.planId}</span></td>
-                          <td className="tabular-nums">{fmtNum(orders.filter((o) => o.buyer === b.name).length)}</td>
-                          <td className="font-bold tabular-nums">{fmtMoney(b.spent)}</td>
-                          <td><Status value={b.status} /></td>
-                          <td><button onClick={() => setBuyerSel(b.id)} className="text-[12.5px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-              <Card className="h-fit p-5">
-                {(() => {
-                  const b = buyers.find((x) => x.id === buyerSel);
-                  if (!b) return <Empty title="خریداری انتخاب نشده" desc="روی «مدیریت» بزنید تا پرونده باز شود." />;
-                  const bo = orders.filter((o) => o.buyer === b.name);
-                  return (
-                    <div>
-                      <p className="text-[15px] font-extrabold">{b.name}</p>
-                      <p className="text-xs text-[var(--kv-muted)]">{b.city} · {b.contact}</p>
-                      {b.accountId && <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">مرتبط با همان حساب مشتری: {accounts.find((a) => a.id === b.accountId)?.name ?? b.accountId}</p>}
-                      <div className="mt-3"><Status value={b.status} /></div>
-                      <div className="mt-4 space-y-3">
-                        <Field label="پلن عضویت"><Select options={plans.map((p) => p.name)} value={plans.find((p) => p.id === b.planId)?.name} onChange={(v) => { const p = plans.find((x) => x.name === v); if (p) { setBuyer(b.id, { planId: p.id }); flash(`پلن ${b.name} به ${p.name} تغییر کرد`); } }} /></Field>
-                        {b.tradeCode && <p className="text-[12px] text-[var(--kv-muted)]">شناسه صنفی: <b className="text-[var(--kv-ink)]">{b.tradeCode}</b> · ثبت: {b.submittedAt}</p>}
-                        <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-3.5 py-3 text-[12.5px]"><p className="flex justify-between"><span className="text-[var(--kv-muted)]">سفارش‌ها</span><b className="tabular-nums">{fmtNum(bo.length)}</b></p><p className="mt-1 flex justify-between"><span className="text-[var(--kv-muted)]">زیرسفارش باز</span><b className="tabular-nums">{fmtNum(bo.flatMap((o) => o.subOrders ?? []).filter((s) => !isTerminal(s.status)).length)}</b></p></div>
-                        {b.status === "در انتظار تأیید" ? (
-                          <div className="grid grid-cols-2 gap-2">
-                            <Btn variant="accent" size="sm" icon={<Check size={14} />} onClick={() => { setBuyer(b.id, { status: "فعال" }); flash(`عضویت عمده ${b.name} تأیید شد؛ قیمت‌ها برایش فعال است`); }}>تأیید عضویت</Btn>
-                            <Btn variant="soft" size="sm" icon={<X size={14} />} onClick={() => { setBuyer(b.id, { status: "مسدود" }); flash("درخواست رد شد"); }}>رد</Btn>
-                          </div>
-                        ) : b.status === "فعال"
-                          ? <Btn variant="soft" size="sm" className="w-full" icon={<Ban size={14} />} onClick={() => { setBuyer(b.id, { status: "مسدود" }); flash(`${b.name} مسدود شد`); }}>مسدودسازی حساب</Btn>
-                          : <Btn variant="soft" size="sm" className="w-full" onClick={() => { setBuyer(b.id, { status: "فعال" }); flash(`${b.name} فعال شد`); }}>فعال‌سازی مجدد</Btn>}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </Card>
-            </div>
-          )}
-
+          {/* buyers demo desk consolidated into CRM → خریداران VIP (§1) */}
           {/* ---------- Plans ---------- */}
           {tab === "plans" && <PlansCenter flash={flash} />}
           {tab === "applications" && <ApplicationsCenter flash={flash} />}
@@ -578,19 +468,19 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           )}
 
           {/* ---------- Retail modules ---------- */}
-          {tab === "users" && moduleBoundary("فهرست کاربران", <UsersDirectoryPanel flash={flash} />)}
           {tab === "rproducts" && moduleBoundary("تعریف محصول", <ProductStudio flash={flash} />)}
           {tab === "structure" && moduleBoundary("ساختار محصولات و سری‌ها", <HubTabs tabs={[
             { v: "structure", label: "ساختار محصولات", node: <ProductStructurePanel flash={flash} /> },
             { v: "series", label: "قالب‌های سری کلبه", node: <SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /> },
           ]} />)}
-          {tab === "mreview" && moduleBoundary("بازبینی بازارچه", <MarketplaceReviewPanel flash={flash} />)}
           {tab === "imports" && moduleBoundary("مرکز ورود داده", <ImportCenterPanel flash={flash} />)}
-          {tab === "wms" && moduleBoundary("انبار و نقل‌وانتقالات", <WarehouseHub flash={flash} />)}
-          {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs tabs={[
-            { v: "customers", label: "مشتریان و مخاطبین", node: <CrmPanel /> },
-            { v: "growth", label: "رشد و کمپین‌ها", node: <CrmCenter flash={flash} /> },
-            { v: "b360", label: "پرونده ۳۶۰° خریداران", node: <Buyer360Panel flash={flash} /> },
+          {tab === "wms" && moduleBoundary("انبار و نقل‌وانتقالات", <WarehouseHub flash={flash} initial={hubSub} />)}
+          {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
+          {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
+            { v: "customers", label: "مشتریان خرده", node: <div className="space-y-5"><CrmPanel /><UsersDirectoryPanel flash={flash} /></div> },
+            { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
+            { v: "suppliers", label: "تأمین‌کنندگان", node: <div className="space-y-5"><SupplierChangeReview flash={flash} /><Supplier360Panel flash={flash} /></div> },
+            { v: "marketing", label: "بازاریابی", node: <div className="space-y-5"><SmsCenter flash={flash} /><CrmCenter flash={flash} /></div> },
           ]} />)}
           {tab === "automation" && moduleBoundary("اتوماسیون و n8n", <AutomationCenter flash={flash} />)}
           {tab === "reviews" && moduleBoundary("نظرات و امتیازها", <ReviewsCenter flash={flash} />)}
@@ -608,7 +498,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             { v: "safety", label: "ایمنی تخفیف و کوپن شخصی", node: <PromoSafetyPanel flash={flash} /> },
             { v: "server-rules", label: "پروموشن‌های سرور", node: <AdminServerOrders request={request} only="server-promotions" /> },
           ]} />)}
-          {tab === "sms" && moduleBoundary("پنل پیامک", <SmsCenter flash={flash} />)}
           {tab === "seo" && moduleBoundary("مرکز SEO", <SEOCenter flash={flash} request={request} />)}
           {tab === "media" && moduleBoundary("مجله و رسانه‌ها", <ContentMediaCenter flash={flash} request={request} />)}
 
