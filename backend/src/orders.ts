@@ -136,6 +136,7 @@ type VariantRow = {
   supplier_id: string | null;
   owner_type: 'kolbe' | 'supplier';
   retail_enabled: boolean;
+  retail_sale_enabled: boolean;
   wholesale_enabled: boolean;
   installment_policy: string;
   wholesale_moq: number | null;
@@ -398,6 +399,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         const variant = await one<VariantRow>(
           client,
           `SELECT v.id AS variant_id, v.sku, v.size_label, v.color_label, v.active,
+                  v.retail_sale_enabled,
                   v.price_override_rial::text AS price_override_rial,
                   p.id AS product_id, p.name AS product_name, p.brand AS product_brand,
                   sp.brand_name AS brand_display_name,
@@ -416,6 +418,10 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         if (body.orderType === 'retail') {
           if (variant.owner_type !== 'kolbe' || !variant.retail_enabled) {
             throw new ApiError(403, 'FORBIDDEN', `کالای ${variant.sku} متعلق به تأمین‌کننده عمده است و بدون انتقال مالکیت به کلبه در خرده‌فروشی قابل عرضه نیست.`);
+          }
+          // §29/§30: variant-level sale eligibility — effective sellability is server-side.
+          if (!variant.retail_sale_enabled) {
+            throw new ApiError(403, 'FORBIDDEN', `فروش خرده تنوع ${variant.sku} متوقف شده است.`);
           }
         } else {
           if (!variant.wholesale_enabled) {

@@ -48,7 +48,8 @@ type InvRow = {
   variant_id: string; warehouse_id: string; inventory_domain: "retail" | "wholesale";
   warehouse_name: string; sku: string; size_label: string | null; color_label: string | null;
   product_id: string; product_name: string; owner_type: string; supplier_id: string | null;
-  retail_enabled: boolean; product_status: string;
+  retail_enabled: boolean; variant_sale_enabled?: boolean; effective_retail_sellable?: boolean;
+  sale_status?: "active" | "paused" | "variant_paused" | "archived"; product_status: string;
   on_hand: number; reserved: number; incoming: number; damaged: number; available: number;
   stock_status: string;
 };
@@ -309,15 +310,8 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
     return [...map.values()];
   }, [rows]);
 
-  const toggleSale = async (row: InvRow, enable: boolean) => {
-    setBusy(true);
-    try {
-      await productsApi.update(row.product_id, { retailEnabled: enable });
-      flash(enable ? "فروش محصول فعال شد." : "فروش محصول متوقف شد (موجودی دست‌نخورده می‌ماند).");
-      await reload();
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت فروش"); }
-    finally { setBusy(false); }
-  };
+  // §28: sale status needs an EXPLICIT scope — متوقف کردن یک تنوع هرگز کل محصول را نمی‌بندد.
+  const [saleScopeFor, setSaleScopeFor] = useState<{ row: InvRow; productLevel: boolean } | null>(null);
 
   const openIncoming = async (targetRows: InvRow[]) => {
     setBusy(true);
@@ -462,11 +456,11 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                             {sum.incoming > 0 && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void openIncoming(vRows)}>دریافت کالا</Btn>}
                             <select aria-label={`عملیات ${product.product_name}`} value="" disabled={busy} className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2 text-xs" onChange={(e) => {
                               if (e.target.value === "details") setExpanded(new Set(expanded).add(product.product_id));
-                              if (e.target.value === "sale") void toggleSale(product, !product.retail_enabled);
+                              if (e.target.value === "sale") setSaleScopeFor({ row: product, productLevel: true });
                               if (e.target.value === "archive") setArchiveFor(product);
                             }}>
                               <option value="">عملیات ▾</option><option value="details">مشاهده جزئیات</option>
-                              {domain === "retail" && product.product_status !== "archived" && <option value="sale">{product.retail_enabled ? "توقف فروش" : "فعال‌سازی فروش"}</option>}
+                              {domain === "retail" && product.product_status !== "archived" && <option value="sale">وضعیت فروش…</option>}
                               {domain === "retail" && product.product_status !== "archived" && <option value="archive">آرشیو محصول…</option>}
                             </select>
                           </div>
@@ -492,7 +486,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                         <td className="tabular-nums">{fa(row.reserved)}</td>
                         <td className="tabular-nums font-bold">{fa(Number(row.available))}</td>
                         <td><Badge map={STOCK_BADGE} value={row.stock_status} /></td>
-                        {domain === "retail" && <td><span className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-bold", row.retail_enabled && row.product_status !== "archived" ? "bg-emerald-100 text-emerald-800" : "bg-gray-200 text-gray-600")}>{row.product_status === "archived" ? "آرشیو" : row.retail_enabled ? "فعال" : "فروش متوقف"}</span></td>}
+                        {domain === "retail" && <td><span className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-bold", row.sale_status === "active" ? "bg-emerald-100 text-emerald-800" : row.sale_status === "variant_paused" ? "bg-amber-100 text-amber-800" : "bg-gray-200 text-gray-600")}>{row.sale_status === "archived" || row.product_status === "archived" ? "آرشیو" : row.sale_status === "variant_paused" ? "توقف این تنوع" : row.sale_status === "paused" || !row.retail_enabled ? "فروش متوقف (محصول)" : "فعال"}</span></td>}
                         <td>
                           <div className="flex flex-wrap gap-2">
                             {row.incoming > 0 && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void openIncoming([row])}>دریافت کالا</Btn>}
@@ -502,7 +496,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                               if (e.target.value === "manual") setSaleFor(row);
                               if (e.target.value === "adjust") setAdjustFor(row);
                               if (e.target.value === "receive") void openIncoming([row]);
-                              if (e.target.value === "sale") void toggleSale(row, !row.retail_enabled);
+                              if (e.target.value === "sale") setSaleScopeFor({ row, productLevel: false });
                               if (e.target.value === "archive") setArchiveFor(row);
                             }}>
                               <option value="">عملیات ▾</option><option value="details">مشاهده جزئیات</option>
@@ -510,7 +504,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                               {domain === "retail" && <option value="manual">ثبت فروش دستی</option>}
                               <option value="adjust">اصلاح موجودی</option>
                               {row.incoming > 0 && pendingForRows(pendingReceipts, [row]).length > 0 && <option value="receive">دریافت کالای در راه</option>}
-                              {domain === "retail" && row.product_status !== "archived" && <option value="sale">{row.retail_enabled ? "توقف فروش" : "فعال‌سازی فروش"}</option>}
+                              {domain === "retail" && row.product_status !== "archived" && <option value="sale">وضعیت فروش…</option>}
                               {domain === "retail" && row.product_status !== "archived" && <option value="archive">آرشیو محصول…</option>}
                             </select>
                           </div>
@@ -575,11 +569,80 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
       {receiptFor && <ReceiptModal row={receiptFor} domain={domain} onClose={() => setReceiptFor(null)} onDone={() => { setReceiptFor(null); void reload(); }} flash={flash} />}
       {saleFor && <QuickManualSaleModal row={saleFor} onClose={() => setSaleFor(null)} onDone={() => { setSaleFor(null); void reload(); }} flash={flash} />}
       {adjustFor && <AdjustModal row={adjustFor} domain={domain} onClose={() => setAdjustFor(null)} onDone={() => { setAdjustFor(null); void reload(); }} flash={flash} />}
+      {saleScopeFor && <SaleScopeModal target={saleScopeFor} onClose={() => setSaleScopeFor(null)}
+        onDone={() => { setSaleScopeFor(null); void reload(); }} flash={flash} />}
     </Card>
   );
 }
 
 /** react fragments inside tbody need a tiny helper to keep keys happy */
+/**
+ * §28/§30: scope-aware sale status. The admin explicitly picks WHAT stops/starts:
+ * فقط همین تنوع / همهٔ تنوع‌های این رنگ / کل محصول — with a confirmation that names the
+ * exact selection. One transactional backend call, per-item results.
+ */
+function SaleScopeModal({ target, onClose, onDone, flash }: {
+  target: { row: InvRow; productLevel: boolean }; onClose: () => void; onDone: () => void; flash: F;
+}) {
+  const { row } = target;
+  const [scope, setScope] = useState<"variant" | "color" | "product">(target.productLevel ? "product" : "variant");
+  const [enable, setEnable] = useState(() => {
+    if (target.productLevel) return !row.retail_enabled;
+    return !(row.variant_sale_enabled ?? true) || !row.retail_enabled ? true : false;
+  });
+  const [busy, setBusy] = useState(false);
+  const scopeLabel = scope === "variant"
+    ? `فقط تنوع ${row.color_label ?? "—"} / ${row.size_label ?? "—"} (${row.sku})`
+    : scope === "color"
+      ? `همهٔ تنوع‌های رنگ «${row.color_label ?? "—"}» از ${row.product_name}`
+      : `کل محصول «${row.product_name}» (همهٔ رنگ‌ها و سایزها)`;
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const res = await productsApi.saleStatusScoped(
+        scope === "product" ? { scope, enabled: enable, productIds: [row.product_id] }
+          : scope === "color" ? { scope, enabled: enable, colorTargets: [{ productId: row.product_id, colorLabel: row.color_label ?? "" }] }
+            : { scope, enabled: enable, variantIds: [row.variant_id] });
+      const failed = res.results.filter((r) => !r.ok);
+      if (failed.length) flash(`ناموفق: ${failed.map((f) => `${f.label}: ${f.error ?? ""}`).join("؛ ")}`);
+      else flash(enable ? `فروش ${scopeLabel} فعال شد.` : `فروش ${scopeLabel} متوقف شد (موجودی دست‌نخورده می‌ماند).`);
+      onDone();
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت فروش"); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="وضعیت فروش خرده">
+      <h3 className="mb-1 text-[15px] font-extrabold">وضعیت فروش — {row.product_name}</h3>
+      <p className="mb-3 text-[12px] leading-6 text-[var(--kv-muted)]">
+        دامنهٔ تغییر را دقیق انتخاب کنید؛ توقف یک تنوع هرگز کل محصول را متوقف نمی‌کند. قابل فروش بودن نهایی را سرور محاسبه می‌کند (محصول فعال + تنوع فعال + غیرآرشیو + قیمت معتبر).
+      </p>
+      <div className="space-y-2">
+        {([
+          ["variant", `فقط همین تنوع — ${row.color_label ?? "—"} / ${row.size_label ?? "—"}`, `وضعیت فعلی: ${(row.variant_sale_enabled ?? true) ? "فعال" : "متوقف"}`],
+          ["color", `همهٔ تنوع‌های رنگ «${row.color_label ?? "—"}»`, "یک عملیات سروری برای همهٔ سایزهای این رنگ"],
+          ["product", "کل محصول (کلید اصلی)", `وضعیت فعلی محصول: ${row.retail_enabled ? "فعال" : "متوقف"}`],
+        ] as const).map(([value, label, hint]) => (
+          <button key={value} className={cn("w-full rounded-[12px] border p-3 text-right",
+            scope === value ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/5" : "border-[var(--kv-line)]")}
+            onClick={() => setScope(value)} disabled={value === "color" && !row.color_label}>
+            <p className="text-[13px] font-bold">{label}</p>
+            <p className="text-[11px] text-[var(--kv-muted)]">{hint}</p>
+          </button>
+        ))}
+        <Segmented options={[{ v: "stop", label: "توقف فروش" }, { v: "start", label: "فعال‌سازی فروش" }]}
+          value={enable ? "start" : "stop"} onChange={(v) => setEnable(v === "start")} />
+        <p className="rounded-[10px] bg-amber-50 px-3 py-2 text-[12px] font-bold leading-6 text-amber-800">
+          {enable ? "فعال‌سازی" : "توقف"} فروش برای: {scopeLabel}
+        </p>
+        <div className="flex gap-2">
+          <Btn variant="accent" disabled={busy} onClick={() => void submit()}>تأیید و اعمال</Btn>
+          <Btn variant="soft" onClick={onClose}>انصراف</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function FragmentRows({ head, body }: { head: React.ReactNode; body: React.ReactNode }) {
   return <>{head}{body}</>;
 }

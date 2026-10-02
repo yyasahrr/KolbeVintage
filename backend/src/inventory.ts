@@ -211,7 +211,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       // §6: ALL filters are server-backed — no client-side full-dataset filtering.
       offset: z.coerce.number().int().min(0).max(1000000).default(0),
       stockStatus: z.enum(['in_stock', 'low_stock', 'out_of_stock', 'incoming', 'fully_reserved']).optional(),
-      saleStatus: z.enum(['active', 'paused', 'archived']).optional(),
+      saleStatus: z.enum(['active', 'paused', 'variant_paused', 'archived']).optional(),
       colorLabel: z.string().max(60).optional(),
       sizeLabel: z.string().max(60).optional(),
       category: z.string().max(60).optional(),
@@ -226,7 +226,10 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       `WITH base AS (
         SELECT b.variant_id, b.warehouse_id, b.inventory_domain, w.code AS warehouse_code, w.name AS warehouse_name,
               v.sku, v.size_label, v.color_label, p.id AS product_id, p.name AS product_name, p.owner_type,
-              p.supplier_id, p.retail_enabled, p.status AS product_status, p.category,
+              p.supplier_id, p.retail_enabled, v.retail_sale_enabled AS variant_sale_enabled,
+              (p.status = 'published' AND p.retail_enabled AND v.retail_sale_enabled
+               AND COALESCE(p.cash_price_rial, 0) > 0) AS effective_retail_sellable,
+              p.status AS product_status, p.category,
               b.on_hand, b.reserved, b.incoming, b.damaged, (b.on_hand - b.reserved - b.damaged) AS available, b.version,
               CASE
                 WHEN b.on_hand - b.reserved - b.damaged > 0 AND b.on_hand - b.reserved - b.damaged <= ${LOW_STOCK_THRESHOLD} THEN 'low_stock'
@@ -237,8 +240,9 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
               END AS stock_status,
               CASE
                 WHEN p.status = 'archived' THEN 'archived'
-                WHEN p.retail_enabled THEN 'active'
-                ELSE 'paused'
+                WHEN NOT p.retail_enabled THEN 'paused'
+                WHEN NOT v.retail_sale_enabled THEN 'variant_paused'
+                ELSE 'active'
               END AS sale_status
        FROM stock_balances b JOIN warehouses w ON w.id = b.warehouse_id
        JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id

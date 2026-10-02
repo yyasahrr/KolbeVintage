@@ -360,3 +360,89 @@ test('retail supply: reserve → dispatch(break, ALL pieces to retail incoming) 
     await app.close();
   } finally { await pool.end(); }
 });
+
+test('sale status scopes: variant stop never stops the product; color scope is one bulk op; checkout enforces variant eligibility', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { headers } = await makeAdmin(app, pool, suffix);
+    const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers,
+      payload: { brand: 'Kolbe', name: `اسکوپ ${suffix}`, category: 'کت', cashPriceRial: '7000000',
+        variants: [
+          { size: 'M', color: 'مشکی' }, { size: 'L', color: 'مشکی' },
+          { size: 'M', color: 'سفید' }, { size: 'L', color: 'سفید' },
+        ] } });
+    assert.equal(product.statusCode, 201, product.body);
+    const productId = product.json().id as string;
+    const variants = product.json().variants as Array<{ id: string; sku: string }>;
+    await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}/status`, headers, payload: { status: 'published' } });
+    const wh = await app.inject({ method: 'POST', url: '/api/v1/warehouses', headers, payload: { code: `SC-${suffix.toUpperCase()}`, name: 'انبار اسکوپ' } });
+    const whId = wh.json().id as string;
+    for (const [i, v] of variants.entries()) {
+      await app.inject({ method: 'POST', url: '/api/v1/inventory/adjustments', headers: { ...headers, 'idempotency-key': `sc-${suffix}-${i}` },
+        payload: { variantId: v.id, warehouseId: whId, delta: 5, inventoryDomain: 'retail', reason: 'initial stock', reference: `sc-${suffix}-${i}` } });
+    }
+
+    // VARIANT scope: stop only مشکی/M — per-item results include a bogus id failure
+    const bogus = randomUUID();
+    const stopVariant = await app.inject({ method: 'POST', url: '/api/v1/products/sale-status-scoped', headers,
+      payload: { scope: 'variant', enabled: false, variantIds: [variants[0]!.id, bogus] } });
+    assert.equal(stopVariant.statusCode, 200, stopVariant.body);
+    assert.equal(stopVariant.json().succeeded, 1);
+    assert.equal(stopVariant.json().failed, 1);
+
+    // product stays retail_enabled; inventory list shows variant_paused ONLY for that variant
+    const inv = await app.inject({ method: 'GET', url: `/api/v1/inventory?warehouseId=${whId}&inventoryDomain=retail`, headers });
+    const rows = inv.json().items as Array<{ variant_id: string; sale_status: string; retail_enabled: boolean; effective_retail_sellable: boolean }>;
+    const stopped = rows.find((r) => r.variant_id === variants[0]!.id);
+    const sibling = rows.find((r) => r.variant_id === variants[1]!.id);
+    assert.equal(stopped?.sale_status, 'variant_paused');
+    assert.equal(stopped?.retail_enabled, true, 'product master switch untouched');
+    assert.equal(stopped?.effective_retail_sellable, false);
+    assert.equal(sibling?.sale_status, 'active');
+    assert.equal(sibling?.effective_retail_sellable, true);
+
+    // checkout enforcement: stopped variant 403, sibling OK
+    const buyerId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [buyerId, `scope-buyer-${suffix}@example.test`, await argon2.hash('BuyerPass123456!'), 'خریدار اسکوپ']);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { identity: `scope-buyer-${suffix}@example.test`, password: 'BuyerPass123456!' } });
+    const buyer = { authorization: `Bearer ${login.json().accessToken as string}` };
+    const address = { recipient: 'خریدار اسکوپ', phone: '09123456789', province: 'تهران', city: 'تهران', line: 'خیابان آزمایش، پلاک ۱۲، واحد ۳', postalCode: '1234567890' };
+    const blocked = await app.inject({ method: 'POST', url: '/api/v1/orders', headers: { ...buyer, 'idempotency-key': `sc-ord1-${suffix}` },
+      payload: { orderType: 'retail', paymentMode: 'cash', items: [{ variantId: variants[0]!.id, quantity: 1 }], shippingAddress: address } });
+    assert.equal(blocked.statusCode, 403, blocked.body);
+    const allowed = await app.inject({ method: 'POST', url: '/api/v1/orders', headers: { ...buyer, 'idempotency-key': `sc-ord2-${suffix}` },
+      payload: { orderType: 'retail', paymentMode: 'cash', items: [{ variantId: variants[1]!.id, quantity: 1 }], shippingAddress: address } });
+    assert.equal(allowed.statusCode, 201, allowed.body);
+
+    // COLOR scope: one call stops ALL سفید variants, مشکی/L stays active
+    const stopColor = await app.inject({ method: 'POST', url: '/api/v1/products/sale-status-scoped', headers,
+      payload: { scope: 'color', enabled: false, colorTargets: [{ productId, colorLabel: 'سفید' }] } });
+    assert.equal(stopColor.statusCode, 200, stopColor.body);
+    assert.equal(stopColor.json().succeeded, 1);
+    const inv2 = await app.inject({ method: 'GET', url: `/api/v1/inventory?warehouseId=${whId}&inventoryDomain=retail`, headers });
+    const rows2 = inv2.json().items as Array<{ variant_id: string; sale_status: string }>;
+    assert.equal(rows2.find((r) => r.variant_id === variants[2]!.id)?.sale_status, 'variant_paused');
+    assert.equal(rows2.find((r) => r.variant_id === variants[3]!.id)?.sale_status, 'variant_paused');
+    assert.equal(rows2.find((r) => r.variant_id === variants[1]!.id)?.sale_status, 'active');
+
+    // PRODUCT scope: master switch off → everything paused (variant flags preserved)
+    const stopProduct = await app.inject({ method: 'POST', url: '/api/v1/products/sale-status-scoped', headers,
+      payload: { scope: 'product', enabled: false, productIds: [productId] } });
+    assert.equal(stopProduct.statusCode, 200, stopProduct.body);
+    const inv3 = await app.inject({ method: 'GET', url: `/api/v1/inventory?warehouseId=${whId}&inventoryDomain=retail&variantId=${variants[1]!.id}`, headers });
+    assert.equal((inv3.json().items as Array<{ sale_status: string }>)[0]?.sale_status, 'paused');
+
+    // re-enable variant scope on مشکی/M while product paused: allowed, but effective stays false (server-side)
+    const reEnable = await app.inject({ method: 'POST', url: '/api/v1/products/sale-status-scoped', headers,
+      payload: { scope: 'variant', enabled: true, variantIds: [variants[0]!.id] } });
+    assert.equal(reEnable.statusCode, 200, reEnable.body);
+    const inv4 = await app.inject({ method: 'GET', url: `/api/v1/inventory?warehouseId=${whId}&inventoryDomain=retail&variantId=${variants[0]!.id}`, headers });
+    const row4 = (inv4.json().items as Array<{ sale_status: string; effective_retail_sellable: boolean }>)[0];
+    assert.equal(row4?.sale_status, 'paused', 'product master switch wins');
+    assert.equal(row4?.effective_retail_sellable, false);
+    await app.close();
+  } finally { await pool.end(); }
+});

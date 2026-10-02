@@ -205,6 +205,11 @@ export const productsApi = {
   },
   create: (payload: unknown) => apiClient.post<{ id: string; status: string; variants: { id: string; sku: string }[] }>("/products", payload),
   update: (id: string, payload: unknown) => apiClient.patch<{ id: string; updated: string[] }>(`/products/${id}`, payload),
+  /** §27-§30: scoped sale status (product | color | variant) — one transactional call, per-item results. */
+  saleStatusScoped: (payload: {
+    scope: "product" | "color" | "variant"; enabled: boolean;
+    productIds?: string[]; colorTargets?: { productId: string; colorLabel: string }[]; variantIds?: string[];
+  }) => apiClient.post<{ results: { key: string; label: string; ok: boolean; error?: string; affectedVariants?: number }[]; succeeded: number; failed: number }>("/products/sale-status-scoped", payload),
   status: (id: string, status: "published" | "draft" | "rejected" | "archived") =>
     apiClient.patch<{ id: string; status: string }>(`/products/${id}/status`, { status }),
   /** §11/§12: ONE backend call with per-item results — never N client requests. */

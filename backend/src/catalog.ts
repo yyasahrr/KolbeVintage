@@ -777,6 +777,97 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     });
   });
 
+  /**
+   * §27-§30: scoped sale status — the fix for «توقف یک تنوع، کل محصول را متوقف می‌کرد».
+   * Three EXPLICIT scopes in one transactional call with per-item results:
+   *  - product: products.retail_enabled (master switch, as before)
+   *  - color:   all variants of محصول+رنگ via product_variants.retail_sale_enabled (ONE backend op)
+   *  - variant: a single variant's retail_sale_enabled
+   * variant.active is NOT repurposed; every change is audited. Effective sellability stays
+   * server-computed: product enabled AND variant enabled AND not archived AND valid price.
+   */
+  app.post('/api/v1/products/sale-status-scoped', async (request) => {
+    const user = await principal(request, pool, config);
+    requirePermission(user, 'products:write');
+    const body = z.object({
+      scope: z.enum(['product', 'color', 'variant']),
+      enabled: z.boolean(),
+      productIds: z.array(z.uuid()).max(200).optional(),
+      colorTargets: z.array(z.object({ productId: z.uuid(), colorLabel: z.string().trim().min(1).max(60) })).max(200).optional(),
+      variantIds: z.array(z.uuid()).max(200).optional(),
+    }).strict().parse(request.body);
+
+    return transaction(pool, async (client) => {
+      const results: { key: string; label: string; ok: boolean; error?: string; affectedVariants?: number }[] = [];
+
+      if (body.scope === 'product') {
+        const ids = body.productIds ?? [];
+        if (!ids.length) throw badRequest('برای دامنه «محصول» حداقل یک محصول لازم است.');
+        for (const productId of ids) {
+          const product = await one<{ id: string; name: string; status: string; owner_type: string; retail_enabled: boolean; cash_price_rial: string | null }>(
+            client, 'SELECT id, name, status, owner_type, retail_enabled, cash_price_rial FROM products WHERE id = $1 FOR UPDATE', [productId]);
+          if (!product) { results.push({ key: productId, label: productId, ok: false, error: 'محصول یافت نشد.' }); continue; }
+          if (product.status === 'archived') { results.push({ key: productId, label: product.name, ok: false, error: 'محصول آرشیو شده است.' }); continue; }
+          if (body.enabled && product.owner_type === 'supplier') { results.push({ key: productId, label: product.name, ok: false, error: 'محصول تأمین‌کننده فقط در کانال عمده مجاز است.' }); continue; }
+          if (body.enabled && (!product.cash_price_rial || product.cash_price_rial === '0')) { results.push({ key: productId, label: product.name, ok: false, error: 'قیمت خرده ثبت نشده است.' }); continue; }
+          if (product.retail_enabled !== body.enabled) {
+            await client.query('UPDATE products SET retail_enabled = $2, version = version + 1, updated_at = now() WHERE id = $1', [productId, body.enabled]);
+            await outbox(client, 'product.updated', 'product', productId, { productId, retailEnabled: body.enabled });
+          }
+          await audit(client, user.id, 'product.sale_status_changed', 'product', productId,
+            { retail_enabled: product.retail_enabled }, { retail_enabled: body.enabled, scope: 'product' }, request.ip);
+          results.push({ key: productId, label: product.name, ok: true });
+        }
+      }
+
+      if (body.scope === 'color') {
+        const targets = body.colorTargets ?? [];
+        if (!targets.length) throw badRequest('برای دامنه «رنگ» حداقل یک محصول+رنگ لازم است.');
+        for (const target of targets) {
+          const key = `${target.productId}|${target.colorLabel}`;
+          const product = await one<{ id: string; name: string; status: string }>(
+            client, 'SELECT id, name, status FROM products WHERE id = $1 FOR UPDATE', [target.productId]);
+          if (!product) { results.push({ key, label: key, ok: false, error: 'محصول یافت نشد.' }); continue; }
+          if (product.status === 'archived') { results.push({ key, label: `${product.name} — ${target.colorLabel}`, ok: false, error: 'محصول آرشیو شده است.' }); continue; }
+          const updated = await client.query(
+            `UPDATE product_variants SET retail_sale_enabled = $3
+             WHERE product_id = $1 AND color_label = $2 AND retail_sale_enabled <> $3
+             RETURNING id`,
+            [target.productId, target.colorLabel, body.enabled]);
+          const existing = await one<{ c: string }>(client,
+            'SELECT count(*)::text AS c FROM product_variants WHERE product_id = $1 AND color_label = $2', [target.productId, target.colorLabel]);
+          if (Number(existing?.c ?? '0') === 0) { results.push({ key, label: `${product.name} — ${target.colorLabel}`, ok: false, error: 'تنوعی با این رنگ یافت نشد.' }); continue; }
+          await audit(client, user.id, 'product_color.sale_status_changed', 'product', target.productId,
+            undefined, { colorLabel: target.colorLabel, retail_sale_enabled: body.enabled, affected: updated.rowCount, scope: 'color' }, request.ip);
+          results.push({ key, label: `${product.name} — ${target.colorLabel}`, ok: true, affectedVariants: Number(existing?.c ?? '0') });
+        }
+      }
+
+      if (body.scope === 'variant') {
+        const ids = body.variantIds ?? [];
+        if (!ids.length) throw badRequest('برای دامنه «تنوع» حداقل یک تنوع لازم است.');
+        for (const variantId of ids) {
+          const variant = await one<{ id: string; sku: string; retail_sale_enabled: boolean; product_id: string; product_status: string; product_name: string }>(
+            client,
+            `SELECT v.id, v.sku, v.retail_sale_enabled, p.id AS product_id, p.status AS product_status, p.name AS product_name
+             FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = $1 FOR UPDATE OF v`,
+            [variantId]);
+          if (!variant) { results.push({ key: variantId, label: variantId, ok: false, error: 'تنوع یافت نشد.' }); continue; }
+          if (variant.product_status === 'archived') { results.push({ key: variantId, label: variant.sku, ok: false, error: 'محصول آرشیو شده است.' }); continue; }
+          if (variant.retail_sale_enabled !== body.enabled) {
+            await client.query('UPDATE product_variants SET retail_sale_enabled = $2 WHERE id = $1', [variantId, body.enabled]);
+          }
+          await audit(client, user.id, 'variant.sale_status_changed', 'product_variant', variantId,
+            { retail_sale_enabled: variant.retail_sale_enabled }, { retail_sale_enabled: body.enabled, scope: 'variant' }, request.ip);
+          results.push({ key: variantId, label: `${variant.product_name} (${variant.sku})`, ok: true });
+        }
+      }
+
+      const succeeded = results.filter((item) => item.ok).length;
+      return { results, succeeded, failed: results.length - succeeded };
+    });
+  });
+
   /** §12: safe bulk archive — stock and ledger stay untouched; per-item results. */
   app.post('/api/v1/products/bulk/archive', async (request) => {
     const user = await principal(request, pool, config);
