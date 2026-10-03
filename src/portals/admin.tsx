@@ -9,7 +9,7 @@ import { useStore } from "../data/store";
 import { KOLBE, SUB_STATUS, isTerminal, type VipPlan } from "../data/platform";
 import { Btn, Card, Status, SearchBox, Timeline, Field, Input, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
 import { ShippingAdmin } from "./admin-retail";
-import { FinanceCenter, PlansCenter, RestrictionsCenter, ApplicationsCenter } from "./admin-ops";
+import { PlansCenter, RestrictionsCenter, ApplicationsCenter } from "./admin-ops";
 import { SmsCenter } from "./admin-growth";
 
 import { SeriesTemplateManager } from "./series-templates";
@@ -21,7 +21,6 @@ import { normalizeWarehouses } from "../data/contracts";
 import { AdminServerOrders } from "./admin-server-orders";
 import { OrdersHub } from "./orders-hub";
 import { WarehouseHub } from "./warehouse-hub";
-import { FinanceLedgerPanel } from "../components/finance-ledger";
 import { AuditLogPanel } from "../components/audit-log-panel";
 import { CrmPanel } from "../components/crm-panel";
 import { CrmRetailPanel } from "../components/crm-retail-panel";
@@ -251,7 +250,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "seo", label: "مرکز SEO", icon: <Globe2 size={17} /> },
     { v: "media", label: "مجله و رسانه‌ها", icon: <FileVideo2 size={17} /> },
     { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
-    { v: "finance", label: "مرکز مالی", icon: <Wallet size={17} />, badge: badge(summary?.pendingWithdrawals, ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length) },
+    { v: "finance", label: "مرکز مالی", icon: <Wallet size={17} /> },
     { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
     { g: "رشد و اتوماسیون" },
     { v: "automation", label: "اتوماسیون و n8n", icon: <Workflow size={17} /> },
@@ -496,11 +495,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "recs" && moduleBoundary("توصیه‌گر هوشمند", <RecommendationsPanel flash={flash} />)}
           {tab === "cms" && moduleBoundary("محتوا", <CmsCenter flash={flash} />)}
           {tab === "notifs" && moduleBoundary("اعلان‌ها", <NotificationsPanel />)}
-          {tab === "finance" && moduleBoundary("مرکز مالی", <HubTabs tabs={[
-            { v: "ops", label: "عملیات مالی و تسویه", node: <FinanceOpsPanel flash={flash} /> },
-            { v: "ledger", label: "دفتر کل", node: <FinanceLedgerPanel /> },
-            { v: "wallet", label: "کیف پول و کارمزد", node: <FinanceCenter flash={flash} /> },
-          ]} />)}
+          {/* Prompt 4 §15: one Finance Center with the final 6-domain IA. Legacy sibling
+              tabs (دفتر کل → حسابداری، کیف پول demo → removed: duplicated real settlement/bank flows). */}
+          {tab === "finance" && moduleBoundary("مرکز مالی", <FinanceOpsPanel flash={flash} />)}
           {tab === "integrations" && moduleBoundary("یکپارچه‌سازی‌ها", <IntegrationsPanel />)}
           {tab === "promo" && moduleBoundary("کوپن و جشنواره", <HubTabs tabs={[
             { v: "promo", label: "کوپن و جشنواره", node: <PromoPanel /> },

@@ -51,6 +51,54 @@ const previousRange = (start: Date, end: Date) => {
 
 export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   // ------------------------------------------------------------- dashboard --
+  /** Prompt 4 (§40-§47): honest revenue-stream classification. Every number comes
+   *  from a REAL canonical source; streams with no connected billing are reported
+   *  as supported-but-disabled — nothing is fabricated. */
+  app.get('/api/v1/admin/finance/revenue-streams', async (request) => {
+    const actor = await principal(request, pool, config); requirePermission(actor, readPermission);
+    const query = dateRange.parse(request.query ?? {});
+    const { start, end } = rangeOf(query.from, query.to);
+    const plans = await pool.query<{ v: string; c: number }>(
+      `SELECT COALESCE(SUM(amount_rial), 0)::text AS v, COUNT(*)::int AS c
+         FROM payment_intents WHERE status = 'succeeded' AND membership_id IS NOT NULL
+          AND COALESCE(succeeded_at, created_at) BETWEEN $1 AND $2`, [start, end]);
+    const commission = await pool.query<{ v: string; c: number }>(
+      `SELECT COALESCE(SUM(commission_rial), 0)::text AS v, COUNT(*)::int AS c
+         FROM supplier_child_payables WHERE created_at BETWEEN $1 AND $2 AND status <> 'cancelled'`, [start, end]);
+    const fees = await pool.query<{ category: string; v: string; c: number }>(
+      `SELECT category, COALESCE(SUM(amount_rial), 0)::text AS v, COUNT(*)::int AS c
+         FROM financial_adjustments
+        WHERE category IN ('storage', 'handling', 'qc', 'fulfillment') AND status = 'applied'
+          AND created_at BETWEEN $1 AND $2 GROUP BY category`, [start, end]);
+    const feeRow = (category: string, title: string) => {
+      const found = fees.rows.find((r) => r.category === category);
+      return { key: category, title, revenueRial: found?.v ?? '0', count: found?.c ?? 0,
+        enabled: Boolean(found && found.v !== '0'), supported: true, costRial: null, costStatus: 'not_tracked' };
+    };
+    // Try-On: monetization table may not exist yet — report honestly either way.
+    let tryon = { revenue: '0', count: 0, cost: null as string | null, connected: false };
+    try {
+      const t = await pool.query<{ v: string; c: number }>(
+        `SELECT COALESCE(SUM(price_rial), 0)::text AS v, COUNT(*)::int AS c
+           FROM tryon_credit_purchases WHERE status = 'paid' AND created_at BETWEEN $1 AND $2`, [start, end]);
+      tryon = { revenue: t.rows[0]?.v ?? '0', count: t.rows[0]?.c ?? 0, cost: null, connected: true };
+    } catch { /* table absent until Try-On monetization migration runs */ }
+    return {
+      range: { from: start.toISOString(), to: end.toISOString() },
+      streams: [
+        { key: 'vip_plans', title: 'پلن‌های عضویت VIP', revenueRial: plans.rows[0]?.v ?? '0',
+          count: plans.rows[0]?.c ?? 0, enabled: true, supported: true, costRial: null, costStatus: 'not_tracked' },
+        { key: 'marketplace_commission', title: 'کمیسیون Marketplace', revenueRial: commission.rows[0]?.v ?? '0',
+          count: commission.rows[0]?.c ?? 0, enabled: true, supported: true, costRial: null, costStatus: 'not_tracked' },
+        { key: 'tryon', title: 'سرویس پرو مجازی (Try-On)', revenueRial: tryon.revenue, count: tryon.count,
+          enabled: tryon.connected, supported: true, costRial: tryon.cost,
+          costStatus: tryon.connected ? 'unknown' : 'not_connected' },
+        feeRow('storage', 'هزینه انبارداری'), feeRow('handling', 'هزینه هندلینگ'),
+        feeRow('qc', 'هزینه کنترل کیفیت'), feeRow('fulfillment', 'هزینه پردازش سفارش'),
+      ],
+    };
+  });
+
   app.get('/api/v1/admin/finance/summary', async (request) => {
     const actor = await principal(request, pool, config); requirePermission(actor, readPermission);
     const query = dateRange.extend({ compare: z.enum(['previous', 'none']).default('previous') }).parse(request.query);

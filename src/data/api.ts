@@ -1128,6 +1128,13 @@ export const financeOpsApi = {
     authFetch<FinanceTargets>(`/admin/finance/targets${month ? `?month=${month}` : ""}`),
   saveTarget: (payload: { month: string; targetRial: string }) =>
     authFetch<{ month: string; targetRial: string }>("/admin/finance/targets", { method: "PUT", body: JSON.stringify(payload) }),
+  revenueStreams: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return authFetch<{ range: { from: string; to: string }; streams: {
+      key: string; title: string; revenueRial: string; count: number; enabled: boolean;
+      supported: boolean; costRial: string | null; costStatus: string }[] }>(
+      `/admin/finance/revenue-streams?${q.toString()}`);
+  },
   aging: (side: "payable" | "receivable" = "payable") =>
     authFetch<Record<string, { buckets: string[]; items: Record<string, string>[]; totals: Record<string, string> }>>(
       `/admin/finance/aging?side=${side}`),

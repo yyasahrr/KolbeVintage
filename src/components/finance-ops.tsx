@@ -8,8 +8,9 @@ import { PersianDatePicker } from "./persian-date-picker";
 import { formatPersianDate, formatPersianDateTime, todayIso, addDaysIso, isoDateOnly } from "../data/persian-date";
 import { fmtToman, tomanFromRial, rialFromToman } from "../data/contracts";
 import { fmtNum } from "../data/catalog";
-import { financeOpsApi, invoiceDocsApi, ordersApi } from "../data/api";
+import { financeOpsApi, invoiceDocsApi, ordersApi, settlementAdminApi } from "../data/api";
 import { SettlementCenter } from "./settlement-center";
+import { FinanceLedgerPanel } from "./finance-ledger";
 import { useSupplierOptions } from "./supplier-360";
 import { useFetch } from "../hooks/useApi";
 import { cn } from "../utils/cn";
@@ -911,97 +912,37 @@ function AdjustmentsTab({ flash }: { flash: Flash }) {
   );
 }
 
-function AdvancesTab({ flash }: { flash: Flash }) {
-  const suppliers = useSupplierOptions();
-  const [draft, setDraft] = useState({ supplierId: "", amount: "", reason: "" });
-  const [payRefs, setPayRefs] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
+function AdvancesTab() {
+  /** Prompt 4 (§32): supplier advances are NOT part of the active business model.
+   *  History stays read-only and honestly labeled; create/pay/apply actions removed. */
   const list = useFetch(() => financeOpsApi.advances({ limit: "100" }), []);
   const rows = (list.data?.items ?? []) as Row[];
-
-  const create = async () => {
-    setBusy(true);
-    try {
-      const result = await financeOpsApi.createAdvance({ supplierId: draft.supplierId, amountRial: rialFromToman(draft.amount), reason: draft.reason.trim() });
-      flash(`پیش‌پرداخت ${result.reference} ثبت شد`);
-      setDraft({ supplierId: "", amount: "", reason: "" });
-      list.reload();
-    } catch (error) { flash(error instanceof Error ? error.message : "ثبت پیش‌پرداخت ناموفق بود"); }
-    finally { setBusy(false); }
-  };
-
   return (
     <div className="space-y-4">
-      <Card className="space-y-3 p-5">
-        <SectionHead title="پیش‌پرداخت تأمین‌کننده" desc="پرداخت پیش از تسویه؛ پس از پرداخت، در برابر مانده پرداختنی اعمال می‌شود" />
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <Field label="تأمین‌کننده"><LabelSelect options={suppliers} value={draft.supplierId} onChange={(v) => setDraft({ ...draft, supplierId: v })} /></Field>
-          <Field label="مبلغ (تومان)"><Input value={draft.amount} onChange={(v) => setDraft({ ...draft, amount: v })} placeholder="مثلاً ۵۰۰۰۰۰۰" /></Field>
-          <Field label="دلیل (حداقل ۳ نویسه)"><Input value={draft.reason} onChange={(v) => setDraft({ ...draft, reason: v })} placeholder="مثلاً پیش‌پرداخت تولید پاییز" /></Field>
-          <div className="flex items-end">
-            <Btn variant="accent" icon={<HandCoins size={15} />} disabled={busy || !draft.supplierId || !/^\d+$/.test(draft.amount.replace(/[^\d]/g, "")) || draft.reason.trim().length < 3}
-              onClick={() => void create()}>ثبت پیش‌پرداخت</Btn>
-          </div>
-        </div>
-      </Card>
-
-      {list.loading && !list.data && <LoadingState label="در حال خواندن پیش‌پرداخت‌ها…" />}
+      <div role="note" className="rounded-[12px] border border-[var(--kv-warning,#b58900)]/40 bg-[var(--kv-surface-2)] px-4 py-3 text-[12.5px]">
+        <b>بایگانی قدیمی.</b> پیش‌پرداخت تأمین‌کننده در مدل مالی جدید فعال نیست؛ پرداخت به تأمین‌کننده تنها از مسیر
+        «تسویه زمان‌بندی‌شده» انجام می‌شود. رکوردهای زیر فقط برای حسابرسی تاریخی نگه داشته شده‌اند.
+      </div>
+      {list.loading && !list.data && <LoadingState label="در حال خواندن سوابق پیش‌پرداخت…" />}
       {list.error && <ErrorState message={list.error} onRetry={list.reload} />}
-      {list.data && rows.length === 0 && <Empty title="پیش‌پرداختی ثبت نشده" desc="پیش‌پرداخت‌ها بخشی از حساب مالی تأمین‌کننده‌اند و در صورت‌حساب دیده می‌شوند." />}
-
+      {list.data && rows.length === 0 && <Empty title="سابقه‌ای وجود ندارد" desc="هیچ پیش‌پرداخت تاریخی ثبت نشده است — این بخش صرفاً بایگانی است." />}
       {rows.length > 0 && (
         <Card className="overflow-hidden">
           <div className="kv-scroll overflow-x-auto">
-            <table className="kv-table min-w-[1000px]">
-              <thead><tr><th>مرجع</th><th>تأمین‌کننده</th><th>مبلغ</th><th>اعمال‌شده</th><th>دلیل</th><th>وضعیت</th><th>تاریخ</th><th>پرداخت</th><th>اعمال</th></tr></thead>
+            <table className="kv-table min-w-[860px]">
+              <thead><tr><th>مرجع</th><th>تأمین‌کننده</th><th>مبلغ</th><th>اعمال‌شده</th><th>دلیل</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
               <tbody>
-                {rows.map((row) => {
-                  const id = text(row, "id");
-                  const state = text(row, "status", "");
-                  return (
-                    <tr key={id}>
-                      <td className="font-mono text-[11px]">{text(row, "reference")}</td>
-                      <td>{text(row, "supplier_name")}</td>
-                      <td className="tabular-nums">{fmtToman(row.amount_rial)}</td>
-                      <td className="tabular-nums">{fmtToman(row.applied_rial)}</td>
-                      <td className="max-w-[200px] truncate" title={text(row, "reason")}>{text(row, "reason")}</td>
-                      <td><Status value={ADVANCE_STATUS[state] ?? state} /></td>
-                      <td className="tabular-nums">{formatPersianDate(text(row, "created_at"))}</td>
-                      <td>
-                        {state === "requested" ? (
-                          <div className="flex items-center gap-1.5">
-                            <input value={payRefs[id] ?? ""} onChange={(event) => setPayRefs({ ...payRefs, [id]: event.target.value })}
-                              placeholder="مرجع بانکی" className="h-8 w-[120px] rounded-[8px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-2 text-[12px]" aria-label="مرجع پرداخت پیش‌پرداخت" />
-                            <Btn variant="soft" size="sm" icon={<CreditCard size={14} />} disabled={busy || (payRefs[id] ?? "").trim().length < 2}
-                              onClick={() => void (async () => {
-                                setBusy(true);
-                                try {
-                                  await financeOpsApi.payAdvance(id, { reference: (payRefs[id] ?? "").trim() });
-                                  flash("پیش‌پرداخت پرداخت شد");
-                                  list.reload();
-                                } catch (error) { flash(error instanceof Error ? error.message : "پرداخت پیش‌پرداخت ناموفق بود"); }
-                                finally { setBusy(false); }
-                              })()}>پرداخت</Btn>
-                          </div>
-                        ) : <span className="text-[11.5px] text-[var(--kv-muted)]">{state === "paid" ? "پرداخت‌شده" : "—"}</span>}
-                      </td>
-                      <td>
-                        {state === "paid" && tomanFromRial(row.applied_rial) < tomanFromRial(row.amount_rial) && (
-                          <Btn variant="soft" size="sm" icon={<Scale size={14} />} disabled={busy}
-                            onClick={() => void (async () => {
-                              setBusy(true);
-                              try {
-                                const result = await financeOpsApi.applyAdvance(id);
-                                flash(`مبلغ اعمال‌شده: ${fmtToman(result.appliedRial)}`);
-                                list.reload();
-                              } catch (error) { flash(error instanceof Error ? error.message : "اعمال پیش‌پرداخت ناموفق بود"); }
-                              finally { setBusy(false); }
-                            })()}>اعمال روی پرداختنی</Btn>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {rows.map((row) => (
+                  <tr key={text(row, "id")}>
+                    <td className="font-mono text-[11px]">{text(row, "reference")}</td>
+                    <td>{text(row, "supplier_name")}</td>
+                    <td className="tabular-nums">{fmtToman(row.amount_rial)}</td>
+                    <td className="tabular-nums">{fmtToman(row.applied_rial)}</td>
+                    <td className="max-w-[240px] truncate" title={text(row, "reason")}>{text(row, "reason")}</td>
+                    <td><Status value={ADVANCE_STATUS[text(row, "status", "")] ?? text(row, "status", "")} /></td>
+                    <td className="tabular-nums">{formatPersianDate(text(row, "created_at"))}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -1306,22 +1247,126 @@ function EventsTab() {
 
 /* ================================ Shell ================================ */
 
-const TABS = [
-  { v: "dashboard", label: "داشبورد" },
-  { v: "accounts", label: "حساب تأمین‌کنندگان" },
-  { v: "aging", label: "سنین بدهی" },
-  { v: "supplier-settlements", label: "تسویه تأمین‌کنندگان" },
-  { v: "settlements", label: "تسویه‌ها (legacy)" },
-  { v: "adjustments", label: "اصلاحات" },
-  { v: "advances", label: "پیش‌پرداخت‌ها" },
-  { v: "shipping", label: "تخصیص حمل" },
-  { v: "reports", label: "مرکز گزارش‌ها" },
-  { v: "periods", label: "دوره‌های مالی" },
-  { v: "events", label: "رویدادها" },
-] as const;
-type TabKey = typeof TABS[number]["v"];
+/* ================== Other revenue / finance settings (Prompt 4) ================== */
 
-const TAB_ICON: Record<TabKey, React.ReactNode> = {
+function OtherRevenueTab({ range }: { range: Range }) {
+  const dates = apiRange(range);
+  const list = useFetch(() => financeOpsApi.revenueStreams({ from: dates.from, to: dates.to }), [dates.from, dates.to]);
+  if (list.loading && !list.data) return <LoadingState label="در حال خواندن جریان‌های درآمدی…" />;
+  if (list.error) return <ErrorState message={list.error} onRetry={list.reload} />;
+  const streams = list.data?.streams ?? [];
+  return (
+    <div className="space-y-4">
+      <SectionHead title="درآمدها و خدمات جانبی" desc="هر عدد از منبع واقعی خودش خوانده می‌شود؛ سرویس بدون اتصال مالی «غیرفعال» نمایش داده می‌شود، نه صفرِ ساختگی" />
+      <Card className="overflow-hidden">
+        <table className="kv-table">
+          <thead><tr><th>جریان درآمدی</th><th>درآمد بازه</th><th>تعداد</th><th>هزینه مستقیم</th><th>وضعیت</th></tr></thead>
+          <tbody>
+            {streams.map((row) => (
+              <tr key={row.key}>
+                <td className="font-bold">{row.title}</td>
+                <td className="tabular-nums">{row.enabled ? fmtToman(row.revenueRial) : "—"}</td>
+                <td className="tabular-nums">{row.enabled ? fmtNum(row.count) : "—"}</td>
+                <td className="text-[12px] text-[var(--kv-muted)]">
+                  {row.costRial !== null ? fmtToman(row.costRial)
+                    : row.costStatus === "not_connected" ? "متصل نیست"
+                    : row.costStatus === "unknown" ? "نامشخص (صادقانه)" : "ثبت نمی‌شود"}
+                </td>
+                <td>{row.enabled
+                  ? <Status value="فعال" />
+                  : <span className="text-[11.5px] font-bold text-[var(--kv-muted)]">پشتیبانی‌شده · غیرفعال</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="border-t border-[var(--kv-line)] p-3 text-[11.5px] text-[var(--kv-muted)]">
+          هزینه‌های انبارداری/هندلینگ/QC/پردازش در طبقه‌بندی مالی پشتیبانی می‌شوند ولی تا فعال‌سازی تجاری، هیچ مبلغی از تأمین‌کننده کسر نمی‌شود (§41).
+        </p>
+      </Card>
+    </div>
+  );
+}
+
+function FinancePolicyTab({ flash }: { flash: Flash }) {
+  const policy = useFetch(() => settlementAdminApi.financePolicy(), []);
+  const [draft, setDraft] = useState<{ holdHours: string; bankCooldownHours: string; dualControlToman: string; legacy: boolean } | null>(null);
+  useEffect(() => {
+    if (policy.data && !draft) setDraft({
+      holdHours: String(policy.data.holdHours ?? 72),
+      bankCooldownHours: String(policy.data.bankCooldownHours ?? 0),
+      dualControlToman: String(tomanFromRial(String(policy.data.dualControlThresholdRial ?? "0"))),
+      legacy: Boolean(policy.data.legacyWithdrawalsEnabled),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [policy.data]);
+  if (policy.loading && !policy.data) return <LoadingState label="در حال خواندن سیاست مالی…" />;
+  if (policy.error) return <ErrorState message={policy.error} onRetry={policy.reload} />;
+  if (!draft) return null;
+  const save = async () => {
+    try {
+      await settlementAdminApi.updateFinancePolicy({
+        holdHours: Number(draft.holdHours || 0),
+        bankCooldownHours: Number(draft.bankCooldownHours || 0),
+        dualControlThresholdRial: String(Math.max(0, Number(draft.dualControlToman.replace(/\D/g, "") || 0)) * 10),
+        legacyWithdrawalsEnabled: draft.legacy,
+      });
+      flash("سیاست مالی ذخیره شد.");
+      policy.reload();
+    } catch (error) { flash(error instanceof Error ? error.message : "ذخیره ناموفق بود"); }
+  };
+  return (
+    <div className="max-w-[640px] space-y-4">
+      <SectionHead title="سیاست مالی تأمین‌کننده" desc="پیکربندی سراسری Hold، دوره انتظار حساب بانکی، کنترل دوگانه و کلید قطع برداشت قدیمی" />
+      <Card className="space-y-3 p-5">
+        <Field label="مدت پیش‌فرض Settlement Hold (ساعت)"><Input value={draft.holdHours} onChange={(v) => setDraft({ ...draft, holdHours: v.replace(/\D/g, "") })} /></Field>
+        <Field label="دوره انتظار امنیتی پس از تأیید حساب بانکی (ساعت)"><Input value={draft.bankCooldownHours} onChange={(v) => setDraft({ ...draft, bankCooldownHours: v.replace(/\D/g, "") })} /></Field>
+        <Field label="آستانه کنترل دوگانه تسویه (تومان)" hint="بالاتر از این مبلغ، تأییدکننده باید غیر از ایجادکننده باشد"><Input value={draft.dualControlToman} onChange={(v) => setDraft({ ...draft, dualControlToman: v.replace(/\D/g, "") })} /></Field>
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={draft.legacy} onChange={(e) => setDraft({ ...draft, legacy: e.target.checked })} />
+          <span>برداشت قدیمی تأمین‌کننده فعال بماند <b className="text-[var(--kv-danger)]">(فقط برای دوره گذار — مدل جدید تسویه زمان‌بندی‌شده است)</b></span>
+        </label>
+        <Btn variant="accent" onClick={() => void save()}>ذخیره سیاست</Btn>
+      </Card>
+    </div>
+  );
+}
+
+/* ----------------------------- shell ----------------------------- */
+
+/** Prompt 4 (§15): final Finance Center IA — six business-facing domains.
+ *  All previous capabilities keep living under one of these groups; nothing deleted. */
+const GROUPS = [
+  { v: "overview", label: "داشبورد", tabs: [
+    { v: "dashboard", label: "نمای کسب‌وکار" },
+  ] },
+  { v: "domains", label: "حوزه‌های مالی", tabs: [
+    { v: "accounts", label: "مالی Marketplace تأمین‌کنندگان" },
+    { v: "aging", label: "مانده پرداختنی تأمین‌کنندگان" },
+    { v: "streams", label: "درآمدها و خدمات جانبی" },
+  ] },
+  { v: "settlement", label: "پرداخت و تسویه", tabs: [
+    { v: "supplier-settlements", label: "تسویه تأمین‌کنندگان" },
+    { v: "settlements", label: "تاریخچه تسویه/پرداخت (قدیمی)" },
+    { v: "advances", label: "پیش‌پرداخت‌ها (بایگانی)" },
+  ] },
+  { v: "docs", label: "اسناد و گزارش‌ها", tabs: [
+    { v: "reports", label: "مرکز گزارش‌ها" },
+  ] },
+  { v: "accounting", label: "حسابداری", tabs: [
+    { v: "ledger", label: "دفتر کل" },
+    { v: "periods", label: "دوره‌های مالی" },
+    { v: "adjustments", label: "اصلاحات حسابداری" },
+    { v: "events", label: "رویدادهای مالی" },
+  ] },
+  { v: "settings", label: "تنظیمات مالی", tabs: [
+    { v: "shipping", label: "سیاست هزینه حمل" },
+    { v: "finance-policy", label: "سیاست مالی تأمین‌کننده" },
+  ] },
+] as const;
+type GroupKey = typeof GROUPS[number]["v"];
+type TabKey = typeof GROUPS[number]["tabs"][number]["v"];
+
+const TAB_ICON: Partial<Record<TabKey, React.ReactNode>> = {
   dashboard: <Wallet size={15} />,
   "supplier-settlements": <Banknote size={15} />,
   accounts: <Building2 size={15} />,
@@ -1333,9 +1378,12 @@ const TAB_ICON: Record<TabKey, React.ReactNode> = {
   reports: <FileBarChart2 size={15} />,
   periods: <CalendarClock size={15} />,
   events: <Radio size={15} />,
+  streams: <HandCoins size={15} />,
+  "finance-policy": <Scale size={15} />,
 };
 
 export function FinanceOpsPanel({ flash }: { flash: Flash }) {
+  const [group, setGroup] = useState<GroupKey>("overview");
   const [tab, setTab] = useState<TabKey>("dashboard");
   const [range, setRange] = useState<Range>({ from: addDaysIso(todayIso(), -29), to: todayIso() });
   const [notice, setNotice] = useState<string | null>(null);
@@ -1354,7 +1402,10 @@ export function FinanceOpsPanel({ flash }: { flash: Flash }) {
       case "supplier-settlements": return <SettlementCenter flash={fire} />;
       case "settlements": return <SettlementsTab range={range} flash={fire} />;
       case "adjustments": return <AdjustmentsTab flash={fire} />;
-      case "advances": return <AdvancesTab flash={fire} />;
+      case "advances": return <AdvancesTab />;
+      case "ledger": return <FinanceLedgerPanel />;
+      case "streams": return <OtherRevenueTab range={range} />;
+      case "finance-policy": return <FinancePolicyTab flash={fire} />;
       case "shipping": return <ShippingTab flash={fire} />;
       case "reports": return <ReportsTab range={range} flash={fire} />;
       case "periods": return <PeriodsTab flash={fire} />;
@@ -1366,17 +1417,26 @@ export function FinanceOpsPanel({ flash }: { flash: Flash }) {
 
   return (
     <div className="space-y-5">
-      <SectionHead title="مرکز عملیات مالی" desc="دفتر کل دوسویه، حساب تأمین‌کنندگان، تسویه، مغایرت‌یابی، پیش‌پرداخت، گزارش و دوره‌های مالی" />
+      <SectionHead title="مرکز مالی" desc="داشبورد کسب‌وکار، حوزه‌های مالی، پرداخت و تسویه، اسناد و گزارش‌ها، حسابداری حرفه‌ای و تنظیمات مالی — همه از دفتر کل واحد" />
       {notice && (
         <div role="status" className="flex items-center gap-2 rounded-[10px] bg-[var(--kv-accent)]/10 px-3 py-2 text-[12.5px] font-semibold text-[var(--kv-accent)]">
           <AlertTriangle size={14} />{notice}
         </div>
       )}
       <div className="kv-scroll -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
-        {TABS.map((item) => (
+        {GROUPS.map((g) => (
+          <button key={g.v} onClick={() => { setGroup(g.v); setTab(g.tabs[0].v); }}
+            className={cn("kv-press flex shrink-0 items-center gap-1.5 rounded-[10px] px-3.5 py-2 text-[13px] font-extrabold",
+              group === g.v ? "bg-[var(--kv-action)] text-[var(--kv-bg)]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)] hover:text-[var(--kv-text)]")}>
+            {g.label}
+          </button>
+        ))}
+      </div>
+      <div className="kv-scroll -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+        {GROUPS.find((g) => g.v === group)!.tabs.map((item) => (
           <button key={item.v} onClick={() => setTab(item.v)}
-            className={cn("kv-press flex shrink-0 items-center gap-1.5 rounded-[10px] px-3 py-2 text-[12.5px] font-bold",
-              tab === item.v ? "bg-[var(--kv-action)] text-[var(--kv-bg)]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)] hover:text-[var(--kv-text)]")}>
+            className={cn("kv-press flex shrink-0 items-center gap-1.5 rounded-[10px] px-3 py-1.5 text-[12.5px] font-bold",
+              tab === item.v ? "bg-[var(--kv-accent)]/15 text-[var(--kv-accent)]" : "bg-transparent text-[var(--kv-muted)] hover:text-[var(--kv-text)]")}>
             {TAB_ICON[item.v]}{item.label}
           </button>
         ))}
