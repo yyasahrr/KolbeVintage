@@ -19,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { one, transaction, type DbPool } from './db.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { audit } from './operations.js';
-import { rial } from './money.js';
+import { rial, signedRial } from './money.js';
 import { accrueSupplier, financeEvent } from './ledger.js';
 import { nextDocumentReference } from './references.js';
 
@@ -221,13 +221,13 @@ export async function accrueChildPayable(client: PoolClient, childOrderId: strin
   // Ledger truth first (§17-§18): gross credit + explainable deductions.
   const ledgerEntries = await accrueSupplier(client, [
     { event: 'order_sale', amount: gross, reference, description: `فروش زیرسفارش ${child.reference}`,
-      supplierId: child.seller_id, orderId: child.id, actorId, sourceType: 'child_order', sourceId: child.id },
+      supplierId: child.seller_id, orderId: child.id, actorId },
     ...(commission > 0n ? [{ event: 'commission' as const, amount: commission, reference,
       description: `کارمزد ${commissionPercent}٪ — ${child.reference}`, supplierId: child.seller_id,
-      orderId: child.id, actorId, sourceType: 'child_order', sourceId: child.id }] : []),
+      orderId: child.id, actorId }] : []),
     ...(shippingShare > 0n ? [{ event: 'shipping_charge' as const, amount: shippingShare, reference,
       description: `سهم ارسال تأمین‌کننده — ${child.reference}`, supplierId: child.seller_id,
-      orderId: child.id, actorId, sourceType: 'child_order', sourceId: child.id }] : []),
+      orderId: child.id, actorId }] : []),
   ]);
 
   await client.query(
@@ -351,7 +351,7 @@ export async function applyPayableRefund(client: PoolClient, input: {
         payable.id, payable.child_order_id, payable.settlement_id, input.reason, input.actorId]);
     await accrueSupplier(client, [{ event: 'refund', amount, reference,
       description: `بازپرداخت پس از تسویه — ${payable.reference}`, supplierId: payable.supplier_id,
-      orderId: payable.child_order_id, actorId: input.actorId, sourceType: 'supplier_recovery', sourceId: recoveryId }]);
+      orderId: payable.child_order_id, actorId: input.actorId }]);
     await audit(client, input.actorId, 'supplier_recovery.created', 'supplier_recovery', recoveryId, undefined,
       { reference, payableId: payable.id, amountRial: amount.toString(), reason: input.reason });
     await financeEvent(client, 'reconciliation.exception', 'supplier_recovery', recoveryId,
@@ -364,7 +364,7 @@ export async function applyPayableRefund(client: PoolClient, input: {
 
   await accrueSupplier(client, [{ event: 'refund', amount, reference: `${payable.reference}-RF${Date.now().toString(36)}`,
     description: `بازپرداخت — ${payable.reference}`, supplierId: payable.supplier_id,
-    orderId: payable.child_order_id, actorId: input.actorId, sourceType: 'supplier_payable', sourceId: payable.id }]);
+    orderId: payable.child_order_id, actorId: input.actorId }]);
   await client.query(
     `UPDATE supplier_child_payables SET refunds_rial = refunds_rial + $2, net_rial = $3, updated_at = now() WHERE id = $1`,
     [payable.id, amount.toString(), newNet.toString()]);
@@ -440,7 +440,7 @@ export async function reconciliationDiagnostic(db: DbPool | PoolClient, supplier
   const scheduled = rial(buckets?.scheduled ?? '0');
   const openRecovery = rial(recoveries?.open ?? '0');
   const expectedOutstanding = held + eligible + scheduled - openRecovery;
-  const ledgerOutstanding = rial(ledger?.balance ?? '0');
+  const ledgerOutstanding = signedRial(ledger?.balance ?? '0');
   const holds = await one<{ active: string; blocked: string }>(db,
     `SELECT COALESCE(SUM(amount_rial) FILTER (WHERE status = 'active'), 0)::text AS active,
             COALESCE(SUM(amount_rial) FILTER (WHERE status = 'blocked'), 0)::text AS blocked

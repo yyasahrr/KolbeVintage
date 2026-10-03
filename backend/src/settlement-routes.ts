@@ -730,7 +730,7 @@ export function registerSettlementCoreRoutes(app: FastifyInstance, pool: DbPool,
         const { accrueSupplier } = await import('./ledger.js');
         await accrueSupplier(client, [{ event: 'adjustment_credit', amount: remaining,
           reference: `${recovery.reference}-WO`, description: `بخشودگی Recovery — ${body.reason}`,
-          supplierId: recovery.supplier_id, actorId: user.id, sourceType: 'supplier_recovery', sourceId: id }]);
+          supplierId: recovery.supplier_id, actorId: user.id }]);
       }
       await audit(client, user.id, 'supplier_recovery.written_off', 'supplier_recovery', id,
         { status: 'open' }, { status: 'written_off', reason: body.reason }, request.ip);
