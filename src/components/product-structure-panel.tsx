@@ -105,7 +105,7 @@ function TypesSection({ flash }: { flash: F }) {
         {!current ? <Empty title="نوعی انتخاب نشده" desc="از فهرست سمت راست یک نوع محصول را انتخاب کنید." /> : (
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div><h3 className="text-[15px] font-extrabold">{current.name}</h3><p className="text-xs text-[var(--kv-muted)]" dir="ltr">{current.code}</p></div>
+              <div><h3 className="text-[15px] font-extrabold">{current.name}</h3><p className="text-xs text-[var(--kv-muted)]">کد نوع: <span dir="ltr">{current.code}</span></p></div>
               <div className="flex gap-2">
                 <Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setEdit({ id: current.id, code: current.code, name: current.name, description: current.description, active: current.active, position: String(current.position), specTemplateId: current.specTemplateId ?? "" })}>ویرایش</Btn>
                 <Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} onClick={async () => { try { await productStructureApi.deleteType(current.id); await load(); flash("نوع محصول حذف شد"); } catch (e) { flash(e instanceof Error ? e.message : "حذف ممکن نیست — احتمالاً در محصولی استفاده شده است"); } }}>حذف</Btn>

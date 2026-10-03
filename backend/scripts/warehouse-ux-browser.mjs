@@ -20,6 +20,8 @@ export async function warehouseUxSmoke({ page, check, apiPort, clickByText, setI
   await page.reload(); await waitForText('کنسول مدیریت');
   // Refresh sidebar warehouse module after reload defaults back to its primary tab.
   await page.evaluate(() => [...document.querySelectorAll('aside button')].find((button) => button.textContent.includes('انبار و نقل‌وانتقالات'))?.click());
+  // §14: the hub now opens on «کالاها» (product definition); the retail stock table lives under «خرده‌فروشی».
+  await clickByText('خرده‌فروشی');
   await page.waitForSelector('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]');
   await page.type('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]', String(suffix));
   await waitForText(productName);
@@ -40,6 +42,12 @@ export async function warehouseUxSmoke({ page, check, apiPort, clickByText, setI
   check('incoming product exposes visible Receive action', (await productRow()).includes('دریافت کالا'));
   await page.evaluate((name) => [...document.querySelectorAll('tbody tr')].find((row) => row.textContent.includes(name))?.click(), productName);
   const action = async (value) => {
+    // The operations select is disabled while the hub is busy (refresh in flight);
+    // change events on disabled elements are silently dropped — wait until enabled.
+    await page.waitForFunction((sku) => {
+      const el = document.querySelector(`select[aria-label="عملیات ${sku}"]`);
+      return Boolean(el) && !el.disabled;
+    }, { timeout: 30000 }, variant.sku);
     await page.select(`select[aria-label="عملیات ${variant.sku}"]`, value);
   };
   const calls = [];
@@ -75,14 +83,42 @@ export async function warehouseUxSmoke({ page, check, apiPort, clickByText, setI
   check('remaining receipt incoming is visible after refresh', (await productRow()).includes('+۳ در راه'));
   await action('receive'); await waitForText(`دریافت رسید ${b.reference}`);
   check('single pending receipt opens receive modal directly', !(await text()).includes('یک رسید را برای دریافت انتخاب کنید'));
-  await clickByText('ثبت دریافت'); await waitForText('رسید کامل دریافت شد');
+  // Mirror the first receipt's flow: the submit button stays disabled until the modal's
+  // async warehouse context resolves, so wait for the fully-ready modal before clicking.
+  await waitForText('تعداد واقعی دریافتی'); await waitForText(warehouse.name);
+  const receiveClicked = await clickByText('ثبت دریافت');
+  // Outcome-based wait: flash toasts expire too fast under constrained CPU, so verify the
+  // REAL outcome — modal closed + receipt applied to on-hand via the API (database truth).
+  let modalClosed = false;
+  for (let i = 0; i < 24 && !modalClosed; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    modalClosed = !(await text()).includes(`دریافت رسید ${b.reference}`);
+  }
+  const afterB = (await request(`/inventory?warehouseId=${warehouse.id}&inventoryDomain=retail`)).items.find((item) => item.variant_id === variant.id);
+  check('second receipt fully received — modal closes, on-hand 18, incoming 0 (API truth)',
+    receiveClicked && modalClosed && afterB.on_hand === 18 && afterB.incoming === 0);
   check('incoming and Receive action disappear after final receipt', !(await productRow()).includes('در راه') && !(await productRow()).includes('دریافت کالا'));
   const final = (await request(`/inventory?warehouseId=${warehouse.id}&inventoryDomain=retail`)).items.find((item) => item.variant_id === variant.id);
   check('on-hand reflects both independent receipt confirmations', final.on_hand === 18 && final.incoming === 0);
   check('operations column uses compact native menu', await page.$eval(`select[aria-label="عملیات ${variant.sku}"]`, (select) => select.options[0].text.includes('عملیات') && ![...select.options].some((option) => option.value === 'receive')));
-  await action('sale'); await page.waitForFunction((sku) => [...(document.querySelector(`select[aria-label="عملیات ${sku}"]`)?.options ?? [])].some((option) => option.text === 'فعال‌سازی فروش'), {}, variant.sku);
-  check('retail sale action changes to activate when stopped', await page.$eval(`select[aria-label="عملیات ${variant.sku}"]`, (select) => [...select.options].some((option) => option.text === 'فعال‌سازی فروش')));
-  await action('sale'); await page.waitForFunction((sku) => [...(document.querySelector(`select[aria-label="عملیات ${sku}"]`)?.options ?? [])].some((option) => option.text === 'توقف فروش'), {}, variant.sku);
-  check('retail sale action changes to stop when active', await page.$eval(`select[aria-label="عملیات ${variant.sku}"]`, (select) => [...select.options].some((option) => option.text === 'توقف فروش')));
+  // Sale toggle is now a SCOPE modal (variant/color/product + تأیید و اعمال) — drive it like an operator.
+  await action('sale'); await waitForText(`وضعیت فروش — ${productName}`);
+  check('sale modal locks scope to the entry variant with explicit preview', (await text()).includes('فقط همین تنوع') && (await text()).includes(`توقف فروش برای: فقط تنوع مشکی / 41 (${variant.sku})`));
+  await clickByText('تأیید و اعمال');
+  // The operations entry is static («وضعیت فروش…») in the scope-modal design, so assert the
+  // OUTCOME: the variant-level sale flag flips server-side (API/database truth).
+  const saleFlag = async () => {
+    const item = (await request(`/inventory?warehouseId=${warehouse.id}&inventoryDomain=retail`)).items.find((it) => it.variant_id === variant.id);
+    return item?.variant_sale_enabled ?? true;
+  };
+  let stopped = false;
+  for (let i = 0; i < 24 && !stopped; i += 1) { await new Promise((resolve) => setTimeout(resolve, 400)); stopped = (await saleFlag()) === false; }
+  check('variant-scope sale stop persists server-side', stopped);
+  await action('sale'); await waitForText(`وضعیت فروش — ${productName}`);
+  check('sale modal defaults to re-activation when the variant is stopped', (await text()).includes('فعال‌سازی فروش برای'));
+  await clickByText('تأیید و اعمال');
+  let active = false;
+  for (let i = 0; i < 24 && !active; i += 1) { await new Promise((resolve) => setTimeout(resolve, 400)); active = (await saleFlag()) === true; }
+  check('variant-scope sale re-activation persists server-side', active);
   page.off('request', listener);
 }

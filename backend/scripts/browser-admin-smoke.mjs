@@ -262,7 +262,8 @@ try {
   await shot('01-tower');
 
   // ---------------------------- pass 1: empty database ----------------------------
-  await openTab('حمل‌ونقل');
+  // Final IA: shipping CONFIG lives under «تنظیمات و دسترسی» (legacy «حمل‌ونقل» key redirects).
+  await openTab('تنظیمات و دسترسی');
   let body = await text();
   check('shipping tab opens with the canonical columns', body.includes('کد روش ارسال') && body.includes('نوع ارسال') && body.includes('هزینه پایه'));
   check('shipping tab states a real server connection (not the old banner)',
@@ -340,7 +341,11 @@ try {
     body.includes('هیرو') && (body.includes('صفحه اصلی') ), body.split('\n').slice(0, 6).join(' | ').slice(0, 140));
   await shot('05-cms-bootstrap');
 
-  await openTab('دفتر کل');
+  // Final IA (Prompt 4 §15): GL lives inside مرکز مالی → حسابداری → دفتر کل.
+  await openTab('مرکز مالی');
+  await clickByText('حسابداری');
+  await clickByText('دفتر کل');
+  await sleep(1500);
   body = await text();
   if (!freshDb) {
     check('ledger renders real rows when the stack already carries finance events',
@@ -373,7 +378,7 @@ try {
   await shot('07-integrations');
 
   // module tabs must never crash or blank the console
-  const moduleTabs = ['مشتریان', 'پنل پیامک', 'اعلان‌ها', 'مالی و تسویه', 'محتوا'];
+  const moduleTabs = ['مرکز CRM', 'اعلان‌ها', 'مرکز مالی', 'محتوا'];
   capture((await text()));
   for (const label of moduleTabs) {
     try {
@@ -423,7 +428,7 @@ try {
   let shellReady = false;
   for (let attempt = 0; attempt < 40 && !shellReady; attempt += 1) {
     await sleep(500);
-    shellReady = await page.evaluate(() => [...document.querySelectorAll('button')].some((button) => button.innerText.trim().startsWith('حمل‌ونقل')));
+    shellReady = await page.evaluate(() => [...document.querySelectorAll('button')].some((button) => button.innerText.trim().startsWith('برج کنترل')));
   }
   check('console shell comes back after a full reload (session revalidation)', shellReady);
   if (!shellReady) {
@@ -431,7 +436,7 @@ try {
     console.error('--- after reload url --- ' + page.url());
     console.error('--- console errors ---\n' + consoleErrors.slice(-6).join('\n'));
   }
-  await openTab('حمل‌ونقل');
+  await openTab('تنظیمات و دسترسی');
   body = await text();
   check('seeded shipping methods are listed with Persian types',
     /استاندارد|سریع|تحویل حضوری/.test(body) && body.includes('تومان'), '');
@@ -442,7 +447,9 @@ try {
   await warehouseUxSmoke({ page, check, apiPort, clickByText, setInput, text, waitForText });
   await shot('09-wms-seeded');
 
-  await openTab('تعریف محصول');
+  // §14: product definition lives at انبار و نقل‌وانتقالات → کالاها (legacy «تعریف محصول» redirects).
+  await openTab('انبار و نقل‌وانتقالات');
+  await clickByText('کالاها');
   const catalogueReady = await waitForText('موجودی (WMS)');
   check('ProductStudio lists the real catalogue rows', catalogueReady, (await text()).replace(/\n+/g, ' | ').slice(0, 90));
   const inventoryOpened = await clickByText('موجودی و انبار');
@@ -483,7 +490,10 @@ try {
   await shot('12-palette');
 
   // jalali table dates + full Persian sweep on the ledger/integrations surfaces
-  await openTab('دفتر کل');
+  await openTab('مرکز مالی');
+  await clickByText('حسابداری');
+  await clickByText('دفتر کل');
+  await sleep(1500);
   body = await text();
   const ledgerHasData = !body.includes('هنوز رویداد مالی واقعی ایجاد نشده است.');
   if (ledgerHasData) {
@@ -495,11 +505,13 @@ try {
   await shot('13-ledger-after-seed');
 
   // ---- full console walk: every section of the sidebar, in order ----
+  // Final consolidated sidebar (Prompt 4): one business capability = one entry.
   const allTabs = [
-    'برج کنترل', 'سفارش‌های سرور', 'سفارش‌های عمده', 'میز عملیات کلبه', 'محصولات و بازبینی', 'قالب‌های سری کلبه',
-    'تأمین‌کنندگان', 'درخواست همکاری', 'خریداران عمده', 'پلن‌های عضویت', 'سفارش‌های خرده', 'تعریف محصول',
-    'حمل‌ونقل', 'انبار و نقل‌وانتقالات', 'مشتریان', 'کوپن و جشنواره', 'محتوا', 'پنل پیامک', 'اعلان‌ها', 'مالی و تسویه',
-    'دفتر کل', 'یکپارچه‌سازی‌ها', 'تیکت و مرجوعی', 'گزارش حسابرسی', 'محدودیت کاربران', 'تنظیمات و دسترسی',
+    'مرکز سفارشات', 'انبار و نقل‌وانتقالات', 'برج کنترل', 'مرکز ورود داده', 'اسناد و صورت‌حساب',
+    'درخواست همکاری', 'پلن‌های عضویت', 'ساختار محصولات و سری‌ها', 'مرکز CRM', 'کوپن و جشنواره',
+    'محتوا (CMS)', 'مرکز SEO', 'مجله و رسانه‌ها', 'اعلان‌ها', 'مرکز مالی', 'یکپارچه‌سازی‌ها',
+    'اتوماسیون و n8n', 'نظرات و امتیازها', 'توصیه‌گر هوشمند', 'تیکت و مرجوعی', 'گزارش حسابرسی',
+    'محدودیت کاربران', 'تنظیمات و دسترسی',
   ];
   const broken = [];
   for (const label of allTabs) {
@@ -533,8 +545,9 @@ try {
     .filter((line) => /^[A-Za-z][A-Za-z0-9 _/-]{3,}$/.test(line))
     .filter((line) => !/^\/(admin|api|site|products|orders|invoices|warehouses|inventory)/.test(line))
     .filter((line) => !/^KV-[A-Z0-9-]+$/.test(line))                // order, invoice and warehouse codes
+    .filter((line) => !/^(zibal|nextpay)$/.test(line))              // payment-provider technical codes (shown as codes by design)
     .filter((line) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/.test(line)); // UUIDs
-  check('no standalone English UI labels across every visited module', sweep.length === 0, sweep.slice(0, 4).join(' | '));
+  check('no standalone English UI labels across every visited module', sweep.length === 0, sweep.slice(0, 12).join(' | '));
   writeFileSync(`${shotDir}/api-calls.json`, JSON.stringify(apiCalls, null, 2));
   writeFileSync(`${shotDir}/report.json`, JSON.stringify({ results, consoleErrors }, null, 2));
 } catch (error) {

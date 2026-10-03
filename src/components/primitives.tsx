@@ -124,14 +124,14 @@ export function SearchBox({ placeholder = "جست‌وجو…", value, onChange 
   return <Input placeholder={placeholder} value={value} onChange={onChange} icon={<Search size={17} />} />;
 }
 
-export function Select({ options, value, onChange, className }: { options: string[]; value?: string; onChange?: (v: string) => void; className?: string }) {
+export function Select({ options, value, onChange, className, labels }: { options: string[]; value?: string; onChange?: (v: string) => void; className?: string; labels?: Record<string, string> }) {
   return (
     <div className={cn("relative", className)}>
       <select
         value={value} onChange={(e) => onChange?.(e.target.value)}
         className="h-11 w-full appearance-none rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 pl-9 text-sm font-medium text-[var(--kv-ink)] outline-none transition-all focus:border-[var(--kv-accent)] cursor-pointer"
       >
-        {options.map((o) => <option key={o}>{o}</option>)}
+        {options.map((o) => <option key={o} value={o}>{labels?.[o] ?? o}</option>)}
       </select>
       <ChevronLeft size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 rotate-[-90deg] text-[var(--kv-faint)]" />
     </div>

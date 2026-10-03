@@ -8,6 +8,13 @@ const text = (value: unknown, fallback = "—") => (value === null || value === 
 const num = (value: unknown) => fmtNum(Number(value ?? 0));
 const rial = (value: unknown) => `${fmtNum(Number(String(value ?? "0")))} ریال`;
 
+/** Persian labels for server-owned strategy codes (items 110-121). */
+const STRATEGY_LABEL: Record<string, string> = {
+  personalized: "شخصی‌سازی‌شده", similar: "محصولات مشابه", collaborative: "خرید مشترک کاربران", popular: "پرفروش‌ها",
+  trending: "داغ‌های روز", rule_based: "قانون‌محور", seasonal: "فصلی", manual_campaign: "کمپین دستی", new_arrivals: "تازه‌رسیده‌ها",
+};
+const strategyLabel = (value: unknown) => STRATEGY_LABEL[String(value ?? "")] ?? text(value);
+
 type Tab = "slots" | "analytics";
 const TABS: { v: Tab; label: string }[] = [
   { v: "slots", label: "جایگاه‌ها و استراتژی‌ها" },
@@ -75,16 +82,16 @@ export function RecommendationsPanel({ flash }: { flash: (message: string) => vo
                   <div>
                     <p className="flex items-center gap-2 text-[13px] font-extrabold"><Layers size={15} />{text(slot.title)}</p>
                     <p className="mt-0.5 text-[11.5px] text-[var(--kv-muted)]">
-                      <code>{code}</code> · صفحه {text(slot.page_scope)} · پیش‌فرض {text(slot.default_strategy)} · {num(slot.manual_items)} آیتم دستی
+                      <code>{code}</code> · صفحه {text(slot.page_scope)} · پیش‌فرض {strategyLabel(slot.default_strategy)} · {num(slot.manual_items)} آیتم دستی
                     </p>
                   </div>
                   <Switch on={Boolean(slot.active)} onToggle={() => void run("تغییر وضعیت جایگاه", () => recommendationsApi.updateSlot(code, { active: !slot.active }))} />
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-[11.5px]">
                   <span className="text-[var(--kv-muted)]">استراتژی پیش‌فرض:</span>
-                  <Select options={strategies} value={text(slot.default_strategy)} className="w-44"
+                  <Select options={strategies} labels={STRATEGY_LABEL} value={text(slot.default_strategy)} className="w-44"
                     onChange={(v) => void run("تغییر استراتژی", () => recommendationsApi.updateSlot(code, { defaultStrategy: v }))} />
-                  <span className="text-[var(--kv-muted)]">فعال: {activeStrategies.length ? activeStrategies.join("، ") : "همه"}</span>
+                  <span className="text-[var(--kv-muted)]">فعال: {activeStrategies.length ? activeStrategies.map((item) => strategyLabel(item)).join("، ") : "همه"}</span>
                 </div>
                 <div className="mt-3 flex gap-2">
                   <Btn variant="soft" size="sm" icon={<Plus size={13} />} onClick={() => { setPicking(slot); setProductIds(""); setReplace("true"); }}>مدیریت پین دستی</Btn>
@@ -119,7 +126,7 @@ export function RecommendationsPanel({ flash }: { flash: (message: string) => vo
                   {analytics.items.map((row) => (
                     <tr key={`${row.slotCode}-${row.strategy}`}>
                       <td className="py-2 font-semibold"><code>{text(row.slotCode)}</code></td>
-                      <td className="py-2">{text(row.strategy)}</td>
+                      <td className="py-2">{strategyLabel(row.strategy)}</td>
                       <td className="py-2 tabular-nums">{num(row.impressions)}</td>
                       <td className="py-2 tabular-nums">{num(row.clicks)}</td>
                       <td className="py-2 tabular-nums">{text(row.ctr, "0")}٪</td>
@@ -151,7 +158,7 @@ export function RecommendationsPanel({ flash }: { flash: (message: string) => vo
             <Input value={productIds} onChange={setProductIds} placeholder="00000000-0000-0000-0000-000000000000" />
           </Field>
           <Field label="جایگزینی پین‌های قبلی">
-            <Select options={["true", "false"]} value={replace} onChange={(v) => setReplace(v as "true" | "false")} />
+            <Select options={["true", "false"]} labels={{ true: "جایگزینی کامل فهرست", false: "افزودن به فهرست فعلی" }} value={replace} onChange={(v) => setReplace(v as "true" | "false")} />
           </Field>
           <Btn variant="accent" className="w-full" disabled={!productIds.trim()}
             onClick={() => void run("پین محصولات", async () => {

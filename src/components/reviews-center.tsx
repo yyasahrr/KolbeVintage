@@ -25,6 +25,11 @@ const TABS: { v: Tab; label: string }[] = [
 ];
 
 type StatusFilter = "pending" | "approved" | "rejected" | "hidden" | "all";
+
+const REVIEW_STATUS_LABEL: Record<string, string> = {
+  pending: "در انتظار تأیید", approved: "تأییدشده", rejected: "ردشده", hidden: "پنهان‌شده", all: "همه وضعیت‌ها",
+};
+const REPORT_STATUS_LABEL: Record<string, string> = { open: "باز", resolved: "رسیدگی‌شده", dismissed: "ردشده" };
 type ProductStat = { id: string; name: string; review_count: number; average: string };
 
 /** Review moderation + product rating analytics (items 105-109). Moderation only
@@ -81,10 +86,9 @@ export function ReviewsCenter({ flash }: { flash: (message: string) => void }) {
         <Segmented options={TABS} value={tab} onChange={setTab} />
         {tab === "moderation" && (
           <div className="flex items-center gap-2">
-            <Select options={["pending", "approved", "rejected", "hidden", "all"]} value={statusFilter}
+            <Select options={["pending", "approved", "rejected", "hidden", "all"]} labels={REVIEW_STATUS_LABEL} value={statusFilter}
               onChange={(v) => setStatusFilter(v as StatusFilter)} />
-            <Select options={["false", "true"]} value={reportedOnly} onChange={(v) => setReportedOnly(v as "false" | "true")} />
-            <span className="text-[11.5px] text-[var(--kv-muted)]">فیلتر «true» = فقط گزارش‌شده</span>
+            <Select options={["false", "true"]} labels={{ false: "همه نظرات", true: "فقط گزارش‌شده‌ها" }} value={reportedOnly} onChange={(v) => setReportedOnly(v as "false" | "true")} />
           </div>
         )}
       </Card>
@@ -99,7 +103,7 @@ export function ReviewsCenter({ flash }: { flash: (message: string) => void }) {
                     <Stars value={Number(review.rating ?? 0)} />
                     {text(review.title, "بدون عنوان")}
                     {review.verified_purchase ? <Status value="خرید تأییدشده" /> : <Status value="بدون تأیید خرید" />}
-                    <Status value={text(review.status)} />
+                    <Status value={REVIEW_STATUS_LABEL[String(review.status)] ?? text(review.status)} />
                   </p>
                   <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">
                     {text(review.product_name)} · {text(review.customer_name)} · {text(review.customer_phone)} · {stamp(review.created_at)}
@@ -134,7 +138,7 @@ export function ReviewsCenter({ flash }: { flash: (message: string) => void }) {
                 <div>
                   <p className="flex items-center gap-2 text-[13px] font-extrabold">
                     <Flag size={14} />گزارش {text(report.reason)}
-                    <Status value={text(report.status)} />
+                    <Status value={REPORT_STATUS_LABEL[String(report.status)] ?? text(report.status)} />
                   </p>
                   <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">
                     {text(report.product_name)} · امتیاز {num(report.rating)} · گزارش‌دهنده {text(report.reporter_name)} · {stamp(report.created_at)}

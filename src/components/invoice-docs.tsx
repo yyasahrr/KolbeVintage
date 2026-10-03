@@ -39,6 +39,10 @@ const STATUS_LABEL: Record<string, string> = {
 
 const SECTION_TYPES = ["keyValues", "table", "totals", "paragraph", "signature"] as const;
 
+const SECTION_TYPE_LABEL: Record<string, string> = {
+  keyValues: "کلید/مقدار", table: "جدول اقلام", totals: "جمع‌بندی مبالغ", paragraph: "پاراگراف متنی", signature: "محل امضا",
+};
+
 type TemplateSection = { id: string; type: string; title?: string; order?: number; visible?: boolean;
   fields?: string[]; text?: string; lines?: string[] };
 
@@ -110,8 +114,8 @@ function DocumentsTab({ flash }: { flash?: (message: string) => void }) {
       <div className="flex flex-wrap items-center gap-2">
         <SearchBox placeholder="شماره سند (INV-…)" value={reference} onChange={setReference} />
         <Btn variant="soft" size="sm" onClick={load}>جست‌وجو</Btn>
-        <Select options={["", ...Object.keys(STATUS_LABEL)]} value={status} onChange={setStatus} />
-        <Select options={["", ...Object.keys(KIND_LABEL)]} value={kind} onChange={setKind} />
+        <Select options={["", ...Object.keys(STATUS_LABEL)]} labels={{ "": "همه وضعیت‌ها", ...STATUS_LABEL }} value={status} onChange={setStatus} />
+        <Select options={["", ...Object.keys(KIND_LABEL)]} labels={{ "": "همه انواع سند", ...KIND_LABEL }} value={kind} onChange={setKind} />
         <span className="mr-auto text-[12px] text-[var(--kv-muted)]">{fmtNum(items.length)} سند</span>
         <Btn variant="ghost" size="sm" icon={<RefreshCw size={14} />} onClick={() => void load()}>بروزرسانی</Btn>
       </div>
@@ -423,7 +427,7 @@ function TemplateEditor({ editor, setEditor, variables, busy, onPreview, onSave,
             <Input value={editor.title} onChange={(value) => setEditor({ ...editor, title: value })} placeholder="فاکتور رسمی فروش" />
           </Field>
           <Field label="نوع سند">
-            <Select options={Object.keys(KIND_LABEL)} value={editor.kind} onChange={(value) => setEditor({ ...editor, kind: value })} />
+            <Select options={Object.keys(KIND_LABEL)} labels={KIND_LABEL} value={editor.kind} onChange={(value) => setEditor({ ...editor, kind: value })} />
           </Field>
         </div>
 
@@ -443,7 +447,7 @@ function TemplateEditor({ editor, setEditor, variables, busy, onPreview, onSave,
               <div key={section.id} className="grid gap-2 rounded-[10px] border border-[var(--kv-line)] p-2 md:grid-cols-[1fr_1fr_90px_90px_auto]">
                 <Input value={section.id} onChange={(value) => patch(index, { id: value })} placeholder="شناسه" />
                 <Input value={section.title ?? ""} onChange={(value) => patch(index, { title: value })} placeholder="عنوان" />
-                <Select options={[...SECTION_TYPES]} value={section.type} onChange={(value) => patch(index, { type: value })} />
+                <Select options={[...SECTION_TYPES]} labels={SECTION_TYPE_LABEL} value={section.type} onChange={(value) => patch(index, { type: value })} />
                 <Input value={String(section.order ?? index + 1)}
                   onChange={(value) => patch(index, { order: Number(value) || index + 1 })} placeholder="ترتیب" />
                 <div className="flex items-center gap-2">
@@ -533,7 +537,9 @@ function StatementsTab({ flash }: { flash?: (message: string) => void }) {
         <SectionHead title="صدور صورت‌حساب تأمین‌کننده" desc="از گردش واقعی دفتر معین تأمین‌کننده، با فایل PDF و اسنپ‌شات" />
         <div className="mt-3 grid gap-3 md:grid-cols-4">
           <Field label="تأمین‌کننده">
-            <Select options={supplierOptions.map((option) => option.v)} value={supplierId} onChange={setSupplierId} />
+            <Select options={["", ...supplierOptions.map((option) => option.v)]}
+              labels={{ "": "انتخاب تأمین‌کننده…", ...Object.fromEntries(supplierOptions.map((option) => [option.v, option.label])) }}
+              value={supplierId} onChange={setSupplierId} />
           </Field>
           <div><PersianDatePicker label="از تاریخ" value={from} onChange={(iso) => iso && setFrom(iso)} /></div>
           <div><PersianDatePicker label="تا تاریخ" value={to} onChange={(iso) => iso && setTo(iso)} /></div>

@@ -207,12 +207,17 @@ try {
   await page.evaluate((tk) => localStorage.setItem('kolbe-access-token', tk), admin);
   await page.goto(`${BASE}/#/admin`, { waitUntil: 'networkidle2' });
   await sleep(1500);
-  const loginInputs = await page.$$('input');
-  if (loginInputs.length >= 2 && !(await text()).includes('محتوا (CMS)')) {
-    await loginInputs[0].type('admin@kolbe.ir');
-    await loginInputs[1].type('ChangeMe-Admin-123456');
-    await page.keyboard.press('Enter');
-    await page.waitForFunction(() => document.body.innerText.includes('محتوا (CMS)'), { timeout: 20000 }).catch(() => undefined);
+  // The console login form has no implicit Enter submit — click the real button, and retry
+  // through the auth rate limiter (token() calls above may have consumed the per-IP budget).
+  for (let attempt = 0; attempt < 4 && !(await text()).includes('محتوا (CMS)'); attempt += 1) {
+    const loginInputs = await page.$$('input');
+    if (loginInputs.length >= 2) {
+      await loginInputs[0].click({ clickCount: 3 }); await loginInputs[0].type('admin@kolbe.ir');
+      await loginInputs[1].click({ clickCount: 3 }); await loginInputs[1].type('ChangeMe-Admin-123456');
+      await page.evaluate(() => [...document.querySelectorAll('button')].find((b) => b.textContent?.includes('ورود به کنسول'))?.click());
+      await page.waitForFunction(() => document.body.innerText.includes('محتوا (CMS)'), { timeout: 20000 }).catch(() => undefined);
+      if (!(await text()).includes('محتوا (CMS)')) await sleep(12000); // ride out the 10/min auth limiter
+    }
   }
   await clickText('button', 'محتوا (CMS)');
   await page.waitForFunction(() => document.body.innerText.includes('صفحات و انتشار') && document.body.innerText.includes('منتشر شده'), { timeout: 20000 }).catch(() => undefined);

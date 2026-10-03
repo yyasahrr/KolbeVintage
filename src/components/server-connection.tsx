@@ -34,6 +34,9 @@ const PROBES: Record<string, Probe> = {
   restrictions: { label: "محدودیت کاربران", run: () => adminApi.restrictions() },
   plans: { label: "پلن‌های عضویت", run: () => adminApi.plans() },
   users: { label: "کاربران", run: () => adminApi.users() },
+  // Prompt 5 QA: settings now hosts server-backed modules (پیکربندی حمل‌ونقل + کاربران سیستم),
+  // so it must probe the server instead of claiming to be local.
+  settings: { label: "پیکربندی حمل‌ونقل و کاربران", run: () => shippingApi.adminList() },
 };
 
 type State =
@@ -50,7 +53,6 @@ const LOCAL_ONLY: Record<string, string> = {
   rorders: "سفارش‌های خردهٔ محلی؛ نسخه سروری در «سفارش‌های واقعی» است.",
   rproducts: "تعریف محصول از کاتالوگ واقعی سرور خوانده و روی آن ذخیره می‌شود.",
   series: "قالب‌های سری کلبه محلی‌اند.",
-  settings: "تنظیمات و دسترسی در این نسخه محلی است.",
 };
 
 /**
