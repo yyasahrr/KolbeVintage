@@ -12,6 +12,8 @@ export const DOCUMENT_PREFIX = {
   return: 'RTN',
   cooperation: 'COOP',
   credit_note: 'CN',
+  payable: 'PAYB',
+  recovery: 'RCV',
 } as const;
 
 export type DocumentType = keyof typeof DOCUMENT_PREFIX;
