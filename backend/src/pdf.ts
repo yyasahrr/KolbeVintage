@@ -165,11 +165,21 @@ class Renderer {
         for (const row of section.rows) {
           this.ensureSpace(16);
           const label = shaped(row.label);
-          const value = shaped(row.value);
           this.cursorY -= 14;
-          this.page.drawText(label, { x: A4.width - MARGIN - 150, y: this.cursorY, size: 9.5, font: this.font, color: MUTED });
-          const width = this.font.widthOfTextAtSize(value, 9.5);
-          this.page.drawText(value, { x: A4.width - MARGIN - width, y: this.cursorY, size: 9.5, font: this.font, color: INK });
+          const labelWidth = this.font.widthOfTextAtSize(label, 9.5);
+          // RTL layout: label hugs the right margin; value sits to its left and may not
+          // overlap the label column — long values are truncated with an ellipsis.
+          this.page.drawText(label, { x: A4.width - MARGIN - labelWidth, y: this.cursorY, size: 9.5, font: this.font, color: MUTED });
+          const maxValueWidth = A4.width - MARGIN * 2 - 160;
+          let rawValue = row.value;
+          let value = shaped(rawValue);
+          let width = this.font.widthOfTextAtSize(value, 9.5);
+          while (width > maxValueWidth && rawValue.length > 1) {
+            rawValue = rawValue.slice(0, -2);
+            value = shaped(`${rawValue}…`);
+            width = this.font.widthOfTextAtSize(value, 9.5);
+          }
+          this.page.drawText(value, { x: A4.width - MARGIN - 160 - width, y: this.cursorY, size: 9.5, font: this.font, color: INK });
         }
         this.space(2);
         break;

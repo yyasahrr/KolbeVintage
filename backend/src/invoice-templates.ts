@@ -214,13 +214,40 @@ export function templateContext(input: {
     },
     order: { reference: input.orderReference ?? '—' },
     payment: {
-      method: input.payment?.method ?? '—',
+      method: input.payment?.method ? (PAYMENT_METHOD_FA[input.payment.method] ?? input.payment.method) : '—',
       lastReference: input.payment?.lastReference ?? '—',
       paidAt: input.payment?.paidAt ? formatJalali(input.payment.paidAt, true) : '—',
     },
     ...(input.extras ?? {}),
   };
 }
+
+/** Persian labels for template variable paths (§19 PDF visual QA: a raw path like
+ *  «seller.name» must never appear as a printed label). Group-qualified where the
+ *  same key exists for several parties. Kept in sync with the builder catalogue. */
+export const FIELD_LABELS: Record<string, string> = {
+  'invoice.number': 'شماره سند', 'invoice.issueDate': 'تاریخ صدور', 'invoice.dueDate': 'سررسید',
+  'invoice.date': 'تاریخ', 'invoice.kind': 'نوع سند', 'invoice.services': 'کارمزد خدمات',
+  'invoice.status': 'وضعیت', 'invoice.paymentType': 'نوع پرداخت', 'invoice.subtotal': 'جمع اقلام',
+  'invoice.discount': 'تخفیف', 'invoice.tax': 'مالیات', 'invoice.shipping': 'هزینه ارسال',
+  'invoice.servicesFee': 'کارمزد خدمات', 'invoice.total': 'مبلغ کل', 'invoice.paid': 'پرداخت‌شده',
+  'invoice.remaining': 'مانده', 'invoice.notes': 'توضیحات', 'invoice.items': 'فهرست اقلام',
+  'invoice.itemCount': 'تعداد اقلام',
+  'customer.name': 'نام خریدار', 'customer.legalName': 'نام حقوقی خریدار', 'customer.phone': 'تلفن خریدار',
+  'customer.address': 'نشانی خریدار', 'customer.nationalId': 'کد ملی خریدار', 'customer.economicCode': 'کد اقتصادی خریدار',
+  'seller.name': 'نام فروشنده', 'seller.legalName': 'نام حقوقی فروشنده', 'seller.phone': 'تلفن فروشنده',
+  'seller.address': 'نشانی فروشنده', 'seller.nationalId': 'کد ملی فروشنده', 'seller.economicCode': 'کد اقتصادی فروشنده',
+  'supplier.name': 'نام تأمین‌کننده', 'supplier.legalName': 'نام حقوقی تأمین‌کننده', 'supplier.iban': 'شبا تأمین‌کننده',
+  'supplier.address': 'نشانی تأمین‌کننده', 'supplier.phone': 'تلفن تأمین‌کننده',
+  'order.reference': 'شماره سفارش',
+  'payment.method': 'روش پرداخت', 'payment.lastReference': 'آخرین مرجع پرداخت', 'payment.paidAt': 'زمان پرداخت',
+};
+
+/** Persian labels for raw payment-method codes stored on invoice_payments. */
+const PAYMENT_METHOD_FA: Record<string, string> = {
+  transfer: 'حواله بانکی', card: 'کارت به کارت', cash: 'نقدی', cheque: 'چک',
+  wallet: 'کیف پول', gateway: 'درگاه پرداخت', other: 'سایر',
+};
 
 const resolveVariable = (context: Record<string, Record<string, string>>, path: string): string => {
   const [group, key] = path.split('.');
@@ -249,7 +276,7 @@ export function buildDocument(input: {
       continue;
     }
     if (section.type === 'keyValues') {
-      const rows = (section.fields ?? []).map((field) => ({ label: field, value: substitute(`{{${field}}}`, input.context) }))
+      const rows = (section.fields ?? []).map((field) => ({ label: FIELD_LABELS[field] ?? field, value: substitute(`{{${field}}}`, input.context) }))
         .filter((row) => row.value !== '—' && row.value !== '');
       if (rows.length) sections.push({ type: 'keyValues', title: section.title, rows });
       continue;

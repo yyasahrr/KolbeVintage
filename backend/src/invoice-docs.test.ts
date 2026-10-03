@@ -60,7 +60,14 @@ test('invoice templates, lifecycle, snapshots and PDF documents (items 25-34)', 
     assert.equal(versionBump.statusCode, 201, versionBump.body);
     assert.equal(versionBump.json().version, 2);
 
-    const preview = await app.inject({ method: 'POST', url: `/api/v1/invoices/templates/${templateId}/preview`, headers, payload: {} });
+    // Preview with the keyValues definition inline (without invoiceId the endpoint renders
+    // the ACTIVE version, which v2 reduced to a bare table) — §19 label regression needs it.
+    const preview = await app.inject({ method: 'POST', url: `/api/v1/invoices/templates/${templateId}/preview`, headers, payload: {
+      definition: { paperSize: 'A4', sections: [
+        { id: 'head', type: 'keyValues', title: 'طرفین', order: 1, visible: true,
+          fields: ['invoice.number', 'customer.name', 'invoice.date', 'order.reference'] },
+        { id: 'items', type: 'table', title: 'اقلام', order: 2, visible: true },
+      ] } } });
     assert.equal(preview.statusCode, 200, preview.body);
     assert.match(preview.headers['content-type'] as string, /application\/pdf/);
     const previewPdf = preview.rawPayload;
@@ -68,6 +75,11 @@ test('invoice templates, lifecycle, snapshots and PDF documents (items 25-34)', 
     assert.equal(previewStructure.a4, true, 'پیش‌نمایش A4 است');
     assert.equal(previewStructure.embeddedFont, true, 'فونت فارسی جاسازی شده است');
     assert.ok(previewStructure.pageCount >= 1);
+    // §19 regression (Prompt 5 PDF visual QA): template variable PATHS must render with
+    // their Persian labels — raw keys like «customer.name» must never be printed.
+    const previewText = extractPdfText(previewPdf);
+    assert.ok(previewText.includes(toVisual('شماره سند')) && previewText.includes(toVisual('نام خریدار')), 'برچسب فارسی متغیرهای keyValues چاپ می‌شود');
+    assert.ok(!previewText.includes('customer.name') && !previewText.includes('invoice.number'), 'کلید خام قالب در PDF چاپ نمی‌شود');
 
     // --- lifecycle: draft → issued with ledger posting and stored PDF ------------------
     const customerId = randomUUID();
