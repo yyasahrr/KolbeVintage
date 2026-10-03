@@ -6,6 +6,7 @@ import type { DbPool } from './db.js';
 import { one } from './db.js';
 import { principal } from './auth.js';
 import { ApiError, badRequest, notFound, unauthorized } from './errors.js';
+import { consumeTryonCredit, refundTryonCredit } from './tryon-commerce.js';
 
 const ALPHA_BASE = 'https://api.appalpha.ir/v1';
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
@@ -93,13 +94,22 @@ export function registerTryOnRoutes(app: FastifyInstance, pool: DbPool, config: 
     const garmentImage = publicImageUrl(product.metadata);
     if (!garmentImage) throw badRequest('این محصول عکس عمومی مناسب برای پرو مجازی ندارد.');
 
-    const job = await alphaRequest(config, '/generations', {
+    // §44/§199: one generation = one credit (free quota auto-granted once).
+    // Debit first under a row lock, refund if the provider submission fails.
+    const consumption = await consumeTryonCredit(pool, user.id);
+    let job: AlphaJob;
+    try {
+      job = await alphaRequest(config, '/generations', {
       model: 'qwen-image-edit',
       prompt: `تصویر اول عکس شخص است. تصویر دوم لباس یا اکسسوری محصول «${product.name}» است. محصول تصویر دوم را به شکل طبیعی روی شخص تصویر اول قرار بده؛ چهره، هویت، ژست و پس‌زمینهٔ شخص را حفظ کن. رنگ، طرح و جزئیات محصول را تا حد امکان مطابق تصویر دوم نگه دار. خروجی یک عکس واقع‌گرایانه از همان شخص با این محصول باشد.`,
       image: `data:${mime};base64,${photo.toString('base64')}`,
       image2: garmentImage,
-    });
-    if (!job.id || !z.uuid().safeParse(job.id).success) throw new ApiError(502, 'TRYON_BAD_RESPONSE', 'پاسخ سرویس پرو مجازی معتبر نبود.');
+      });
+      if (!job.id || !z.uuid().safeParse(job.id).success) throw new ApiError(502, 'TRYON_BAD_RESPONSE', 'پاسخ سرویس پرو مجازی معتبر نبود.');
+    } catch (error) {
+      if (consumption.charged) await refundTryonCredit(pool, user.id);
+      throw error;
+    }
     const jobToken = await new SignJWT({ jid: job.id, sid: user.sessionId })
       .setProtectedHeader({ alg: 'HS256' }).setSubject(user.id).setIssuer('kolbe-tryon')
       .setAudience('kolbe-tryon').setIssuedAt().setExpirationTime('20m').sign(secret(config));

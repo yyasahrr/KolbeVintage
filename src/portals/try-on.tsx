@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Camera, Check, Download, Eye, Loader2, RotateCcw, Shirt, Sparkles, Upload, Wand2 } from "lucide-react";
 import { Btn, Card } from "../components/primitives";
 import { fmtMoney } from "../data/catalog";
-import { apiClient, catalogApi, isAuthenticated, type CatalogItem } from "../data/api";
+import { apiClient, catalogApi, isAuthenticated, tryonCreditApi, type CatalogItem } from "../data/api";
 import { cn } from "../utils/cn";
 
 type TryOnJob = { jobToken?: string; status: "processing" | "ready" | "failed"; percent: number | null; outputUrl: string | null; message: string | null };
@@ -30,7 +30,27 @@ export function TryOn({ onLogin }: { onLogin: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
+  const [credits, setCredits] = useState<{ salesEnabled: boolean; freeQuota: number; freeGranted: boolean; balance: number; packages: { id: string; name: string; credits: number; price_rial: string }[] } | null>(null);
+  const [buying, setBuying] = useState("");
+  const [purchaseNote, setPurchaseNote] = useState("");
   const product = products.find((item) => item.id === productId);
+
+  const loadCredits = async () => {
+    if (!isAuthenticated()) { setCredits(null); return; }
+    try { setCredits(await tryonCreditApi.packages()); } catch { /* keep previous state */ }
+  };
+  useEffect(() => { void loadCredits(); }, []);
+
+  /** §42-§47: buying a pack creates a purchase + ONE canonical payment intent; credits arrive after verified payment. */
+  const buyPack = async (packageId: string) => {
+    setBuying(packageId); setPurchaseNote("");
+    try {
+      const purchase = await tryonCreditApi.purchase(packageId);
+      setPurchaseNote(`درخواست پرداخت ${purchase.reference} ثبت شد — پس از تأیید پرداخت درگاه، اعتبار به حساب شما اضافه می‌شود.`);
+      await loadCredits();
+    } catch (cause) { setPurchaseNote(cause instanceof Error ? cause.message : "ثبت خرید ناموفق بود."); }
+    finally { setBuying(""); }
+  };
 
   useEffect(() => {
     let live = true;
@@ -105,7 +125,7 @@ export function TryOn({ onLogin }: { onLogin: () => void }) {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "شروع پرو مجازی ناموفق بود.");
       setStep(1);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); void loadCredits(); }
   };
 
   const reset = () => { setStep(0); setJobToken(""); setPercent(null); setResultUrl(""); setError(""); };
@@ -161,6 +181,14 @@ export function TryOn({ onLogin }: { onLogin: () => void }) {
         </div>}
       </Card>
       <div className="space-y-4"><Card className="p-5"><h2 className="text-sm font-bold">محصول انتخاب‌شده</h2>{product ? <div className="mt-3 flex gap-3"><img src={product.image} alt="" className="h-20 w-16 rounded-lg object-cover"/><div className="min-w-0"><p className="text-sm font-bold">{product.name}</p><p className="mt-1 text-xs text-[var(--kv-muted)]">{fmtMoney(Number(product.cashPriceRial))}</p></div></div> : <p className="mt-3 text-xs text-[var(--kv-muted)]">محصولی انتخاب نشده است.</p>}</Card>
+        {credits && credits.salesEnabled && <Card className="p-5"><h2 className="text-sm font-bold">اعتبار پرو مجازی</h2>
+          <p className="mt-2 text-xs leading-6 text-[var(--kv-muted)]">موجودی شما: <b className="text-[var(--kv-ink)]">{credits.balance.toLocaleString("fa-IR")} اعتبار</b>{!credits.freeGranted && credits.freeQuota > 0 && <span> + {credits.freeQuota.toLocaleString("fa-IR")} پروی رایگان اولین استفاده</span>}</p>
+          <div className="mt-3 space-y-2">{credits.packages.map((pack) => <div key={pack.id} className="flex items-center justify-between gap-2 rounded-lg border border-[var(--kv-line)] px-3 py-2">
+            <div className="min-w-0"><p className="truncate text-xs font-bold">{pack.name}</p><p className="mt-0.5 text-[11px] text-[var(--kv-muted)]">{pack.credits.toLocaleString("fa-IR")} ساخت تصویر · {fmtMoney(Number(pack.price_rial))}</p></div>
+            <Btn size="sm" variant="soft" disabled={buying === pack.id} onClick={() => void buyPack(pack.id)}>{buying === pack.id ? "در حال ثبت…" : "خرید"}</Btn>
+          </div>)}</div>
+          {purchaseNote && <p role="status" className="mt-3 text-[11px] leading-5 text-[var(--kv-accent)]">{purchaseNote}</p>}
+        </Card>}
         <Card className="p-5"><h2 className="text-sm font-bold">دربارهٔ نتیجه</h2><p className="mt-2 text-xs leading-6 text-[var(--kv-muted)]">تصویر با مدل ویرایش تصویر آلفا ساخته می‌شود. رنگ، فرم و اندازه ممکن است دقیقاً با کالای واقعی یکی نباشد؛ برای انتخاب سایز از مشخصات محصول استفاده کن.</p></Card></div>
     </div>
   </div>;

@@ -10,6 +10,7 @@ import { badRequest, conflict, notFound } from './errors.js';
 import { issueInvoiceForOrder } from './invoices.js';
 import { ACCOUNTS, postJournalEntry } from './ledger.js';
 import { applyChildPaymentAllocations } from './wholesale-oms.js';
+import { grantTryonCredits } from './tryon-commerce.js';
 
 const limitsSchema = z.object({
   sources: z.enum(['all', 'kolbe']).default('all'),
@@ -117,10 +118,17 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
         { membershipId: intent.membership_id, userId: membership.user_id, endsAt: endsAt.toISOString(), renewal: Boolean(renewal) });
     }
     if (!intent.order_id && !intent.membership_id) {
-      // Prompt 2 (§57-§62): master-flow intents target children via payment_allocations.
-      await applyChildPaymentAllocations(client, {
-        intentId: intent.id, providerReference: payment.providerReference, paidAt: payment.paidAt,
-      });
+      // Prompt 4 (§199): try-on credit purchases ride the SAME verified-payment path.
+      const tryonPurchase = await one<{ id: string }>(client,
+        'SELECT id FROM tryon_credit_purchases WHERE payment_intent_id = $1', [intent.id]);
+      if (tryonPurchase) {
+        await grantTryonCredits(client, tryonPurchase.id, payment.paidAt);
+      } else {
+        // Prompt 2 (§57-§62): master-flow intents target children via payment_allocations.
+        await applyChildPaymentAllocations(client, {
+          intentId: intent.id, providerReference: payment.providerReference, paidAt: payment.paidAt,
+        });
+      }
     }
     await audit(client, null, 'payment.verified', 'payment_intent', intent.id, { status: 'pending' },
       { status: 'succeeded', provider: payment.provider, providerReference: payment.providerReference });

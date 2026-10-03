@@ -8,7 +8,7 @@ import { PersianDatePicker } from "./persian-date-picker";
 import { formatPersianDate, formatPersianDateTime, todayIso, addDaysIso, isoDateOnly } from "../data/persian-date";
 import { fmtToman, tomanFromRial, rialFromToman } from "../data/contracts";
 import { fmtNum } from "../data/catalog";
-import { financeOpsApi, invoiceDocsApi, ordersApi, settlementAdminApi } from "../data/api";
+import { financeOpsApi, invoiceDocsApi, ordersApi, settlementAdminApi, tryonAdminApi } from "../data/api";
 import { SettlementCenter } from "./settlement-center";
 import { FinanceLedgerPanel } from "./finance-ledger";
 import { useSupplierOptions } from "./supplier-360";
@@ -1321,6 +1321,113 @@ function OtherRevenueTab({ range }: { range: Range }) {
   );
 }
 
+/** Prompt 4 (§42-§47): Try-On as a real revenue stream — admin-configurable packages,
+ *  honest cost reporting (unknown stays unknown), credits through the canonical ledger. */
+function TryOnFinanceTab({ flash }: { flash: Flash }) {
+  const packs = useFetch(() => tryonAdminApi.packages(), []);
+  const finance = useFetch(() => tryonAdminApi.finance(), []);
+  const [draft, setDraft] = useState({ name: "", credits: "5", priceToman: "100000" });
+  const [policyDraft, setPolicyDraft] = useState<{ freeQuota: string; salesEnabled: boolean } | null>(null);
+  useEffect(() => {
+    if (packs.data && !policyDraft) setPolicyDraft({ freeQuota: String(packs.data.policy.freeQuota), salesEnabled: packs.data.policy.salesEnabled });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [packs.data]);
+  if ((packs.loading && !packs.data) || (finance.loading && !finance.data)) return <LoadingState label="در حال خواندن مالی پرو مجازی…" />;
+  if (packs.error) return <ErrorState message={packs.error} onRetry={packs.reload} />;
+  const f = finance.data;
+  const createPack = async () => {
+    try {
+      const credits = Number(draft.credits || 0);
+      const priceRial = String(Math.max(0, Number(draft.priceToman.replace(/\D/g, "") || 0)) * 10);
+      await tryonAdminApi.createPackage({ name: draft.name.trim(), credits, priceRial });
+      flash("بسته جدید ساخته شد."); setDraft({ name: "", credits: "5", priceToman: "100000" }); packs.reload();
+    } catch (error) { flash(error instanceof Error ? error.message : "ساخت بسته ناموفق بود"); }
+  };
+  const toggle = async (id: string, active: boolean) => {
+    try { await tryonAdminApi.updatePackage(id, { active: !active }); flash(!active ? "بسته فعال شد." : "بسته غیرفعال شد."); packs.reload(); }
+    catch (error) { flash(error instanceof Error ? error.message : "به‌روزرسانی ناموفق بود"); }
+  };
+  const savePolicy = async () => {
+    if (!policyDraft) return;
+    try {
+      await tryonAdminApi.savePolicy({ freeQuota: Number(policyDraft.freeQuota || 0), salesEnabled: policyDraft.salesEnabled });
+      flash("سیاست پرو مجازی ذخیره شد."); packs.reload();
+    } catch (error) { flash(error instanceof Error ? error.message : "ذخیره ناموفق بود"); }
+  };
+  return (
+    <div className="space-y-4">
+      <SectionHead title="سرویس پرو مجازی" desc="بسته‌های اعتبار و سهمیه رایگان، قابل تنظیم توسط ادمین — فروش از خط پرداخت یکتا و اعتبار از دفتر تغییرناپذیر خوانده می‌شود" />
+      {f && <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="درآمد پرداخت‌شده" value={fmtToman(f.revenueRial)} />
+        <Kpi label="خرید موفق" value={fmtNum(f.paidPurchases)} />
+        <Kpi label="اعتبار مصرف‌شده" value={fmtNum(f.creditsConsumed)} />
+        <Kpi label="اعتبار باقی‌مانده کاربران" value={fmtNum(f.creditsOutstanding)} />
+      </div>}
+      {f && <Card className="p-4 text-[12px] leading-6 text-[var(--kv-muted)]">
+        هزینه هر ساخت تصویر نزد سرویس آلفا: {f.generationsWithUnknownCost > 0 || f.knownGenerationCostRial === "0"
+          ? <b>نامشخص — اتصال هزینه برقرار نیست (Cost Not Connected)</b>
+          : <b>{fmtToman(f.knownGenerationCostRial)}</b>}؛ سود این سرویس تا اتصال هزینه واقعی، «درآمد ناخالص» گزارش می‌شود (§46).
+      </Card>}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <Card className="overflow-hidden">
+          <table className="kv-table">
+            <thead><tr><th>بسته</th><th>اعتبار</th><th>قیمت</th><th>فروش موفق</th><th>وضعیت</th><th /></tr></thead>
+            <tbody>
+              {(packs.data?.items ?? []).map((row) => (
+                <tr key={row.id}>
+                  <td className="font-bold">{row.name}</td>
+                  <td className="tabular-nums">{fmtNum(row.credits)}</td>
+                  <td className="tabular-nums">{fmtToman(row.price_rial)}</td>
+                  <td className="tabular-nums">{fmtNum(row.paid_count)}</td>
+                  <td>{row.active ? <Status value="فعال" /> : <span className="text-[11.5px] font-bold text-[var(--kv-muted)]">غیرفعال</span>}</td>
+                  <td><Btn size="sm" variant="soft" onClick={() => void toggle(row.id, row.active)}>{row.active ? "غیرفعال کن" : "فعال کن"}</Btn></td>
+                </tr>
+              ))}
+              {(packs.data?.items ?? []).length === 0 && <tr><td colSpan={6} className="p-4 text-center text-[12px] text-[var(--kv-muted)]">بسته‌ای تعریف نشده است.</td></tr>}
+            </tbody>
+          </table>
+        </Card>
+        <div className="space-y-4">
+          <Card className="space-y-3 p-4">
+            <h4 className="text-[13px] font-bold">بسته جدید</h4>
+            <Field label="نام بسته"><Input value={draft.name} onChange={(v) => setDraft({ ...draft, name: v })} /></Field>
+            <Field label="تعداد اعتبار (ساخت تصویر)"><Input value={draft.credits} onChange={(v) => setDraft({ ...draft, credits: v.replace(/\D/g, "") })} /></Field>
+            <Field label="قیمت (تومان)"><Input value={draft.priceToman} onChange={(v) => setDraft({ ...draft, priceToman: v.replace(/\D/g, "") })} /></Field>
+            <Btn variant="accent" className="w-full" disabled={draft.name.trim().length < 2 || !Number(draft.credits) || !Number(draft.priceToman)} onClick={() => void createPack()}>ساخت بسته</Btn>
+          </Card>
+          {policyDraft && <Card className="space-y-3 p-4">
+            <h4 className="text-[13px] font-bold">سیاست سرویس</h4>
+            <Field label="سهمیه رایگان هر کاربر (یک‌بار)"><Input value={policyDraft.freeQuota} onChange={(v) => setPolicyDraft({ ...policyDraft, freeQuota: v.replace(/\D/g, "") })} /></Field>
+            <label className="flex items-center gap-2 text-[13px]">
+              <input type="checkbox" checked={policyDraft.salesEnabled} onChange={(e) => setPolicyDraft({ ...policyDraft, salesEnabled: e.target.checked })} />
+              <span>فروش بسته و کسر اعتبار فعال باشد</span>
+            </label>
+            <Btn variant="accent" className="w-full" onClick={() => void savePolicy()}>ذخیره سیاست</Btn>
+          </Card>}
+        </div>
+      </div>
+      {f && f.purchases.length > 0 && <Card className="overflow-hidden">
+        <div className="border-b border-[var(--kv-line)] p-3 text-[13px] font-bold">آخرین خریدهای بسته</div>
+        <table className="kv-table">
+          <thead><tr><th>مرجع</th><th>خریدار</th><th>اعتبار</th><th>مبلغ</th><th>وضعیت</th><th>پرداخت</th></tr></thead>
+          <tbody>
+            {f.purchases.map((row) => (
+              <tr key={row.reference}>
+                <td className="font-mono text-[12px]">{row.reference}</td>
+                <td>{row.user_name}</td>
+                <td className="tabular-nums">{fmtNum(row.credits)}</td>
+                <td className="tabular-nums">{fmtToman(row.price_rial)}</td>
+                <td>{row.status === "paid" ? <Status value="پرداخت‌شده" /> : row.status === "pending" ? "در انتظار پرداخت" : "لغوشده"}</td>
+                <td className="text-[12px] text-[var(--kv-muted)]">{row.paid_at ? formatPersianDateTime(row.paid_at) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>}
+    </div>
+  );
+}
+
 function FinancePolicyTab({ flash }: { flash: Flash }) {
   const policy = useFetch(() => settlementAdminApi.financePolicy(), []);
   const [draft, setDraft] = useState<{ holdHours: string; bankCooldownHours: string; dualControlToman: string; legacy: boolean } | null>(null);
@@ -1377,6 +1484,7 @@ const GROUPS = [
     { v: "accounts", label: "مالی Marketplace تأمین‌کنندگان" },
     { v: "aging", label: "مانده پرداختنی تأمین‌کنندگان" },
     { v: "streams", label: "درآمدها و خدمات جانبی" },
+    { v: "tryon", label: "سرویس پرو مجازی" },
   ] },
   { v: "settlement", label: "پرداخت و تسویه", tabs: [
     { v: "supplier-settlements", label: "تسویه تأمین‌کنندگان" },
@@ -1439,6 +1547,7 @@ export function FinanceOpsPanel({ flash }: { flash: Flash }) {
       case "advances": return <AdvancesTab />;
       case "ledger": return <FinanceLedgerPanel />;
       case "streams": return <OtherRevenueTab range={range} />;
+      case "tryon": return <TryOnFinanceTab flash={fire} />;
       case "finance-policy": return <FinancePolicyTab flash={fire} />;
       case "shipping": return <ShippingTab flash={fire} />;
       case "reports": return <ReportsTab range={range} flash={fire} />;

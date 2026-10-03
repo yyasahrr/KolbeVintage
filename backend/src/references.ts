@@ -14,6 +14,7 @@ export const DOCUMENT_PREFIX = {
   credit_note: 'CN',
   payable: 'PAYB',
   recovery: 'RCV',
+  tryon_purchase: 'TRY',
 } as const;
 
 export type DocumentType = keyof typeof DOCUMENT_PREFIX;

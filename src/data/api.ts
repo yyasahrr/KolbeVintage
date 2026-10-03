@@ -1115,6 +1115,30 @@ export type FinanceTargets = {
   month: string; targetRial: string; actualRial: string; achievementPercent: number | null; orders: number;
 };
 
+/** Try-On monetization (Prompt 4 §42-§47): packages, credits, canonical payment intents. */
+export type TryonPackage = { id: string; name: string; credits: number; price_rial: string; expiry_days: number | null };
+export const tryonCreditApi = {
+  packages: () => authFetch<{ salesEnabled: boolean; freeQuota: number; freeGranted: boolean; balance: number; packages: TryonPackage[] }>("/tryon/packages"),
+  purchase: (packageId: string) =>
+    authFetch<{ id: string; reference: string; paymentIntentId: string; amountRial: string; status: string }>(
+      "/tryon/purchases", { method: "POST", body: JSON.stringify({ packageId }) }),
+  purchases: () => authFetch<{ items: { id: string; reference: string; credits: number; price_rial: string; status: string; created_at: string; paid_at: string | null }[] }>("/tryon/purchases"),
+};
+export const tryonAdminApi = {
+  packages: () => authFetch<{ items: (TryonPackage & { active: boolean; sort: number; paid_count: number; created_at: string })[];
+    policy: { freeQuota: number; salesEnabled: boolean } }>("/admin/tryon/packages"),
+  createPackage: (payload: { name: string; credits: number; priceRial: string; expiryDays?: number | null; sort?: number }) =>
+    authFetch<{ id: string }>("/admin/tryon/packages", { method: "POST", body: JSON.stringify(payload) }),
+  updatePackage: (id: string, payload: Partial<{ name: string; credits: number; priceRial: string; active: boolean; sort: number; expiryDays: number | null }>) =>
+    authFetch<{ id: string }>(`/admin/tryon/packages/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  savePolicy: (payload: Partial<{ freeQuota: number; salesEnabled: boolean }>) =>
+    authFetch<{ freeQuota: number; salesEnabled: boolean }>("/admin/tryon/policy", { method: "PUT", body: JSON.stringify(payload) }),
+  finance: () => authFetch<{ revenueRial: string; paidPurchases: number; pendingPurchases: number;
+    creditsPurchased: number; creditsFreeGranted: number; creditsConsumed: number; creditsOutstanding: number;
+    knownGenerationCostRial: string; generationsWithUnknownCost: number; costStatus: string;
+    purchases: { reference: string; user_name: string; credits: number; price_rial: string; status: string; paid_at: string | null; created_at: string }[] }>("/admin/tryon/finance"),
+};
+
 export const financeOpsApi = {
   summary: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
