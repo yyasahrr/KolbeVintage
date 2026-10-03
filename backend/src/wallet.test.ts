@@ -91,9 +91,19 @@ test('wallet earnings, withdrawal lifecycle and settlements are traceable', { sk
     assert.equal(entries.json().items.length, 2);
     assert.match(entries.json().items[0].reference as string, /^TXN-\d{4}-\d{6}$/);
 
-    // Withdrawal request is idempotent and holds the amount.
+    // Prompt 3 (§62-§64): supplier withdrawal creation is DEPRECATED by default —
+    // scheduled settlements replace it. The legacy lifecycle below is exercised
+    // only under the explicit operational flag (documented legacy mode).
     const withdrawalPayload = { amountRial: '50000000',
       destination: { bankName: 'ملت', iban: 'IR060120020000000397455001', holderName: 'صاحب حساب' } };
+    const deprecated = await app.inject({ method: 'POST', url: '/api/v1/wallet/withdrawals',
+      headers: { ...supplierHeaders, 'idempotency-key': `wd-dep-${suffix}` }, payload: withdrawalPayload });
+    assert.equal(deprecated.statusCode, 409, deprecated.body);
+    assert.equal(deprecated.json().code, 'WITHDRAWAL_DEPRECATED');
+    await pool.query(`INSERT INTO site_settings(key, value) VALUES ('supplier_finance_policy', '{"legacyWithdrawalsEnabled": true}')
+      ON CONFLICT (key) DO UPDATE SET value = '{"legacyWithdrawalsEnabled": true}'`);
+
+    // Withdrawal request is idempotent and holds the amount (legacy mode).
     const withdrawal = await app.inject({ method: 'POST', url: '/api/v1/wallet/withdrawals',
       headers: { ...supplierHeaders, 'idempotency-key': `wd-${suffix}` }, payload: withdrawalPayload });
     assert.equal(withdrawal.statusCode, 201, withdrawal.body);
@@ -155,6 +165,7 @@ test('wallet earnings, withdrawal lifecycle and settlements are traceable', { sk
     assert.equal(afterSettle.json().availableRial, '0');
     assert.equal(afterSettle.json().totals.settledRial, '40000000');
   } finally {
+    await pool.query("DELETE FROM site_settings WHERE key = 'supplier_finance_policy'");
     await app.close();
     await pool.end();
   }

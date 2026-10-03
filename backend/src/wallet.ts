@@ -8,10 +8,11 @@ import { one, transaction, type DbPool } from './db.js';
 import { asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { nextDocumentReference } from './references.js';
-import { badRequest, conflict, notFound } from './errors.js';
+import { ApiError, badRequest, conflict, notFound } from './errors.js';
 import { assertNotRestricted } from './console.js';
 import { assertSupplierMay } from './supplier360.js';
 import { postJournalEntry } from './ledger.js';
+import { supplierFinancePolicy } from './settlement-core.js';
 
 /* Wallet ledger, withdrawals and settlements (items 25, 39-41).
    The wallet is provider-agnostic: transfers are reconciled through the
@@ -140,8 +141,19 @@ export function registerWalletRoutes(app: FastifyInstance, pool: DbPool, config:
 
   app.post('/api/v1/wallet/withdrawals', async (request, reply) => {
     const user = await principal(request, pool, config);
+    // Restriction checks run first: an explicit per-supplier restriction is a
+    // stronger, more specific answer (403 + reason) than the generic deprecation.
     await assertNotRestricted(pool, user.id, 'withdrawal');
     await assertSupplierMay(pool, user.id, 'withdrawal', { resource: 'withdrawal', ip: request.ip });
+    // Prompt 3 (§7, §62-§64): scheduled settlements replace supplier withdrawals.
+    // The legacy path stays only behind an explicit operational flag for history.
+    if (user.roles.includes('supplier')) {
+      const financePolicy = await supplierFinancePolicy(pool);
+      if (!financePolicy.legacyWithdrawalsEnabled) {
+        throw new ApiError(409, 'WITHDRAWAL_DEPRECATED',
+          'درخواست برداشت حذف شده است؛ مبالغ شما طبق زمان\u200cبندی تسویه به حساب بانکی تأییدشده واریز می\u200cشود.');
+      }
+    }
     const body = z.object({ amountRial: z.string().regex(/^\d+$/), destination }).strict().parse(request.body);
     const amount = rial(body.amountRial);
     if (amount === 0n) throw badRequest('مبلغ برداشت باید بزرگ‌تر از صفر باشد.');

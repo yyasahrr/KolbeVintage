@@ -27,6 +27,7 @@ import { one, transaction, type DbClient, type DbPool } from './db.js';
 import type { PoolClient } from 'pg';
 import { rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
+import { accrueChildPayable } from './settlement-core.js';
 import { assertNotRestricted } from './console.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { resolveVariantPrice } from './promotions.js';
@@ -1931,6 +1932,9 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         // supplier settlement for master-flow children is Prompt 3, fed by this event.
         await outbox(client, 'child_order.fulfillment_delivered', 'order', child.id,
           { childOrderId: child.id, masterOrderId: id });
+        // Prompt 3 (§13, §120): child-level supplier payable accrual — exactly once,
+        // inside this same transaction. Kolbe children return null (no payable).
+        await accrueChildPayable(client, child.id, user.id);
       }
       await audit(client, user.id, 'wholesale_master.delivered', 'master_order', id, undefined,
         { children: children.rows.length }, request.ip);

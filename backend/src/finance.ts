@@ -21,12 +21,13 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { asRial, rial, signedRial } from './money.js';
 import { audit } from './operations.js';
-import { badRequest, conflict, notFound } from './errors.js';
+import { ApiError, badRequest, conflict, notFound } from './errors.js';
 import { nextDocumentReference } from './references.js';
 import { ensurePeriod, financeEvent, refreshSupplierAccount, accrueSupplier } from './ledger.js';
 import { issueStatementDocument, type StatementLine } from './invoice-templates.js';
 import { runReport, REPORT_CATALOG, exportReport, type ReportFormat } from './reports.js';
 import { assertSupplierMay } from './supplier360.js';
+import { supplierFinancePolicy } from './settlement-core.js';
 
 const readPermission = 'payments:read';
 const managePermission = 'finance:manage';
@@ -556,6 +557,29 @@ export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config
       if (approval.requested_by === actor.id && (action === 'approve' || action === 'review')) {
         throw conflict('تأیید دو‌مرحله‌ای: تأییدکننده باید شخص دیگری باشد.');
       }
+      // Prompt 3 (§46, §49, §57): scheduled supplier settlements re-verify the
+      // destination bank account at approval time and enforce dual control.
+      if (approval.subject_type === 'settlement' && action === 'approve') {
+        const scheduled = await one<{ id: string; kind: string; bank_account_id: string | null; created_by: string | null; net_rial: string }>(client,
+          'SELECT id, kind, bank_account_id, created_by, net_rial::text FROM settlements WHERE id = $1', [approval.subject_id]);
+        if (scheduled?.kind === 'scheduled') {
+          if (!scheduled.bank_account_id) {
+            throw new ApiError(409, 'BANK_ACCOUNT_UNVERIFIED', 'این تسویه حساب بانکی تأییدشده ندارد.');
+          }
+          const bank = await one<{ status: string; settlement_enabled_at: Date | null }>(client,
+            'SELECT status, settlement_enabled_at FROM supplier_bank_accounts WHERE id = $1', [scheduled.bank_account_id]);
+          if (!bank || bank.status !== 'verified') {
+            throw new ApiError(409, 'BANK_ACCOUNT_UNVERIFIED', 'حساب بانکی مقصد دیگر تأییدشده نیست — تسویه قابل تأیید نیست.');
+          }
+          if (bank.settlement_enabled_at && bank.settlement_enabled_at > new Date()) {
+            throw new ApiError(409, 'BANK_ACCOUNT_COOLDOWN', 'حساب بانکی مقصد در دوره انتظار امنیتی است.');
+          }
+          const financePolicy = await supplierFinancePolicy(client);
+          if (rial(scheduled.net_rial) > rial(financePolicy.dualControlThresholdRial) && scheduled.created_by === actor.id) {
+            throw conflict('کنترل دوگانه: برای مبالغ بالا، تأییدکننده باید غیر از ایجادکننده تسویه باشد.');
+          }
+        }
+      }
       const column = action === 'review' ? 'reviewed_by' : action === 'approve' ? 'approved_by' : action === 'reject' ? 'rejected_by' : null;
       await client.query(
         `UPDATE finance_approvals SET status = $2, updated_at = now()${column ? `, ${column} = $3` : ''} WHERE id = $1`,
@@ -594,14 +618,40 @@ export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config
       reference: z.string().trim().min(2).max(120),
       paidAt: z.iso.datetime().optional(),
       note: z.string().trim().max(500).optional(),
+      // Prompt 3 (§52): manual transfer evidence for scheduled settlements.
+      paidAmountRial: z.string().regex(/^\d+$/).optional(),
+      sourceBank: z.string().trim().max(120).optional(),
     }).parse(request.body);
     return transaction(pool, async (client) => {
       const settlement = await one<{ id: string; reference: string; party_user_id: string; net_rial: string; status: string;
-        reconciliation_status: string; period_code: string | null }>(client,
-        'SELECT id, reference, party_user_id, net_rial::text, status, reconciliation_status, period_code FROM settlements WHERE id = $1 FOR UPDATE', [id]);
+        reconciliation_status: string; period_code: string | null; kind: string; bank_account_id: string | null;
+        bank_snapshot: { iban?: string } }>(client,
+        'SELECT id, reference, party_user_id, net_rial::text, status, reconciliation_status, period_code, kind, bank_account_id, bank_snapshot FROM settlements WHERE id = $1 FOR UPDATE', [id]);
       if (!settlement) throw notFound();
-      if (settlement.status === 'paid' || settlement.status === 'reconciled') return { id, status: settlement.status };
+      if (settlement.status === 'paid' || settlement.status === 'reconciled') {
+        throw new ApiError(409, 'SETTLEMENT_ALREADY_PAID', 'این تسویه قبلاً پرداخت و نهایی شده است.');
+      }
       if (settlement.status !== 'approved') throw conflict('پرداخت تنها پس از تأیید مدیر مالی مجاز است.');
+      if (settlement.kind === 'scheduled') {
+        // §48/§52: transfer only to the frozen verified snapshot + evidence checks.
+        if (!settlement.bank_snapshot?.iban || !settlement.bank_account_id) {
+          throw new ApiError(409, 'BANK_ACCOUNT_UNVERIFIED', 'این تسویه snapshot حساب بانکی تأییدشده ندارد.');
+        }
+        const bank = await one<{ status: string }>(client,
+          'SELECT status FROM supplier_bank_accounts WHERE id = $1', [settlement.bank_account_id]);
+        if (!bank || bank.status !== 'verified') {
+          throw new ApiError(409, 'BANK_ACCOUNT_UNVERIFIED', 'حساب بانکی مقصد دیگر تأییدشده نیست — ثبت پرداخت مسدود است.');
+        }
+        if (!body.paidAmountRial) throw badRequest('مبلغ واقعی واریز برای تسویه زمان\u200cبندی\u200cشده الزامی است.');
+        if (rial(body.paidAmountRial) !== rial(settlement.net_rial)) {
+          throw new ApiError(409, 'SETTLEMENT_AMOUNT_CHANGED',
+            'مبلغ واریز با خالص تسویه برابر نیست — در صورت تغییر مبلغ، تسویه باید بازبینی شود.');
+        }
+        // §54: one bank tracking reference closes at most one settlement.
+        const duplicate = await one<{ id: string }>(client,
+          "SELECT id FROM settlements WHERE kind = 'scheduled' AND paid_reference = $1 AND id <> $2", [body.reference, id]);
+        if (duplicate) throw conflict('این کد پیگیری بانکی قبلاً برای تسویه دیگری ثبت شده است.');
+      }
       const blocking = await one<{ count: string }>(client,
         "SELECT COUNT(*)::text AS count FROM settlement_exceptions WHERE settlement_id = $1 AND status = 'open' AND severity = 'blocking'", [id]);
       if (Number(blocking?.count ?? '0') > 0) throw conflict('مغایرت بازدارنده حل نشده است.');
@@ -618,8 +668,16 @@ export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config
       }]);
       const entryId = accrual!.journalEntryId;
       await client.query(
-        `UPDATE settlements SET status = 'paid', reconciliation_status = 'paid', paid_at = $2, paid_reference = $3 WHERE id = $1`,
-        [id, paidAt, body.reference]);
+        `UPDATE settlements SET status = 'paid', reconciliation_status = 'paid', paid_at = $2, paid_reference = $3,
+           paid_amount_rial = $4, paid_by = $5, source_bank = $6, paid_note = $7 WHERE id = $1`,
+        [id, paidAt, body.reference, body.paidAmountRial ?? settlement.net_rial, actor.id,
+          body.sourceBank ?? null, body.note ?? null]);
+      if (settlement.kind === 'scheduled') {
+        // §41: payables settle exactly with their settlement — immutable afterwards.
+        await client.query(
+          `UPDATE supplier_child_payables SET status = 'settled', settled_at = $2, updated_at = now()
+            WHERE settlement_id = $1 AND status = 'scheduled'`, [id, paidAt]);
+      }
       await client.query(
         `INSERT INTO settlement_events(id, settlement_id, from_status, to_status, actor_id, note) VALUES ($1,$2,$3,'paid',$4,$5)`,
         [randomUUID(), id, settlement.status, actor.id, `پرداخت با روش ${body.method} — ${body.reference}`]);

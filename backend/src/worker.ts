@@ -10,6 +10,7 @@ import { processStyleAnalysisEvents } from './style.js';
 import { processMediaUploadedEvents } from './media-pipeline.js';
 import { dispatchAutomationEvents } from './events.js';
 import { expireDueMemberships } from './membership.js';
+import { releaseDueHolds } from './settlement-core.js';
 import { runCrmRuleSweep } from './crm-intelligence.js';
 import { sweepAbandonedCarts } from './cart.js';
 import { dispatchDueAutomations } from './promo-safety.js';
@@ -160,7 +161,16 @@ const membershipPump = async () => {
 };
 const membershipTimer = setInterval(() => void membershipPump().catch((error) => console.error('Membership sweep failed', error)), 3600_000);
 await membershipPump();
+// Prompt 3 (§31): settlement-hold release sweep — idempotent, blocker-aware;
+// due holds become ELIGIBLE payables (never money movement).
+const holdSweep = async () => {
+  const result = await releaseDueHolds(pool, null);
+  if (result.released || result.blocked) console.log('Settlement hold sweep', JSON.stringify(result));
+};
+const holdSweepTimer = setInterval(() => void holdSweep().catch((error) => console.error('Hold sweep failed', error)), 300_000);
+await holdSweep();
 const shutdown = async () => {
+  clearInterval(holdSweepTimer);
   clearInterval(timer); clearInterval(smsTimer); clearInterval(crmTimer); clearInterval(retentionTimer);
   clearInterval(styleTimer); clearInterval(mediaTimer);
   clearInterval(automationTimer); clearInterval(membershipTimer); clearInterval(crmSweepTimer);
