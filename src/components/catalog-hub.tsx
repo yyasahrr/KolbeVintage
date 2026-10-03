@@ -65,7 +65,7 @@ export function CatalogHub({ flash }: { flash: F }) {
               ادمین همیشه «کلبه» است (سمت سرور تضمین می‌شود).
             </p>
           </Card>
-          <ProductStudio flash={flash} />
+          <ProductStudio flash={flash} onGoToSetup={() => setSub("needs-setup")} />
         </div>
       )}
       {sub === "needs-setup" && <NeedsSetupPanel flash={flash} />}

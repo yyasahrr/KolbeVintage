@@ -18,7 +18,7 @@ import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSize
 import { AdaptiveSpecForm, ProductTypesManager, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
 import { catalogOpsApi } from "../data/api";
-import { Btn, Card, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea, SearchBox, LoadingState, ErrorState } from "../components/primitives";
+import { Btn, Card, Drawer, Empty, Field, Input, Modal, Segmented, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
 import { cn } from "../utils/cn";
 
 type F = (m: string) => void;
@@ -210,7 +210,7 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
   );
 }
 
-export function ProductStudio({ flash }: { flash: F }) {
+export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: () => void }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct, reload } = useStore();
   const [mediaBusy, setMediaBusy] = useState(false);
@@ -223,10 +223,7 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [newColor, setNewColor] = useState({ name: "", hex: "#8A6A4F" });
   // Inventory step: warehouse + per (color,size) initial quantity. Persisted through WMS receipts.
   const [warehouses, setWarehouses] = useState<Warehouse[] | null>(null);
-  const [warehouseId, setWarehouseId] = useState<string>("");
-  const [initialQty, setInitialQty] = useState<Record<string, string>>({});
-  const [inventoryBusy, setInventoryBusy] = useState(false);
-  const [createdSummary, setCreatedSummary] = useState<{ product: ProductCreateResponse; receipted: number } | null>(null);
+  const [createdSummary, setCreatedSummary] = useState<{ product: ProductCreateResponse; colors: number; series: number } | null>(null);
   const [inventoryFor, setInventoryFor] = useState<Product | null>(null);
   const [discountFor, setDiscountFor] = useState<Product | null>(null);
   const [types, setTypes] = useState<ProductType[]>([]);
@@ -333,17 +330,49 @@ export function ProductStudio({ flash }: { flash: F }) {
       flash(`رنگ «${name}» در سرور ذخیره و انتخاب شد`);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره رنگ"); }
   };
+  /** §8 (corrective): sizes are CATEGORY-driven. With a configured category profile the new
+   *  size is explicitly added to that profile (data-safe merge — template/guide untouched);
+   *  legacy products with a selected type keep the old path; otherwise the size applies to
+   *  this product only (the server has no size constraint without a profile). */
   const createSize = async () => {
     const code = newSize.trim();
     if (!code) return;
-    if (!d.productTypeId) { flash("برای افزودن سایز، ابتدا نوع محصول را انتخاب کنید."); return; }
-    try {
-      await productStructureApi.createSize(d.productTypeId, { code, label: code });
-      loadTypes();
-      setD((cur) => ({ ...cur, sizes: cur.sizes.includes(code) ? cur.sizes : [...cur.sizes, code] }));
-      setNewSize("");
-      flash(`سایز «${code}» به نوع محصول اضافه شد`);
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
+    if (!isDemo && catSchema?.configured) {
+      try {
+        const all = await catalogOpsApi.categoryProfiles();
+        const row = (all.items ?? []).find((p) => String(p.category) === d.category.trim()) as Record<string, unknown> | undefined;
+        const allowed = Array.isArray(row?.allowed_sizes) ? (row.allowed_sizes as string[]) : (catSchema.allowedSizes ?? []);
+        if (!allowed.includes(code)) {
+          await catalogOpsApi.saveCategoryProfile(d.category.trim(), {
+            specTemplateId: (row?.spec_template_id as string | null) ?? null,
+            sizeGuideId: (row?.size_guide_id as string | null) ?? null,
+            allowedSizes: [...allowed, code],
+            requiredFields: Array.isArray(row?.required_fields) ? row.required_fields : [],
+            notes: String(row?.notes ?? ""),
+            active: row?.active !== false,
+          });
+          setCatSchema((cur) => (cur ? { ...cur, allowedSizes: cur.allowedSizes.includes(code) ? cur.allowedSizes : [...cur.allowedSizes, code] } : cur));
+          flash(`سایز «${code}» به پروفایل دسته «${d.category}» اضافه شد`);
+        }
+        setD((cur) => ({ ...cur, sizes: cur.sizes.includes(code) ? cur.sizes : [...cur.sizes, code] }));
+        setNewSize("");
+      } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
+      return;
+    }
+    if (!isDemo && d.productTypeId) {
+      try {
+        await productStructureApi.createSize(d.productTypeId, { code, label: code });
+        loadTypes();
+        setD((cur) => ({ ...cur, sizes: cur.sizes.includes(code) ? cur.sizes : [...cur.sizes, code] }));
+        setNewSize("");
+        flash(`سایز «${code}» به نوع محصول اضافه شد`);
+      } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
+      return;
+    }
+    // No profile and no legacy type: the size belongs to this product only.
+    setD((cur) => ({ ...cur, sizes: cur.sizes.includes(code) ? cur.sizes : [...cur.sizes, code] }));
+    setNewSize("");
+    flash(`سایز «${code}» فقط برای همین محصول استفاده می‌شود`);
   };
   const createVibe = async () => {
     const name = newVibe.trim();
@@ -476,7 +505,11 @@ export function ProductStudio({ flash }: { flash: F }) {
     ? types.map((t) => ({ id: t.id, code: t.code, name: t.name, sizeCodes: t.sizes.filter((size) => size.active !== false).map((size) => size.code) }))
     : productTypes.map((t) => ({ id: t.id, code: t.code, name: t.name, sizeCodes: t.sizes.filter((size) => size.active !== false).map((size) => size.code) })));
   const typedSizeCodes = d.productTypeId ? (typeOptions.find((t) => t.id === d.productTypeId)?.sizeCodes ?? []) : [];
-  const sizeOptions = selectedType?.sizes.length
+  /** §8-§9 (corrective): with a configured category profile the CATEGORY is the size source;
+   *  the legacy type chain only applies to historical products without a profile. */
+  const sizeOptions = catSchema?.configured && catSchema.allowedSizes.length
+    ? catSchema.allowedSizes
+    : selectedType?.sizes.length
     ? selectedType.sizes.map((size) => size.code)
     : typedSizeCodes.length ? typedSizeCodes
     : seriesSizesFor(d.category);
@@ -501,7 +534,6 @@ export function ProductStudio({ flash }: { flash: F }) {
         const list = normalizeWarehouses(await inventoryApi.warehouses());
         if (!active) return;
         setWarehouses(list);
-        setWarehouseId((current) => current || list[0]?.id || "");
       } catch { if (active) setWarehouses([]); }
     })();
     return () => { active = false; };
@@ -519,13 +551,13 @@ export function ProductStudio({ flash }: { flash: F }) {
   ].filter((color) => Boolean(color?.id)).map((color) => [color.name, color])).values());
   const list = products.filter((p) => !q.trim() || (p.name ?? "").includes(q.trim()) || (p.sku ?? "").includes(q.trim()));
   const categoryDriven = !!catSchema?.configured; // §8: category profile overrides the legacy type system
+  // §7 (corrective): Product Type is NOT required in the new flow — category drives the
+  // schema when a profile exists, and its absence never blocks a definition.
   const issues = [
-    !isDemo && !categoryDriven && !d.productTypeId && "نوع محصول",
     !d.name.trim() && "نام محصول", !d.colors.length && "دست‌کم یک رنگ", !d.sizes.length && "سایزها",
     !d.retailOn && !d.wholesaleOn && "یک کانال فروش", d.retailOn && !(Number(d.retail) > 0) && "قیمت خرده",
     d.retailOn && d.installment && !(Number(d.installment) > 0) && "قیمت چهارقسطه معتبر",
     d.wholesaleOn && !seriesComplete(d.series) && "سری‌های عمده (قیمت، حداقل و رنگ)", !d.images.length && "دست‌کم یک تصویر",
-    !isDemo && !categoryDriven && types.length > 0 && !d.typeCode && "نوع محصول",
     ...missingRequiredSpecs(selectedType, d.specs).map((label) => `مشخصه «${label}»`),
   ].filter(Boolean) as string[];
 
@@ -559,7 +591,7 @@ export function ProductStudio({ flash }: { flash: F }) {
         colors: d.colors, images: d.images.map((image) => image.url), video: d.video || undefined, cutout: d.cutout,
         series: d.wholesaleOn ? d.series : [], seriesCount: d.wholesaleOn ? d.series.length : 0,
         moq: d.wholesaleOn && offered.length ? Math.min(...offered.map((s) => s.moqSeries)) : 1,
-        stock: Object.values(initialQty).reduce((total, value) => total + (Number(value) || 0), 0),
+        stock: 0, // §4 (corrective): product definition never carries stock — WMS owns it.
         fabric: d.fabric || "—", desc: d.desc || "توضیحات این محصول در حال تکمیل است.",
       };
       addProduct(p); setOpen(false); setD(blank());
@@ -593,43 +625,28 @@ export function ProductStudio({ flash }: { flash: F }) {
       const enabledVariants = payload.variants.filter((variant) =>
         !cellOff[variantKey((variant as { color?: string | null }).color ?? null, (variant as { size?: string | null }).size ?? null)]);
       if (!enabledVariants.length) { flash("دست‌کم یک خانه فعال در ماتریس رنگ×سایز لازم است."); return; }
-      setInventoryBusy(true);
       // Adaptive form data (Req 325-326): the server validates specs against the type template.
       const adaptivePayload = { ...payload, variants: enabledVariants, ...(d.typeCode ? { productTypeCode: d.typeCode, specifications: d.specs } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
       const res = readProductCreateResponse(await productsApi.create(adaptivePayload));
       const skus = productVariantSkus(res);
 
-      // Inventory never lives on the product: after the server mints the variants we open a real
-      // WMS receipt per variant (incoming → receive) so the balance becomes sellable stock.
-      let receipted = 0;
-      const warehouse = warehouseId || warehouses?.[0]?.id || "";
-      if (warehouse) {
-        for (const variant of res.variants) {
-          const key = variantKey(variant.color, variant.size);
-          const quantity = Number(initialQty[key] ?? 0);
-          if (!quantity || quantity < 1) continue;
-          const receipt = await inventoryApi.receipt({
-            warehouseId: warehouse, variantId: variant.id, quantity,
-            reference: `INIT-${variant.sku}`,
-          }, `init-${variant.id}`) as { id?: string };
-          if (receipt?.id) await inventoryApi.receiveReceipt(receipt.id);
-          receipted += 1;
-        }
-      }
-      setCreatedSummary({ product: res, receipted });
-      flash(`«${d.name}» ثبت شد — ${skus.length.toLocaleString("fa-IR")} واریانت (SKU سرور)${receipted ? ` و موجودی اولیه ${receipted.toLocaleString("fa-IR")} واریانت در انبار ثبت شد` : ""}`);
-      setOpen(false); setD(blank()); setInitialQty({});
+      // §4 (corrective): Product Definition = catalog ONLY. No receipt, no movement, no
+      // balance mutation here — the product lands in «نیازمند راه‌اندازی» and opening stock
+      // is registered there through the audited WMS document (inventory-setup).
+      setCreatedSummary({ product: res, colors: d.colors.length, series: d.wholesaleOn ? d.series.filter((s) => s.available).length : 0 });
+      flash(`«${d.name}» با موفقیت تعریف شد — ${skus.length.toLocaleString("fa-IR")} واریانت؛ وضعیت موجودی: نیازمند راه‌اندازی`);
+      setOpen(false); setD(blank());
       await reload();
     } catch (e) {
       flash(e instanceof Error ? e.message : "خطا در انتشار");
     }
   };
 
-  // One unified studio for create AND edit (Req 39); initial stock only applies at creation.
+  // One unified studio for create AND edit (Req 39). §4 (corrective): NO operational stock
+  // step — definition answers «این کالا چیست؟» and WMS answers «کجا و چقدر موجود است؟».
   const secs = [
     ["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"],
     ["price", "قیمت‌گذاری"], ["series", "سری‌های عمده"],
-    ...(editing ? [] : [["stock", "موجودی اولیه"]]),
     ["specs", "مشخصات فنی و راهنمای سایز"], ["seo", "سئو و کانال‌ها"],
   ];
   return (
@@ -736,8 +753,17 @@ export function ProductStudio({ flash }: { flash: F }) {
                     </div>
                   </Field>
                 )}
-                {!categoryDriven && typeOptions.length > 0 && (
-                  <Field label="نوع محصول" hint="سایزها و قالب مشخصات از نوع محصول می‌آیند">
+                {/* §7 (corrective): Product Type is hidden from the NEW flow; it remains only
+                    when editing a legacy product that already carries one (historical data). */}
+                {!categoryDriven && !isDemo && d.category.trim() !== "" && (
+                  <Field label="ساختار دسته‌بندی" hint="پروفایل دسته از «کالاها ← پروفایل دسته‌بندی» تعریف می‌شود">
+                    <div className="flex h-11 items-center rounded-[11px] border border-amber-300 bg-amber-50 px-3 text-[12px] font-bold text-amber-800">
+                      برای این دسته هنوز ساختار مشخصات و سایزبندی تعریف نشده است.
+                    </div>
+                  </Field>
+                )}
+                {!!editing && !categoryDriven && typeOptions.length > 0 && (
+                  <Field label="نوع محصول (سازگاری تاریخی)" hint="فقط برای محصولات قدیمی — در جریان جدید، دسته‌بندی منبع ساختار است">
                     <Select options={["انتخاب کنید", ...typeOptions.map((t) => t.name)]}
                       value={typeOptions.find((t) => t.id === d.productTypeId || t.code === d.typeCode)?.name ?? "انتخاب کنید"}
                       onChange={(label) => { const t = typeOptions.find((x) => x.name === label); setD({ ...d, typeCode: t?.code ?? "", productTypeId: t?.id ?? "", specs: {}, sizes: t?.sizeCodes.length ? t.sizeCodes : d.sizes, series: [] }); }} />
@@ -824,22 +850,28 @@ export function ProductStudio({ flash }: { flash: F }) {
                   <Btn variant="soft" disabled={!newColor.name.trim() || palette.some((c) => c.name === newColor.name.trim())} onClick={() => void createColor()} icon={<Plus size={14} />}>{isDemo ? "افزودن (demo)" : "ذخیره در سرور و انتخاب"}</Btn>
                 </div>
               </div>
-              <Field label={selectedType || typedSizeCodes.length ? `سایزهای ${selectedType?.name ?? typeOptions.find((t) => t.id === d.productTypeId)?.name ?? "نوع محصول"} (از قالب نوع محصول)` : "سایزهای خرده"}>
+              <Field label={catSchema?.configured
+                ? `سایزهای مجاز دسته «${d.category}» (از پروفایل دسته‌بندی)`
+                : selectedType || typedSizeCodes.length ? `سایزهای ${selectedType?.name ?? typeOptions.find((t) => t.id === d.productTypeId)?.name ?? "محصول"}` : "سایزهای خرده"}>
                 {sizeOptions.length === 0
-                  ? <p className="text-[12.5px] text-[var(--kv-muted)]">این نوع محصول سایز فعالی ندارد؛ از «ساختار محصولات» سایز اضافه کنید.</p>
+                  ? <p className="text-[12.5px] text-[var(--kv-muted)]">{catSchema?.configured ? "برای این دسته هنوز سایزی در پروفایل ثبت نشده؛ از پایین همین بخش اضافه کنید." : "سایزی ثبت نشده؛ از پایین همین بخش اضافه کنید."}</p>
                   : <div className="flex flex-wrap gap-2">{sizeOptions.map((s) => <button key={s} aria-pressed={d.sizes.includes(s)} onClick={() => setD({ ...d, sizes: d.sizes.includes(s) ? d.sizes.filter((x) => x !== s) : [...d.sizes, s] })} className={cn("min-h-10 min-w-[46px] rounded-[10px] border px-3 text-[12.5px] font-bold", d.sizes.includes(s) ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)]")}>{s}</button>)}</div>}
               </Field>
               {!isDemo && (
                 <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
-                  <p className="mb-2 text-[12.5px] font-bold">افزودن سایز جدید به نوع محصول</p>
-                  {!d.productTypeId
-                    ? <p className="text-[12px] text-[var(--kv-muted)]">سایزها به «نوع محصول» وصل‌اند؛ ابتدا در «اطلاعات پایه» نوع محصول را انتخاب کنید.</p>
-                    : <div className="flex flex-wrap items-end gap-2">
-                        <Field label="کد سایز" hint="مثلاً XXL یا ۴۴ — روی سرور ذخیره و بعد از رفرش هم می‌ماند">
-                          <Input value={newSize} onChange={setNewSize} placeholder="XXL" />
-                        </Field>
-                        <Btn variant="soft" size="sm" disabled={!newSize.trim()} onClick={() => void createSize()} icon={<Plus size={14} />}>افزودن به نوع محصول</Btn>
-                      </div>}
+                  {/* §8 (corrective): size creation is category-driven — never blocked on «نوع محصول». */}
+                  <p className="mb-2 text-[12.5px] font-bold">افزودن سایز جدید</p>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Field label="کد سایز" hint="مثلاً XXL یا ۴۴">
+                      <Input value={newSize} onChange={setNewSize} placeholder="XXL" />
+                    </Field>
+                    <Btn variant="soft" size="sm" disabled={!newSize.trim()} onClick={() => void createSize()} icon={<Plus size={14} />}>
+                      {catSchema?.configured ? "افزودن به پروفایل این دسته" : d.productTypeId ? "افزودن به نوع محصول" : "افزودن برای همین محصول"}
+                    </Btn>
+                  </div>
+                  {catSchema?.configured
+                    ? <p className="mt-1.5 text-[11px] text-[var(--kv-muted)]">سایز به پروفایل دسته «{d.category}» اضافه می‌شود و برای همه محصولات این دسته قابل استفاده خواهد بود.</p>
+                    : !d.productTypeId && <p className="mt-1.5 text-[11px] text-[var(--kv-muted)]">این دسته هنوز پروفایل سایزبندی ندارد؛ سایز فقط برای همین محصول ثبت می‌شود.</p>}
                 </div>
               )}
               {/* Req 26/32: the real Color×Size matrix. «—» = واریانت وجود ندارد؛ صفر = واریانت هست ولی موجودی صفر. */}
@@ -960,58 +992,34 @@ export function ProductStudio({ flash }: { flash: F }) {
             {sec === "series" && <>
               <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span><b className="text-[13px]">فروش در بازارچه عمده · بخش کلبه وینتیج</b><span className="block text-[11.5px] text-[var(--kv-muted)]">سری‌ها از قالب‌های تعریف‌شده انتخاب می‌شوند</span></span><Switch on={d.wholesaleOn} onToggle={() => setD({ ...d, wholesaleOn: !d.wholesaleOn })} /></div>
               {d.wholesaleOn && <Field label="حداقل سفارش عمده (عدد)" hint="سرور در ثبت سفارش عمده همین کف را برای مجموع واریانت‌های این محصول اعمال می‌کند"><Input value={d.wholesaleMoq} onChange={(v) => setD({ ...d, wholesaleMoq: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۲" /></Field>}
-              {d.wholesaleOn && (!d.productTypeId && !isDemo ? <p className="rounded-[12px] border border-dashed border-[var(--kv-line-strong)] p-4 text-[12.5px] text-[var(--kv-muted)]">برای انتخاب سری، ابتدا نوع محصول را مشخص کنید.</p> : <SeriesTemplatePicker ownerId={KOLBE.id} category={d.category} colors={d.colors} value={d.series} onChange={(s) => setD({ ...d, series: s })} onManage={() => setManage(true)} productTypeId={d.productTypeId || undefined} />)}
+              {d.wholesaleOn && <SeriesTemplatePicker ownerId={KOLBE.id} category={d.category} colors={d.colors} value={d.series} onChange={(s) => setD({ ...d, series: s })} onManage={() => setManage(true)} productTypeId={d.productTypeId || undefined} />}
             </>}
-            {sec === "stock" && (
-              <div className="space-y-3">
-                <p className="text-[12.5px] leading-6 text-[var(--kv-muted)]">
-                  موجودی فقط در انبار (WMS) نگهداری می‌شود؛ برای هر رنگ/سایز مقدار اولیه را وارد کنید تا در پایان ذخیره، رسید ورودی واقعی ثبت و تأیید شود.
-                </p>
-                {!warehouses || warehouses.length === 0 ? (
-                  <ErrorState message="هنوز انباری ثبت نشده است؛ نخست از بخش «انبار و موجودی» یک انبار بسازید." />
-                ) : (
-                  <Field label="انبار مقصد موجودی اولیه" hint="از فهرست واقعی انبارهای ثبت‌شده">
-                    <Select
-                      options={warehouses.map((warehouse) => `${warehouse.code} — ${warehouse.name}`)}
-                      value={warehouses.find((warehouse) => warehouse.id === warehouseId) ? `${warehouses.find((warehouse) => warehouse.id === warehouseId)!.code} — ${warehouses.find((warehouse) => warehouse.id === warehouseId)!.name}` : warehouses[0] ? `${warehouses[0].code} — ${warehouses[0].name}` : ""}
-                      onChange={(label) => setWarehouseId(warehouses.find((warehouse) => `${warehouse.code} — ${warehouse.name}` === label)?.id ?? "")}
-                    />
-                  </Field>
-                )}
-                <Card className="overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="kv-table min-w-[560px] text-xs">
-                      <thead><tr><th>رنگ</th><th>سایز</th><th>SKU (پس از ایجاد)</th><th>وزن (گرم)</th><th>انبار</th><th>موجودی اولیه</th></tr></thead>
-                      <tbody>
-                        {variantMatrix(d.colors.map((color) => color.name), d.sizes).filter(({ color, size }) => !cellOff[variantKey(color, size)]).map(({ color, size }) => (
-                          <tr key={`${color}-${size}`}>
-                            <td>{color}</td><td>{size}</td>
-                            <td className="text-[var(--kv-muted)]" dir="ltr">پس از ذخیره ساخته می‌شود</td>
-                            <td className="w-[100px]">
-                              <Input
-                                value={d.variantWeights[variantKey(color, size)] ?? ""}
-                                onChange={(value) => setD((current) => ({ ...current, variantWeights: { ...current.variantWeights, [variantKey(color, size)]: value.replace(/\D/g, "") } }))}
-                                placeholder="—"
-                              />
-                            </td>
-                            <td>{warehouses?.find((warehouse) => warehouse.id === warehouseId)?.name ?? "—"}</td>
-                            <td className="w-[120px]">
-                              <Input
-                                value={initialQty[variantKey(color, size)] ?? ""}
-                                onChange={(value) => setInitialQty((current) => ({ ...current, [variantKey(color, size)]: value.replace(/\D/g, "") }))}
-                                placeholder="۰"
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {d.colors.length === 0 || d.sizes.length === 0
-                    ? <p className="px-4 py-3 text-[12px] text-[var(--kv-muted)]">ابتدا در بخش «رنگ و سایز» دست‌کم یک رنگ و یک سایز انتخاب کنید.</p>
-                    : <p className="px-4 py-3 text-[11.5px] text-[var(--kv-muted)]">{`${variantMatrix(d.colors.map((color) => color.name), d.sizes).filter(({ color, size }) => !cellOff[variantKey(color, size)]).length.toLocaleString("fa-IR")} واریانت (خانه‌های فعال ماتریس) ساخته می‌شود و موجودی هر ردیف با رسید ورودی ثبت می‌شود.`}</p>}
-                </Card>
-                {inventoryBusy && <LoadingState label="در حال ثبت رسیدهای موجودی اولیه…" />}
+            {/* §4 (corrective): the «موجودی اولیه» step was removed from Product Definition.
+                Opening stock lives ONLY in کالاها → نیازمند راه‌اندازی (audited WMS document).
+                Variant weight (catalog data) stays here, next to the matrix result. */}
+            {sec === "variant" && !editing && d.colors.length > 0 && d.sizes.length > 0 && (
+              <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
+                <p className="mb-1 text-[12.5px] font-bold">وزن واریانت‌ها (گرم — اختیاری)</p>
+                <p className="mb-2 text-[11.5px] text-[var(--kv-muted)]">داده کاتالوگی واریانت است و ربطی به موجودی ندارد؛ موجودی اولیه فقط از «نیازمند راه‌اندازی» ثبت می‌شود.</p>
+                <div className="overflow-x-auto">
+                  <table className="kv-table min-w-[420px] text-xs">
+                    <thead><tr><th>رنگ</th><th>سایز</th><th>وزن (گرم)</th></tr></thead>
+                    <tbody>
+                      {variantMatrix(d.colors.map((color) => color.name), d.sizes).filter(({ color, size }) => !cellOff[variantKey(color, size)]).map(({ color, size }) => (
+                        <tr key={`${color}-${size}`}>
+                          <td>{color}</td><td>{size}</td>
+                          <td className="w-[110px]">
+                            <Input
+                              value={d.variantWeights[variantKey(color, size)] ?? ""}
+                              onChange={(value) => setD((current) => ({ ...current, variantWeights: { ...current.variantWeights, [variantKey(color, size)]: value.replace(/\D/g, "") } }))}
+                              placeholder="—"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
             {sec === "specs" && (
@@ -1026,7 +1034,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                 ) : (
                   <Empty
                     title="مشخصات ساختاریافته و راهنمای سایز پس از ذخیره"
-                    desc="ویرایشگر مشخصات فنی (بر اساس قالب نوع محصول) و اتصال راهنمای سایز به شناسه محصول روی سرور نیاز دارند؛ بعد از «ذخیره و انتشار»، از دکمه «ویرایش» همین بخش فعال می‌شود."
+                    desc="ویرایشگر مشخصات فنی (بر اساس ساختار دسته‌بندی) و اتصال راهنمای سایز به شناسه محصول روی سرور نیاز دارند؛ بعد از «ذخیره و انتشار»، از دکمه «ویرایش» همین بخش فعال می‌شود."
                   />
                 )}
               </div>
@@ -1068,17 +1076,24 @@ export function ProductStudio({ flash }: { flash: F }) {
           />
         )}
       </Drawer>
-      <Drawer open={!!createdSummary} onClose={() => setCreatedSummary(null)} title="محصول ثبت شد — موجودی اولیه" wide>
+      {/* §44 (corrective): post-create summary — catalog facts + honest inventory state. */}
+      <Modal open={!!createdSummary} onClose={() => setCreatedSummary(null)} title="محصول با موفقیت تعریف شد">
         {createdSummary && (
           <div className="space-y-3">
-            <p className="text-[13px] leading-7 text-[var(--kv-muted)]">
-              {createdSummary.product.variants.length.toLocaleString("fa-IR")} واریانت با SKU سرور ساخته شد
-              {createdSummary.receipted > 0
-                ? ` و موجودی اولیه ${createdSummary.receipted.toLocaleString("fa-IR")} واریانت با رسید ورودی در انبار ثبت شد.`
-                : "؛ برای این محصول موجودی اولیه ثبت نشد و می‌توانید بعداً از بخش انبار اضافه کنید."}
+            <h3 className="text-[15px] font-extrabold">محصول با موفقیت تعریف شد.</h3>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              {([["واریانت‌ها", createdSummary.product.variants.length], ["رنگ‌ها", createdSummary.colors], ["سری عمده", createdSummary.series]] as [string, number][]).map(([label, value]) => (
+                <div key={label} className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2.5">
+                  <p className="text-[15px] font-extrabold tabular-nums">{value.toLocaleString("fa-IR")}</p>
+                  <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
+                </div>
+              ))}
+            </div>
+            <p className="rounded-[12px] border border-amber-300 bg-amber-50 px-3 py-2.5 text-[12.5px] font-bold text-amber-800">
+              وضعیت موجودی: نیازمند راه‌اندازی — موجودی اولیه فقط از «کالاها ← نیازمند راه‌اندازی» و با سند انبار ثبت می‌شود.
             </p>
             <Card className="overflow-hidden">
-              <div className="overflow-x-auto">
+              <div className="kv-scroll max-h-56 overflow-auto">
                 <table className="kv-table min-w-[420px] text-xs">
                   <thead><tr><th>رنگ</th><th>سایز</th><th>SKU</th></tr></thead>
                   <tbody>
@@ -1089,10 +1104,13 @@ export function ProductStudio({ flash }: { flash: F }) {
                 </table>
               </div>
             </Card>
-            <Btn variant="soft" size="sm" onClick={() => setCreatedSummary(null)}>بستن</Btn>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Btn variant="soft" size="sm" onClick={() => setCreatedSummary(null)}>بعداً</Btn>
+              {onGoToSetup && <Btn variant="accent" size="sm" onClick={() => { setCreatedSummary(null); onGoToSetup(); }}>رفتن به راه‌اندازی موجودی</Btn>}
+            </div>
           </div>
         )}
-      </Drawer>
+      </Modal>
     </div>
   );
 }
