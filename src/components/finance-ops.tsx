@@ -9,10 +9,12 @@ import { formatPersianDate, formatPersianDateTime, todayIso, addDaysIso, isoDate
 import { fmtToman, tomanFromRial, rialFromToman } from "../data/contracts";
 import { fmtNum } from "../data/catalog";
 import { financeOpsApi, invoiceDocsApi, ordersApi } from "../data/api";
+import { SettlementCenter } from "./settlement-center";
 import { useSupplierOptions } from "./supplier-360";
 import { useFetch } from "../hooks/useApi";
 import { cn } from "../utils/cn";
 import {
+  Banknote,
   Wallet, Building2, Scale, HandCoins, Truck, FileBarChart2, CalendarClock, Radio,
   RefreshCw, Plus, Check, X, CreditCard, AlertTriangle, ShieldCheck, Download, BadgeCheck,
   Undo2, Percent,
@@ -1308,7 +1310,8 @@ const TABS = [
   { v: "dashboard", label: "داشبورد" },
   { v: "accounts", label: "حساب تأمین‌کنندگان" },
   { v: "aging", label: "سنین بدهی" },
-  { v: "settlements", label: "تسویه‌ها" },
+  { v: "supplier-settlements", label: "تسویه تأمین‌کنندگان" },
+  { v: "settlements", label: "تسویه‌ها (legacy)" },
   { v: "adjustments", label: "اصلاحات" },
   { v: "advances", label: "پیش‌پرداخت‌ها" },
   { v: "shipping", label: "تخصیص حمل" },
@@ -1320,6 +1323,7 @@ type TabKey = typeof TABS[number]["v"];
 
 const TAB_ICON: Record<TabKey, React.ReactNode> = {
   dashboard: <Wallet size={15} />,
+  "supplier-settlements": <Banknote size={15} />,
   accounts: <Building2 size={15} />,
   aging: <Scale size={15} />,
   settlements: <BadgeCheck size={15} />,
@@ -1347,6 +1351,7 @@ export function FinanceOpsPanel({ flash }: { flash: Flash }) {
       case "dashboard": return <DashboardTab range={range} setRange={setRange} flash={fire} />;
       case "accounts": return <AccountsTab range={range} flash={fire} />;
       case "aging": return <AgingTab />;
+      case "supplier-settlements": return <SettlementCenter flash={fire} />;
       case "settlements": return <SettlementsTab range={range} flash={fire} />;
       case "adjustments": return <AdjustmentsTab flash={fire} />;
       case "advances": return <AdvancesTab flash={fire} />;

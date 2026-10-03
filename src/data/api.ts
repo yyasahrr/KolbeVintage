@@ -480,6 +480,75 @@ export const walletApi = {
   settle: (id: string, payload?: unknown) => authFetch<unknown>(`/settlements/${id}/settle`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
 };
 
+/* ------------- supplier financial core (Prompt 3: payable→hold→settlement) ------------- */
+
+export const supplierFinanceApi = {
+  summary: () => authFetch<Record<string, unknown>>("/supplier/finance/summary"),
+  payables: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[]; total: number }>(`/supplier/finance/payables${query(params)}`),
+  holds: () => authFetch<{ items: Record<string, unknown>[] }>("/supplier/finance/holds"),
+  settlements: () => authFetch<{ items: Record<string, unknown>[] }>("/supplier/finance/settlements"),
+  settlement: (id: string) => authFetch<Record<string, unknown>>(`/supplier/finance/settlements/${id}`),
+  ledger: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[]; total: number }>(`/supplier/finance/ledger${query(params)}`),
+  bankAccounts: () => authFetch<{ items: Record<string, unknown>[] }>("/supplier/finance/bank-accounts"),
+  addBankAccount: (payload: { bankName: string; iban: string; holderName: string }) =>
+    authFetch<{ id: string; status: string }>("/supplier/finance/bank-accounts", { method: "POST", body: JSON.stringify(payload) }),
+  archiveBankAccount: (id: string) =>
+    authFetch<unknown>(`/supplier/finance/bank-accounts/${id}/archive`, { method: "POST" }),
+};
+
+export const settlementAdminApi = {
+  upcoming: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/finance/supplier-settlements/upcoming"),
+  generate: (payload: { supplierId?: string; force?: boolean }) =>
+    authFetch<{ created: Record<string, unknown>[]; skipped: Record<string, unknown>[] }>(
+      "/admin/finance/supplier-settlements/generate", { method: "POST", body: JSON.stringify(payload) }),
+  settlements: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/finance/supplier-settlements${query(params)}`),
+  settlement: (id: string) => authFetch<Record<string, unknown>>(`/admin/finance/supplier-settlements/${id}`),
+  block: (id: string, reason: string) =>
+    authFetch<unknown>(`/admin/finance/supplier-settlements/${id}/block`, { method: "POST", body: JSON.stringify({ reason }) }),
+  transition: (id: string, action: "cancel" | "fail", reason: string) =>
+    authFetch<unknown>(`/admin/finance/supplier-settlements/${id}/${action}`, { method: "POST", body: JSON.stringify({ reason }) }),
+  approvalAction: (approvalId: string, action: "review" | "approve" | "reject", note?: string) =>
+    authFetch<unknown>(`/admin/finance/approvals/${approvalId}/${action}`, { method: "POST", body: JSON.stringify({ note }) }),
+  pay: (id: string, payload: { reference: string; paidAmountRial: string; sourceBank?: string; note?: string }) =>
+    authFetch<unknown>(`/admin/finance/settlements/${id}/pay`, { method: "POST", body: JSON.stringify(payload) }),
+  payables: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/finance/supplier-payables${query(params)}`),
+  refundPayable: (id: string, payload: { amountRial: string; reason: string }) =>
+    authFetch<unknown>(`/admin/finance/supplier-payables/${id}/refund`, { method: "POST", body: JSON.stringify(payload) }),
+  holds: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/finance/settlement-holds${query(params)}`),
+  holdAction: (id: string, action: "block" | "unblock" | "extend" | "release", payload?: { reason?: string; hours?: number }) =>
+    authFetch<unknown>(`/admin/finance/settlement-holds/${id}/${action}`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+  runHoldRelease: () => authFetch<{ released: number; blocked: number }>("/admin/finance/settlement-holds/run-release", { method: "POST" }),
+  policies: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/finance/settlement-policies"),
+  createPolicy: (payload: Record<string, unknown>) =>
+    authFetch<{ id: string }>("/admin/finance/settlement-policies", { method: "POST", body: JSON.stringify(payload) }),
+  assignPolicy: (supplierId: string, policyId: string | null) =>
+    authFetch<unknown>("/admin/finance/settlement-policies/assign", { method: "POST", body: JSON.stringify({ supplierId, policyId }) }),
+  bankAccounts: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/finance/bank-accounts${query(params)}`),
+  bankAction: (id: string, action: "verify" | "reject" | "disable", reason?: string) =>
+    authFetch<unknown>(`/admin/finance/bank-accounts/${id}/${action}`, { method: "POST", body: JSON.stringify({ reason }) }),
+  recoveries: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/finance/supplier-recoveries${query(params)}`),
+  writeOffRecovery: (id: string, reason: string) =>
+    authFetch<unknown>(`/admin/finance/supplier-recoveries/${id}/write-off`, { method: "POST", body: JSON.stringify({ reason }) }),
+  diagnostic: (supplierId: string) => authFetch<Record<string, unknown>>(`/admin/finance/reconciliation-diagnostic/${supplierId}`),
+  shippingPolicies: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/finance/shipping-policies"),
+  createShippingPolicy: (payload: Record<string, unknown>) =>
+    authFetch<{ id: string; version: number }>("/admin/finance/shipping-policies", { method: "POST", body: JSON.stringify(payload) }),
+  providerReconciliations: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[]; unreconciledIntents: number }>(`/admin/finance/provider-reconciliations${query(params)}`),
+  recordProviderReconciliation: (payload: Record<string, unknown>) =>
+    authFetch<unknown>("/admin/finance/provider-reconciliations", { method: "POST", body: JSON.stringify(payload) }),
+  financePolicy: () => authFetch<Record<string, unknown>>("/admin/finance/supplier-finance-policy"),
+  updateFinancePolicy: (payload: Record<string, unknown>) =>
+    authFetch<Record<string, unknown>>("/admin/finance/supplier-finance-policy", { method: "PUT", body: JSON.stringify(payload) }),
+};
+
 /* ------------------------------- supplier ------------------------------- */
 
 export const supplierApi = {
