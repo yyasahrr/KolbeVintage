@@ -7,7 +7,7 @@ import { IMG, fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE, BUYER_ADDRESS, limitsOf, describeLimits, type VipPlan } from "../data/platform";
 import { useOps } from "../data/ops";
-import { AdminApiError, apiClient, membershipApi, ordersApi, seriesTemplatesApi, supplierOffersApi, type OrderSummary } from "../data/api";
+import { AdminApiError, apiClient, membershipApi, ordersApi, seriesTemplatesApi, supplierOffersApi, wholesaleOmsApi, type MasterOrderSummary, type OrderSummary } from "../data/api";
 import { ParentOrderCard, SupplierChip } from "../components/orders";
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Swatch, Stepper, Empty, Input, Segmented, Field } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -385,10 +385,33 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   });
   // Real orders placed on the server (POST /orders) for this buyer.
   const [serverOrders, setServerOrders] = useState<OrderSummary[] | null>(null);
+  // Prompt-2 §17-§18: one canonical MASTER row per purchase; children are per-seller sub-orders.
+  const [serverMasters, setServerMasters] = useState<MasterOrderSummary[] | null>(null);
+  const [payingMaster, setPayingMaster] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
   const loadServerOrders = async () => {
-    try { const res = await ordersApi.list({ orderType: "wholesale", limit: "30" }); setServerOrders(res.items); }
-    catch { /* keep previous list */ }
+    try {
+      const [orders, masters] = await Promise.all([
+        ordersApi.list({ orderType: "wholesale", limit: "30" }),
+        wholesaleOmsApi.masters({ limit: 30 }).catch(() => null),
+      ]);
+      setServerOrders(orders.items);
+      if (masters) setServerMasters(masters.items);
+    } catch { /* keep previous list */ }
+  };
+  /** §53-§58: ONE batch payment intent for every READY child of the master — the server re-checks eligibility. */
+  const payReadyChildren = async (masterId: string) => {
+    setPayingMaster(masterId);
+    try {
+      const detail = await wholesaleOmsApi.master(masterId) as { children?: { id: string; payment_eligibility: string; composition_state: string }[] };
+      const ready = (detail.children ?? []).filter((c) => c.payment_eligibility === "ready" && c.composition_state === "included").map((c) => c.id);
+      if (ready.length === 0) { flash("زیرسفارش آماده پرداخت وجود ندارد — منتظر تأیید تأمین‌کننده بمانید."); return; }
+      const intent = await wholesaleOmsApi.batchPaymentIntent(masterId, ready);
+      flash(`درخواست پرداخت ${intent.reference} برای ${ready.length} زیرسفارش ثبت شد (${fmtMoney(rialToToman(intent.amountRial))})`);
+      await loadServerOrders();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا در ایجاد پرداخت");
+    } finally { setPayingMaster(null); }
   };
   const marketBase = products.filter((p) => p.status === "published" && p.wholesaleFrom > 0);
   const market = wholesaleServer ?? marketBase;
@@ -550,18 +573,22 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
       try {
         const merged = new Map<string, number>();
         for (const c of serverCartLines) merged.set(c.serverTemplateId!, (merged.get(c.serverTemplateId!) ?? 0) + c.l.qtySeries);
+        // Prompt-2: checkout creates ONE master + one child per seller (POST /wholesale/masters).
+        // The legacy single-order create endpoint remains ONLY for old flows — not VIP checkout.
         const payload = {
-          orderType: "wholesale" as const,
-          series: [...merged.entries()].map(([seriesTemplateId, count]) => ({ seriesTemplateId, count })),
+          items: [...merged.entries()].map(([seriesTemplateId, count]) => ({ seriesTemplateId, count })),
         };
         const key = `vip-wholesale-${accountId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        const res = await ordersApi.create(payload, key) as { reference?: string; id?: string };
+        const res = await wholesaleOmsApi.createMaster(payload, key);
         for (const c of [...serverCartLines].sort((a, b) => b.i - a.i)) store.wcartRemove(c.i);
         setCouponCode(""); setCouponInput("");
         setJustPlaced(res.reference ?? null);
         setTab("orders"); setOrderFilter("all");
         await loadServerOrders();
-        flash(`سفارش ${res.reference ?? ""} در سرور ثبت شد و موجودی سری‌ها رزرو شد`);
+        const readyCount = res.children.filter((c) => c.paymentEligibility === "ready").length;
+        const waiting = res.children.length - readyCount;
+        flash(`سفارش مادر ${res.reference} با ${res.children.length} زیرسفارش ثبت شد` +
+          (waiting > 0 ? ` — ${waiting} زیرسفارش در انتظار تأیید تأمین‌کننده است` : " و موجودی سری‌ها رزرو شد"));
       } catch (e) {
         if (e instanceof AdminApiError && e.status === 409) {
           flash(e.message || "موجودی سری کافی نیست؛ موجودی لحظه‌ای به‌روزرسانی شد.");
@@ -768,10 +795,45 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
             </div>
             <Segmented<OrderFilter> options={[{ v: "all", label: "همه" }, { v: "action", label: "نیازمند پرداخت" }, { v: "active", label: "در جریان" }, { v: "done", label: "بسته‌شده" }]} value={orderFilter} onChange={setOrderFilter} />
           </div>
+          {role === "vip" && serverMasters !== null && serverMasters.length > 0 && (
+            <Card className="mb-5 overflow-hidden">
+              <div className="flex items-center justify-between border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-5 py-3">
+                <p className="text-[13.5px] font-extrabold">سفارش‌های مادر شما</p>
+                <button onClick={() => void loadServerOrders()} className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline">به‌روزرسانی</button>
+              </div>
+              <div className="divide-y divide-[var(--kv-line)]">
+                {serverMasters.map((m) => {
+                  const mix = m.supplier_children === 0 ? "کلبه" : m.supplier_children === m.child_count ? "تأمین‌کننده" : "ترکیبی";
+                  const stateFa = m.delivered_at ? "تحویل شد" : m.shipped_at ? "ارسال شد" : m.locked_at ? "ترکیب قفل شد" : "ترکیب باز";
+                  return (
+                    <div key={m.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 text-[13px]">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <b className="tabular-nums" dir="ltr">{m.reference}</b>
+                        <Status value={mix} />
+                        <Status value={stateFa} />
+                        <span className="text-[12px] text-[var(--kv-muted)]">
+                          {fmtNum(m.child_count)} زیرسفارش · {fmtNum(m.paid_children)} پرداخت‌شده{m.ready_children > 0 ? ` · ${fmtNum(m.ready_children)} آماده پرداخت` : ""}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4 text-[12.5px]">
+                        <span className="tabular-nums font-bold">{fmtMoney(rialToToman(m.total_rial))}</span>
+                        <span className="text-[var(--kv-muted)]">{new Date(m.created_at).toLocaleDateString("fa-IR")}</span>
+                        {m.ready_children > 0 && (
+                          <Btn size="sm" variant="accent" disabled={payingMaster === m.id} onClick={() => void payReadyChildren(m.id)}>
+                            {payingMaster === m.id ? "در حال ایجاد پرداخت…" : "پرداخت زیرسفارش‌های آماده"}
+                          </Btn>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
           {role === "vip" && serverOrders !== null && serverOrders.length > 0 && (
             <Card className="mb-5 overflow-hidden">
               <div className="flex items-center justify-between border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-5 py-3">
-                <p className="text-[13.5px] font-extrabold">سفارش‌های ثبت‌شده شما</p>
+                <p className="text-[13.5px] font-extrabold">زیرسفارش‌های شما (به تفکیک فروشنده)</p>
                 <button onClick={() => void loadServerOrders()} className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline">به‌روزرسانی</button>
               </div>
               <div className="divide-y divide-[var(--kv-line)]">

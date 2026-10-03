@@ -18,7 +18,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import {
   apiClient, authApi, getAccessToken, setAccessToken, setApiBaseUrl, ticketsApi, productsApi, filesApi,
-  omsApi, ordersApi, seriesTemplatesApi, AdminApiError,
+  omsApi, ordersApi, seriesTemplatesApi, wholesaleOmsApi, AdminApiError,
 } from '../../src/data/api.ts';
 import {
   TICKET_STATUSES, adaptCmsHero, adaptSitePage, buildProductCreatePayload, buildShippingMethodPayload, buildTicketCreatePayload,
@@ -491,6 +491,29 @@ try {
   check('VIP orders list refreshes from the server after checkout',
     myWholesaleOrders.items.some((order) => order.reference === placedOrder.reference));
 
+  // =================== Prompt-2 §190: VIP Master/Child wholesale OMS through the SAME frontend client ===================
+  const masterRes = await wholesaleOmsApi.createMaster(
+    { items: [{ seriesTemplateId: seriesTemplate.id, count: 1 }] }, `smoke-master-${suffix}`);
+  check('wholesaleOmsApi.createMaster → ONE master (MV-) + child per seller on the canonical orders table',
+    masterRes.reference.startsWith('MV-') && masterRes.children.length === 1 &&
+    masterRes.children[0]!.reference.startsWith('KV-'), masterRes.reference);
+  check('kolbe-stock child is READY immediately (stock reserved atomically, snapshot locked)',
+    masterRes.children[0]!.paymentEligibility === 'ready' &&
+    ['stock_reserved', 'confirmed'].includes(masterRes.children[0]!.supplyStatus));
+  const afterMaster = await seriesTemplatesApi.vipList(seriesProduct.id);
+  check('master checkout consumed the LAST series through the same atomic reservation path (1 → 0)',
+    afterMaster.items.find((row) => row.id === seriesTemplate.id)?.available_series === 0);
+  const masterIntent = await wholesaleOmsApi.batchPaymentIntent(masterRes.id, [masterRes.children[0]!.id]);
+  check('batch payment intent spans READY children of one master (PAY-, SUM == amount)',
+    masterIntent.reference.startsWith('PAY-') && masterIntent.amountRial === masterRes.children[0]!.totalRial);
+  let dupIntent: unknown = null;
+  try { await wholesaleOmsApi.childPaymentIntent(masterRes.children[0]!.id); } catch (error) { dupIntent = error; }
+  check('second intent on the same child is rejected (single active intent — PAYMENT_INTENT_EXISTS)',
+    dupIntent instanceof AdminApiError && dupIntent.status === 409);
+  const masterList = await wholesaleOmsApi.masters({ limit: 10 });
+  check('wholesaleOmsApi.masters returns ONE canonical row per master with child aggregates (§152)',
+    masterList.items.some((m) => m.reference === masterRes.reference && m.child_count === 1 && m.ready_children === 1));
+
   // =================== VIP / warehouse-hub UI contract (static source assertions) ===================
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
   const vipSrc = readFileSync(join(repoRoot, 'src/portals/vip.tsx'), 'utf8');
@@ -499,8 +522,9 @@ try {
     !vipSrc.includes('تکه') && !vipSrc.includes('جفت') && !vipSrc.includes('cartPieces'));
   check('VIP UI still renders the series composition',
     vipSrc.includes('ترکیب سری') && vipSrc.includes('composition'));
-  check('real VIP checkout uses POST /orders — store.placeOrder only as the demo fallback branch',
-    vipSrc.includes('ordersApi.create') && vipSrc.includes('seriesTemplateId') &&
+  check('real VIP checkout posts /wholesale/masters (master/child OMS) — store.placeOrder only as the demo fallback branch',
+    vipSrc.includes('wholesaleOmsApi.createMaster') && vipSrc.includes('seriesTemplateId') &&
+    !vipSrc.includes('ordersApi.create') &&
     vipSrc.indexOf('serverCartLines.length > 0') < vipSrc.indexOf('store.placeOrder('));
   check('VIP availability uses server availableSeries (no local stock≥pieces×moq math)',
     vipSrc.includes('availableSeries') && !vipSrc.includes('p.stock >=') && !vipSrc.includes('p.stock <'));
@@ -514,6 +538,10 @@ try {
   check('کالاها hub has the §14 sub-views and NO owner picker in the definition flow',
     ['تعریف محصول', 'نیازمند راه‌اندازی', 'بازبینی تأمین‌کنندگان', 'همه کالاها', 'آرشیو'].every((t) => catalogHubSrc.includes(t)) &&
     !catalogHubSrc.includes('مالک محصول'));
+  const supplierChildPanelSrc = readFileSync(join(repoRoot, 'src/components/supplier-child-orders-panel.tsx'), 'utf8');
+  check('supplier wholesale panel offers exactly the §71 actions (تأیید کامل/پیشنهاد کمتر/عدم امکان) + server-resolved dispatch',
+    ['تأیید کامل', 'پیشنهاد کمتر', 'عدم امکان'].every((t) => supplierChildPanelSrc.includes(t)) &&
+    supplierChildPanelSrc.includes('supplierDispatch') && !supplierChildPanelSrc.includes('destinationWarehouseId'));
 
   // ---------- OMS: 3-tab orders hub contracts (§18-§41) ----------
   const omsAdmin = await authApi.login({ identity: adminEmail, password: adminPassword });
@@ -542,6 +570,8 @@ try {
     ordersHubSrc.includes('trackingApi.updateShipment'));
   check('bulk invoice print reuses the existing invoice domain (no parallel invoice renderer)',
     ordersHubSrc.includes('invoicesApi.list({ orderId') && !ordersHubSrc.includes('INV-'));
+  check('orders hub shows ONE canonical master row (MasterOrdersStrip) — children stay in the wholesale tabs (§152)',
+    ordersHubSrc.includes('MasterOrdersStrip') && ordersHubSrc.includes('wholesaleOmsApi.masters'));
 
   // ---------- §31-§35: manual sale = REAL order on the canonical pipeline ----------
   const moVariant = wmsProduct.variants.find((v) => v.color === 'مشکی' && v.size === 'M')!;

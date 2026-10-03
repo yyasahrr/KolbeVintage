@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardList, FileText, Package, Printer, RefreshCw, Tag, Truck } from "lucide-react";
 import { Btn, Checkbox, Drawer, Empty, ErrorState, LoadingState, Modal, SearchBox, Segmented, Textarea } from "../components/primitives";
-import { authBlobUrl, invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi } from "../data/api";
+import { authBlobUrl, invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi, wholesaleOmsApi, type MasterOrderSummary } from "../data/api";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { ManualOrderForm } from "../components/manual-order-form";
 import { TrackingCenter } from "../components/tracking-center";
@@ -852,6 +852,53 @@ function RetailTab() {
 
 /* ----------------------------- hub (§18: exactly three tabs) ----------------------------- */
 
+/**
+ * Prompt-2 §152: ONE canonical row per VIP MASTER order with a composition badge
+ * (کلبه / تأمین‌کننده / ترکیبی) — children are listed in the wholesale tabs below,
+ * so the master never duplicates per-seller rows.
+ */
+function MasterOrdersStrip() {
+  const [items, setItems] = useState<MasterOrderSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    setError(null);
+    try { const res = await wholesaleOmsApi.masters({ scope: "all", limit: 20 }); setItems(res.items); }
+    catch (err) { setError(err instanceof Error ? err.message : "خطا در دریافت سفارش‌های مادر"); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  if (error) return <ErrorState message={error} onRetry={load} />;
+  if (!items || items.length === 0) return null;
+  const fa = new Intl.NumberFormat("fa-IR");
+  return (
+    <div className="overflow-x-auto rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)]">
+      <div className="flex items-center justify-between border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-4 py-2.5">
+        <p className="text-[12.5px] font-extrabold">سفارش‌های مادر VIP (هر خرید یک ردیف — زیرسفارش‌ها در جدول پایین)</p>
+        <button onClick={() => void load()} className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline">به‌روزرسانی</button>
+      </div>
+      <table className="kv-table min-w-[900px] text-xs">
+        <thead><tr><th>مرجع</th><th>ترکیب</th><th>زیرسفارش‌ها</th><th>پرداخت‌شده</th><th>وضعیت ترکیب</th><th>ارسال نهایی</th><th>جمع (ریال)</th><th>تاریخ</th></tr></thead>
+        <tbody>
+          {items.map((m) => {
+            const mix = m.supplier_children === 0 ? "کلبه" : m.supplier_children === m.child_count ? "تأمین‌کننده" : "ترکیبی";
+            return (
+              <tr key={m.id}>
+                <td className="font-mono font-bold" dir="ltr">{m.reference}</td>
+                <td><span className="rounded-full bg-[var(--kv-surface-2)] px-2 py-0.5 text-[11px]">{mix}</span></td>
+                <td className="tabular-nums">{fa.format(m.included_children)} / {fa.format(m.child_count)}</td>
+                <td className="tabular-nums">{fa.format(m.paid_children)}</td>
+                <td>{m.locked_at ? "قفل‌شده" : "باز"}</td>
+                <td>{m.delivered_at ? "تحویل شد" : m.shipped_at ? `ارسال شد${m.tracking_code ? ` (${m.tracking_code})` : ""}` : "—"}</td>
+                <td className="tabular-nums">{fa.format(Number(m.total_rial))}</td>
+                <td>{new Date(m.created_at).toLocaleDateString("fa-IR")}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function OrdersHub() {
   const [tab, setTab] = useState<"retail" | "kolbe" | "supplier">("retail");
   const [trackingOpen, setTrackingOpen] = useState(false);
@@ -874,6 +921,7 @@ export function OrdersHub() {
         </div>
       </div>
       {tab === "retail" && <RetailTab key={retailReload} />}
+      {tab !== "retail" && <MasterOrdersStrip />}
       {tab === "kolbe" && <WholesaleTab scope="kolbe" key="kolbe" />}
       {tab === "supplier" && <WholesaleTab scope="supplier" key="supplier" />}
       {trackingOpen && (

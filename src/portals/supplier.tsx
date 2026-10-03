@@ -20,6 +20,7 @@ import { SupplierWallet, SupplierBankForm, useWallet } from "./supplier-wallet";
 import { TicketCenter } from "../components/support";
 import { SupplierStatsPanel } from "./supplier-stats-panel";
 import { SupplierOrdersPanel } from "../components/supplier-orders-panel";
+import { SupplierChildOrdersPanel } from "../components/supplier-child-orders-panel";
 import { SupplierReviewPanel } from "../components/supplier-review-panel";
 import { useOps } from "../data/ops";
 import { apiClient, authApi, isAuthenticated, notificationsApi, productsApi, productStructureApi } from "../data/api";
@@ -755,6 +756,8 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
 
           {tab === "orders" && (
             <div className="space-y-6 animate-[fadeUp_0.35s_ease]">
+              {/* Prompt-2 §71-§72: VIP wholesale CHILD orders (master/child OMS) — confirm/counter/reject + dispatch-to-kolbe. */}
+              <SupplierChildOrdersPanel flash={flash} />
               <SupplierOrdersPanel />
               <div className="animate-[fadeUp_0.35s_ease]">
               <SubOrderDesk items={mySubs.filter((i: any) => (i as any).sub.status !== "pending_supplier")} actor={ME.name} onTransition={transition} emptyTitle="سفارشی در جریان نیست" emptyDesc="سفارش‌های تأییدشده و مراحل پرداخت، آماده‌سازی و ارسال اینجا دنبال می‌شود." />

@@ -1625,3 +1625,84 @@ export const supplierConsignmentApi = {
   convertOwnership: (payload: Record<string, unknown>) =>
     authFetch<Record<string, unknown>>("/admin/inventory/series-ownership-conversions", { method: "POST", body: JSON.stringify(payload) }),
 };
+
+/* ---------------------- VIP wholesale Master/Child OMS ---------------------- */
+
+/** Prompt-2 §17-§18: master order = grouping/consolidation shell; each CHILD order (one per seller) is the financial truth. */
+export type MasterOrderSummary = {
+  id: string; reference: string; composition: string; status: string;
+  shipping_estimate_rial: string | null; tracking_code: string | null; carrier: string | null;
+  created_at: string; locked_at: string | null; shipped_at: string | null; delivered_at: string | null;
+  child_count: number; supplier_children: number; paid_children: number; ready_children: number;
+  included_children: number; total_rial: string;
+};
+export type MasterChildSummary = {
+  id: string; reference: string; sellerType: "kolbe" | "supplier"; sellerId: string | null;
+  supplyStatus: string; paymentEligibility: string; paymentDueAt: string | null;
+  subtotalRial: string; discountRial: string; totalRial: string;
+};
+export type SupplierChildLine = {
+  id: string; productId: string; seriesTemplateId: string; requestedSeries: number;
+  proposedSeries: number | null; confirmedSeries: number | null; status: string;
+  piecesPerSeries: number; productName?: string; templateName?: string;
+  externalSeries: number; stockAtKolbeSeries: number;
+};
+export type SupplierChildOrder = {
+  id: string; reference: string; status: string; supply_status: string; payment_eligibility: string;
+  child_fulfillment: string | null; supplier_respond_by: string | null; created_at: string;
+  master_reference: string; lines: SupplierChildLine[];
+};
+
+export const wholesaleOmsApi = {
+  /** VIP checkout → ONE master + one child per seller; server expands series recipes and reserves atomically. */
+  createMaster: (payload: {
+    items: { seriesTemplateId: string; count: number; offerId?: string }[];
+    shippingAddress?: { recipient: string; phone: string; province: string; city: string; line: string; postalCode: string };
+    shippingMethodId?: string; note?: string;
+  }, key: string) =>
+    authFetch<{ id: string; reference: string; composition: string; status: string; subtotalRial: string; children: MasterChildSummary[] }>(
+      "/wholesale/masters", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
+  masters: (params?: Record<string, string | number>) =>
+    authFetch<{ items: MasterOrderSummary[] }>(`/wholesale/masters${query(params)}`),
+  master: (id: string) => authFetch<Record<string, unknown>>(`/wholesale/masters/${id}`),
+  lock: (id: string) => authFetch<Record<string, unknown>>(`/wholesale/masters/${id}/lock`, { method: "POST", body: "{}" }),
+  removeChild: (childId: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/children/${childId}/remove`, { method: "POST", body: "{}" }),
+  /** Buyer decision on a countered line: accept the supplier's lower proposal or remove the line. */
+  buyerDecision: (lineId: string, action: "accept_counter" | "remove") =>
+    authFetch<Record<string, unknown>>(`/wholesale/lines/${lineId}/decision`, { method: "POST", body: JSON.stringify({ action }) }),
+  /** §53-§58: payment intents — per child, or ONE gateway transaction across several READY children. */
+  childPaymentIntent: (childId: string) =>
+    authFetch<{ intentId: string; reference: string; amountRial: string; children: { id: string; reference: string; amountRial: string }[] }>(
+      `/wholesale/children/${childId}/payment-intent`, { method: "POST", body: "{}" }),
+  batchPaymentIntent: (masterId: string, childIds: string[]) =>
+    authFetch<{ intentId: string; reference: string; amountRial: string; children: { id: string; reference: string; amountRial: string }[] }>(
+      `/wholesale/masters/${masterId}/batch-payment-intent`, { method: "POST", body: JSON.stringify({ childIds }) }),
+  /** §71-§72: supplier panel — child orders only; buyer identity is never exposed. */
+  supplierChildOrders: (params?: Record<string, string | number>) =>
+    authFetch<{ items: SupplierChildOrder[] }>(`/wholesale/supplier/child-orders${query(params)}`),
+  supplierRespond: (lineId: string, payload: { action: "confirm" | "counter" | "reject"; proposedSeries?: number; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/lines/${lineId}/respond`, { method: "POST", body: JSON.stringify(payload) }),
+  supplierDispatch: (childId: string, payload?: { trackingNote?: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/children/${childId}/dispatch`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+  /** Warehouse/ops fulfillment + consolidation (§77-§103). */
+  pick: (childId: string) => authFetch<Record<string, unknown>>(`/wholesale/children/${childId}/pick`, { method: "POST", body: "{}" }),
+  receive: (childId: string, payload: { allocations: { allocationId: string; receivedSeries: number }[] }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/children/${childId}/receive`, { method: "POST", body: JSON.stringify(payload) }),
+  qc: (childId: string, payload: { allocations: { allocationId: string; passedSeries: number; rejectedSeries: number }[] }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/children/${childId}/qc`, { method: "POST", body: JSON.stringify(payload) }),
+  resolveException: (exceptionId: string, payload: { resolution: string; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/exceptions/${exceptionId}/resolve`, { method: "POST", body: JSON.stringify(payload) }),
+  consolidationStart: (masterId: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/masters/${masterId}/consolidation/start`, { method: "POST", body: "{}" }),
+  consolidationVerify: (consolidationId: string, payload: { lineId: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/consolidations/${consolidationId}/verify-item`, { method: "POST", body: JSON.stringify(payload) }),
+  consolidationComplete: (consolidationId: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/consolidations/${consolidationId}/complete`, { method: "POST", body: "{}" }),
+  consolidationPack: (consolidationId: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/consolidations/${consolidationId}/pack`, { method: "POST", body: "{}" }),
+  ship: (masterId: string, payload: { carrier: string; trackingCode: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/masters/${masterId}/ship`, { method: "POST", body: JSON.stringify(payload) }),
+  deliver: (masterId: string) =>
+    authFetch<Record<string, unknown>>(`/wholesale/masters/${masterId}/deliver`, { method: "POST", body: "{}" }),
+};

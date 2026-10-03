@@ -896,10 +896,12 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       limit: z.coerce.number().int().min(1).max(100).default(30),
       before: z.iso.datetime().optional(),
       buyerId: z.uuid().optional(),
+      scope: z.enum(['own', 'all']).default('own'),
     }).parse(request.query);
     const admin = user.permissions.includes('orders:read');
-    const buyerId = admin && query.buyerId ? query.buyerId : user.id;
-    if (!admin && query.buyerId && query.buyerId !== user.id) throw forbidden();
+    if (!admin && (query.scope === 'all' || (query.buyerId && query.buyerId !== user.id))) throw forbidden();
+    // admin ops view (§152 orders hub): scope=all lists every master; otherwise own/explicit buyer.
+    const buyerId = admin && query.scope === 'all' ? null : admin && query.buyerId ? query.buyerId : user.id;
     // one aggregate query — no N+1 (§212).
     const rows = await pool.query(
       `SELECT m.id, m.reference, m.composition, m.status, m.shipping_estimate_rial::text AS shipping_estimate_rial,
@@ -912,7 +914,7 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
               COALESCE(SUM(o.total_rial) FILTER (WHERE o.composition_state = 'included'), 0)::text AS total_rial
        FROM master_orders m
        LEFT JOIN orders o ON o.master_order_id = m.id
-       WHERE m.buyer_id = $1 AND ($2::timestamptz IS NULL OR m.created_at < $2)
+       WHERE ($1::uuid IS NULL OR m.buyer_id = $1) AND ($2::timestamptz IS NULL OR m.created_at < $2)
        GROUP BY m.id ORDER BY m.created_at DESC LIMIT $3`,
       [buyerId, query.before ?? null, query.limit]);
     return { items: rows.rows };
