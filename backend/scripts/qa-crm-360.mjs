@@ -201,6 +201,25 @@ try {
     await sleep(2500); await shot('supplier-360');
     const probeSup = await modalProbe();
     check('§101 Supplier 360 is a CENTERED WorkspaceModal (not drawer)', probeSup.found && probeSup.centered && !probeSup.sideSheet, JSON.stringify(probeSup));
+
+    /* §71: the full 14-tab workspace */
+    const expectedTabs = ['نمای کلی', 'اطلاعات و قرارداد', 'محصولات', 'Offerها', 'موجودی نزد کلبه', 'ظرفیت اعلامی',
+      'سفارش‌ها', 'عملکرد', 'کنترل کیفیت', 'مالی', 'تسویه‌ها', 'حساب بانکی', 'پشتیبانی', 'تایم‌لاین'];
+    const tabsFound = await page.evaluate((wanted) => {
+      const dialog = [...document.querySelectorAll('[role="dialog"]')].at(-1);
+      if (!dialog) return [];
+      const labels = [...dialog.querySelectorAll('button')].map((b) => b.textContent?.trim() ?? '');
+      return wanted.filter((w) => labels.some((l) => l === w || l.startsWith(w)));
+    }, expectedTabs);
+    check('§71 supplier 360 exposes all 14 required tabs', tabsFound.length === expectedTabs.length,
+      `found ${tabsFound.length}/14 — missing: ${expectedTabs.filter((t) => !tabsFound.includes(t)).join('، ') || 'هیچ'}`);
+
+    /* §76: bank tab masked */
+    await clickInDialog('حساب بانکی'); await sleep(900);
+    const bankBody = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].at(-1)?.textContent ?? '');
+    const fullIban = /IR\d{22,24}/.test(bankBody);
+    check('§76 bank IBAN masked in supplier 360', bankBody.includes('حساب بانکی') && !fullIban, `fullIbanVisible=${fullIban}`);
+    await shot('supplier-360-bank');
     await page.keyboard.press('Escape'); await sleep(600);
   } else {
     check('§101 Supplier 360 is a CENTERED WorkspaceModal (not drawer)', false, 'could not open');

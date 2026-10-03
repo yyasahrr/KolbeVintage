@@ -222,6 +222,33 @@ export function registerSupplier360Routes(app: FastifyInstance, pool: DbPool, co
            FROM tickets t WHERE t.owner_id = $1 ORDER BY t.created_at DESC LIMIT 10`, [id]),
     ]);
 
+    /* Corrective §70-§76: the 360 workspace tabs need the underlying LISTS, not just counts.
+       All four are reads over existing canonical tables — no new stores. */
+    const [productList, offers, supplierOrders, qc] = await Promise.all([
+      pool.query(
+        `SELECT p.id, p.name, p.category, p.status, p.inventory_setup, p.created_at,
+                (SELECT COUNT(*)::int FROM product_variants v WHERE v.product_id = p.id) AS variant_count
+           FROM products p WHERE p.supplier_id = $1 ORDER BY p.created_at DESC LIMIT 50`, [id]),
+      // §31: declared capacity is an availability CLAIM — shown separately from WMS stock.
+      pool.query(
+        `SELECT o.id, o.color_label, o.status, o.fulfillment_mode, o.wholesale_price_rial::text AS wholesale_price_rial,
+                o.min_order_series, o.max_order_series, o.declared_capacity, o.reserved_external, o.safety_buffer,
+                o.lead_time_days, o.capacity_confirmed_at, o.updated_at, p.name AS product_name
+           FROM supplier_offers o JOIN products p ON p.id = o.product_id
+          WHERE o.supplier_id = $1 ORDER BY o.updated_at DESC LIMIT 50`, [id]),
+      pool.query(
+        `SELECT o.id, o.reference, o.order_type, o.status, o.created_at,
+                COALESCE(SUM(ol.line_total_rial),0)::text AS supplier_total_rial, COUNT(ol.id)::int AS line_count
+           FROM orders o JOIN order_lines ol ON ol.order_id = o.id
+          WHERE ol.supplier_id = $1 GROUP BY o.id ORDER BY o.created_at DESC LIMIT 20`, [id]),
+      // QC evidence = real return inspections on this supplier's lines (no invented scores).
+      pool.query(
+        `SELECT r.id, r.status, r.resolution, r.inspection_result, r.reason, r.amount_rial::text AS amount_rial,
+                r.created_at, ol.product_name
+           FROM return_requests r JOIN order_lines ol ON ol.id = r.order_line_id
+          WHERE ol.supplier_id = $1 ORDER BY r.created_at DESC LIMIT 30`, [id]),
+    ]);
+
     const performance = await one<Record<string, string>>(pool,
       `SELECT
          (SELECT COUNT(*)::int FROM orders o JOIN order_lines ol ON ol.order_id = o.id
@@ -263,6 +290,10 @@ export function registerSupplier360Routes(app: FastifyInstance, pool: DbPool, co
       financeSummary: { payableRial: finance?.pending_payable_rial ?? '0', availableRial: finance?.available_payable_rial ?? '0',
         blockedRial: finance?.blocked_rial ?? '0', settledRial: finance?.settled_rial ?? '0' },
       performance: { ...(performance ?? {}), products: products.rows, orders: orders.rows[0], invoices: invoices.rows[0] },
+      productList: productList.rows,
+      offers: offers.rows,
+      supplierOrders: supplierOrders.rows,
+      qc: qc.rows,
       documents: documents.rows,
       inventory: inventory.rows[0] ?? { product_count: 0, variant_count: 0, on_hand: 0, reserved: 0, damaged: 0, available: 0 },
       tickets: {

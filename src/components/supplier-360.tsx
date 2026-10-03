@@ -7,6 +7,7 @@ import { BarList } from "./charts";
 import { formatPersianDateTime, formatPersianDate } from "../data/persian-date";
 import { fmtToman } from "../data/contracts";
 import { supplier360Api, type SupplierActivityStatus, type Supplier360Overview } from "../data/api";
+import { CONTRACT_STATUS_FA, COOPERATION_STATUS_FA, FULFILLMENT_MODE_FA, INSPECTION_RESULT_FA, INVENTORY_SETUP_FA, OFFER_STATUS_FA, ORDER_STATUS_FA, ORDER_TYPE_FA, PERSON_TYPE_FA, PRIORITY_FA, PRODUCT_STATUS_FA, RECONCILIATION_STATUS_FA, RETURN_RESOLUTION_FA, RETURN_STATUS_FA, SETTLEMENT_STATUS_FA, TICKET_STATUS_FA, faLabel } from "../data/fa-labels";
 import { fmtNum } from "../data/catalog";
 import {
   UserCog, Ban, CheckCircle2, FileText, History, Plus, Unlock, RefreshCw, AlertTriangle, Clock,
@@ -25,6 +26,13 @@ const STATUS_LABEL: Record<SupplierActivityStatus, string> = {
   blocked: "مسدود",
   rejected: "ردشده",
 };
+
+/* Corrective §71: the supplier 360 is a full workspace — overview, contract, products,
+   offers, stock-at-kolbe vs declared capacity, orders, performance, QC, finance,
+   settlements, bank (masked), support and timeline, plus restriction management. */
+type Supplier360Tab =
+  | "overview" | "contract" | "products" | "offers" | "kolbe-stock" | "capacity" | "orders"
+  | "performance" | "qc" | "finance" | "settlements" | "bank" | "support" | "timeline" | "restrictions";
 
 const STATUS_TONE: Record<SupplierActivityStatus, string> = {
   pending_review: "bg-[var(--kv-warn)]/12 text-[var(--kv-warn)]",
@@ -200,7 +208,7 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
   const [data, setData] = useState<Supplier360Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"overview" | "restrictions" | "finance" | "timeline">("overview");
+  const [tab, setTab] = useState<Supplier360Tab>("overview");
   const [finance, setFinance] = useState<Awaited<ReturnType<typeof supplier360Api.finance>> | null>(null);
 
   const load = async () => {
@@ -210,7 +218,7 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
   };
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [supplierId, days]);
   useEffect(() => {
-    if (tab !== "finance") return;
+    if (tab !== "finance" && tab !== "settlements") return;
     let live = true;
     void (async () => {
       try {
@@ -272,43 +280,6 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
           <StatusActions busy={busy} onRun={run} supplierId={supplierId} current={status} />
         </Card>
 
-        {/* identity ---------------------------------------------------- */}
-        <Card className="p-4">
-          <SectionHead title="هویت و پرونده" desc="اطلاعات ثبت‌شده در پروفایل نسخه‌دار تأمین‌کننده" />
-          <div className="mt-3 grid gap-2 text-[12.5px] sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              ["نام تجاری", data.supplier.brand_name],
-              ["نام حقوقی", data.supplier.legal_name],
-              ["نوع شخص", data.supplier.person_type === "legal" ? "حقوقی" : data.supplier.person_type === "real" ? "حقیقی" : null],
-              ["شناسه/کد ملی", data.supplier.national_id],
-              ["کد اقتصادی", data.supplier.economic_code],
-              ["شخص مسئول", data.supplier.display_name],
-              ["تماس", data.supplier.phone],
-              ["تلفن دفتر", data.supplier.business_phone],
-              ["ایمیل", data.supplier.email],
-              ["بانک", data.supplier.bank_name],
-              ["شبا", data.supplier.bank_iban ? `IR${String(data.supplier.bank_iban).slice(-24)}` : null],
-              ["شماره حساب", data.supplier.account_number],
-              ["دسته‌های فعالیت", Array.isArray(data.supplier.product_categories) ? (data.supplier.product_categories as string[]).join("، ") : data.supplier.product_categories],
-              ["شهرهای ارسال", Array.isArray(data.supplier.shipping_cities) ? (data.supplier.shipping_cities as string[]).join("، ") : data.supplier.shipping_cities],
-              ["زمان آماده‌سازی (روز)", data.supplier.lead_time_days],
-              ["حداقل سفارش", data.supplier.min_order_quantity],
-              ["شرایط تسویه", data.supplier.settlement_terms],
-              ["SLA", data.supplier.sla],
-              ["کارمزد", data.supplier.commission_percent === null || data.supplier.commission_percent === undefined ? null : `${fmtNum(Number(data.supplier.commission_percent))}٪`],
-              ["وضعیت همکاری", data.supplier.cooperation_status === "approved" ? "تأییدشده" : data.supplier.cooperation_status],
-              ["وضعیت قرارداد", data.supplier.contract_status],
-              ["نسخه پروفایل", `v${fmtNum(Number(data.supplier.version ?? 1))}`],
-              ["شروع همکاری", data.supplier.created_at ? formatPersianDate(String(data.supplier.created_at)) : null],
-            ].filter(([, value]) => value !== null && value !== undefined && value !== "").map(([label, value]) => (
-              <div key={String(label)} className="flex items-center justify-between gap-3 rounded-[10px] bg-[var(--kv-surface-2)]/60 px-3 py-2">
-                <span className="text-[var(--kv-muted)]">{String(label)}</span>
-                <b className="truncate" title={String(value)}>{String(value)}</b>
-              </div>
-            ))}
-          </div>
-        </Card>
-
         {/* KPIs ------------------------------------------------------- */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Card className="p-4">
@@ -331,18 +302,273 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
           </Card>
         </div>
 
-        <Segmented<"overview" | "restrictions" | "finance" | "timeline">
+        <Segmented<Supplier360Tab>
           options={[
-            { v: "overview", label: "عملکرد و اسناد" },
-            { v: "restrictions", label: `محدودیت‌ها (${fmtNum(data.restrictions.filter((r) => r.status === "active").length)})` },
+            { v: "overview", label: "نمای کلی" },
+            { v: "contract", label: "اطلاعات و قرارداد" },
+            { v: "products", label: "محصولات" },
+            { v: "offers", label: "Offerها" },
+            { v: "kolbe-stock", label: "موجودی نزد کلبه" },
+            { v: "capacity", label: "ظرفیت اعلامی" },
+            { v: "orders", label: "سفارش‌ها" },
+            { v: "performance", label: "عملکرد" },
+            { v: "qc", label: "کنترل کیفیت" },
             { v: "finance", label: "مالی" },
+            { v: "settlements", label: "تسویه‌ها" },
+            { v: "bank", label: "حساب بانکی" },
+            { v: "support", label: "پشتیبانی" },
             { v: "timeline", label: "تایم‌لاین" },
+            { v: "restrictions", label: `محدودیت‌ها (${fmtNum(data.restrictions.filter((r) => r.status === "active").length)})` },
           ]}
           value={tab} onChange={setTab} />
 
         {tab === "overview" && (
+          <div className="grid gap-3 md:grid-cols-2">
+            <Card className="p-4">
+              <SectionHead title="خلاصه پرونده" desc="تصویر فوری از همه حوزه‌ها؛ جزئیات در تب مربوطه" />
+              <div className="mt-3 space-y-2 text-[12.5px]">
+                {[
+                  ["محصولات", fmtNum(data.inventory.product_count)],
+                  ["واریانت‌ها", fmtNum(data.inventory.variant_count)],
+                  ["موجودی قابل فروش نزد کلبه", fmtNum(data.inventory.available)],
+                  ["Offerهای فعال", fmtNum(data.offers.filter((o) => o.status === "active").length)],
+                  ["سفارش‌های دوره", fmtNum(Number((performance.orders as { order_count?: number } | undefined)?.order_count ?? 0))],
+                  ["تیکت‌های باز", fmtNum(data.tickets.openCount)],
+                  ["محدودیت‌های فعال", fmtNum(data.restrictions.filter((r) => r.status === "active").length)],
+                  ["مدارک پروفایل", fmtNum(data.documents.length)],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="flex items-center justify-between rounded-[10px] bg-[var(--kv-surface-2)]/60 px-3 py-2">
+                    <span className="text-[var(--kv-muted)]">{String(label)}</span>
+                    <span className="font-extrabold tabular-nums">{String(value)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+              <Card className="p-4">
+                <SectionHead title="محصولات" desc="توزیع وضعیت محصولات تأمین‌کننده" />
+                <div className="mt-3">
+                  {productsByStatus.length
+                    ? <BarList items={productsByStatus.map((row) => ({ label: faLabel(PRODUCT_STATUS_FA, row.status), value: row.count }))} />
+                    : <p className="text-[12.5px] text-[var(--kv-muted)]">محصولی ثبت نشده است.</p>}
+                </div>
+              </Card>
+          </div>
+        )}
+
+        {tab === "contract" && (
           <div className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
+        {/* identity ---------------------------------------------------- */}
+        <Card className="p-4">
+          <SectionHead title="هویت و پرونده" desc="اطلاعات ثبت‌شده در پروفایل نسخه‌دار تأمین‌کننده" />
+          <div className="mt-3 grid gap-2 text-[12.5px] sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              ["نام تجاری", data.supplier.brand_name],
+              ["نام حقوقی", data.supplier.legal_name],
+              ["نوع شخص", data.supplier.person_type ? faLabel(PERSON_TYPE_FA, data.supplier.person_type) : null],
+              ["شناسه/کد ملی", data.supplier.national_id],
+              ["کد اقتصادی", data.supplier.economic_code],
+              ["شخص مسئول", data.supplier.display_name],
+              ["تماس", data.supplier.phone],
+              ["تلفن دفتر", data.supplier.business_phone],
+              ["ایمیل", data.supplier.email],
+              ["دسته‌های فعالیت", Array.isArray(data.supplier.product_categories) ? (data.supplier.product_categories as string[]).join("، ") : data.supplier.product_categories],
+              ["شهرهای ارسال", Array.isArray(data.supplier.shipping_cities) ? (data.supplier.shipping_cities as string[]).join("، ") : data.supplier.shipping_cities],
+              ["زمان آماده‌سازی (روز)", data.supplier.lead_time_days],
+              ["حداقل سفارش", data.supplier.min_order_quantity],
+              ["شرایط تسویه", data.supplier.settlement_terms],
+              ["SLA", data.supplier.sla],
+              ["کارمزد", data.supplier.commission_percent === null || data.supplier.commission_percent === undefined ? null : `${fmtNum(Number(data.supplier.commission_percent))}٪`],
+              ["وضعیت همکاری", data.supplier.cooperation_status ? faLabel(COOPERATION_STATUS_FA, data.supplier.cooperation_status) : null],
+              ["وضعیت قرارداد", data.supplier.contract_status ? faLabel(CONTRACT_STATUS_FA, data.supplier.contract_status) : null],
+              ["نسخه پروفایل", `v${fmtNum(Number(data.supplier.version ?? 1))}`],
+              ["شروع همکاری", data.supplier.created_at ? formatPersianDate(String(data.supplier.created_at)) : null],
+            ].filter(([, value]) => value !== null && value !== undefined && value !== "").map(([label, value]) => (
+              <div key={String(label)} className="flex items-center justify-between gap-3 rounded-[10px] bg-[var(--kv-surface-2)]/60 px-3 py-2">
+                <span className="text-[var(--kv-muted)]">{String(label)}</span>
+                <b className="truncate" title={String(value)}>{String(value)}</b>
+              </div>
+            ))}
+          </div>
+        </Card>
+            <Card className="overflow-hidden">
+              <div className="px-4 py-3"><p className="text-[13px] font-bold">نسخه‌های پروفایل</p></div>
+              <div className="overflow-x-auto">
+                <table className="kv-table min-w-[520px] text-xs">
+                  <thead><tr><th>نسخه</th><th>یادداشت تغییر</th><th>تغییردهنده</th><th>تاریخ</th></tr></thead>
+                  <tbody>
+                    {data.profileVersions.length === 0 && <tr><td colSpan={4} className="text-center text-[var(--kv-muted)]">نسخه‌ای ثبت نشده است.</td></tr>}
+                    {data.profileVersions.map((version) => (
+                      <tr key={`${String(version.version)}-${String(version.created_at)}`}>
+                        <td className="tabular-nums">v{fmtNum(Number(version.version ?? 0))}</td>
+                        <td>{String(version.change_note ?? "—")}</td>
+                        <td className="font-mono text-[11px]">{String(version.changed_by ?? "—").slice(0, 8)}</td>
+                        <td className="tabular-nums">{formatPersianDateTime(String(version.created_at))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+            <Card className="overflow-hidden">
+              <div className="px-4 py-3"><p className="text-[13px] font-bold">مدارک پروفایل</p></div>
+              <div className="overflow-x-auto">
+                <table className="kv-table min-w-[520px] text-xs">
+                  <thead><tr><th>نوع</th><th>عنوان</th><th>وضعیت تأیید</th><th>تاریخ</th></tr></thead>
+                  <tbody>
+                    {data.documents.length === 0 && <tr><td colSpan={4} className="text-center text-[var(--kv-muted)]">مدرکی بارگذاری نشده است.</td></tr>}
+                    {data.documents.map((doc) => (
+                      <tr key={String(doc.id)}>
+                        <td>{String(doc.doc_type)}</td>
+                        <td>{String(doc.title ?? "—")}</td>
+                        <td>{doc.verified ? <Status value="تأییدشده" /> : <Status value="در انتظار" />}</td>
+                        <td className="tabular-nums">{formatPersianDate(String(doc.created_at))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {tab === "products" && (
+          <Card className="overflow-hidden">
+            <div className="px-4 py-3"><p className="text-[13px] font-bold">محصولات تأمین‌کننده</p></div>
+            <div className="overflow-x-auto">
+              <table className="kv-table min-w-[640px] text-xs">
+                <thead><tr><th>نام</th><th>دسته</th><th>وضعیت</th><th>راه‌اندازی موجودی</th><th>واریانت</th><th>تاریخ ثبت</th></tr></thead>
+                <tbody>
+                  {data.productList.length === 0 && <tr><td colSpan={6} className="text-center text-[var(--kv-muted)]">محصولی ثبت نشده است.</td></tr>}
+                  {data.productList.map((row) => (
+                    <tr key={String(row.id)}>
+                      <td className="max-w-[220px] truncate" title={String(row.name)}>{String(row.name)}</td>
+                      <td>{String(row.category ?? "—")}</td>
+                      <td>{faLabel(PRODUCT_STATUS_FA, row.status)}</td>
+                      <td>{faLabel(INVENTORY_SETUP_FA, row.inventory_setup)}</td>
+                      <td className="tabular-nums">{fmtNum(Number(row.variant_count ?? 0))}</td>
+                      <td className="tabular-nums">{formatPersianDate(String(row.created_at))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {tab === "offers" && (
+          <Card className="overflow-hidden">
+            <div className="px-4 py-3">
+              <p className="text-[13px] font-bold">Offerهای عمده</p>
+              <p className="text-[11.5px] text-[var(--kv-muted)]">برای محصولات تأمین‌کننده، Offer مرجعِ قیمت و شرایط فروش عمده است.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="kv-table min-w-[720px] text-xs">
+                <thead><tr><th>محصول</th><th>رنگ</th><th>وضعیت</th><th>نحوه تأمین</th><th>قیمت عمده</th><th>حداقل سری</th><th>حداکثر سری</th></tr></thead>
+                <tbody>
+                  {data.offers.length === 0 && <tr><td colSpan={7} className="text-center text-[var(--kv-muted)]">Offerی ثبت نشده است.</td></tr>}
+                  {data.offers.map((row) => (
+                    <tr key={String(row.id)}>
+                      <td className="max-w-[200px] truncate" title={String(row.product_name)}>{String(row.product_name)}</td>
+                      <td>{String(row.color_label ?? "همه رنگ‌ها")}</td>
+                      <td>{faLabel(OFFER_STATUS_FA, row.status)}</td>
+                      <td>{faLabel(FULFILLMENT_MODE_FA, row.fulfillment_mode)}</td>
+                      <td className="tabular-nums">{row.wholesale_price_rial ? fmtToman(String(row.wholesale_price_rial)) : "—"}</td>
+                      <td className="tabular-nums">{fmtNum(Number(row.min_order_series ?? 1))}</td>
+                      <td className="tabular-nums">{row.max_order_series ? fmtNum(Number(row.max_order_series)) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {tab === "kolbe-stock" && (
+          <div className="space-y-3">
+            <p className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2 text-[12px] text-[var(--kv-muted)]">
+              موجودی نزد کلبه از اسناد واقعی انبار (WMS) خوانده می‌شود و با «ظرفیت اعلامی» تأمین‌کننده یکی نیست.
+            </p>
+              <Card className="p-4">
+                <SectionHead title="موجودی (WMS)" desc="موجودی واقعی واریانت‌های این تأمین‌کننده؛ قابل فروش = موجودی − رزرو − آسیب‌دیده" />
+                <div className="mt-3 space-y-2 text-[12.5px]">
+                  {[
+                    ["محصول", fmtNum(data.inventory.product_count)],
+                    ["واریانت", fmtNum(data.inventory.variant_count)],
+                    ["موجودی", fmtNum(data.inventory.on_hand)],
+                    ["رزرو‌شده", fmtNum(data.inventory.reserved)],
+                    ["آسیب‌دیده", fmtNum(data.inventory.damaged)],
+                    ["قابل فروش", fmtNum(data.inventory.available)],
+                  ].map(([label, value]) => (
+                    <div key={label} className="flex items-center justify-between rounded-[10px] bg-[var(--kv-surface-2)]/60 px-3 py-2">
+                      <span className="text-[var(--kv-muted)]">{label}</span>
+                      <span className="font-extrabold tabular-nums">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+          </div>
+        )}
+
+        {tab === "capacity" && (
+          <Card className="overflow-hidden">
+            <div className="px-4 py-3">
+              <p className="text-[13px] font-bold">ظرفیت اعلامی تأمین‌کننده</p>
+              <p className="text-[11.5px] text-[var(--kv-muted)]">ظرفیت اعلامی ادعای آمادگی تأمین است — نه موجودی انبار کلبه و نه عدد قابل فروش قطعی.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="kv-table min-w-[760px] text-xs">
+                <thead><tr><th>محصول</th><th>رنگ</th><th>ظرفیت اعلامی</th><th>در جریان سفارش</th><th>حاشیه ایمنی</th><th>قابل درخواست</th><th>زمان آماده‌سازی</th><th>آخرین تأیید</th></tr></thead>
+                <tbody>
+                  {data.offers.length === 0 && <tr><td colSpan={8} className="text-center text-[var(--kv-muted)]">ظرفیتی اعلام نشده است.</td></tr>}
+                  {data.offers.map((row) => {
+                    const declared = Number(row.declared_capacity ?? 0);
+                    const reserved = Number(row.reserved_external ?? 0);
+                    const buffer = Number(row.safety_buffer ?? 0);
+                    return (
+                      <tr key={String(row.id)}>
+                        <td className="max-w-[200px] truncate" title={String(row.product_name)}>{String(row.product_name)}</td>
+                        <td>{String(row.color_label ?? "همه رنگ‌ها")}</td>
+                        <td className="tabular-nums">{fmtNum(declared)}</td>
+                        <td className="tabular-nums">{fmtNum(reserved)}</td>
+                        <td className="tabular-nums">{fmtNum(buffer)}</td>
+                        <td className="tabular-nums font-bold">{fmtNum(Math.max(declared - reserved - buffer, 0))}</td>
+                        <td className="tabular-nums">{fmtNum(Number(row.lead_time_days ?? 0))} روز</td>
+                        <td className="tabular-nums">{row.capacity_confirmed_at ? formatPersianDate(String(row.capacity_confirmed_at)) : "تأیید نشده"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {tab === "orders" && (
+          <Card className="overflow-hidden">
+            <div className="px-4 py-3"><p className="text-[13px] font-bold">سفارش‌های دارای سطر این تأمین‌کننده</p></div>
+            <div className="overflow-x-auto">
+              <table className="kv-table min-w-[640px] text-xs">
+                <thead><tr><th>مرجع</th><th>نوع</th><th>وضعیت</th><th>سطرها</th><th>سهم تأمین‌کننده</th><th>تاریخ</th></tr></thead>
+                <tbody>
+                  {data.supplierOrders.length === 0 && <tr><td colSpan={6} className="text-center text-[var(--kv-muted)]">سفارشی ثبت نشده است.</td></tr>}
+                  {data.supplierOrders.map((row) => (
+                    <tr key={String(row.id)}>
+                      <td className="font-mono text-[11px]">{String(row.reference)}</td>
+                      <td>{faLabel(ORDER_TYPE_FA, row.order_type)}</td>
+                      <td>{faLabel(ORDER_STATUS_FA, row.status)}</td>
+                      <td className="tabular-nums">{fmtNum(Number(row.line_count ?? 0))}</td>
+                      <td className="tabular-nums">{fmtToman(String(row.supplier_total_rial ?? "0"))}</td>
+                      <td className="tabular-nums">{formatPersianDate(String(row.created_at))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {tab === "performance" && (
+          <div className="grid gap-3 md:grid-cols-2">
               <Card className="p-4">
                 <SectionHead title="شاخص‌های عملکرد" desc="محاسبه‌شده در سرور از سفارش‌ها، رویدادها و مرجوعی‌ها" />
                 <div className="mt-3 space-y-2 text-[12.5px]">
@@ -366,31 +592,61 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
                 <SectionHead title="محصولات" desc="توزیع وضعیت محصولات تأمین‌کننده" />
                 <div className="mt-3">
                   {productsByStatus.length
-                    ? <BarList items={productsByStatus.map((row) => ({ label: row.status, value: row.count }))} />
+                    ? <BarList items={productsByStatus.map((row) => ({ label: faLabel(PRODUCT_STATUS_FA, row.status), value: row.count }))} />
                     : <p className="text-[12.5px] text-[var(--kv-muted)]">محصولی ثبت نشده است.</p>}
                 </div>
               </Card>
-            </div>
+          </div>
+        )}
 
-            <div className="grid gap-3 md:grid-cols-2">
-              <Card className="p-4">
-                <SectionHead title="موجودی (WMS)" desc="موجودی واقعی واریانت‌های این تأمین‌کننده؛ قابل فروش = موجودی − رزرو − آسیب‌دیده" />
-                <div className="mt-3 space-y-2 text-[12.5px]">
-                  {[
-                    ["محصول", fmtNum(data.inventory.product_count)],
-                    ["واریانت", fmtNum(data.inventory.variant_count)],
-                    ["موجودی", fmtNum(data.inventory.on_hand)],
-                    ["رزرو‌شده", fmtNum(data.inventory.reserved)],
-                    ["آسیب‌دیده", fmtNum(data.inventory.damaged)],
-                    ["قابل فروش", fmtNum(data.inventory.available)],
-                  ].map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between rounded-[10px] bg-[var(--kv-surface-2)]/60 px-3 py-2">
-                      <span className="text-[var(--kv-muted)]">{label}</span>
-                      <span className="font-extrabold tabular-nums">{value}</span>
-                    </div>
+        {tab === "qc" && (
+          <Card className="overflow-hidden">
+            <div className="px-4 py-3">
+              <p className="text-[13px] font-bold">کنترل کیفیت</p>
+              <p className="text-[11.5px] text-[var(--kv-muted)]">شواهد کیفی از بازرسی واقعی مرجوعی‌های سطرهای این تأمین‌کننده — امتیاز ساختگی وجود ندارد.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="kv-table min-w-[720px] text-xs">
+                <thead><tr><th>محصول</th><th>دلیل</th><th>وضعیت</th><th>راهکار</th><th>نتیجه بازرسی</th><th>مبلغ</th><th>تاریخ</th></tr></thead>
+                <tbody>
+                  {data.qc.length === 0 && <tr><td colSpan={7} className="text-center text-[var(--kv-muted)]">موردی برای کنترل کیفیت ثبت نشده است.</td></tr>}
+                  {data.qc.map((row) => (
+                    <tr key={String(row.id)}>
+                      <td className="max-w-[180px] truncate" title={String(row.product_name)}>{String(row.product_name)}</td>
+                      <td className="max-w-[200px] truncate" title={String(row.reason)}>{String(row.reason)}</td>
+                      <td>{faLabel(RETURN_STATUS_FA, row.status)}</td>
+                      <td>{faLabel(RETURN_RESOLUTION_FA, row.resolution)}</td>
+                      <td>{row.inspection_result ? faLabel(INSPECTION_RESULT_FA, row.inspection_result) : "در انتظار بازرسی"}</td>
+                      <td className="tabular-nums">{fmtToman(String(row.amount_rial ?? "0"))}</td>
+                      <td className="tabular-nums">{formatPersianDate(String(row.created_at))}</td>
+                    </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {tab === "bank" && (
+          <Card className="p-4">
+            <SectionHead title="حساب بانکی" desc="اطلاعات حساس بانکی به‌صورت پوشیده نمایش داده می‌شود؛ نسخه کامل فقط در جریان تسویه با دسترسی مالی." />
+            <div className="mt-3 grid gap-2 text-[12.5px] sm:grid-cols-2">
+              {[
+                ["بانک", data.supplier.bank_name ?? "ثبت نشده"],
+                ["دارنده حساب", data.supplier.account_holder ?? data.supplier.legal_name ?? "ثبت نشده"],
+                ["شبا", data.supplier.bank_iban ? `IR··············${String(data.supplier.bank_iban).slice(-4)}` : "ثبت نشده"],
+                ["شماره حساب", data.supplier.account_number ? `····${String(data.supplier.account_number).slice(-4)}` : "ثبت نشده"],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="flex items-center justify-between gap-3 rounded-[10px] bg-[var(--kv-surface-2)]/60 px-3 py-2">
+                  <span className="text-[var(--kv-muted)]">{String(label)}</span>
+                  <b className="tabular-nums" dir="ltr">{String(value)}</b>
                 </div>
-              </Card>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {tab === "support" && (
               <Card className="overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3">
                   <p className="text-[13px] font-bold">تیکت‌های پشتیبانی</p>
@@ -405,8 +661,8 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
                         <tr key={String(ticket.id)}>
                           <td className="font-mono text-[11px]">{String(ticket.reference)}</td>
                           <td className="max-w-[200px] truncate" title={String(ticket.subject)}>{String(ticket.subject)}</td>
-                          <td>{String(ticket.priority)}</td>
-                          <td>{String(ticket.status)}</td>
+                          <td>{faLabel(PRIORITY_FA, ticket.priority)}</td>
+                          <td>{faLabel(TICKET_STATUS_FA, ticket.status)}</td>
                           <td className="tabular-nums">{formatPersianDate(String(ticket.created_at))}</td>
                         </tr>
                       ))}
@@ -414,48 +670,6 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
                   </table>
                 </div>
               </Card>
-            </div>
-
-            <Card className="overflow-hidden">
-              <div className="px-4 py-3"><p className="text-[13px] font-bold">نسخه‌های پروفایل</p></div>
-              <div className="overflow-x-auto">
-                <table className="kv-table min-w-[520px] text-xs">
-                  <thead><tr><th>نسخه</th><th>یادداشت تغییر</th><th>تغییردهنده</th><th>تاریخ</th></tr></thead>
-                  <tbody>
-                    {data.profileVersions.length === 0 && <tr><td colSpan={4} className="text-center text-[var(--kv-muted)]">نسخه‌ای ثبت نشده است.</td></tr>}
-                    {data.profileVersions.map((version) => (
-                      <tr key={`${String(version.version)}-${String(version.created_at)}`}>
-                        <td className="tabular-nums">v{fmtNum(Number(version.version ?? 0))}</td>
-                        <td>{String(version.change_note ?? "—")}</td>
-                        <td className="font-mono text-[11px]">{String(version.changed_by ?? "—").slice(0, 8)}</td>
-                        <td className="tabular-nums">{formatPersianDateTime(String(version.created_at))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-
-            <Card className="overflow-hidden">
-              <div className="px-4 py-3"><p className="text-[13px] font-bold">مدارک پروفایل</p></div>
-              <div className="overflow-x-auto">
-                <table className="kv-table min-w-[520px] text-xs">
-                  <thead><tr><th>نوع</th><th>عنوان</th><th>وضعیت تأیید</th><th>تاریخ</th></tr></thead>
-                  <tbody>
-                    {data.documents.length === 0 && <tr><td colSpan={4} className="text-center text-[var(--kv-muted)]">مدرکی بارگذاری نشده است.</td></tr>}
-                    {data.documents.map((doc) => (
-                      <tr key={String(doc.id)}>
-                        <td>{String(doc.doc_type)}</td>
-                        <td>{String(doc.title ?? "—")}</td>
-                        <td>{doc.verified ? <Status value="تأییدشده" /> : <Status value="در انتظار" />}</td>
-                        <td className="tabular-nums">{formatPersianDate(String(doc.created_at))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
         )}
 
         {tab === "restrictions" && (
@@ -493,6 +707,11 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
               </div>
             </Card>
 
+          </div>
+        )}
+
+        {tab === "settlements" && (
+          <div className="space-y-4">
             <Card className="overflow-hidden">
               <div className="px-4 py-3"><p className="text-[13px] font-bold">تسویه‌ها</p></div>
               <div className="overflow-x-auto">
@@ -505,8 +724,8 @@ export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
                     {(finance?.settlements ?? []).map((row) => (
                       <tr key={String(row.id)}>
                         <td className="font-mono text-[11px]">{String(row.reference)}</td>
-                        <td>{String(row.status)}</td>
-                        <td>{String(row.reconciliation_status)}</td>
+                        <td>{faLabel(SETTLEMENT_STATUS_FA, row.status)}</td>
+                        <td>{faLabel(RECONCILIATION_STATUS_FA, row.reconciliation_status)}</td>
                         <td className="tabular-nums">{fmtToman(row.net_rial)}</td>
                         <td className="tabular-nums">{formatPersianDate(String(row.created_at))}</td>
                       </tr>

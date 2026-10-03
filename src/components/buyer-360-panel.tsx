@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Ban, Check, FileText, HelpCircle, ShieldCheck, UserCog } from "lucide-react";
+import { REVIEW_STATUS_FA, SMS_STATUS_FA, TICKET_STATUS_FA, faEvent, faLabel } from "../data/fa-labels";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
 import { buyersApi, membershipLifecycleApi, type Buyer360Payload } from "../data/api";
@@ -247,7 +248,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     <p className="mb-2 text-[12.5px] font-bold">تاریخچه عضویت</p>
                     <MiniTable head={["رویداد", "از → به", "مبلغ", "تاریخ"]} empty="رویدادی ثبت نشده است."
                       rows={(view.membershipHistory ?? []).map((row) => [
-                        text(row.event_type ?? row.action),
+                        faEvent(row.event_type ?? row.action),
                         `${text(row.from_status ?? row.from_plan_code, "—")} → ${text(row.to_status ?? row.to_plan_code, "—")}`,
                         rial(row.amount_rial ?? 0), day(row.created_at ?? row.occurred_at),
                       ])} />
@@ -328,7 +329,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">تیکت‌ها</p>
                     <MiniTable head={["موضوع", "دسته", "وضعیت", "تاریخ"]} empty="تیکتی ثبت نشده است."
-                      rows={view.support.tickets.map((row) => [text(row.subject), text(row.category), text(row.status), day(row.created_at)])} />
+                      rows={view.support.tickets.map((row) => [text(row.subject), text(row.category), faLabel(TICKET_STATUS_FA, row.status), day(row.created_at)])} />
                   </div>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">اعلان‌ها</p>
@@ -338,7 +339,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">پیامک‌های ارسالی</p>
                     <MiniTable head={["متن", "وضعیت", "ارسال"]} empty="پیامکی ارسال نشده است."
-                      rows={view.support.sms.map((row) => [text(row.message), text(row.status), day(row.sent_at ?? row.created_at)])} />
+                      rows={view.support.sms.map((row) => [text(row.message), faLabel(SMS_STATUS_FA, row.status), day(row.sent_at ?? row.created_at)])} />
                   </div>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">یادداشت داخلی</p>
@@ -389,12 +390,12 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">دیدگاه‌های ثبت‌شده</p>
                     <MiniTable head={["محصول", "امتیاز", "عنوان", "وضعیت"]} empty="دیدگاهی ثبت نشده است."
-                      rows={(crm?.reviews ?? []).map((row) => [text(row.product_name), `${fmtNum(Number(row.rating ?? 0))}/۵`, text(row.title), text(row.status)])} />
+                      rows={(crm?.reviews ?? []).map((row) => [text(row.product_name), `${fmtNum(Number(row.rating ?? 0))}/۵`, text(row.title), faLabel(REVIEW_STATUS_FA, row.status)])} />
                   </div>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">تایم‌لاین کامل فعالیت</p>
                     <MiniTable head={["رویداد", "عنوان", "منبع", "زمان"]} empty="فعالیتی ثبت نشده است."
-                      rows={(crm?.timeline ?? []).map((row) => [text(row.event_type), text(row.title), text(row.source), row.occurred_at ? formatPersianDateTime(String(row.occurred_at)) : "—"])} />
+                      rows={(crm?.timeline ?? []).map((row) => [faEvent(row.event_type), text(row.title), text(row.source), row.occurred_at ? formatPersianDateTime(String(row.occurred_at)) : "—"])} />
                   </div>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">حسابرسی اقدامات مدیریتی</p>

@@ -1023,6 +1023,11 @@ export type Supplier360Overview = {
   finance: Record<string, string>;
   financeSummary: { payableRial: string; availableRial: string; blockedRial: string; settledRial: string };
   performance: Record<string, unknown>;
+  /** Corrective §70-§76: canonical lists behind the 360 tabs (products/offers/orders/QC). */
+  productList: Record<string, unknown>[];
+  offers: Record<string, unknown>[];
+  supplierOrders: Record<string, unknown>[];
+  qc: Record<string, unknown>[];
   documents: Record<string, unknown>[];
   /** Real WMS position of this supplier's variants (never a typed-in number). */
   inventory: { product_count: number; variant_count: number; on_hand: number; reserved: number; damaged: number; available: number };

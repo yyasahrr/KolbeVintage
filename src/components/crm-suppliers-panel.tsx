@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Factory, HelpCircle, RefreshCw } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { crmApi } from "../data/api";
+import { COOPERATION_STATUS_FA, faLabel } from "../data/fa-labels";
 import { Btn, Card, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status } from "./primitives";
 
 const toman = (value: unknown) => `${fmtNum(Math.round(Number(String(value ?? "0")) / 10))} تومان`;
@@ -87,7 +88,7 @@ export function CrmSuppliersPanel({ onOpen360 }: { onOpen360?: (userId: string) 
                       <span className="text-[11px] text-[var(--kv-muted)]">{text(row.display_name)}</span>
                     </td>
                     <td className="py-2.5 tabular-nums">{text(row.phone)}</td>
-                    <td className="py-2.5"><Status value={String(row.cooperation_status) === "approved" ? "تأییدشده" : String(row.cooperation_status) === "suspended" ? "تعلیق" : text(row.cooperation_status)} /></td>
+                    <td className="py-2.5"><Status value={faLabel(COOPERATION_STATUS_FA, row.cooperation_status)} /></td>
                     <td className="py-2.5">
                       <span className="relative inline-flex items-center gap-1">
                         <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-bold ${tone}`}>{text(row.performance_label)}</span>

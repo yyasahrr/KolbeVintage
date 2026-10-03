@@ -35,6 +35,49 @@ export const TICKET_STATUS_FA: Record<string, string> = {
   resolved: "حل‌شده", closed: "بسته",
 };
 
+export const PRODUCT_STATUS_FA: Record<string, string> = {
+  draft: "پیش‌نویس", pending_review: "در انتظار بررسی", approved: "تأییدشده", active: "فعال",
+  rejected: "ردشده", archived: "بایگانی", inactive: "غیرفعال",
+};
+
+export const OFFER_STATUS_FA: Record<string, string> = { active: "فعال", paused: "متوقف", archived: "بایگانی" };
+
+export const FULFILLMENT_MODE_FA: Record<string, string> = {
+  order_driven: "سفارش‌محور", stock_at_kolbe: "موجودی نزد کلبه", hybrid: "ترکیبی",
+};
+
+export const CONTRACT_STATUS_FA: Record<string, string> = {
+  none: "بدون قرارداد", draft: "پیش‌نویس", active: "فعال", suspended: "تعلیق", terminated: "خاتمه‌یافته", signed: "امضاشده",
+};
+
+export const PRIORITY_FA: Record<string, string> = {
+  low: "کم", normal: "عادی", medium: "متوسط", high: "زیاد", urgent: "فوری", critical: "بحرانی",
+};
+
+export const SETTLEMENT_STATUS_FA: Record<string, string> = {
+  pending: "در انتظار", approved: "تأییدشده", processing: "در حال پردازش", paid: "پرداخت‌شده",
+  reconciled: "مغایرت‌گیری‌شده", cancelled: "لغوشده", failed: "ناموفق",
+};
+
+export const RECONCILIATION_STATUS_FA: Record<string, string> = {
+  pending: "در انتظار", matched: "تطبیق‌شده", mismatch: "مغایرت", manual: "دستی", unknown: "نامشخص",
+  not_required: "نیاز ندارد",
+};
+
+export const INSPECTION_RESULT_FA: Record<string, string> = { sellable: "قابل فروش", damaged: "آسیب‌دیده" };
+
+export const RETURN_RESOLUTION_FA: Record<string, string> = { refund: "بازپرداخت", exchange: "تعویض", credit: "اعتبار" };
+
+export const INVENTORY_SETUP_FA: Record<string, string> = {
+  pending: "نیازمند راه‌اندازی", configured: "راه‌اندازی‌شده", legacy: "قدیمی",
+};
+
+export const PERSON_TYPE_FA: Record<string, string> = { real: "حقیقی", legal: "حقوقی" };
+
+export const SMS_STATUS_FA: Record<string, string> = {
+  queued: "در صف ارسال", sent: "ارسال‌شده", delivered: "تحویل‌شده", failed: "ناموفق", pending: "در انتظار",
+};
+
 export const COOPERATION_STATUS_FA: Record<string, string> = {
   approved: "تأییدشده", pending: "در انتظار", pending_review: "در انتظار بررسی",
   suspended: "تعلیق", rejected: "ردشده", terminated: "خاتمه‌یافته",
