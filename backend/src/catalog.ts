@@ -586,9 +586,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       : [variantInput.parse(rawBody ?? {})];
 
     const created = await transaction(pool, async (client) => {
-      const product = await one<{ id: string; category: string; supplier_id: string | null; product_type_id: string | null }>(
+      const product = await one<{ id: string; category: string; supplier_id: string | null; product_type_id: string | null; specifications: Record<string, unknown> | null }>(
         client,
-        'SELECT id, category, supplier_id, product_type_id FROM products WHERE id = $1 FOR UPDATE',
+        'SELECT id, category, supplier_id, product_type_id, specifications FROM products WHERE id = $1 FOR UPDATE',
         [id],
       );
       if (!product) throw notFound();
@@ -600,6 +600,11 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       }
       if (product.product_type_id)
         await assertTypeSizes(client as unknown as DbPool, product.product_type_id, items.map((variant) => variant.size ?? undefined));
+      // §8/§14 (final UAT gate): category profile bounds new variant sizes too — the rule
+      // that guards product CREATE must also guard later variant additions (server-side,
+      // regardless of what the UI offers). Existing specifications are passed through so
+      // the required-spec check never false-fails on a product saved under this profile.
+      await validateCategoryRequirements(client, product.category, product.specifications ?? {}, items.map((variant) => variant.size ?? null));
 
       const out = [];
       for (const variant of items) {

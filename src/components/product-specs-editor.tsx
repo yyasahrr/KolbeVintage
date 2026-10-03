@@ -57,7 +57,7 @@ function ValueInput({ attribute, value, onChange }: { attribute: SpecAttribute; 
     return <Input value={value === null || value === undefined ? "" : String(value)} onChange={(v) => onChange(v === "" ? null : Number(v))} placeholder={attribute.unit ?? ""} />;
   }
   if (type === "file" || type === "image" || type === "video") {
-    return <Input value={typeof value === "string" ? value : ""} onChange={(v) => onChange(v)} placeholder="شناسه فایل (POST /files)" />;
+    return <Input value={typeof value === "string" ? value : ""} onChange={(v) => onChange(v)} placeholder="شناسه فایل بارگذاری‌شده" />;
   }
   return <Input value={typeof value === "string" || typeof value === "number" ? String(value) : ""} onChange={(v) => onChange(v)} placeholder={attribute.unit ?? ""} />;
 }
@@ -92,7 +92,7 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
       sizeGuidesApi.adminList().then(normalizeSizeGuides).catch(() => [] as SizeGuide[]),
       sizeGuidesApi.productGuide(productId).catch(() => null),
       inventoryApi.productInventory(productId).then(readProductInventory).catch(() => null),
-      specsApi.attributes().then((raw) => normalizeSpecAttributes((raw as { items?: unknown[] }).items ?? raw)).catch(() => [] as SpecAttribute[]),
+      specsApi.attributes().then((raw) => normalizeSpecAttributes(raw)).catch(() => [] as SpecAttribute[]),
     ]).then(([specData, guideList, productGuide, inventory, attributes]) => {
       if (!live) return;
       setSpecs(specData);
@@ -158,7 +158,7 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
     setSaving(true);
     try {
       const created = await specsApi.createAttribute({ label: newAttr.label.trim(), code: newAttr.code.trim().toLowerCase(), type: newAttr.type, scope: "product", active: true }) as { id?: string };
-      const refreshed = await specsApi.attributes().then((raw) => normalizeSpecAttributes((raw as { items?: unknown[] }).items ?? raw)).catch(() => allAttributes);
+      const refreshed = await specsApi.attributes().then((raw) => normalizeSpecAttributes(raw)).catch(() => allAttributes);
       setAllAttributes(refreshed.filter((a) => a.active));
       const createdId = created?.id ?? refreshed.find((a) => a.code === newAttr.code.trim().toLowerCase())?.id ?? "";
       setNewAttr({ label: "", code: "", type: "text" });
@@ -317,7 +317,8 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
           </div>
         ) : (
           <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_150px_auto] sm:items-end">
-            <Field label="راهنما"><Select options={["انتخاب…", ...guides.map((g) => `${g.name} (نسخه ${g.version})`)]} value={guides.find((g) => g.id === attachDraft.guideId) ? `${guides.find((g) => g.id === attachDraft.guideId)!.name} (نسخه ${guides.find((g) => g.id === attachDraft.guideId)!.version})` : "انتخاب…"} onChange={(label) => setAttachDraft({ ...attachDraft, guideId: guides.find((g) => `${g.name} (نسخه ${g.version})` === label)?.id ?? "" })} /></Field>
+            {/* §39: شماره نسخه در گزینه‌ها هم فارسی نمایش داده می‌شود (مثل برچسب راهنمای متصل). */}
+            <Field label="راهنما"><Select options={["انتخاب…", ...guides.map((g) => `${g.name} (نسخه ${faNum(g.version)})`)]} value={guides.find((g) => g.id === attachDraft.guideId) ? `${guides.find((g) => g.id === attachDraft.guideId)!.name} (نسخه ${faNum(guides.find((g) => g.id === attachDraft.guideId)!.version)})` : "انتخاب…"} onChange={(label) => setAttachDraft({ ...attachDraft, guideId: guides.find((g) => `${g.name} (نسخه ${faNum(g.version)})` === label)?.id ?? "" })} /></Field>
             <Field label="حالت" hint="کپی ثابت با نسخه‌های بعدی تغییر نمی‌کند"><Select options={["اتصال زنده", "کپی ثابت"]} value={attachDraft.mode === "detached" ? "کپی ثابت" : "اتصال زنده"} onChange={(v) => setAttachDraft({ ...attachDraft, mode: v === "کپی ثابت" ? "detached" : "link" })} /></Field>
             <Btn variant="soft" size="sm" disabled={!attachDraft.guideId} icon={<Plus size={14} />} onClick={() => void (async () => { try { await sizeGuidesApi.attachToProduct(productId, { guideId: attachDraft.guideId, mode: attachDraft.mode }); const link = await sizeGuidesApi.productGuide(productId) as { mode?: string; guide?: unknown }; setAttached({ mode: link.mode ?? "link", guide: link.guide ? normalizeSizeGuide(link.guide) : null }); flash("راهنمای سایز متصل شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()}>اتصال</Btn>
           </div>

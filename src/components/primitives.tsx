@@ -290,7 +290,8 @@ export function Lightbox({ open, onClose, label, children, onKey, caption, z = "
 /* ---------- Segmented ---------- */
 export function Segmented<T extends string>({ options, value, onChange }: { options: { v: T; label: string }[]; value: T; onChange: (v: T) => void }) {
   return (
-    <div className="inline-flex rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/70 p-1">
+    /* max-w-full + flex-wrap: روی موبایل (۳۶۰px) تب‌ها می‌شکنند و از صفحه بیرون نمی‌زنند (§40) */
+    <div className="inline-flex max-w-full flex-wrap rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/70 p-1">
       {options.map((o) => (
         <button
           key={o.v} onClick={() => onChange(o.v)}

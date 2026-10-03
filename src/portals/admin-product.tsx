@@ -176,7 +176,7 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-[11.5px] text-[var(--kv-muted)]" dir="ltr">{variant.sku} · on-hand {variant.on_hand} · available {variant.available}</p>
+          <p className="text-[11.5px] text-[var(--kv-muted)]"><span dir="ltr">{variant.sku}</span> · موجودی {variant.on_hand.toLocaleString("fa-IR")} · قابل فروش {variant.available.toLocaleString("fa-IR")}</p>
           {/* Req 29: retail/wholesale inventory domains are separate (Agent 1 foundation). */}
           <div className="flex flex-wrap gap-1.5 text-[11px]">
             <span className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 font-semibold">موجودی خرده: {variant.retail_on_hand.toLocaleString("fa-IR")} (قابل فروش {variant.retail_available.toLocaleString("fa-IR")})</span>
@@ -216,6 +216,9 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const [mediaBusy, setMediaBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [sec, setSec] = useState("base");
+  /** §37: snapshot of the draft at open-time — leaving with unsaved edits asks first. */
+  const [openSnapshot, setOpenSnapshot] = useState("");
+  const [confirmLeave, setConfirmLeave] = useState(false);
   const [q, setQ] = useState("");
   const [d, setD] = useState<Draft>(blank());
   const [cutFor, setCutFor] = useState<Product | null>(null);
@@ -229,7 +232,8 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const [types, setTypes] = useState<ProductType[]>([]);
   /** §8: when the category has a configured profile, CATEGORY is the schema source of truth
    *  and the legacy product-type picker disappears (legacy data stays via the server adapter). */
-  const [catSchema, setCatSchema] = useState<{ configured: boolean; allowedSizes: string[]; sizeGuide: { name: string } | null } | null>(null);
+  type CategorySpecField = { code: string; label: string; type: string; unit: string | null; required: boolean; options: { value: string; label: string }[] };
+  const [catSchema, setCatSchema] = useState<{ configured: boolean; allowedSizes: string[]; sizeGuide: { name: string } | null; specFields: CategorySpecField[] } | null>(null);
   const [vibeOptions, setVibeOptions] = useState<{ slug: string; name: string }[]>([]);
   const [typesOpen, setTypesOpen] = useState(false);
   const loadTypes = () => { if (!isDemo) productTypesApi.list().then((r) => setTypes(r.items)).catch(() => setTypes([])); };
@@ -237,7 +241,24 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
     if (isDemo || !d.category.trim()) { setCatSchema(null); return; }
     let alive = true;
     catalogOpsApi.categorySchema(d.category.trim())
-      .then((r) => { if (alive) setCatSchema({ configured: r.configured, allowedSizes: r.allowedSizes ?? [], sizeGuide: r.sizeGuide }); })
+      .then((r) => {
+        if (!alive) return;
+        const fields = (r.specFields ?? []).map((field) => ({
+          code: String(field.code ?? ""), label: String(field.label ?? ""), type: String(field.type ?? "text"),
+          unit: field.unit ? String(field.unit) : null, required: field.required === true,
+          options: Array.isArray(field.options) ? (field.options as { value: string; label: string }[]) : [],
+        })).filter((field) => field.code);
+        setCatSchema({ configured: r.configured, allowedSizes: r.allowedSizes ?? [], sizeGuide: r.sizeGuide, specFields: fields });
+        // §8: in CREATE mode the selected sizes follow the category profile automatically —
+        // no manual reload, and no out-of-profile size can linger from the previous category.
+        if (!editing && r.configured && (r.allowedSizes ?? []).length) {
+          setD((cur) => {
+            if (cur.category.trim() !== r.category) return cur;
+            const kept = cur.sizes.filter((size) => (r.allowedSizes ?? []).includes(size));
+            return { ...cur, sizes: kept.length ? kept : (r.allowedSizes ?? []).slice(0, 4) };
+          });
+        }
+      })
       .catch(() => { if (alive) setCatSchema(null); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -261,8 +282,12 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const [cellOff, setCellOff] = useState<Record<string, boolean>>({});
   /* Persisted structure data (Req 30/34/35/41/43/44) */
   const [serverColors, setServerColors] = useState<{ id: string; name: string; hex: string }[]>([]);
+  /* §33/§36: unpublished kolbe products (drafts) merged into the define list — the public catalogue hides them. */
+  const [serverDrafts, setServerDrafts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string; slug: string; parentId: string | null }[]>([]);
   const [newCategory, setNewCategory] = useState<{ open: boolean; name: string; parentId: string }>({ open: false, name: "", parentId: "" });
+  /** §7 (final gate): quick filter for the hierarchical category picker. */
+  const [catQuery, setCatQuery] = useState("");
   const [newSize, setNewSize] = useState("");
   const [vibeQuery, setVibeQuery] = useState("");
   const [newVibe, setNewVibe] = useState("");
@@ -280,7 +305,22 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
     if (isDemo) return;
     productColorsApi.list().then((r) => setServerColors((r.items ?? []).map((c) => ({ id: c.id, name: c.name, hex: c.hex })))).catch(() => setServerColors([]));
   };
+  const loadServerDrafts = () => {
+    if (isDemo) return;
+    catalogOpsApi.adminProducts({ status: "active", owner: "kolbe", limit: 100 })
+      .then((r) => setServerDrafts(((r.items ?? []) as { id: string; name: string; brand?: string | null; category?: string | null; status: string }[])
+        .filter((row) => row.status !== "published")
+        .map((row) => ({
+          id: row.id, name: row.name, brand: row.brand ?? "Kolbe", category: row.category ?? "", sku: "",
+          supplier: KOLBE.name, supplierId: KOLBE.id, status: row.status,
+          retailPrice: 0, installmentPrice: 0, wholesaleFrom: 0, rating: 0, reviews: 0,
+          colors: [], images: [], series: [], seriesCount: 0, moq: 1, stock: 0, fabric: "—", desc: "",
+        }) as unknown as Product)))
+      .catch(() => setServerDrafts([]));
+  };
   useEffect(() => { loadCategories(); loadServerColors(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  /* re-sync drafts whenever the canonical cache refreshes (save/publish call reload()). */
+  useEffect(() => { loadServerDrafts(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [products, isDemo]);
   /** Hierarchical category options (Req 34): parents first, children indented. */
   const categoryTree: { name: string; depth: number }[] = (() => {
     const out: { name: string; depth: number }[] = [];
@@ -399,7 +439,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       const toToman = (value: unknown) => value === null || value === undefined ? "" : String(Math.round(Number(value) / 10) || "");
       const metaImages = Array.isArray(meta.images) ? (meta.images as { fileId?: string | null; url?: string }[]) : [];
       const seo = (meta.seo ?? {}) as { title?: string; slug?: string };
-      setD({
+      const loadedDraft: Draft = {
         ...blank(),
         name: String(detail.name ?? ""), brand: String(detail.brand ?? "Kolbe"), category: String(detail.category ?? ""),
         sku: String(meta.editorialSku ?? ""), desc: String(detail.description ?? ""),
@@ -419,7 +459,9 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         productTypeId: String(detail.product_type_id ?? ""), genderCode: String(detail.gender_code ?? ""),
         installmentPolicy: (detail.installment_policy as InstallmentPolicy) ?? "enabled",
         wholesaleMoq: detail.wholesale_moq === null || detail.wholesale_moq === undefined ? "" : String(detail.wholesale_moq),
-      });
+      };
+      setD(loadedDraft);
+      setOpenSnapshot(JSON.stringify(loadedDraft));
       setEditing({ id: p.id, metadata: meta });
       setEditVariants(variants);
       setCellOff({});
@@ -549,17 +591,37 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
     ...Object.values(COLORS),
     ...products.flatMap((p) => p.colors ?? []),
   ].filter((color) => Boolean(color?.id)).map((color) => [color.name, color])).values());
-  const list = products.filter((p) => !q.trim() || (p.name ?? "").includes(q.trim()) || (p.sku ?? "").includes(q.trim()));
+  // §33/§36 (corrective): a freshly defined product is a DRAFT; the public catalogue (store hydration)
+  // only carries published rows, so without this merge the product vanished from «تعریف محصول» right
+  // after save — no edit, no specs, no publish switch. Unpublished kolbe rows come from the admin read model.
+  const merged = [...serverDrafts.filter((dr) => !products.some((p) => p.id === dr.id)), ...products];
+  const list = merged.filter((p) => !q.trim() || (p.name ?? "").includes(q.trim()) || (p.sku ?? "").includes(q.trim()));
   const categoryDriven = !!catSchema?.configured; // §8: category profile overrides the legacy type system
+  // §10 (final gate): required spec fields of the CATEGORY schema must be filled before publish —
+  // each missing field produces a field-specific Persian issue that links back to its section.
+  const missingCategorySpecs = categoryDriven
+    ? (catSchema?.specFields ?? []).filter((field) => {
+        if (!field.required) return false;
+        const value = d.specs[field.code];
+        return value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
+      })
+    : [];
   // §7 (corrective): Product Type is NOT required in the new flow — category drives the
   // schema when a profile exists, and its absence never blocks a definition.
-  const issues = [
-    !d.name.trim() && "نام محصول", !d.colors.length && "دست‌کم یک رنگ", !d.sizes.length && "سایزها",
-    !d.retailOn && !d.wholesaleOn && "یک کانال فروش", d.retailOn && !(Number(d.retail) > 0) && "قیمت خرده",
-    d.retailOn && d.installment && !(Number(d.installment) > 0) && "قیمت چهارقسطه معتبر",
-    d.wholesaleOn && !seriesComplete(d.series) && "سری‌های عمده (قیمت، حداقل و رنگ)", !d.images.length && "دست‌کم یک تصویر",
-    ...missingRequiredSpecs(selectedType, d.specs).map((label) => `مشخصه «${label}»`),
-  ].filter(Boolean) as string[];
+  /** §30: every completion issue knows which section fixes it (review-step deep links). */
+  const issueItems = [
+    !d.name.trim() && { label: "نام محصول", sec: "base" },
+    !d.colors.length && { label: "دست‌کم یک رنگ", sec: "variant" },
+    !d.sizes.length && { label: "سایزها", sec: "variant" },
+    !d.retailOn && !d.wholesaleOn && { label: "یک کانال فروش", sec: "price" },
+    d.retailOn && !(Number(d.retail) > 0) && { label: "قیمت خرده", sec: "price" },
+    d.retailOn && d.installment && !(Number(d.installment) > 0) && { label: "قیمت چهارقسطه معتبر", sec: "price" },
+    d.wholesaleOn && !seriesComplete(d.series) && { label: "سری‌های عمده (قیمت، حداقل و رنگ)", sec: "series" },
+    !d.images.length && { label: "دست‌کم یک تصویر", sec: "media" },
+    ...missingCategorySpecs.map((field) => ({ label: `مشخصه «${field.label}» الزامی است`, sec: "specs" })),
+    ...missingRequiredSpecs(selectedType, d.specs).map((label) => ({ label: `مشخصه «${label}»`, sec: "base" })),
+  ].filter(Boolean) as { label: string; sec: string }[];
+  const issues = issueItems.map((item) => item.label);
 
   /** Uploads a product image; the persisted value is the server file id, the preview stays local. */
   const uploadImage = async (file: File): Promise<DraftImage> => {
@@ -626,7 +688,9 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         !cellOff[variantKey((variant as { color?: string | null }).color ?? null, (variant as { size?: string | null }).size ?? null)]);
       if (!enabledVariants.length) { flash("دست‌کم یک خانه فعال در ماتریس رنگ×سایز لازم است."); return; }
       // Adaptive form data (Req 325-326): the server validates specs against the type template.
-      const adaptivePayload = { ...payload, variants: enabledVariants, ...(d.typeCode ? { productTypeCode: d.typeCode, specifications: d.specs } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
+      // §10: category-driven specs ALWAYS travel with the create payload (the server validates
+      // required attributes of the category profile against exactly this object).
+      const adaptivePayload = { ...payload, variants: enabledVariants, specifications: d.specs, ...(d.typeCode ? { productTypeCode: d.typeCode } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
       const res = readProductCreateResponse(await productsApi.create(adaptivePayload));
       const skus = productVariantSkus(res);
 
@@ -647,7 +711,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const secs = [
     ["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"],
     ["price", "قیمت‌گذاری"], ["series", "سری‌های عمده"],
-    ["specs", "مشخصات فنی و راهنمای سایز"], ["seo", "سئو و کانال‌ها"],
+    ["specs", "مشخصات فنی و راهنمای سایز"], ["seo", "سئو و کانال‌ها"], ["review", "بازبینی و انتشار"],
   ];
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
@@ -656,7 +720,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         <div className="min-w-[200px] flex-1"><SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول یا SKU…" /></div>
         <Btn variant="soft" size="sm" onClick={() => setManage(true)}>قالب‌های سری کلبه</Btn>
         {!isDemo && <Btn variant="soft" size="sm" onClick={() => setTypesOpen(true)}>انواع محصول و قالب مشخصات</Btn>}
-        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setD(blank()); setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
+        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { const fresh = blank(); setD(fresh); setOpenSnapshot(JSON.stringify(fresh)); setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
       </div>
       <Card className="overflow-hidden">
         <div className="kv-scroll overflow-x-auto">
@@ -706,7 +770,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       {open && (
       <div>
         <div className="mb-4 flex flex-wrap items-center gap-2.5">
-          <Btn variant="soft" size="sm" onClick={() => { setOpen(false); setEditing(null); }} icon={<X size={14} />}>بازگشت به فهرست</Btn>
+          <Btn variant="soft" size="sm" onClick={() => { if (JSON.stringify(d) !== openSnapshot) { setConfirmLeave(true); return; } setOpen(false); setEditing(null); }} icon={<X size={14} />}>بازگشت به فهرست</Btn>
           <h2 className="text-[17px] font-extrabold">{editing ? `ویرایش محصول · ${d.name || "…"}` : "تعریف محصول جدید"}</h2>
           <span className="text-[11.5px] text-[var(--kv-muted)]">{editing ? "داده‌ها از سرور بارگذاری شده‌اند؛ تغییرات با ذخیره روی همان محصول اعمال می‌شود." : "تمام بخش‌های محصول را در همین صفحه تکمیل کنید و در پایان ذخیره و انتشار بزنید."}</span>
         </div>
@@ -721,14 +785,26 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
             {sec === "base" && <>
               <Field label="نام محصول"><Input value={d.name} onChange={(v) => setD({ ...d, name: v })} placeholder="مثلاً کت پشمی دو‌دکمه" /></Field>
               <div className="grid gap-3 sm:grid-cols-3"><Field label="برند"><Input value={d.brand} onChange={(v) => setD({ ...d, brand: v })} /></Field><Field label="دسته" hint={!isDemo && categories.length ? "سلسله‌مراتبی از سرور (زیر‌دسته‌ها با — تورفتگی)" : undefined}>
-                  <Select
-                    options={!isDemo && categories.length ? categoryOptionLabels : [...new Set([...cats, "شلوار", "کفش", "اکسسوری"])]}
-                    value={!isDemo && categories.length ? (categoryOptionLabels.find((label) => label.replace(/^(?:— )+/, "") === d.category) ?? d.category) : d.category}
-                    onChange={(v) => {
-                      if (v === NEW_CATEGORY_OPTION) { setNewCategory({ open: true, name: "", parentId: "" }); return; }
-                      const name = v.replace(/^(?:— )+/, "");
-                      setD({ ...d, category: name, sizes: seriesSizesFor(name).slice(0, 4), series: [] });
-                    }} />
+                  <div className="space-y-1.5">
+                    {!isDemo && categories.length > 6 && (
+                      <Input value={catQuery} onChange={setCatQuery} placeholder="جست‌وجوی دسته…" />
+                    )}
+                    <Select
+                      options={!isDemo && categories.length
+                        ? categoryOptionLabels.filter((label) => {
+                            if (!catQuery.trim()) return true;
+                            if (label === NEW_CATEGORY_OPTION) return true;
+                            if (label.replace(/^(?:— )+/, "") === d.category) return true;
+                            return label.includes(catQuery.trim());
+                          })
+                        : [...new Set([...cats, "شلوار", "کفش", "اکسسوری"])]}
+                      value={!isDemo && categories.length ? (categoryOptionLabels.find((label) => label.replace(/^(?:— )+/, "") === d.category) ?? d.category) : d.category}
+                      onChange={(v) => {
+                        if (v === NEW_CATEGORY_OPTION) { setNewCategory({ open: true, name: "", parentId: "" }); return; }
+                        const name = v.replace(/^(?:— )+/, "");
+                        setD({ ...d, category: name, sizes: seriesSizesFor(name).slice(0, 4), series: [] });
+                      }} />
+                  </div>
                 </Field><Field label="SKU"><Input value={d.sku} onChange={(v) => setD({ ...d, sku: v })} placeholder="خودکار · در صورت نیاز قابل تغییر" /></Field></div>
               {newCategory.open && (
                 <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
@@ -838,8 +914,9 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
             {sec === "variant" && <>
               <div>
                 <p className="mb-2 text-[13px] font-semibold">رنگ‌های محصول</p>
-                <div className="flex flex-wrap gap-2">{palette.map((c) => { const on = d.colors.some((x) => x.id === c.id); return (
-                  <button key={c.id} aria-pressed={on} onClick={() => setD({ ...d, colors: on ? d.colors.filter((x) => x.id !== c.id) : [...d.colors, c], series: d.series.map((s) => ({ ...s, colorIds: on ? s.colorIds?.filter((x) => x !== c.id) : s.colorIds })) })} className={cn("flex min-h-10 items-center gap-2 rounded-full border px-3 text-[12px] font-semibold", on ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}><span className="h-4 w-4 rounded-full border border-black/15" style={{ background: c.hex }} />{c.name}</button>
+                {/* هویت رنگ واریانت = نام رنگ؛ تطبیق بر اساس نام هم انجام می‌شود تا «مشکی» پیش‌فرض و «مشکی» سروری دو انتخاب موازی (و واریانت تکراری هم‌نام) نسازند. */}
+                <div className="flex flex-wrap gap-2">{palette.map((c) => { const on = d.colors.some((x) => x.id === c.id || x.name === c.name); return (
+                  <button key={c.id} aria-pressed={on} onClick={() => setD({ ...d, colors: on ? d.colors.filter((x) => x.id !== c.id && x.name !== c.name) : [...d.colors.filter((x) => x.name !== c.name), c], series: d.series.map((s) => ({ ...s, colorIds: on ? s.colorIds?.filter((x) => x !== c.id) : s.colorIds })) })} className={cn("flex min-h-10 items-center gap-2 rounded-full border px-3 text-[12px] font-semibold", on ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}><span className="h-4 w-4 rounded-full border border-black/15" style={{ background: c.hex }} />{c.name}</button>
                 ); })}</div>
               </div>
               <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
@@ -959,13 +1036,13 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
               <div>
                 <div className="mb-2 flex items-center justify-between"><p className="text-[13px] font-semibold">تصاویر فروشگاه ({fmtNum(d.images.length)})</p><span className="text-[11.5px] text-[var(--kv-muted)]">اولین تصویر، کاور است · نسبت ۳:۴</span></div>
                 <div className="grid grid-cols-4 gap-2">
-                  {d.images.map((im, i) => <div key={`${im.fileId ?? im.url}-${i}`} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><img src={im.url} alt="" className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<span className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-bold text-white" dir="ltr">{im.fileId ? "server" : "demo"}</span><button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
+                  {d.images.map((im, i) => <div key={`${im.fileId ?? im.url}-${i}`} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><img src={im.url} alt="" className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<span className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-bold text-white">{im.fileId ? "ذخیره‌شده" : "محلی"}</span><button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
                   <input ref={imgRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" onChange={async (e) => { const files = Array.from(e.target.files ?? []).slice(0, 8); if (!files.length) return; setMediaBusy(true); try { const uploaded: DraftImage[] = []; for (const file of files) uploaded.push(await uploadImage(file)); setD((prev) => ({ ...prev, images: [...prev.images, ...uploaded] })); if (!isDemo) flash(`${uploaded.length.toLocaleString("fa-IR")} تصویر روی سرور ذخیره شد`); } catch (err) { flash(err instanceof Error ? err.message : "خطا در بارگذاری تصویر"); } finally { setMediaBusy(false); } }} />
                   <button onClick={() => imgRef.current?.click()} className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-[10px] border-2 border-dashed border-[var(--kv-line-strong)] text-[11.5px] font-semibold text-[var(--kv-muted)] hover:border-[var(--kv-accent)]"><ImageIcon size={18} />افزودن تصویر</button>
                 </div>
                 {isDemo
                   ? <div className="mt-2 flex gap-1.5 overflow-x-auto kv-no-scrollbar">{[IMG.trenchArch, IMG.trenchHero, IMG.blazerDuo, IMG.shirtRack, IMG.redCoat].map((src) => <button key={src} onClick={() => setD({ ...d, images: [...d.images, { fileId: null, url: src }] })} className="h-12 w-10 shrink-0 overflow-hidden rounded-[7px] opacity-70 hover:opacity-100" aria-label="افزودن تصویر نمونه"><img src={src} alt="" className="h-full w-full object-cover" /></button>)}<span className="self-center text-[11px] text-[var(--kv-muted)]">تصاویر نمونه (demo)</span></div>
-                  : <p className="mt-2 text-[11.5px] text-[var(--kv-muted)]">هر تصویر ابتدا با <code dir="ltr">POST /files</code> روی سرور ذخیره می‌شود و شناسه فایل در <code dir="ltr">metadata.images</code> قرار می‌گیرد؛ پیش‌نمایش محلی فقط برای نمایش است.</p>}
+                  : <p className="mt-2 text-[11.5px] text-[var(--kv-muted)]">هر تصویر همان لحظه روی سرور ذخیره می‌شود و همراه محصول می‌ماند؛ پیش‌نمایش فقط برای نمایش در همین صفحه است.</p>}
                 {mediaBusy && <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">در حال بارگذاری روی سرور…</p>}
               </div>
               <div>
@@ -1031,6 +1108,53 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                 </div>
                 {editing ? (
                   <ProductSpecsEditor key={editing.id} productId={editing.id} flash={flash} />
+                ) : categoryDriven && (catSchema?.specFields.length ?? 0) > 0 ? (
+                  /* §10 (final gate): the CATEGORY schema fields render right here in create mode —
+                     required blanks produce a field-specific Persian error and block publish. */
+                  <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
+                    <p className="mb-1 text-[12.5px] font-extrabold">مشخصات فنی دسته «{d.category}»</p>
+                    <p className="mb-3 text-[11.5px] text-[var(--kv-muted)]">این فیلدها از پروفایل دسته‌بندی می‌آیند و همراه محصول ذخیره می‌شوند؛ موارد ستاره‌دار الزامی‌اند.</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {catSchema!.specFields.map((field) => {
+                        const value = d.specs[field.code];
+                        const empty = value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
+                        const setValue = (next: unknown) => setD((cur) => ({ ...cur, specs: { ...cur.specs, [field.code]: next } }));
+                        return (
+                          <div key={field.code} className={field.type === "textarea" ? "sm:col-span-2" : undefined}>
+                            <Field label={`${field.label}${field.required ? " *" : ""}${field.unit ? ` (${field.unit})` : ""}`}>
+                              {field.type === "single_select" ? (
+                                <Select options={["—", ...field.options.map((o) => o.label)]}
+                                  value={field.options.find((o) => o.value === value)?.label ?? "—"}
+                                  onChange={(label) => setValue(label === "—" ? null : field.options.find((o) => o.label === label)?.value ?? null)} />
+                              ) : field.type === "multi_select" ? (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {field.options.map((option) => {
+                                    const selected = Array.isArray(value) ? (value as string[]) : [];
+                                    const on = selected.includes(option.value);
+                                    return (
+                                      <button key={option.value} type="button" aria-pressed={on}
+                                        onClick={() => setValue(on ? selected.filter((v) => v !== option.value) : [...selected, option.value])}
+                                        className={cn("min-h-10 rounded-full border px-3 text-[12px] font-semibold", on ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>{option.label}</button>
+                                    );
+                                  })}
+                                </div>
+                              ) : field.type === "textarea" ? (
+                                <Textarea rows={3} value={typeof value === "string" ? value : ""} onChange={(v) => setValue(v)} />
+                              ) : field.type === "boolean" ? (
+                                <Switch on={value === true} onToggle={() => setValue(value !== true)} />
+                              ) : field.type === "number" || field.type === "decimal" || field.type === "measurement" ? (
+                                <Input value={value === null || value === undefined ? "" : String(value)} onChange={(v) => setValue(v === "" ? null : Number(v))} placeholder={field.unit ?? ""} />
+                              ) : (
+                                <Input value={typeof value === "string" || typeof value === "number" ? String(value) : ""} onChange={(v) => setValue(v)} />
+                              )}
+                            </Field>
+                            {field.required && empty && <p role="alert" className="mt-1 text-[11.5px] font-bold text-[var(--kv-danger)]">مشخصه «{field.label}» الزامی است.</p>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-3 text-[11px] text-[var(--kv-muted)]">مشخصه اختصاصیِ خارج از قالب (فقط برای همین محصول) پس از ذخیره، از دکمه «ویرایش» همین بخش اضافه می‌شود.</p>
+                  </div>
                 ) : (
                   <Empty
                     title="مشخصات ساختاریافته و راهنمای سایز پس از ذخیره"
@@ -1045,6 +1169,58 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
               <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">عنوان پایه همراه محصول ذخیره می‌شود؛ توضیح متا، Canonical، ایندکس، تصویر شبکه‌های اجتماعی و Schema محصول (قیمت و موجودی زنده از سرور) پس از ذخیره در «استودیو CMS ← سئو ← محصولات» مدیریت می‌شود.</p>
               <p className="text-[12px] text-[var(--kv-muted)]">کانال‌ها: {[d.retailOn && "فروشگاه خرده", d.wholesaleOn && "بازارچه عمده", d.cutout.status === "ready" && "استایل‌بیلدر"].filter(Boolean).join("، ") || "هیچ‌کدام"}</p>
             </>}
+            {/* §30 (final gate): review step — completion checklist with click-to-section links. */}
+            {sec === "review" && (
+              <div className="space-y-4">
+                {!editing && issueItems.length > 0 && (
+                  <div>
+                    <p className="mb-2 text-[13px] font-extrabold">برای انتشار، این موارد باقی مانده است:</p>
+                    <ul className="space-y-1.5">
+                      {issueItems.map((item, i) => (
+                        <li key={`${item.label}-${i}`}>
+                          <button type="button" onClick={() => setSec(item.sec)}
+                            className="flex min-h-10 w-full items-center justify-between gap-2 rounded-[10px] border border-amber-300 bg-amber-50 px-3 py-2 text-right text-[12.5px] font-bold text-amber-800 hover:border-amber-400">
+                            <span>{item.label}</span><span className="shrink-0 text-[11px]">رفتن به بخش مربوط</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {!editing && issueItems.length === 0 && (
+                  <p className="rounded-[12px] border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-[12.5px] font-bold text-emerald-800">
+                    همه بخش‌ها کامل است — می‌توانید «ذخیره و انتشار» بزنید.
+                  </p>
+                )}
+                <div>
+                  <p className="mb-2 text-[13px] font-extrabold">خلاصه محصول</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {([
+                      ["نام", d.name.trim() || "—"],
+                      ["دسته", d.category || "—"],
+                      ["رنگ‌ها", d.colors.map((c) => c.name).join("، ") || "—"],
+                      ["سایزها", d.sizes.join("، ") || "—"],
+                      ["واریانت‌هایی که ساخته می‌شوند", editing
+                        ? `${editVariants.length.toLocaleString("fa-IR")} واریانت روی سرور`
+                        : `${variantMatrix(d.colors.map((c) => c.name), d.sizes).filter(({ color, size }) => !cellOff[variantKey(color, size)]).length.toLocaleString("fa-IR")} از ${(d.colors.length * d.sizes.length).toLocaleString("fa-IR")} خانه ماتریس`],
+                      ["تصاویر", `${d.images.length.toLocaleString("fa-IR")} تصویر${d.video ? " · ویدیو دارد" : ""}`],
+                      ["کانال‌ها", [d.retailOn && "فروشگاه خرده", d.wholesaleOn && "بازارچه عمده", d.cutout.status === "ready" && "استایل‌بیلدر"].filter(Boolean).join("، ") || "هیچ‌کدام"],
+                      ["قیمت خرده", d.retailOn && d.retail ? fmtMoney(Number(d.retail)) : "—"],
+                      ["سری‌های عمده", d.wholesaleOn ? `${d.series.filter((s) => s.available).length.toLocaleString("fa-IR")} سری فعال` : "غیرفعال"],
+                      ["سئو", d.seoTitle.trim() || d.slug.trim() ? `${d.seoTitle.trim() || d.name.trim()}${d.slug.trim() ? ` · ${d.slug.trim()}` : ""}` : "پیش‌فرض (نام محصول)"],
+                    ] as [string, string][]).map(([label, value]) => (
+                      <div key={label} className="rounded-[12px] border border-[var(--kv-line)] px-3 py-2">
+                        <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
+                        <p className="mt-0.5 break-words text-[12.5px] font-bold">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
+                  با ذخیره، فقط «تعریف» محصول ثبت می‌شود؛ موجودی اولیه بعداً از «کالاها ← نیازمند راه‌اندازی» با سند انبار ثبت می‌شود.
+                </p>
+              </div>
+            )}
             <div className="space-y-2 border-t border-[var(--kv-line)] pt-4">
               {!editing && issues.length > 0 && <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">برای انتشار تکمیل کنید: {issues.join("، ")}</p>}
               <Btn variant="accent" disabled={editing ? !d.name.trim() : issues.length > 0} onClick={editing ? saveEdit : save} icon={<Check size={14} />}>{editing ? "ذخیره تغییرات" : "ذخیره و انتشار"}</Btn>
@@ -1104,12 +1280,34 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                 </table>
               </div>
             </Card>
+            {/* §32 (final gate): the three canonical next steps after a definition. */}
             <div className="flex flex-wrap justify-end gap-2">
               <Btn variant="soft" size="sm" onClick={() => setCreatedSummary(null)}>بعداً</Btn>
+              <Btn variant="soft" size="sm" onClick={() => {
+                const created = createdSummary.product;
+                setCreatedSummary(null);
+                void openEdit({ id: created.id } as unknown as Product);
+              }}>مشاهده محصول</Btn>
+              <Btn variant="soft" size="sm" onClick={() => {
+                setCreatedSummary(null);
+                const fresh = blank();
+                setD(fresh); setOpenSnapshot(JSON.stringify(fresh));
+                setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true);
+              }}>تعریف محصول بعدی</Btn>
               {onGoToSetup && <Btn variant="accent" size="sm" onClick={() => { setCreatedSummary(null); onGoToSetup(); }}>رفتن به راه‌اندازی موجودی</Btn>}
             </div>
           </div>
         )}
+      </Modal>
+      {/* §37 (final gate): leaving the studio with unsaved edits always asks first. */}
+      <Modal open={confirmLeave} onClose={() => setConfirmLeave(false)} title="تغییرات ذخیره‌نشده">
+        <div className="space-y-3">
+          <p className="text-[13px] leading-7">تغییرات ذخیره‌نشده‌ای در این {editing ? "ویرایش" : "تعریف"} دارید. اگر خارج شوید، این تغییرات از بین می‌روند.</p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Btn variant="soft" size="sm" onClick={() => setConfirmLeave(false)}>ادامه ویرایش</Btn>
+            <Btn variant="outline" size="sm" onClick={() => { setConfirmLeave(false); setOpen(false); setEditing(null); setD(blank()); }}>خروج بدون ذخیره</Btn>
+          </div>
+        </div>
       </Modal>
     </div>
   );

@@ -242,6 +242,20 @@ test('category profiles: category is the schema source of truth — no product t
     assert.equal(schema.json().configured, true);
     assert.ok((schema.json().specFields as unknown[]).length >= 1);
     assert.equal((schema.json().sizeGuide as { id: string }).id, guideId);
+
+    // §14 regression (final UAT gate): the category size bound also guards LATER variant
+    // additions — POST /products/:id/variants with an out-of-profile size must be 400.
+    const productId = ok.json().id as string;
+    const badVariant = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/variants`, headers,
+      payload: { color: 'مشکی', size: 'XXL' } });
+    assert.equal(badVariant.statusCode, 400, badVariant.body);
+    // official extension workflow: extend the category profile, then the size is accepted.
+    const extend = await app.inject({ method: 'PUT', url: `/api/v1/admin/category-profiles/${encodeURIComponent(category)}`, headers,
+      payload: { specTemplateId: tplId, sizeGuideId: guideId, allowedSizes: ['M', 'L', 'XXL'] } });
+    assert.equal(extend.statusCode, 200, extend.body);
+    const okVariant = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/variants`, headers,
+      payload: { color: 'مشکی', size: 'XXL' } });
+    assert.equal(okVariant.statusCode, 201, okVariant.body);
   } finally { await pool.end(); await app.close(); }
 });
 
