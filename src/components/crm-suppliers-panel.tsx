@@ -109,7 +109,7 @@ export function CrmSuppliersPanel({ onOpen360 }: { onOpen360?: (userId: string) 
                     <td className="py-2.5 tabular-nums">{toman(row.total_sales)}</td>
                     <td className="py-2.5 tabular-nums">{fmtNum(Number(row.open_tickets ?? 0))}</td>
                     <td className="py-2.5">
-                      {onOpen360 ? <Btn variant="soft" size="sm" onClick={() => onOpen360(id)}>پروفایل ۳۶۰°</Btn> : null}
+                      {onOpen360 ? <Btn variant="soft" size="sm" onClick={() => onOpen360(id)}>پرونده ۳۶۰°</Btn> : null}
                     </td>
                   </tr>
                 );

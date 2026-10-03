@@ -709,6 +709,26 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
     const orders = await db.query(
       `SELECT o.id,o.reference,o.order_type,o.status,o.total_rial::text AS total_rial,o.created_at
        FROM orders o WHERE o.buyer_id = $1 ORDER BY o.created_at DESC LIMIT 20`, [userId]);
+    /* Corrective §56: ITEM-LEVEL purchase chronology — «از چه تاریخی، چه چیزی، با چه مشخصاتی».
+       Canonical order_lines ⋈ variants; return status joined per line (no new store). */
+    const purchases = await db.query(
+      `SELECT l.id, o.id AS order_id, o.reference, o.order_type, o.status AS order_status,
+              o.payment_mode, o.created_at,
+              l.product_name, l.sku, l.quantity, l.unit_price_rial::text AS unit_price_rial,
+              l.line_total_rial::text AS line_total_rial,
+              v.color_label, v.size_label, p.category,
+              rr.status AS return_status
+       FROM order_lines l
+       JOIN orders o ON o.id = l.order_id
+       LEFT JOIN product_variants v ON v.id = l.variant_id
+       LEFT JOIN products p ON p.id = l.product_id
+       LEFT JOIN LATERAL (
+         SELECT status FROM return_requests r
+         WHERE r.order_line_id = l.id OR (r.order_line_id IS NULL AND r.order_id = o.id)
+         ORDER BY r.created_at DESC LIMIT 1
+       ) rr ON true
+       WHERE o.buyer_id = $1
+       ORDER BY o.created_at DESC, l.id LIMIT 100`, [userId]);
     const tickets = await db.query(
       `SELECT t.id,t.reference,t.subject,t.category,t.priority,t.status,t.created_at
        FROM tickets t WHERE t.owner_id = $1 ORDER BY t.created_at DESC LIMIT 20`, [userId]);
@@ -730,7 +750,7 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
     return {
       contact, addresses: addresses.rows, membership, labels: labels.rows, segments: segments.rows,
       reviews: reviews.rows, notes: notes.rows, timeline: timeline.rows, consent,
-      orders: orders.rows, tickets: tickets.rows, wishlist: wishlist.rows, kpis: kpiRow,
+      orders: orders.rows, purchases: purchases.rows, tickets: tickets.rows, wishlist: wishlist.rows, kpis: kpiRow,
     };
   }
 

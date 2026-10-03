@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Ban, Check, FileText, HelpCircle, ShieldCheck, UserCog, X } from "lucide-react";
+import { Ban, Check, FileText, HelpCircle, ShieldCheck, UserCog } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
 import { buyersApi, membershipLifecycleApi, type Buyer360Payload } from "../data/api";
-import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Status, Tag, Textarea } from "./primitives";
+import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Status, Tag, Textarea, WorkspaceModal } from "./primitives";
 
 /** Rial values arrive as strings (money is never a JS float). */
 const rial = (value: unknown) => `${fmtNum(Number(String(value ?? "0")))} ریال`;
@@ -174,13 +174,10 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
         </div>
       </Card>
 
+      {/* §67 (corrective): VIP 360 is a CENTERED WorkspaceModal — same family as Customer/Supplier 360. */}
       {selected && (
-      <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true">
-      <div className="kv-scroll flex h-full w-full flex-col gap-4 overflow-y-auto bg-[var(--kv-bg)] p-5 shadow-2xl md:max-w-4xl">
-        <div className="flex items-center justify-between">
-          <button onClick={() => { setSelected(null); setView(null); }} className="rounded-full p-1.5 hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
-          <span className="text-[12px] text-[var(--kv-muted)]">نمای ۳۶۰ درجه خریدار VIP</span>
-        </div>
+      <WorkspaceModal open onClose={() => { setSelected(null); setView(null); }} title="نمای ۳۶۰ درجه خریدار VIP">
+      <div className="space-y-4">
         {!view ? <Card className="p-6"><LoadingState label="در حال بارگذاری نمای ۳۶۰ درجه…" /></Card> : (
           <>
             <Card className="p-5">
@@ -415,7 +412,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
           </>
         )}
       </div>
-      </div>
+      </WorkspaceModal>
       )}
 
       <Modal open={document.open} onClose={() => setDocument({ ...document, open: false })} title="ثبت مدرک خریدار">

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Card, Btn, Status, SearchBox, Empty, LoadingState, ErrorState, Field, Input, Select, Textarea,
-  Drawer, Segmented, SectionHead,
+  Segmented, SectionHead, WorkspaceModal,
 } from "./primitives";
 import { BarList } from "./charts";
 import { formatPersianDateTime, formatPersianDate } from "../data/persian-date";
@@ -180,7 +180,7 @@ export function Supplier360Panel({ flash }: { flash?: (message: string) => void 
         )}
 
       {selected && (
-        <Supplier360Drawer
+        <Supplier360Workspace
           supplierId={selected}
           onClose={() => setSelected(null)}
           onChanged={() => { void load(); flash?.("وضعیت تأمین‌کننده بروزرسانی شد"); }}
@@ -192,7 +192,8 @@ export function Supplier360Panel({ flash }: { flash?: (message: string) => void 
 
 /* ------------------------------- 360° drawer ------------------------------- */
 
-function Supplier360Drawer({ supplierId, onClose, onChanged }: {
+/** §69 (corrective): the 360 file is a CENTERED WorkspaceModal — never a side drawer. */
+export function Supplier360Workspace({ supplierId, onClose, onChanged }: {
   supplierId: string; onClose: () => void; onChanged: () => void;
 }) {
   const [days, setDays] = useState(90);
@@ -227,15 +228,16 @@ function Supplier360Drawer({ supplierId, onClose, onChanged }: {
     finally { setBusy(false); }
   };
 
-  if (error && !data) return <Drawer open onClose={onClose} title="پرونده تأمین‌کننده" wide><ErrorState message={error} onRetry={load} /></Drawer>;
-  if (!data) return <Drawer open onClose={onClose} title="پرونده تأمین‌کننده" wide><LoadingState label="در حال بارگذاری پرونده ۳۶۰°…" /></Drawer>;
+  if (error && !data) return <WorkspaceModal open onClose={onClose} title="پرونده تأمین‌کننده"><ErrorState message={error} onRetry={load} /></WorkspaceModal>;
+  if (!data) return <WorkspaceModal open onClose={onClose} title="پرونده تأمین‌کننده"><LoadingState label="در حال بارگذاری پرونده ۳۶۰°…" /></WorkspaceModal>;
 
   const status = data.status.current;
   const performance = data.performance as Record<string, unknown>;
   const productsByStatus = (performance.products as { status: string; count: number }[] | undefined) ?? [];
 
   return (
-    <Drawer open onClose={onClose} wide title={`پرونده ۳۶۰° — ${String(data.supplier.brand_name ?? data.supplier.display_name ?? "")}`}>
+    <WorkspaceModal open onClose={onClose} title={`پرونده ۳۶۰° — ${String(data.supplier.brand_name ?? data.supplier.display_name ?? "")}`}
+      subtitle="پروندهٔ کامل تأمین‌کننده — عملکرد، محدودیت‌ها، مالی و تایم‌لاین">
       <div className="space-y-5">
         {error && (
           <div className="flex items-start gap-2 rounded-[12px] border border-[var(--kv-danger)]/40 bg-[var(--kv-danger)]/6 px-3 py-2 text-[12.5px]">
@@ -573,7 +575,7 @@ function Supplier360Drawer({ supplierId, onClose, onChanged }: {
           </div>
         )}
       </div>
-    </Drawer>
+    </WorkspaceModal>
   );
 }
 

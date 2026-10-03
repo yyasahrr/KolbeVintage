@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, HelpCircle, RefreshCw, UserRound, X } from "lucide-react";
+import { HelpCircle, RefreshCw, UserRound } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
-import { crmApi } from "../data/api";
-import { Btn, Card, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status } from "./primitives";
+import { buyersApi, crmApi, crmIntelApi } from "../data/api";
+import { Btn, Card, Checkbox, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status, Textarea, WorkspaceModal } from "./primitives";
+import { ACCOUNT_STATUS_FA, ORDER_STATUS_FA, ORDER_TYPE_FA, PAYMENT_MODE_FA, RETURN_STATUS_FA, REVIEW_STATUS_FA, TICKET_STATUS_FA, faEvent, faLabel } from "../data/fa-labels";
 
 /** Money arrives as rial strings; UI copy shows toman (÷۱۰). */
 const toman = (value: unknown) => `${fmtNum(Math.round(Number(String(value ?? "0")) / 10))} تومان`;
@@ -136,7 +137,7 @@ export function CrmRetailPanel() {
                   <tr key={String(row.id)} className="hover:bg-[var(--kv-surface-2)]/60">
                     <td className="py-2.5 font-bold">{text(row.display_name)}</td>
                     <td className="py-2.5 tabular-nums">{text(row.phone)}</td>
-                    <td className="py-2.5"><Status value={String(row.account_status) === "active" ? "فعال" : "معلق"} /></td>
+                    <td className="py-2.5"><Status value={faLabel(ACCOUNT_STATUS_FA, row.account_status)} /></td>
                     <td className="py-2.5"><BehaviorChip row={row} /></td>
                     <td className="py-2.5 tabular-nums">{day(row.created_at)}</td>
                     <td className="py-2.5 tabular-nums">{fmtNum(Number(row.order_count ?? 0))}</td>
@@ -163,20 +164,23 @@ export function CrmRetailPanel() {
       </Card>
 
       {profileUser && (
-        <Customer360Drawer loading={!profile} data={profile} onClose={() => { setProfileUser(null); setProfile(null); }} />
+        <Customer360Workspace loading={!profile} data={profile} userId={profileUser}
+          onRefresh={async () => { try { setProfile(await crmApi.user360(profileUser)); } catch { /* keep last state */ } }}
+          onClose={() => { setProfileUser(null); setProfile(null); }} />
       )}
     </div>
   );
 }
 
-type TabKey = "overview" | "orders" | "activity" | "interests" | "support" | "marketing";
+type TabKey = "overview" | "purchases" | "activity" | "interests" | "support" | "marketing" | "history";
 const TABS: { v: TabKey; label: string }[] = [
   { v: "overview", label: "نمای کلی" },
-  { v: "orders", label: "سفارش‌ها" },
+  { v: "purchases", label: "خریدها" },
   { v: "activity", label: "فعالیت‌ها" },
   { v: "interests", label: "علاقه‌مندی‌ها" },
   { v: "support", label: "پشتیبانی" },
   { v: "marketing", label: "بازاریابی" },
+  { v: "history", label: "تاریخچه" },
 ];
 
 function Mini({ head, rows, empty }: { head: string[]; rows: React.ReactNode[][]; empty: string }) {
@@ -193,15 +197,24 @@ function Mini({ head, rows, empty }: { head: string[]; rows: React.ReactNode[][]
   );
 }
 
-/** Customer 360 — full-width workspace drawer (full-screen on mobile), composed
- *  from existing domains; missing data always reads «ثبت نشده». */
-function Customer360Drawer({ loading, data, onClose }: { loading: boolean; data: Row | null; onClose: () => void }) {
+/** Customer 360 — Corrective §55/§66: a CENTERED WorkspaceModal (same family as
+ *  VIP/Supplier 360) composed from existing domains; missing data reads «ثبت نشده»،
+ *  and consent toggles actually persist through the canonical consent endpoint. */
+function Customer360Workspace({ loading, data, userId, onRefresh, onClose }: {
+  loading: boolean; data: Row | null; userId: string; onRefresh: () => Promise<void>; onClose: () => void;
+}) {
   const [tab, setTab] = useState<TabKey>("overview");
+  const [sortDesc, setSortDesc] = useState(true);
+  const [consentBusy, setConsentBusy] = useState<string | null>(null);
+  const [consentError, setConsentError] = useState<string | null>(null);
+  const [noteBody, setNoteBody] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [behavior, setBehavior] = useState<Row | null>(null);
   const contact = (data?.contact ?? {}) as Row;
   const kpis = (data?.kpis ?? {}) as Record<string, string | number>;
   const membership = data?.membership as Row | null;
   const consent = data?.consent as Row | null;
-  const orders = (data?.orders as Row[]) ?? [];
+  const purchases = (data?.purchases as Row[]) ?? [];
   const timeline = (data?.timeline as Row[]) ?? [];
   const wishlist = (data?.wishlist as Row[]) ?? [];
   const tickets = (data?.tickets as Row[]) ?? [];
@@ -210,131 +223,224 @@ function Customer360Drawer({ loading, data, onClose }: { loading: boolean; data:
   const reviews = (data?.reviews as Row[]) ?? [];
   const labels = (data?.labels as Row[]) ?? [];
   const segments = (data?.segments as Row[]) ?? [];
+
+  /* Migrated from the legacy «پروفایل و تایم‌لاین» tab: server-side purchase-behavior analysis. */
+  const contactId = String(contact.id ?? "");
+  useEffect(() => {
+    if (!contactId) return;
+    let active = true;
+    void crmIntelApi.behavior(contactId).then((res) => { if (active) setBehavior(res as Row); }).catch(() => { /* behavior card is optional */ });
+    return () => { active = false; };
+  }, [contactId]);
+
+  /* §56: item-level chronology, newest-first by default and sortable. */
+  const sortedPurchases = [...purchases].sort((a, b) => {
+    const ta = new Date(String(a.created_at ?? 0)).getTime();
+    const tb = new Date(String(b.created_at ?? 0)).getTime();
+    return sortDesc ? tb - ta : ta - tb;
+  });
+
+  /* §63: consent writes go through the canonical admin endpoint with loading /
+     success / error-rollback semantics — the checkbox only flips after the server agrees. */
+  const setConsent = async (key: "marketingSms" | "transactionalSms" | "emailMarketing" | "doNotContact", value: boolean) => {
+    setConsentBusy(key); setConsentError(null);
+    try {
+      await buyersApi.saveConsent(userId, { [key]: value, reason: "به‌روزرسانی توسط اپراتور از پروفایل ۳۶۰°" });
+      await onRefresh();
+    } catch (error) {
+      setConsentError(error instanceof Error ? error.message : "ذخیرهٔ رضایت ناموفق بود؛ دوباره تلاش کنید.");
+    } finally { setConsentBusy(null); }
+  };
+
+  const consentRows: { key: "marketingSms" | "transactionalSms" | "emailMarketing" | "doNotContact"; label: string; hint: string; checked: boolean }[] = [
+    { key: "marketingSms", label: "پیامک تبلیغاتی", hint: "کمپین‌ها و پیشنهادهای بازاریابی", checked: consent?.marketing_sms === true },
+    { key: "transactionalSms", label: "پیامک تراکنشی", hint: "اطلاع‌رسانی سفارش و پرداخت — مستقل از بازاریابی", checked: consent?.transactional_sms !== false },
+    { key: "emailMarketing", label: "ایمیل تبلیغاتی", hint: "خبرنامه و کمپین‌های ایمیلی", checked: consent?.email_marketing === true },
+    { key: "doNotContact", label: "عدم تماس (DNC)", hint: "هیچ پیام بازاریابی برای این مشتری ارسال نمی‌شود", checked: consent?.do_not_contact === true },
+  ];
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true">
-      <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--kv-bg)] shadow-2xl md:max-w-4xl">
-        <div className="flex items-center justify-between border-b border-[var(--kv-line)] px-5 py-3">
-          <div className="flex items-center gap-2">
-            <button onClick={onClose} className="rounded-full p-1.5 hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
-            <h3 className="text-[15px] font-extrabold">{text(contact.display_name)} — پروفایل ۳۶۰°</h3>
+    <WorkspaceModal open onClose={onClose} title={`${text(contact.display_name)} — پروفایل ۳۶۰°`}
+      subtitle={`موبایل: ${text(contact.phone)} — پروندهٔ کامل مشتری خرده‌فروشی`}>
+      {loading || !data ? <LoadingState label="در حال بارگذاری پروفایل…" /> : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {([
+              ["تعداد خرید", fmtNum(Number(kpis.order_count ?? 0))],
+              ["ارزش کل خرید", toman(kpis.total_spent_rial)],
+              ["میانگین سفارش", toman(kpis.average_order_rial)],
+              ["آخرین خرید", kpis.last_order_at ? formatPersianDate(String(kpis.last_order_at)) : "ثبت نشده"],
+              ["مرجوعی", fmtNum(Number(kpis.returns_count ?? 0))],
+              ["تیکت باز", fmtNum(Number(kpis.open_tickets ?? 0))],
+              ["علاقه‌مندی", fmtNum(Number(kpis.wishlist_count ?? 0))],
+              ["دیدگاه", fmtNum(Number(kpis.review_count ?? 0))],
+            ] as [string, React.ReactNode][]).map(([label, value]) => (
+              <div key={label} className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2.5">
+                <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
+                <p className="mt-0.5 text-[13px] font-extrabold tabular-nums">{value}</p>
+              </div>
+            ))}
           </div>
-          <span className="text-[11.5px] text-[var(--kv-muted)] tabular-nums">{text(contact.phone)}</span>
-        </div>
-        <div className="kv-scroll flex-1 overflow-y-auto p-5">
-          {loading || !data ? <LoadingState label="در حال بارگذاری پروفایل…" /> : (
+
+          <Segmented options={TABS} value={tab} onChange={setTab} />
+
+          {tab === "overview" && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <dl className="grid gap-x-6 gap-y-2.5 sm:grid-cols-2">
                 {([
-                  ["تعداد خرید", fmtNum(Number(kpis.order_count ?? 0))],
-                  ["ارزش کل خرید", toman(kpis.total_spent_rial)],
-                  ["میانگین سفارش", toman(kpis.average_order_rial)],
-                  ["آخرین خرید", kpis.last_order_at ? formatPersianDate(String(kpis.last_order_at)) : "ثبت نشده"],
-                  ["مرجوعی", fmtNum(Number(kpis.returns_count ?? 0))],
-                  ["تیکت باز", fmtNum(Number(kpis.open_tickets ?? 0))],
-                  ["علاقه‌مندی", fmtNum(Number(kpis.wishlist_count ?? 0))],
-                  ["دیدگاه", fmtNum(Number(kpis.review_count ?? 0))],
+                  ["نام و نام خانوادگی", `${text(contact.first_name)} ${contact.last_name ? String(contact.last_name) : ""}`.trim() || "ثبت نشده"],
+                  ["موبایل", text(contact.phone)],
+                  ["ایمیل", text(contact.email)],
+                  ["تاریخ تولد", contact.birthday ? formatPersianDate(String(contact.birthday)) : "ثبت نشده"],
+                  ["جنسیت", contact.gender === "female" ? "زن" : contact.gender === "male" ? "مرد" : "ثبت نشده"],
+                  ["تاریخ عضویت", day(contact.registered_at)],
+                  ["وضعیت حساب", faLabel(ACCOUNT_STATUS_FA, contact.status)],
+                  ["عضویت VIP", membership ? `${text(membership.title ?? membership.code)} (تا ${day(membership.ends_at)})` : "ندارد"],
                 ] as [string, React.ReactNode][]).map(([label, value]) => (
-                  <div key={label} className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2.5">
-                    <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
-                    <p className="mt-0.5 text-[13px] font-extrabold tabular-nums">{value}</p>
+                  <div key={label} className="flex items-start justify-between gap-3 border-b border-dashed border-[var(--kv-line)] pb-2 text-[12.5px]">
+                    <dt className="text-[var(--kv-muted)]">{label}</dt><dd className="font-semibold tabular-nums">{value}</dd>
                   </div>
                 ))}
+              </dl>
+              <div>
+                <p className="mb-2 text-[12.5px] font-bold">نشانی‌ها</p>
+                <Mini head={["عنوان", "استان/شهر", "نشانی", "پیش‌فرض"]} empty="نشانی ثبت نشده است."
+                  rows={addresses.map((a) => [text(a.title), `${text(a.province)} / ${text(a.city)}`, text(a.line), a.is_default ? "بله" : "خیر"])} />
               </div>
-
-              <Segmented options={TABS} value={tab} onChange={setTab} />
-
-              {tab === "overview" && (
-                <div className="space-y-4">
-                  <dl className="grid gap-x-6 gap-y-2.5 sm:grid-cols-2">
+              <div>
+                <p className="mb-2 text-[12.5px] font-bold">برچسب‌ها و سگمنت‌ها</p>
+                <div className="flex flex-wrap gap-2 text-[11.5px]">
+                  {labels.map((l) => <span key={String(l.label_code)} className="rounded-full border border-[var(--kv-line)] px-3 py-1">{text(l.title ?? l.label_code)}</span>)}
+                  {segments.map((s) => <span key={String(s.code)} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1">{text(s.title)}</span>)}
+                  {!labels.length && !segments.length && <span className="text-[var(--kv-muted)]">برچسبی ثبت نشده است.</span>}
+                </div>
+              </div>
+              {behavior && (
+                <div>
+                  <p className="mb-2 text-[12.5px] font-bold">تحلیل رفتار خرید</p>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {([
-                      ["نام و نام خانوادگی", `${text(contact.first_name)} ${contact.last_name ? String(contact.last_name) : ""}`.trim() || "ثبت نشده"],
-                      ["موبایل", text(contact.phone)],
-                      ["ایمیل", text(contact.email)],
-                      ["تاریخ تولد", contact.birthday ? formatPersianDate(String(contact.birthday)) : "ثبت نشده"],
-                      ["جنسیت", contact.gender === "female" ? "زن" : contact.gender === "male" ? "مرد" : "ثبت نشده"],
-                      ["تاریخ عضویت", day(contact.registered_at)],
-                      ["وضعیت حساب", String(contact.status) === "active" ? "فعال" : text(contact.status)],
-                      ["عضویت VIP", membership ? `${text(membership.title ?? membership.code)} (تا ${day(membership.ends_at)})` : "ندارد"],
+                      ["سفارش", fmtNum(Number((behavior.metrics as Row)?.orders ?? 0))],
+                      ["مجموع خرید", toman((behavior.metrics as Row)?.totalSpentRial)],
+                      ["میانگین سفارش", toman((behavior.metrics as Row)?.averageOrderRial)],
+                      ["فاصله خرید (روز)", behavior.averagePurchaseIntervalDays ? fmtNum(Number(behavior.averagePurchaseIntervalDays)) : "ثبت نشده"],
                     ] as [string, React.ReactNode][]).map(([label, value]) => (
-                      <div key={label} className="flex items-start justify-between gap-3 border-b border-dashed border-[var(--kv-line)] pb-2 text-[12.5px]">
-                        <dt className="text-[var(--kv-muted)]">{label}</dt><dd className="font-semibold tabular-nums">{value}</dd>
+                      <div key={label} className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2">
+                        <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
+                        <p className="text-[13px] font-extrabold tabular-nums">{value}</p>
                       </div>
                     ))}
-                  </dl>
-                  <div>
-                    <p className="mb-2 text-[12.5px] font-bold">نشانی‌ها</p>
-                    <Mini head={["عنوان", "استان/شهر", "نشانی", "پیش‌فرض"]} empty="نشانی ثبت نشده است."
-                      rows={addresses.map((a) => [text(a.title), `${text(a.province)} / ${text(a.city)}`, text(a.line), a.is_default ? "بله" : "خیر"])} />
                   </div>
-                  <div>
-                    <p className="mb-2 text-[12.5px] font-bold">برچسب‌ها و سگمنت‌ها</p>
-                    <div className="flex flex-wrap gap-2 text-[11.5px]">
-                      {labels.map((l) => <span key={String(l.label_code)} className="rounded-full border border-[var(--kv-line)] px-3 py-1">{text(l.title ?? l.label_code)}</span>)}
-                      {segments.map((s) => <span key={String(s.code)} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1">{text(s.title)}</span>)}
-                      {!labels.length && !segments.length && <span className="text-[var(--kv-muted)]">برچسبی ثبت نشده است.</span>}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {tab === "orders" && (
-                <Mini head={["مرجع", "نوع", "وضعیت", "مبلغ", "تاریخ"]} empty="سفارشی ثبت نشده است."
-                  rows={orders.map((o) => [text(o.reference), o.order_type === "wholesale" ? "عمده" : "خرده", text(o.status), toman(o.total_rial), day(o.created_at)])} />
-              )}
-
-              {tab === "activity" && (
-                <Mini head={["رویداد", "عنوان", "منبع", "زمان"]} empty="فعالیتی ثبت نشده است."
-                  rows={timeline.map((t) => [text(t.event_type), text(t.title), text(t.source), t.occurred_at ? formatPersianDateTime(String(t.occurred_at)) : "ثبت نشده"])} />
-              )}
-
-              {tab === "interests" && (
-                <div className="space-y-4">
-                  <p className="text-[11.5px] text-[var(--kv-muted)]">علاقه‌مندی‌ها فقط از رفتار واقعی (لیست علاقه‌مندی و خرید) ساخته می‌شوند؛ هیچ حدسی در کار نیست.</p>
-                  <Mini head={["محصول", "دسته", "تاریخ افزودن"]} empty="موردی در لیست علاقه‌مندی نیست."
-                    rows={wishlist.map((w) => [text(w.product_name), text(w.category), day(w.created_at)])} />
-                </div>
-              )}
-
-              {tab === "support" && (
-                <div className="space-y-4">
-                  <Mini head={["مرجع", "موضوع", "دسته", "وضعیت", "تاریخ"]} empty="تیکتی ثبت نشده است."
-                    rows={tickets.map((t) => [text(t.reference), text(t.subject), text(t.category), text(t.status), day(t.created_at)])} />
-                  <div>
-                    <p className="mb-2 text-[12.5px] font-bold">دیدگاه‌ها</p>
-                    <Mini head={["محصول", "امتیاز", "عنوان", "وضعیت"]} empty="دیدگاهی ثبت نشده است."
-                      rows={reviews.map((r) => [text(r.product_name), `${fmtNum(Number(r.rating ?? 0))}/۵`, text(r.title), text(r.status)])} />
-                  </div>
-                </div>
-              )}
-
-              {tab === "marketing" && (
-                <div className="space-y-4">
-                  <dl className="grid gap-x-6 gap-y-2.5 sm:grid-cols-2">
-                    {([
-                      ["پیامک تبلیغاتی", consent?.marketing_sms ? "دارد" : "ندارد"],
-                      ["پیامک تراکنشی", consent?.transactional_sms === false ? "غیرفعال" : "فعال"],
-                      ["ایمیل تبلیغاتی", consent?.email_marketing ? "دارد" : "ندارد"],
-                      ["عدم تماس (DNC)", consent?.do_not_contact ? "بله" : "خیر"],
-                    ] as [string, React.ReactNode][]).map(([label, value]) => (
-                      <div key={label} className="flex items-start justify-between gap-3 border-b border-dashed border-[var(--kv-line)] pb-2 text-[12.5px]">
-                        <dt className="text-[var(--kv-muted)]">{label}</dt><dd className="font-semibold">{value}</dd>
+                  <div className="mt-3 grid gap-4 md:grid-cols-3">
+                    {([["محصولات محبوب", behavior.products], ["دسته‌های موردعلاقه", behavior.categories], ["کوپن‌های استفاده‌شده", behavior.coupons]] as [string, unknown][]).map(([title, rows]) => (
+                      <div key={title}>
+                        <p className="mb-1.5 text-[11.5px] font-bold">{title}</p>
+                        {((rows as Row[]) ?? []).slice(0, 5).map((row, i) => (
+                          <p key={i} className="text-[11px] text-[var(--kv-muted)] tabular-nums">
+                            {text(row.product_name ?? row.category ?? row.code)} · {fmtNum(Number(row.quantity ?? row.count ?? row.discount_rial ?? 0))}
+                          </p>
+                        ))}
+                        {!(rows as unknown[])?.length && <p className="text-[11px] text-[var(--kv-muted)]">داده‌ای نیست</p>}
                       </div>
                     ))}
-                  </dl>
-                  <div>
-                    <p className="mb-2 text-[12.5px] font-bold">یادداشت‌های داخلی</p>
-                    <Mini head={["یادداشت", "نویسنده", "تاریخ"]} empty="یادداشتی ثبت نشده است."
-                      rows={notes.map((n) => [text(n.body), text(n.author_name), day(n.created_at)])} />
                   </div>
                 </div>
               )}
             </div>
           )}
+
+          {tab === "purchases" && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[11.5px] text-[var(--kv-muted)]">تاریخچهٔ خرید در سطح قلم کالا — چه چیزی، با چه مشخصاتی و در چه تاریخی.</p>
+                <Btn variant="soft" size="sm" onClick={() => setSortDesc((v) => !v)}>{sortDesc ? "جدیدترین اول" : "قدیمی‌ترین اول"}</Btn>
+              </div>
+              <Mini head={["تاریخ", "مرجع سفارش", "محصول", "رنگ", "سایز", "تعداد", "قیمت واحد", "جمع قلم", "نوع", "روش پرداخت", "وضعیت", "مرجوعی"]}
+                empty="خریدی ثبت نشده است."
+                rows={sortedPurchases.map((l) => [
+                  day(l.created_at),
+                  <span key="ref" className="font-bold tabular-nums">{text(l.reference)}</span>,
+                  <span key="p">{text(l.product_name)}<span className="block text-[10.5px] text-[var(--kv-muted)]" dir="ltr">{String(l.sku ?? "")}</span></span>,
+                  text(l.color_label),
+                  text(l.size_label),
+                  fmtNum(Number(l.quantity ?? 0)),
+                  toman(l.unit_price_rial),
+                  toman(l.line_total_rial),
+                  faLabel(ORDER_TYPE_FA, l.order_type),
+                  faLabel(PAYMENT_MODE_FA, l.payment_mode),
+                  <Status key="st" value={faLabel(ORDER_STATUS_FA, l.order_status)} />,
+                  l.return_status ? faLabel(RETURN_STATUS_FA, l.return_status) : "ندارد",
+                ])} />
+            </div>
+          )}
+
+          {tab === "activity" && (
+            <Mini head={["رویداد", "عنوان", "زمان"]} empty="فعالیتی ثبت نشده است."
+              rows={timeline.filter((t) => !String(t.event_type ?? "").startsWith("order")).map((t) => [faEvent(t.event_type), text(t.title), t.occurred_at ? formatPersianDateTime(String(t.occurred_at)) : "ثبت نشده"])} />
+          )}
+
+          {tab === "interests" && (
+            <div className="space-y-4">
+              <p className="text-[11.5px] text-[var(--kv-muted)]">علاقه‌مندی‌ها فقط از رفتار واقعی (لیست علاقه‌مندی و خرید) ساخته می‌شوند؛ هیچ حدسی در کار نیست.</p>
+              <Mini head={["محصول", "دسته", "تاریخ افزودن"]} empty="موردی در لیست علاقه‌مندی نیست."
+                rows={wishlist.map((w) => [text(w.product_name), text(w.category), day(w.created_at)])} />
+            </div>
+          )}
+
+          {tab === "support" && (
+            <div className="space-y-4">
+              <Mini head={["مرجع", "موضوع", "دسته", "وضعیت", "تاریخ"]} empty="تیکتی ثبت نشده است."
+                rows={tickets.map((t) => [text(t.reference), text(t.subject), text(t.category), faLabel(TICKET_STATUS_FA, t.status), day(t.created_at)])} />
+              <div>
+                <p className="mb-2 text-[12.5px] font-bold">دیدگاه‌ها</p>
+                <Mini head={["محصول", "امتیاز", "عنوان", "وضعیت"]} empty="دیدگاهی ثبت نشده است."
+                  rows={reviews.map((r) => [text(r.product_name), `${fmtNum(Number(r.rating ?? 0))}/۵`, text(r.title), faLabel(REVIEW_STATUS_FA, r.status)])} />
+              </div>
+            </div>
+          )}
+
+          {tab === "marketing" && (
+            <div className="space-y-4">
+              <p className="text-[11.5px] text-[var(--kv-muted)]">پیام تراکنشی (اطلاع‌رسانی سفارش) از بازاریابی جداست؛ تغییرها با دلیل در حسابرسی ثبت می‌شوند.</p>
+              {consentError && <p className="rounded-[10px] bg-rose-500/10 px-3 py-2 text-[11.5px] font-bold text-rose-700">{consentError}</p>}
+              <div className="grid gap-2.5 sm:grid-cols-2">
+                {consentRows.map((row) => (
+                  <div key={row.key} className="flex items-start justify-between gap-3 rounded-[12px] border border-[var(--kv-line)] px-3 py-2.5">
+                    <div>
+                      <Checkbox checked={row.checked} onChange={(v) => { if (!consentBusy) void setConsent(row.key, v); }} label={row.label} />
+                      <p className="mt-1 text-[10.5px] text-[var(--kv-muted)]">{row.hint}</p>
+                    </div>
+                    {consentBusy === row.key && <span className="text-[10.5px] text-[var(--kv-muted)]">در حال ذخیره…</span>}
+                  </div>
+                ))}
+              </div>
+              <div>
+                <p className="mb-2 text-[12.5px] font-bold">یادداشت‌های داخلی (هرگز برای مشتری نمایش داده نمی‌شود)</p>
+                <Mini head={["یادداشت", "نویسنده", "تاریخ"]} empty="یادداشتی ثبت نشده است."
+                  rows={notes.map((n) => [text(n.body), text(n.author_name), day(n.created_at)])} />
+                {/* Migrated from the legacy «پروفایل و تایم‌لاین» tab — note-writing now lives inside the 360. */}
+                <div className="mt-2 space-y-2">
+                  <Textarea rows={2} value={noteBody} onChange={setNoteBody} placeholder="یادداشت داخلی…" />
+                  <Btn variant="soft" size="sm" disabled={noteBusy || noteBody.trim().length < 3}
+                    onClick={() => { setNoteBusy(true); void (async () => {
+                      try { await crmIntelApi.addNote(String(contact.id), { body: noteBody, visibility: "internal" }); setNoteBody(""); await onRefresh(); }
+                      catch (error) { setConsentError(error instanceof Error ? error.message : "ثبت یادداشت ناموفق بود."); }
+                      finally { setNoteBusy(false); }
+                    })(); }}>{noteBusy ? "در حال ثبت…" : "ثبت یادداشت"}</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === "history" && (
+            <div className="space-y-2">
+              <p className="text-[11.5px] text-[var(--kv-muted)]">تاریخچهٔ کامل رویدادهای این مشتری از منبع واحد رویدادها.</p>
+              <Mini head={["رویداد", "عنوان", "منبع", "زمان"]} empty="رویدادی ثبت نشده است."
+                rows={timeline.map((t) => [faEvent(t.event_type), text(t.title), text(t.source), t.occurred_at ? formatPersianDateTime(String(t.occurred_at)) : "ثبت نشده"])} />
+            </div>
+          )}
         </div>
-        <div className="border-t border-[var(--kv-line)] px-5 py-2 text-left">
-          <Btn variant="soft" size="sm" icon={<ChevronRight size={13} />} onClick={onClose}>بستن</Btn>
-        </div>
-      </div>
-    </div>
+      )}
+    </WorkspaceModal>
   );
 }

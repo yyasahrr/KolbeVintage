@@ -37,7 +37,7 @@ import { TicketBoardPanel } from "../components/ticket-board-panel";
 import { useDialogFocus } from "../components/focus-trap";
 import { ProductStructurePanel } from "../components/product-structure-panel";
 import { ImportCenterPanel } from "../components/import-center-panel";
-import { Supplier360Panel } from "../components/supplier-360";
+import { Supplier360Workspace } from "../components/supplier-360";
 import { InvoiceDocumentsPanel } from "../components/invoice-docs";
 import { FinanceOpsPanel } from "../components/finance-ops";
 import { ReceiptText } from "lucide-react";
@@ -481,11 +481,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             // to تنظیمات — user administration is not CRM. Backend APIs untouched.
             { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel /> },
             { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
-            { v: "suppliers", label: "تأمین‌کنندگان", node: <div className="space-y-5">
-              <CrmSuppliersPanel />
-              <details className="rounded-[14px] border border-[var(--kv-line)] p-4" open><summary className="cursor-pointer text-[12.5px] font-bold">درخواست‌های تغییر پروفایل تأمین‌کننده</summary><div className="mt-4"><SupplierChangeReview flash={flash} /></div></details>
-              <details className="rounded-[14px] border border-[var(--kv-line)] p-4"><summary className="cursor-pointer text-[12.5px] font-bold">پروفایل ۳۶۰° و مدیریت تأمین‌کننده</summary><div className="mt-4"><Supplier360Panel flash={flash} /></div></details>
-            </div> },
+            // §68/§87 (corrective): the ۳۶۰° file opens from EVERY supplier row (WorkspaceModal);
+            // the old collapsed «پروفایل ۳۶۰° و مدیریت» block was a duplicate surface and is gone.
+            { v: "suppliers", label: "تأمین‌کنندگان", node: <CrmSuppliersHub flash={flash} /> },
             { v: "marketing", label: "بازاریابی", node: <div className="space-y-5"><SmsCenter flash={flash} /><CrmCenter flash={flash} /></div> },
           ]} />)}
           {tab === "automation" && moduleBoundary("اتوماسیون و n8n", <AutomationCenter flash={flash} />)}
@@ -617,6 +615,26 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
         </div>
       )}
       <span className="hidden"><AlertTriangle size={8} /></span>
+    </div>
+  );
+}
+
+
+/** §68 (corrective): CRM suppliers tab — list with an always-available «پروفایل ۳۶۰°» per row
+ *  (centered WorkspaceModal) + the unique change-request review capability, no duplicate panels. */
+function CrmSuppliersHub({ flash }: { flash: (message: string) => void }) {
+  const [open360, setOpen360] = useState<string | null>(null);
+  return (
+    <div className="space-y-5">
+      <CrmSuppliersPanel onOpen360={setOpen360} />
+      <section className="rounded-[14px] border border-[var(--kv-line)] p-4">
+        <h3 className="mb-4 text-[12.5px] font-bold">درخواست‌های تغییر پروفایل تأمین‌کننده</h3>
+        <SupplierChangeReview flash={flash} />
+      </section>
+      {open360 && (
+        <Supplier360Workspace supplierId={open360} onClose={() => setOpen360(null)}
+          onChanged={() => flash("وضعیت تأمین‌کننده بروزرسانی شد")} />
+      )}
     </div>
   );
 }

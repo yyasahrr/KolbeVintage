@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Filter, Plus, RefreshCw, Send, Sparkles, Tags, UserSearch } from "lucide-react";
+import { Filter, Plus, RefreshCw, Send, Sparkles, Tags } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
 import { crmIntelApi } from "../data/api";
-import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, Segmented, Select, Status, Tag, Textarea } from "./primitives";
+import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, Segmented, Select, Status, Textarea } from "./primitives";
 
 const day = (value: unknown) => (value ? formatPersianDate(String(value)) : "—");
 const stamp = (value: unknown) => (value ? formatPersianDateTime(String(value)) : "—");
 const text = (value: unknown, fallback = "—") => (value === null || value === undefined || value === "" ? fallback : String(value));
-const rial = (value: unknown) => `${fmtNum(Number(String(value ?? "0")))} ریال`;
 const listOf = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
 
 type Tab = "labels" | "rules" | "segments" | "contacts" | "campaign" | "events";
@@ -16,7 +15,6 @@ const TABS: { v: Tab; label: string }[] = [
   { v: "labels", label: "برچسب‌ها" },
   { v: "rules", label: "قواعد هوشمند" },
   { v: "segments", label: "سگمنت‌ها" },
-  { v: "contacts", label: "پروفایل و تایم‌لاین" },
   { v: "campaign", label: "کمپین هدفمند" },
   { v: "events", label: "رویدادهای پیش‌رو" },
 ];
@@ -31,19 +29,12 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
   const [labels, setLabels] = useState<Record<string, unknown>[]>([]);
   const [rules, setRules] = useState<Record<string, unknown>[]>([]);
   const [segments, setSegments] = useState<Record<string, unknown>[]>([]);
-  const [contacts, setContacts] = useState<Record<string, unknown>[]>([]);
   const [events, setEvents] = useState<Record<string, unknown>[]>([]);
   const [fields, setFields] = useState<string[]>([]);
   const [operators, setOperators] = useState<string[]>(["=", "!=", ">", ">=", "<", "<=", "in", "contains"]);
   const [loading, setLoading] = useState(true);
   const [ruleDraft, setRuleDraft] = useState({ open: false, code: "", title: "", labelCode: "", matchMode: "all", status: "test", requiresApproval: true, conditions: [] as Condition[] });
   const [segmentDraft, setSegmentDraft] = useState({ open: false, code: "", title: "", matchMode: "all", refreshIntervalMinutes: 60, conditions: [] as Condition[] });
-  const [contactSearch, setContactSearch] = useState("");
-  const [contact, setContact] = useState<Record<string, unknown> | null>(null);
-  const [behavior, setBehavior] = useState<Record<string, unknown> | null>(null);
-  const [timeline, setTimeline] = useState<Record<string, unknown>[]>([]);
-  const [notes, setNotes] = useState<Record<string, unknown>[]>([]);
-  const [noteDraft, setNoteDraft] = useState<{ body: string; visibility: "internal" | "team" }>({ body: "", visibility: "internal" });
   const [dryRun, setDryRun] = useState<{ matchCount: number; sample: Record<string, unknown>[] } | null>(null);
   const [campaign, setCampaign] = useState({ title: "", message: "", segmentId: "", labelCode: "", send: false });
   const [cap, setCap] = useState({ maxPerWindow: 2, windowDays: 7 });
@@ -63,25 +54,8 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
     finally { setLoading(false); }
   }, []);
 
-  const loadContacts = useCallback(async () => {
-    try {
-      const res = await crmIntelApi.contacts({ search: contactSearch || undefined, limit: 40 });
-      setContacts(res.items);
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری مخاطبان"); }
-  }, [contactSearch, flash]);
-
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void crmIntelApi.marketingSettings().then((r) => setCap(r.frequencyCap)).catch(() => undefined); }, []);
-  useEffect(() => { void loadContacts(); }, [loadContacts]);
-
-  const openContact = async (id: string) => {
-    try {
-      const [full, beh] = await Promise.all([crmIntelApi.view360(id), crmIntelApi.behavior(id)]);
-      setContact(full); setBehavior(beh);
-      setTimeline((full.timeline as Record<string, unknown>[]) ?? []);
-      setNotes((full.notes as Record<string, unknown>[]) ?? []);
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری پرونده مشتری"); }
-  };
 
   const run = async (label: string, action: () => Promise<unknown>) => {
     try { await action(); flash(`${label} انجام شد`); await load(); }
@@ -224,120 +198,15 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
         </div>
       )}
 
+      {/* Corrective §54/§58: the generic «پروفایل و تایم‌لاین» tab is retired — profile,
+          timeline, notes and behavior analysis now live inside each entity's 360.
+          The tab key stays legal so stale deep-links land here instead of crashing. */}
       {tab === "contacts" && (
-        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <Card className="h-fit p-4">
-            <p className="mb-3 text-[13px] font-extrabold">مخاطبان CRM</p>
-            <div className="flex gap-2">
-              <Input value={contactSearch} onChange={setContactSearch} placeholder="نام یا همراه" />
-              <Btn variant="soft" size="sm" icon={<UserSearch size={14} />} onClick={() => void loadContacts()}>جست‌وجو</Btn>
-            </div>
-            <div className="kv-scroll mt-3 max-h-[520px] space-y-1 overflow-y-auto">
-              {contacts.map((row) => (
-                <button key={String(row.id)} onClick={() => void openContact(String(row.id))}
-                  className="kv-press flex w-full flex-col items-start rounded-[11px] border border-[var(--kv-line)] px-3 py-2 text-right text-[12.5px] hover:bg-[var(--kv-surface-2)]">
-                  <span className="font-bold">{text(row.display_name ?? row.phone)}</span>
-                  <span className="text-[11px] text-[var(--kv-muted)] tabular-nums">
-                    {fmtNum(Number(row.order_count ?? 0))} سفارش · {rial(row.total_spent_rial)}
-                  </span>
-                </button>
-              ))}
-              {!contacts.length && <Empty title="مخاطبی یافت نشد" desc="با ثبت سفارش یا عضویت، مخاطب ساخته می‌شود." />}
-            </div>
-          </Card>
-
-          <div className="space-y-4">
-            {!contact ? <Card className="p-6"><Empty title="مشتری انتخاب نشده" desc="از فهرست سمت راست یک مشتری را باز کنید." /></Card> : (() => {
-              const profile = (contact.contact ?? {}) as Record<string, unknown>;
-              const membership = contact.membership as Record<string, unknown> | null;
-              const contactId = String(profile.id ?? "");
-              return (
-              <>
-                <Card className="p-5">
-                  <h3 className="text-[16px] font-extrabold">{text(profile.display_name)}</h3>
-                  <p className="mt-1 text-[12px] text-[var(--kv-muted)] tabular-nums">
-                    {text(profile.phone)} · {text(profile.email)} · وضعیت {text(profile.status)} ·
-                    عضویت {text(membership?.title ?? membership?.code, "—")} {membership ? `(${text(membership.status)})` : ""} · آخرین ورود {stamp(profile.last_login_at)}
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {(contact.labels as { label_code: string; title: string }[] ?? []).map((label) => <Tag key={label.label_code}>{label.title}</Tag>)}
-                    {(contact.segments as { code: string; title: string }[] ?? []).map((segment) => <Tag key={segment.code}>{segment.title}</Tag>)}
-                    {!(contact.labels as unknown[])?.length && !(contact.segments as unknown[])?.length && <span className="text-[12px] text-[var(--kv-muted)]">برچسب یا سگمنتی ثبت نشده است.</span>}
-                  </div>
-                </Card>
-                {behavior && (
-                  <Card className="p-5">
-                    <p className="mb-3 flex items-center gap-2 text-[13px] font-extrabold"><Activity size={15} />تحلیل رفتار خرید</p>
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                      {[
-                        ["سفارش", fmtNum(Number((behavior.metrics as Record<string, unknown>)?.orders ?? 0))],
-                        ["مجموع خرید", rial((behavior.metrics as Record<string, unknown>)?.totalSpentRial)],
-                        ["میانگین سفارش", rial((behavior.metrics as Record<string, unknown>)?.averageOrderRial)],
-                        ["فاصله خرید (روز)", text(behavior.averagePurchaseIntervalDays, "—")],
-                      ].map(([label, value]) => (
-                        <div key={label} className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2">
-                          <p className="text-[11px] text-[var(--kv-muted)]">{label}</p>
-                          <p className="text-[13px] font-extrabold tabular-nums">{value}</p>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-4 grid gap-4 md:grid-cols-3">
-                      {[["محصولات محبوب", behavior.products], ["دسته‌های موردعلاقه", behavior.categories], ["کوپن‌های استفاده‌شده", behavior.coupons]].map(([title, rows]) => (
-                        <div key={title as string}>
-                          <p className="mb-1.5 text-[12px] font-bold">{title as string}</p>
-                          {(rows as Record<string, unknown>[])?.slice(0, 5).map((row, i) => (
-                            <p key={i} className="text-[11.5px] text-[var(--kv-muted)] tabular-nums">
-                              {text(row.product_name ?? row.category ?? row.code)} · {fmtNum(Number(row.quantity ?? row.count ?? row.discount_rial ?? 0))}
-                            </p>
-                          ))}
-                          {!(rows as unknown[])?.length && <p className="text-[11.5px] text-[var(--kv-muted)]">داده‌ای نیست</p>}
-                        </div>
-                      ))}
-                    </div>
-                  </Card>
-                )}
-                <Card className="p-5">
-                  <p className="mb-3 text-[13px] font-extrabold">یادداشت داخلی (هرگز برای مشتری نمایش داده نمی‌شود)</p>
-                  <div className="space-y-2">
-                    {notes.map((note) => (
-                      <div key={String(note.id)} className="rounded-[11px] bg-[var(--kv-surface-2)]/60 px-3 py-2 text-[12px]">
-                        <p>{text(note.body)}</p>
-                        <p className="mt-1 text-[10.5px] text-[var(--kv-muted)]">
-                          {text(note.author_name ?? note.author_id)} · {stamp(note.created_at)}
-                          {note.edited_at ? ` · ویرایش ${stamp(note.edited_at)}` : ""} · {text(note.visibility)}
-                        </p>
-                      </div>
-                    ))}
-                    {!notes.length && <p className="text-[12px] text-[var(--kv-muted)]">یادداشتی ثبت نشده است.</p>}
-                  </div>
-                  <Textarea rows={3} value={noteDraft.body} onChange={(v) => setNoteDraft({ ...noteDraft, body: v })} placeholder="یادداشت…" />
-                  <div className="mt-2 flex items-center gap-2">
-                    <Select options={["internal", "team"]} value={noteDraft.visibility} onChange={(v) => setNoteDraft({ ...noteDraft, visibility: v as "internal" | "team" })} />
-                    <Btn variant="soft" size="sm" disabled={noteDraft.body.trim().length < 3}
-                      onClick={() => void run("ثبت یادداشت", async () => {
-                        await crmIntelApi.addNote(String(contactId), noteDraft);
-                        setNoteDraft({ body: "", visibility: "internal" });
-                        if (contact) await openContact(String(contact.id));
-                      })}>ثبت یادداشت</Btn>
-                  </div>
-                </Card>
-                <Card className="p-5">
-                  <p className="mb-3 text-[13px] font-extrabold">تایم‌لاین کامل فعالیت</p>
-                  <div className="space-y-2">
-                    {timeline.slice(0, 25).map((row) => (
-                      <div key={String(row.id)} className="flex items-start justify-between gap-3 border-b border-dashed border-[var(--kv-line)] pb-2 text-[12px]">
-                        <span><b>{text(row.title)}</b><span className="text-[var(--kv-muted)]"> — {text(row.source)}</span></span>
-                        <span className="shrink-0 text-[11px] text-[var(--kv-muted)]">{stamp(row.occurred_at)}</span>
-                      </div>
-                    ))}
-                    {!timeline.length && <p className="text-[12px] text-[var(--kv-muted)]">فعالیتی ثبت نشده است.</p>}
-                  </div>
-                </Card>
-              </>
-              );
-            })()}
-          </div>
-        </div>
+        <Card className="p-6">
+          <Empty title="این بخش به پروفایل ۳۶۰° منتقل شد"
+            desc="پروفایل، تایم‌لاین، یادداشت‌ها و تحلیل رفتار هر مشتری اکنون داخل پروندهٔ ۳۶۰° همان مشتری است (CRM → مشتریان خرده → پروفایل ۳۶۰°)." />
+          <div className="mt-3 text-center"><Btn variant="soft" size="sm" onClick={() => setTab("labels")}>بازگشت به برچسب‌ها</Btn></div>
+        </Card>
       )}
 
       {tab === "campaign" && (
