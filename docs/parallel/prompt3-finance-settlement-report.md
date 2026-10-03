@@ -9,9 +9,9 @@ Branch: `arena/01a0f798-kolbevintage` · Date: 2026-10-03
   - `3edd10a` — F1: migration `065_supplier_settlement_core.sql`, verifier/test-list registration, `PAYB`/`RCV` document sequences.
   - `66eadd7` — F2/F3: `settlement-core.ts` (accrual/holds/refunds/diagnostic/scheduler) + `settlement-routes.ts` (supplier + admin APIs), wiring into `app.ts`, `wholesale-oms.ts` (delivery → accrual), `worker.ts` (hold-release sweep), `finance.ts` (approve/pay hardening), `wallet.ts` (legacy withdrawal flag).
   - `a77ab64` — F4: `settlement.test.ts` registered and green — full suite 170/170.
-  - `4006a4b` — F5: settlement-first UI — supplier wallet rebuilt around scheduled settlements (NO withdraw), admin `SettlementCenter` inside the canonical finance ops hub, `supplierFinanceApi`/`settlementAdminApi` client wrappers.
-  - F6 — this report + `prompt3-financial-security-audit.md`.
-- Push status at time of writing: `3edd10a`…`a77ab64` pushed. `4006a4b` + F6 are committed locally; the sandbox GitHub token expired mid-session — they are pushed as soon as the GitHub connection is restored (honest status, see §9).
+  - `f1d160e` — F5: settlement-first UI — supplier wallet rebuilt around scheduled settlements (NO withdraw), admin `SettlementCenter` inside the canonical finance ops hub, `supplierFinanceApi`/`settlementAdminApi` client wrappers.
+  - `e01a55e` — F6: this report + `prompt3-financial-security-audit.md`.
+- Push status: ALL Prompt-3 commits pushed to `origin/arena/01a0f798-kolbevintage` (remote HEAD `e01a55e`). Note: F5/F6 were first committed as `4006a4b`+1 during a sandbox session whose git objects were lost to an environment reset; the identical working-tree content was re-committed as `f1d160e`/`e01a55e` — no work was redone or lost.
 
 ## 2. AUDIT — REUSE/EXTEND, NO PARALLEL FINANCE ENGINE
 
@@ -98,4 +98,3 @@ Branch: `arena/01a0f798-kolbevintage` · Date: 2026-10-03
 - Early settlement (zoodtar) intentionally NOT implemented (future, disabled by scope).
 - Finance Center visual IA redesign deferred to Prompt 4 (the new tab lives inside the existing hub by design).
 - `settlement-policies/:id/revise` endpoint exists and is tested server-side; the admin UI exposes create/assign — revise ships with the Prompt-4 IA pass.
-- GitHub push of `4006a4b` + F6 pending token refresh at time of writing (work committed on the session branch; nothing local-only by intent).
