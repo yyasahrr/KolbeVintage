@@ -22,7 +22,6 @@ import { AdminServerOrders } from "./admin-server-orders";
 import { OrdersHub } from "./orders-hub";
 import { WarehouseHub } from "./warehouse-hub";
 import { AuditLogPanel } from "../components/audit-log-panel";
-import { CrmPanel } from "../components/crm-panel";
 import { CrmRetailPanel } from "../components/crm-retail-panel";
 import { CrmSuppliersPanel } from "../components/crm-suppliers-panel";
 import { UsersDirectoryPanel } from "../components/users-directory";
@@ -477,11 +476,10 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "wms" && moduleBoundary("انبار و نقل‌وانتقالات", <WarehouseHub flash={flash} initial={hubSub} />)}
           {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
           {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
-            { v: "customers", label: "مشتریان خرده", node: <div className="space-y-5">
-              <CrmRetailPanel />
-              <details className="rounded-[14px] border border-[var(--kv-line)] p-4"><summary className="cursor-pointer text-[12.5px] font-bold">مخاطبان CRM و اتوماسیون‌ها (قدیمی)</summary><div className="mt-4"><CrmPanel /></div></details>
-              <details className="rounded-[14px] border border-[var(--kv-line)] p-4"><summary className="cursor-pointer text-[12.5px] font-bold">فهرست همه کاربران سیستم</summary><div className="mt-4"><UsersDirectoryPanel flash={flash} /></div></details>
-            </div> },
+            // §109: legacy CrmPanel removed (contacts/notes/360 live in بازاریابی→CrmCenter; old
+            // simple automations superseded by CRM rules + مرکز اتوماسیون). UsersDirectory moved
+            // to تنظیمات — user administration is not CRM. Backend APIs untouched.
+            { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel /> },
             { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
             { v: "suppliers", label: "تأمین‌کنندگان", node: <div className="space-y-5">
               <CrmSuppliersPanel />
@@ -555,6 +553,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
             {/* §1.3: shipping CONFIGURATION (methods/rules) lives in settings — operational tracking lives in مرکز سفارشات. */}
             {moduleBoundary("پیکربندی حمل‌ونقل", <ShippingAdmin flash={flash} />)}
+            {/* §109: real system-user directory (migrated from CRM hub) — server-backed, RBAC-aware. */}
+            {moduleBoundary("کاربران سیستم", <UsersDirectoryPanel flash={flash} />)}
             <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
               <Card className="overflow-hidden">
                 <p className="p-5 pb-3 text-[14px] font-extrabold">نقش‌ها و دسترسی‌ها</p>

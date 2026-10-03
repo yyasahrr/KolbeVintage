@@ -25,7 +25,10 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
   const [query, setQuery] = useState("");
   const [sel, setSel] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [decision, setDecision] = useState<"approved" | "rejected" | "changes_requested">("approved");
+  /** §56-§63: two-step decision — step 1 approve/disapprove, step 2 (only on disapprove) fix-request vs final reject. */
+  const [gate, setGate] = useState<"approve" | "disapprove">("approve");
+  const [disapproveKind, setDisapproveKind] = useState<"changes_requested" | "rejected">("changes_requested");
+  const decision: "approved" | "rejected" | "changes_requested" = gate === "approve" ? "approved" : disapproveKind;
   const [reasonCode, setReasonCode] = useState("");
   const [note, setNote] = useState("");
   const [documentsChecked, setDocumentsChecked] = useState(false);
@@ -70,7 +73,7 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
         reviews: (Array.isArray(row.reviews) ? (row.reviews as unknown[]) : [])
           .map(normalizeProductReview).filter((r): r is ProductReview => r !== null),
       });
-      setDecision("approved"); setReasonCode(""); setNote(""); setDocumentsChecked(false);
+      setGate("approve"); setDisapproveKind("changes_requested"); setReasonCode(""); setNote(""); setDocumentsChecked(false);
     }).catch(() => { if (live) setDetail(null); });
     return () => { live = false; };
   }, [sel]);
@@ -157,9 +160,15 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
                   </div>
                 )}
                 <div className="mt-4 space-y-3 border-t border-[var(--kv-line)] pt-4">
-                  <Field label="تصمیم">
-                    <Segmented<"approved" | "rejected" | "changes_requested"> options={[{ v: "approved", label: "تأیید و انتشار" }, { v: "changes_requested", label: "نیازمند اصلاح" }, { v: "rejected", label: "رد" }]} value={decision} onChange={setDecision} />
+                  <Field label="مرحله ۱ — نتیجه بازبینی">
+                    <Segmented<"approve" | "disapprove"> options={[{ v: "approve", label: "تأیید و انتشار" }, { v: "disapprove", label: "عدم تأیید" }]} value={gate} onChange={setGate} />
                   </Field>
+                  {gate === "approve" && <p className="rounded-[10px] bg-[var(--kv-surface-2)]/60 p-2.5 text-[11.5px] leading-5 text-[var(--kv-muted)]">تأیید فقط «مجوز حضور در بازارچه عمده» است؛ هیچ موجودی انباری ایجاد نمی‌کند — موجودی فقط با اسناد انبار (WMS) ساخته می‌شود.</p>}
+                  {gate === "disapprove" && (
+                    <Field label="مرحله ۲ — نوع عدم تأیید">
+                      <Segmented<"changes_requested" | "rejected"> options={[{ v: "changes_requested", label: "نیازمند اصلاح" }, { v: "rejected", label: "رد نهایی" }]} value={disapproveKind} onChange={setDisapproveKind} />
+                    </Field>
+                  )}
                   {decision !== "approved" && (
                     <Field label={decision === "rejected" ? "دلیل رد (الزامی)" : "دلیل اصلاح (الزامی — یا توضیح بنویسید)"} hint="متن دلیل برای تأمین‌کننده ارسال و در سوابق ثبت می‌شود">
                       <Select options={["انتخاب دلیل…", ...reasons.filter((r) => r.active).map((r) => r.label)]} value={reasons.find((r) => r.code === reasonCode)?.label ?? "انتخاب دلیل…"} onChange={(label) => setReasonCode(reasons.find((r) => r.label === label)?.code ?? "")} />
@@ -168,7 +177,7 @@ export function MarketplaceReviewPanel({ flash }: { flash: F }) {
                   <Field label="توضیح بازبین (برای تأمین‌کننده)"><Textarea rows={2} value={note} onChange={setNote} placeholder="مثلاً: تصویر دوم تار است؛ لطفاً جایگزین کنید." /></Field>
                   {detail.supplierId && <Checkbox checked={documentsChecked} onChange={setDocumentsChecked} label="مدارک تأمین‌کننده بررسی شد (شرط تأیید محصول تأمین‌کننده)" />}
                   <div className="grid grid-cols-2 gap-2">
-                    <Btn variant={decision === "approved" ? "accent" : "soft"} size="sm" disabled={busy} icon={decision === "approved" ? <Check size={14} /> : <X size={14} />} onClick={() => void review()}>ثبت بازبینی</Btn>
+                    <Btn variant={decision === "approved" ? "accent" : decision === "rejected" ? "dark" : "soft"} size="sm" disabled={busy} icon={decision === "approved" ? <Check size={14} /> : <X size={14} />} onClick={() => void review()}>{decision === "approved" ? "تأیید و انتشار" : decision === "changes_requested" ? "ارسال درخواست اصلاح" : "رد محصول"}</Btn>
                     {(detail.status === "rejected" || detail.status === "draft") && (
                       <Btn variant="soft" size="sm" disabled={busy} icon={<RotateCcw size={14} />} onClick={() => void (async () => { try { await marketplaceApi.adminResubmit(detail.id); flash("محصول دوباره به صف بازبینی برگشت"); await load(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()}>ارسال مجدد به صف</Btn>
                     )}

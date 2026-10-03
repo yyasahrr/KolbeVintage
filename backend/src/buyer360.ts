@@ -398,9 +398,12 @@ export function registerBuyerRoutes(app: FastifyInstance, pool: DbPool, config: 
   app.post('/api/v1/admin/buyers/:userId/consent', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'buyers:manage');
     const { userId } = z.object({ userId: z.uuid() }).parse(request.params);
+    // §100: the admin UI always sends a human `reason` with consent changes — the strict
+    // schema used to reject it with 400. Accept it and keep it in the audit trail.
     const body = z.object({
       marketingSms: z.boolean().optional(), transactionalSms: z.boolean().optional(),
       emailMarketing: z.boolean().optional(), doNotContact: z.boolean().optional(),
+      reason: z.string().trim().max(200).optional(),
     }).strict().parse(request.body);
     return transaction(pool, async (client) => {
       const before = await one<Record<string, unknown>>(client, 'SELECT * FROM customer_consents WHERE user_id = $1', [userId]);

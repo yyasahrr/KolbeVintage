@@ -164,6 +164,11 @@ test('marketing: campaign preview breakdown + configurable frequency cap (§28-�
     };
     const tail = suffix.replace(/\D/g, '9').padEnd(5, '0').slice(0, 5);
     const consentedId = await mk(tail, true);
+
+    // §100 regression: the admin consent form sends a human `reason` — must be accepted, not 400.
+    const consentWithReason = await app.inject({ method: 'POST', url: `/api/v1/admin/buyers/${consentedId}/consent`,
+      headers, payload: { marketingSms: true, reason: 'تنظیم از پنل مدیریت' } });
+    assert.equal(consentWithReason.statusCode, 200, consentWithReason.body);
     await mk(String((Number(tail) + 1) % 100000).padStart(5, '0'), false);
 
     // dry-run: breakdown shows matched=2, eligible=1, optedOut=1
