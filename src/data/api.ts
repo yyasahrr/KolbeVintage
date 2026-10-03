@@ -1146,6 +1146,7 @@ export const financeOpsApi = {
     const q = new URLSearchParams(params);
     return authFetch<{ supplier: Record<string, string>; openingBalanceRial: string; account: Record<string, string> | null;
       orders: Record<string, unknown>[]; entries: Record<string, unknown>[];
+      settlementPosition: Record<string, string>; paidSettlements: Record<string, unknown>[];
       range: { from: string; to: string } }>(`/admin/finance/suppliers/${id}/statement?${q.toString()}`);
   },
   settlements: (params?: Record<string, string>) => {

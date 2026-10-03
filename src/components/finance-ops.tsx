@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Card, Btn, Status, SearchBox, Empty, LoadingState, ErrorState, Field, Input, Select,
-  Textarea, Drawer, Segmented, SectionHead, Switch, Modal, Tag,
+  Textarea, Drawer, Segmented, SectionHead, Switch, Modal, Tag, WorkspaceModal,
 } from "./primitives";
 import { AreaChart, BarList, Kpi } from "./charts";
 import { PersianDatePicker } from "./persian-date-picker";
@@ -336,8 +336,11 @@ function StatementDrawer({ supplierId, range, onClose, flash }: { supplierId: st
     } finally { setBusy(false); }
   };
 
+  const pos = statement.data?.settlementPosition as Record<string, string> | undefined;
+  const paidSettlements = ((statement.data?.paidSettlements ?? []) as Row[]);
   return (
-    <Drawer open onClose={onClose} title={`حساب مالی ${text(statement.data?.supplier as Row | null, "display_name", "تأمین‌کننده")}`} wide>
+    <WorkspaceModal open onClose={onClose} title={`مالی تأمین‌کننده — ${text(statement.data?.supplier as Row | null, "display_name", "تأمین‌کننده")}`}
+      subtitle="صورت‌حساب بر پایه دفتر کل تأمین‌کننده و موقعیت تسویه زمان‌بندی‌شده">
       <div className="space-y-5">
         <div className="flex flex-wrap items-end gap-3">
           <div className="w-[180px]"><PersianDatePicker label="از" value={local.from} onChange={(iso) => iso && setLocal({ ...local, from: iso })} /></div>
@@ -351,14 +354,44 @@ function StatementDrawer({ supplierId, range, onClose, flash }: { supplierId: st
 
         {statement.data && (
           <>
-            <Card className="space-y-2 p-4">
-              <Line label="مانده آغاز دوره" value={fmtToman(statement.data.openingBalanceRial)} strong />
-              <Line label="پرداختنی معلق" value={fmtToman(account?.pending_payable_rial)} />
-              <Line label="قابل پرداخت" value={fmtToman(account?.available_payable_rial)} />
-              <Line label="مسدود" value={fmtToman(account?.blocked_rial)} />
-              <Line label="تسویه‌شده" value={fmtToman(account?.settled_rial)} />
-              <Line label="پیش‌پرداخت" value={fmtToman(account?.prepayments_rial)} />
-            </Card>
+            {pos && (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                {([["Settlement Hold", pos.heldRial], ["مسدود", pos.blockedRial], ["آماده تسویه", pos.eligibleRial],
+                  ["در تسویه برنامه‌ریزی‌شده", pos.scheduledRial], ["تسویه‌شده", pos.settledRial],
+                  ["Recovery باز", pos.openRecoveryRial]] as const).map(([label, v]) => (
+                  <div key={label} className="rounded-[12px] border border-[var(--kv-line)] p-3">
+                    <p className="text-[11px] text-[var(--kv-muted)]">{label}</p>
+                    <p className="text-[13.5px] font-extrabold tabular-nums">{fmtToman(v)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            {paidSettlements.length > 0 && (
+              <Card className="overflow-hidden">
+                <p className="px-4 py-3 text-[13px] font-bold">تسویه‌های پرداخت‌شده در بازه ({fmtNum(paidSettlements.length)})</p>
+                <table className="kv-table text-xs"><thead><tr><th>سند تسویه</th><th>خالص واریز</th><th>کد پیگیری بانکی</th><th>تاریخ واریز</th></tr></thead><tbody>
+                  {paidSettlements.map((row) => (
+                    <tr key={text(row, "reference")}>
+                      <td className="font-mono text-[11px]">{text(row, "reference")}</td>
+                      <td className="tabular-nums">{fmtToman(row.net_rial)}</td>
+                      <td className="font-mono text-[11px]" dir="ltr">{text(row, "paid_reference")}</td>
+                      <td className="tabular-nums">{formatPersianDate(text(row, "paid_at"))}</td>
+                    </tr>
+                  ))}
+                </tbody></table>
+              </Card>
+            )}
+            <details className="rounded-[14px] border border-[var(--kv-line)] p-4">
+              <summary className="cursor-pointer text-[12.5px] font-bold text-[var(--kv-muted)]">حساب قدیمی (بایگانی — مدل پیش از تسویه زمان‌بندی‌شده)</summary>
+              <div className="mt-3 space-y-2">
+                <Line label="مانده آغاز دوره" value={fmtToman(statement.data.openingBalanceRial)} strong />
+                <Line label="پرداختنی معلق" value={fmtToman(account?.pending_payable_rial)} />
+                <Line label="قابل پرداخت (قدیمی)" value={fmtToman(account?.available_payable_rial)} />
+                <Line label="مسدود" value={fmtToman(account?.blocked_rial)} />
+                <Line label="تسویه‌شده" value={fmtToman(account?.settled_rial)} />
+                <Line label="پیش‌پرداخت (بایگانی)" value={fmtToman(account?.prepayments_rial)} />
+              </div>
+            </details>
 
             <Card className="overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3">
@@ -411,15 +444,16 @@ function StatementDrawer({ supplierId, range, onClose, flash }: { supplierId: st
           </>
         )}
       </div>
-    </Drawer>
+    </WorkspaceModal>
   );
 }
 
 const EVENT_LABEL: Record<string, string> = {
+  payable_accrual: "ثبت سند فروش (Payable)", refund: "بازپرداخت", recovery: "Recovery", settlement_paid: "واریز تسویه",
   order_sale: "فروش سفارش", commission: "کارمزد", shipping_charge: "هزینه حمل",
   return_cost: "مرجوعی", adjustment_credit: "اصلاح بستانکار", adjustment_debit: "اصلاح بدهکار",
   settlement: "تسویه/پرداخت", prepayment: "پیش‌پرداخت", prepayment_applied: "اعمال پیش‌پرداخت",
-  penalty: "جریمه", bonus: "پاداش", tax: "مالیات", withholding: "کسر از پرداخت", withdrawal: "برداشت",
+  penalty: "جریمه", bonus: "پاداش", tax: "مالیات", withholding: "کسر از پرداخت", withdrawal: "برداشت (قدیمی)",
 };
 
 /* ============================== A/P aging ============================== */

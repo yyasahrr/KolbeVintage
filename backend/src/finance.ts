@@ -333,6 +333,23 @@ export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config
          FROM order_lines ol JOIN orders o ON o.id = ol.order_id
         WHERE ol.supplier_id = $1 AND o.updated_at >= $2 AND o.updated_at < $3
         GROUP BY 1,2,3,4 ORDER BY o.updated_at DESC LIMIT 100`, [id, start, end]);
+    // Prompt 4 (§87-§89): statement V2 position — canonical payable/settlement data,
+    // same tables the supplier portal and settlement center read. No second engine.
+    const position = await one<Record<string, string>>(pool,
+      `SELECT
+         COALESCE(SUM(net_rial) FILTER (WHERE status IN ('held','blocked')), 0)::text AS held,
+         COALESCE(SUM(net_rial) FILTER (WHERE status = 'blocked'), 0)::text AS blocked,
+         COALESCE(SUM(net_rial) FILTER (WHERE status = 'eligible'), 0)::text AS eligible,
+         COALESCE(SUM(net_rial) FILTER (WHERE status = 'scheduled'), 0)::text AS scheduled,
+         COALESCE(SUM(net_rial) FILTER (WHERE status = 'settled'), 0)::text AS settled
+       FROM supplier_child_payables WHERE supplier_id = $1`, [id]);
+    const recovery = await one<{ open: string }>(pool,
+      `SELECT COALESCE(SUM(amount_rial - offset_rial) FILTER (WHERE status = 'open'), 0)::text AS open
+         FROM supplier_recoveries WHERE supplier_id = $1`, [id]);
+    const paidSettlements = await pool.query(
+      `SELECT reference, net_rial::text AS net_rial, paid_reference, paid_at
+         FROM settlements WHERE party_user_id = $1 AND kind = 'scheduled' AND status IN ('paid', 'reconciled')
+          AND paid_at >= $2 AND paid_at < $3 ORDER BY paid_at DESC LIMIT 50`, [id, start, end]);
     return {
       supplier: { id, ...supplier },
       range: { from: start.toISOString(), to: end.toISOString() },
@@ -340,6 +357,12 @@ export function registerFinanceRoutes(app: FastifyInstance, pool: DbPool, config
       account,
       orders: orders.rows,
       entries: entries.rows,
+      settlementPosition: {
+        heldRial: position?.held ?? '0', blockedRial: position?.blocked ?? '0',
+        eligibleRial: position?.eligible ?? '0', scheduledRial: position?.scheduled ?? '0',
+        settledRial: position?.settled ?? '0', openRecoveryRial: recovery?.open ?? '0',
+      },
+      paidSettlements: paidSettlements.rows,
     };
   });
 
