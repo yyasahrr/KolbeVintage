@@ -254,19 +254,19 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               </span>
             </button>
 
-            <nav className="mr-6 hidden items-center gap-1 lg:flex" aria-label="ناوبری اصلی">
+            <nav className="mr-4 hidden items-center gap-1 lg:flex xl:mr-6" aria-label="ناوبری اصلی">
               {links.map((l) => (
                 <button
                   key={l.label} onClick={() => { if (l.mega) { setMegaOpen(!megaOpen); return; } setMegaOpen(false); l.onClick(); }} aria-current={l.active ? "page" : undefined}
                   aria-expanded={l.mega ? megaOpen : undefined} aria-haspopup={l.mega ? "true" : undefined}
                   className={cn(
-                    "kv-press relative flex items-center gap-1.5 rounded-[10px] px-3.5 py-2 text-[13.5px] font-bold transition-colors",
+                    "kv-press relative flex items-center gap-1.5 rounded-[10px] px-2.5 py-2 text-[13.5px] font-bold transition-colors xl:px-3.5",
                     l.vip && "text-[var(--kv-accent)]",
                     l.active ? "text-[var(--kv-ink)]" : !l.vip && "text-[var(--kv-muted)] hover:text-[var(--kv-ink)]"
                   )}
                 >
                   {l.vip && <Crown size={14} />}{l.label}
-                  {l.active && <span className="absolute inset-x-3.5 -bottom-[3px] h-[2px] rounded-full bg-[var(--kv-accent)]" />}
+                  {l.active && <span className="absolute inset-x-2.5 -bottom-[3px] h-[2px] rounded-full bg-[var(--kv-accent)] xl:inset-x-3.5" />}
                 </button>
               ))}
             </nav>
@@ -310,7 +310,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
                 <div className="relative mr-1" ref={menuRef}>
                   <button onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen} className="kv-press flex h-10 items-center gap-2 rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-2 pl-3 text-[13px] font-bold">
                     <span className={cn("flex h-7 w-7 items-center justify-center rounded-[8px] text-[12px]", role === "vip" ? "bg-[#1B2A4A] text-[#E8D9C3]" : "bg-[var(--kv-accent)]/12 text-[var(--kv-accent)]")}>{account?.name[0]}</span>
-                    <span className="hidden max-w-[120px] truncate sm:block">{account?.name}</span>
+                    <span className="hidden max-w-[120px] truncate sm:block lg:hidden xl:block">{account?.name}</span>
                     <ChevronDown size={14} className={cn("transition-transform", menuOpen && "rotate-180")} />
                   </button>
                   {menuOpen && (
