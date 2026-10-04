@@ -76,11 +76,18 @@ test('crm read models: retail list pagination/filter, summary KPIs, supplier + V
        VALUES ($1,$2,$3,'retail','cash','delivered',150000000,150000000)`,
       [randomUUID(), `CRMHUB-${suffix}`, custId]);
 
+    // QA2-CRM-014: a supplier whose login ALSO has the customer role (dual-role workshop
+    // account) must NOT appear in the retail customers list — it belongs to the supplier tab.
+    const workshopId = randomUUID();
+    await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+      [workshopId, `crmhub-workshop-${suffix}@example.test`, await argon2.hash('SupplierPassword123!'), `کارگاه ${suffix}`]);
+    await pool.query("INSERT INTO user_roles(user_id,role_code) VALUES ($1,'customer'), ($1,'supplier')", [workshopId]);
+
     // §6: paginated retail list with behavior + evidence
     const list = await app.inject({ method: 'GET', url: `/api/v1/admin/crm/retail-customers?search=${suffix}&limit=10`, headers });
     assert.equal(list.statusCode, 200, list.body);
     const body = list.json() as { total: number; items: Array<Record<string, unknown>> };
-    assert.equal(body.total, 1);
+    assert.equal(body.total, 1, 'dual-role supplier account is excluded from the retail list');
     const row = body.items[0]!;
     assert.equal(row.behavior, 'active');
     assert.equal(row.behavior_label, 'فعال');

@@ -919,6 +919,9 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
          ) prev ON true
          LEFT JOIN LATERAL (SELECT count(*)::int AS returns FROM return_requests rq WHERE rq.requester_id = u.id) rr ON true
          WHERE NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.status = 'active')
+           -- QA2-CRM-014: supplier/staff logins may also hold the customer role (dual-role accounts);
+           -- the RETAIL list must not show them — suppliers have their own CRM tab.
+           AND NOT EXISTS (SELECT 1 FROM user_roles urx WHERE urx.user_id = u.id AND urx.role_code IN ('supplier', 'admin'))
        ), classified AS (
          SELECT b.*,
                 CASE
