@@ -104,6 +104,8 @@ export type PromotionRule = {
   ends?: string;
   priority: number;
   active: boolean;
+  /** DEC-PRICING-001 (Option A): a rule suspended by a festival stays dormant until explicit reactivation. */
+  suspendedByPromotionId?: string | null;
 };
 
 export type ResolvedPromotionPrice = {
@@ -163,6 +165,8 @@ export function resolveVariantPromotion(
 
   const matchingRules = (rules ?? []).filter((r) => {
     if (!r.active) return false;
+    // DEC-PRICING-001 (Option A): festival-suspended rules never price the storefront.
+    if (r.suspendedByPromotionId || (r as unknown as Record<string, unknown>).suspended_by_promotion_id) return false;
     if (r.starts && r.starts > today) return false;
     if (r.ends && r.ends < today) return false;
     if (r.productId !== product.id) return false;

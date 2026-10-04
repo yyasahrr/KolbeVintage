@@ -550,16 +550,24 @@ test('Festival XOR standalone discounts (A5/A6) + product delete guard (P)', { s
     assert.equal((summary.json().activeFestival as { promotionId: string }).promotionId, festivalBId);
     assert.ok((summary.json().suspendedStandaloneRules as number) >= 1);
 
-    // A6: leaving the festival restores still-valid standalone rules automatically.
+    // DEC-PRICING-001 (PO decision = Option A): after the festival ends, previously
+    // suspended standalone rules DO NOT come back automatically.
     const deactivate = await app.inject({ method: 'PATCH', url: `/api/v1/promotions/${festivalBId}`, headers: adminHeaders, payload: { active: false } });
     assert.equal(deactivate.statusCode, 200, deactivate.body);
-    // Festival A is also inactive for this product (its rule was deactivated on move)…
-    price = await app.inject({ method: 'GET', url: `/api/v1/pricing/variants/${variantId}` });
-    // …but the ORIGINAL standalone rule was suspended by festival A which is still active.
-    // Deactivate festival A too, then the standalone discount must come back.
     await app.inject({ method: 'PATCH', url: `/api/v1/promotions/${festivalAId}`, headers: adminHeaders, payload: { active: false } });
     price = await app.inject({ method: 'GET', url: `/api/v1/pricing/variants/${variantId}` });
-    assert.equal(price.json().finalPrice, '900000', 'A6: still-valid standalone rule restored after festival exit');
+    assert.equal(price.json().finalPrice, '1000000', 'Option A: suspended rule stays dormant after festival exit');
+
+    // Reactivation is an explicit admin action (new endpoint); while a festival is still
+    // active on the product it must be refused.
+    const summaryAfterExit = await app.inject({ method: 'GET', url: `/api/v1/promotions/product-summary?productId=${productId}`, headers: adminHeaders });
+    assert.ok((summaryAfterExit.json().suspendedStandaloneRules as number) >= 1, 'rule still reported suspended after festival exit');
+    const reactivate = await app.inject({ method: 'POST', url: `/api/v1/promotions/rules/${standaloneRuleId}/reactivate`, headers: adminHeaders });
+    assert.equal(reactivate.statusCode, 200, reactivate.body);
+    price = await app.inject({ method: 'GET', url: `/api/v1/pricing/variants/${variantId}` });
+    assert.equal(price.json().finalPrice, '900000', 'Option A: rule returns only after explicit reactivation');
+    const reactivateAgain = await app.inject({ method: 'POST', url: `/api/v1/promotions/rules/${standaloneRuleId}/reactivate`, headers: adminHeaders });
+    assert.equal(reactivateAgain.statusCode, 400, 'reactivating a non-suspended rule is rejected');
 
     // P: delete guard — product has promotion history → hard delete refused.
     const blockedDelete = await app.inject({ method: 'DELETE', url: `/api/v1/products/${productId}`, headers: adminHeaders });

@@ -193,15 +193,9 @@ export async function resolveVariantPrice(
        AND r.channel IN ('all', $1)
        AND (r.starts_at IS NULL OR r.starts_at <= $2)
        AND (r.ends_at IS NULL OR r.ends_at > $2)
-       -- A5/A6: rules suspended by a festival stay dormant only while that festival is
-       -- really active; when it ends, still-valid rules are restored automatically.
-       AND (r.suspended_by_promotion_id IS NULL OR NOT EXISTS (
-         SELECT 1 FROM promotions sp
-         WHERE sp.id = r.suspended_by_promotion_id
-           AND sp.active = true
-           AND (sp.starts_at IS NULL OR sp.starts_at <= $2)
-           AND (sp.ends_at IS NULL OR sp.ends_at > $2)
-       ))
+       -- DEC-PRICING-001 (PO decision = Option A): rules suspended by a festival stay
+       -- dormant even after the festival ends; the admin must reactivate them explicitly.
+       AND r.suspended_by_promotion_id IS NULL
        AND (r.promotion_id IS NULL OR (
          pr.active = true
          AND pr.channel IN ('all', $1)
@@ -425,9 +419,8 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
               r.discount_type, r.discount_value::text AS discount_value,
               r.starts_at, r.ends_at, r.active, r.priority, r.created_at,
               r.suspended_by_promotion_id, sp.name AS suspended_by_name,
-              (r.suspended_by_promotion_id IS NOT NULL AND sp.active = true
-                AND (sp.starts_at IS NULL OR sp.starts_at <= now())
-                AND (sp.ends_at IS NULL OR sp.ends_at > now())) AS effectively_suspended,
+              -- DEC-PRICING-001 (Option A): suspension persists until explicit reactivation.
+              (r.suspended_by_promotion_id IS NOT NULL) AS effectively_suspended,
               pr.kind AS promotion_kind, pr.name AS promotion_name
        FROM promotion_rules r
        LEFT JOIN products p ON p.id = r.product_id
@@ -461,13 +454,9 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
     const counts = await one<{ active_standalone: string; suspended_standalone: string }>(pool,
       `SELECT
          count(*) FILTER (WHERE r.promotion_id IS NULL AND r.active = true
-           AND (r.suspended_by_promotion_id IS NULL OR NOT EXISTS (
-             SELECT 1 FROM promotions sp WHERE sp.id = r.suspended_by_promotion_id AND sp.active = true
-               AND (sp.starts_at IS NULL OR sp.starts_at <= now()) AND (sp.ends_at IS NULL OR sp.ends_at > now()))))::text AS active_standalone,
+           AND r.suspended_by_promotion_id IS NULL)::text AS active_standalone,
          count(*) FILTER (WHERE r.promotion_id IS NULL AND r.active = true
-           AND r.suspended_by_promotion_id IS NOT NULL AND EXISTS (
-             SELECT 1 FROM promotions sp WHERE sp.id = r.suspended_by_promotion_id AND sp.active = true
-               AND (sp.starts_at IS NULL OR sp.starts_at <= now()) AND (sp.ends_at IS NULL OR sp.ends_at > now())))::text AS suspended_standalone
+           AND r.suspended_by_promotion_id IS NOT NULL)::text AS suspended_standalone
        FROM promotion_rules r WHERE r.product_id = $1`,
       [query.productId]);
     return {
@@ -735,6 +724,35 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
       );
       await audit(client, user.id, 'promotion_rule.updated', 'promotion_rule', id, existing, body, request.ip);
       return { id, active: nextActive, priority: nextPriority, discountValue: nextValue.toString(), name: nextName, startsAt: nextStarts, endsAt: nextEnds };
+    });
+  });
+
+  // DEC-PRICING-001 (Option A): explicit admin reactivation of a festival-suspended rule.
+  app.post('/api/v1/promotions/rules/:id/reactivate', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!user.permissions.includes('promotions:write')) requirePermission(user, 'products:write');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const existing = await one<{ id: string; product_id: string | null; suspended_by_promotion_id: string | null; active: boolean }>(
+        client, 'SELECT id, product_id, suspended_by_promotion_id, active FROM promotion_rules WHERE id = $1 FOR UPDATE', [id]);
+      if (!existing) throw notFound();
+      if (!existing.suspended_by_promotion_id) throw badRequest('این قانون معلق نیست و نیازی به فعال‌سازی مجدد ندارد.');
+      if (existing.product_id) {
+        const activeFestival = await one<{ promo_name: string }>(client,
+          `SELECT pr.name AS promo_name
+           FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
+           WHERE r.product_id = $1 AND r.active = true AND pr.kind = 'festival' AND pr.active = true
+             AND (pr.starts_at IS NULL OR pr.starts_at <= now())
+             AND (pr.ends_at IS NULL OR pr.ends_at > now())
+           LIMIT 1`, [existing.product_id]);
+        if (activeFestival) {
+          throw conflict(`این محصول هنوز در جشنواره فعال «${activeFestival.promo_name}» است؛ ابتدا محصول را از جشنواره خارج کنید.`);
+        }
+      }
+      await client.query('UPDATE promotion_rules SET suspended_by_promotion_id = NULL, updated_at = now() WHERE id = $1', [id]);
+      await audit(client, user.id, 'promotion_rule.reactivated', 'promotion_rule', id,
+        { suspendedByPromotionId: existing.suspended_by_promotion_id }, { suspendedByPromotionId: null }, request.ip);
+      return { id, reactivated: true, active: existing.active };
     });
   });
 

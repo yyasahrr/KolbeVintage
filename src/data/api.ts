@@ -1621,6 +1621,9 @@ export const promotionRulesApi = {
     }),
   deactivateRule: (id: string) =>
     authFetch<Record<string, unknown>>(`/promotions/rules/${id}`, { method: "DELETE" }),
+  /** DEC-PRICING-001 (Option A): explicit reactivation of a festival-suspended rule. */
+  reactivateRule: (id: string) =>
+    authFetch<Record<string, unknown>>(`/promotions/rules/${id}/reactivate`, { method: "POST" }),
   resolveVariantPrice: (variantId: string, channel: "retail" | "wholesale" = "retail", paymentMode: "cash" | "four_installments" = "cash") =>
     publicApi.get<Record<string, unknown>>(`/pricing/variants/${variantId}?channel=${channel}&paymentMode=${paymentMode}`),
   /** A1/A4/A5: per-product promotion snapshot for the «تخفیف و جشنواره» column. */

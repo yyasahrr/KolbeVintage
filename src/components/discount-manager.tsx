@@ -154,10 +154,21 @@ export function DiscountManager({ productId, productName, productImage, sku, onC
     setBusy(true);
     try {
       await promotionRulesApi.deactivateRule(festivalRule.id);
-      flash("محصول از جشنواره خارج شد؛ تخفیف‌های مستقل معتبر به‌صورت خودکار برگشتند.");
+      flash("محصول از جشنواره خارج شد. تخفیف‌های معلق خودکار برنمی‌گردند؛ در فهرست قوانین با دکمه «فعال‌سازی مجدد» برگردانید.");
       await reload();
     } catch (e) {
       flash(e instanceof Error ? e.message : "خطا در خروج از جشنواره");
+    } finally { setBusy(false); }
+  };
+
+  const reactivateRule = async (rule: RuleRow) => {
+    setBusy(true);
+    try {
+      await promotionRulesApi.reactivateRule(rule.id);
+      flash("تخفیف دوباره فعال شد.");
+      await reload();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "خطا در فعال‌سازی مجدد");
     } finally { setBusy(false); }
   };
 
@@ -228,7 +239,13 @@ export function DiscountManager({ productId, productName, productImage, sku, onC
                     )}>
                       <span className="font-semibold">{ruleLabel(rule)}</span>
                       {rule.promotion_kind === "festival" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10.5px] font-bold text-amber-800">{rule.promotion_name}</span>}
-                      {rule.effectively_suspended && <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10.5px] font-bold text-gray-500">معلق به دلیل جشنواره</span>}
+                      {rule.effectively_suspended && <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10.5px] font-bold text-gray-500">معلق{rule.suspended_by_name ? ` — ${rule.suspended_by_name}` : " به دلیل جشنواره"}</span>}
+                      {rule.effectively_suspended && !inFestival && (
+                        <button
+                          className="rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                          onClick={() => void reactivateRule(rule)} disabled={busy}
+                        >فعال‌سازی مجدد</button>
+                      )}
                       <button className="mr-auto text-red-400 hover:text-red-600" title="غیرفعال‌سازی" onClick={() => void removeRule(rule)} disabled={busy}>
                         <Trash2 size={14} />
                       </button>
