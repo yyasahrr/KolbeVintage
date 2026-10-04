@@ -687,6 +687,88 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
     return reply.code(201).send(rule);
   });
 
+  // §17.10: bulk festival assignment from «همه کالاها» — one call, per-item result summary.
+  app.post('/api/v1/promotions/festival-bulk', async (request, reply) => {
+    const user = await principal(request, pool, config);
+    if (!user.permissions.includes('promotions:write')) requirePermission(user, 'products:write');
+    const body = z.object({
+      promotionId: z.uuid(),
+      productIds: z.array(z.uuid()).min(1).max(200),
+      discountType: z.enum(['percent', 'fixed_rial']),
+      discountValue: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]),
+      moveFromFestival: z.boolean().default(false),
+    }).strict().parse(request.body);
+
+    const promo = await one<{ id: string; name: string; kind: string; active: boolean }>(
+      pool, 'SELECT id, name, kind, active FROM promotions WHERE id = $1', [body.promotionId]);
+    if (!promo) throw notFound();
+    if (promo.kind !== 'festival') throw badRequest('شناسه انتخاب‌شده جشنواره نیست.');
+    if (!promo.active) throw badRequest(`جشنواره «${promo.name}» غیرفعال است.`);
+    const discountValue = rial(body.discountValue);
+    if (body.discountType === 'percent' && (discountValue < 1n || discountValue > 95n)) {
+      throw badRequest('درصد تخفیف باید بین ۱ تا ۹۵ باشد.');
+    }
+
+    const productIds = [...new Set(body.productIds)];
+    const results: { productId: string; productName: string | null; status: string; message: string }[] = [];
+    for (const productId of productIds) {
+      try {
+        const result = await transaction(pool, async (client) => {
+          const product = await one<{ id: string; name: string }>(client, 'SELECT id, name FROM products WHERE id = $1 FOR UPDATE', [productId]);
+          if (!product) return { productId, productName: null, status: 'error', message: 'محصول یافت نشد.' };
+          const existing = await one<{ promotion_id: string; promo_name: string }>(client,
+            `SELECT r.promotion_id, pr.name AS promo_name
+             FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
+             WHERE r.product_id = $1 AND r.active = true
+               AND pr.kind = 'festival' AND pr.active = true
+               AND (pr.starts_at IS NULL OR pr.starts_at <= now())
+               AND (pr.ends_at IS NULL OR pr.ends_at > now())
+             LIMIT 1`, [productId]);
+          if (existing && existing.promotion_id === body.promotionId) {
+            return { productId, productName: product.name, status: 'already_in_festival', message: `همین حالا در «${promo.name}» است.` };
+          }
+          if (existing) {
+            if (!body.moveFromFestival) {
+              return { productId, productName: product.name, status: 'needs_confirmation', message: `در جشنواره فعال «${existing.promo_name}» است؛ انتقال نیاز به تأیید دارد.` };
+            }
+            await client.query(
+              `UPDATE promotion_rules SET active = false, updated_at = now()
+               WHERE product_id = $1 AND active = true AND promotion_id = $2`,
+              [productId, existing.promotion_id]);
+          }
+          // §18: entering a festival SUSPENDS standalone rules (never deletes them).
+          await client.query(
+            `UPDATE promotion_rules SET suspended_by_promotion_id = $2, updated_at = now()
+             WHERE product_id = $1 AND promotion_id IS NULL AND active = true
+               AND suspended_by_promotion_id IS NULL`,
+            [productId, body.promotionId]);
+          const id = randomUUID();
+          await client.query(
+            `INSERT INTO promotion_rules(
+              id, promotion_id, name, channel, target_type, product_id,
+              discount_type, discount_value, active, priority, created_by
+            ) VALUES ($1,$2,$3,'all','product',$4,$5,$6,true,0,$7)`,
+            [id, body.promotionId, promo.name, productId, body.discountType, discountValue.toString(), user.id]);
+          await audit(client, user.id, 'promotion_rule.created', 'promotion_rule', id, undefined,
+            { bulk: true, promotionId: body.promotionId, productId, discountType: body.discountType, discountValue: discountValue.toString() }, request.ip);
+          return { productId, productName: product.name, status: existing ? 'moved' : 'added', message: existing ? `از «${existing.promo_name}» به «${promo.name}» منتقل شد.` : `به «${promo.name}» اضافه شد.` };
+        });
+        results.push(result);
+      } catch (error) {
+        results.push({ productId, productName: null, status: 'error', message: error instanceof Error ? error.message : 'خطای نامشخص' });
+      }
+    }
+    const summary = {
+      total: results.length,
+      added: results.filter((r) => r.status === 'added').length,
+      moved: results.filter((r) => r.status === 'moved').length,
+      alreadyInFestival: results.filter((r) => r.status === 'already_in_festival').length,
+      needsConfirmation: results.filter((r) => r.status === 'needs_confirmation').length,
+      errors: results.filter((r) => r.status === 'error').length,
+    };
+    return reply.code(200).send({ promotionId: body.promotionId, promotionName: promo.name, summary, results });
+  });
+
   app.patch('/api/v1/promotions/rules/:id', async (request) => {
     const user = await principal(request, pool, config);
     if (!user.permissions.includes('promotions:write')) requirePermission(user, 'products:write');

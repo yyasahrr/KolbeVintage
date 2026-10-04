@@ -569,6 +569,34 @@ test('Festival XOR standalone discounts (A5/A6) + product delete guard (P)', { s
     const reactivateAgain = await app.inject({ method: 'POST', url: `/api/v1/promotions/rules/${standaloneRuleId}/reactivate`, headers: adminHeaders });
     assert.equal(reactivateAgain.statusCode, 400, 'reactivating a non-suspended rule is rejected');
 
+    // §17.10: bulk festival assignment with per-item result summary.
+    const product2 = await app.inject({ method: 'POST', url: '/api/v1/products', headers: adminHeaders, payload: {
+      brand: 'Kolbe', name: `محصول دوم ${suffix}`, category: 'پیراهن', cashPriceRial: '2000000', variants: [{ size: 'M', color: 'blue' }] } });
+    assert.equal(product2.statusCode, 201, product2.body);
+    const product2Id = product2.json().id as string;
+    const festivalC = await app.inject({ method: 'POST', url: '/api/v1/promotions', headers: adminHeaders, payload: {
+      name: `جشنواره تابستانه ${suffix}`, kind: 'festival', exclusivePolicy: 'festival_exclusive', channel: 'all' } });
+    const festivalCId = festivalC.json().id as string;
+    const bulk = await app.inject({ method: 'POST', url: '/api/v1/promotions/festival-bulk', headers: adminHeaders, payload: {
+      promotionId: festivalCId, productIds: [productId, product2Id], discountType: 'percent', discountValue: 10 } });
+    assert.equal(bulk.statusCode, 200, bulk.body);
+    const bulkBody = bulk.json() as { summary: Record<string, number>; results: { productId: string; status: string }[] };
+    assert.equal(bulkBody.summary.added, 2, JSON.stringify(bulkBody));
+    // The reactivated standalone rule is suspended again by the bulk festival entry.
+    price = await app.inject({ method: 'GET', url: `/api/v1/pricing/variants/${variantId}` });
+    assert.equal(price.json().finalPrice, '900000', 'bulk festival (10%) prices the variant — standalone suspended');
+    assert.equal(price.json().source, 'festival');
+    // Second bulk toward another festival without confirmation → per-item needs_confirmation (no change applied).
+    const festivalD = await app.inject({ method: 'POST', url: '/api/v1/promotions', headers: adminHeaders, payload: {
+      name: `جشنواره پاییزه ${suffix}`, kind: 'festival', exclusivePolicy: 'festival_exclusive', channel: 'all' } });
+    const bulk2 = await app.inject({ method: 'POST', url: '/api/v1/promotions/festival-bulk', headers: adminHeaders, payload: {
+      promotionId: festivalD.json().id as string, productIds: [productId, product2Id], discountType: 'percent', discountValue: 25 } });
+    assert.equal((bulk2.json() as { summary: { needsConfirmation: number } }).summary.needsConfirmation, 2, bulk2.body);
+    // …and with explicit confirmation the move succeeds.
+    const bulk3 = await app.inject({ method: 'POST', url: '/api/v1/promotions/festival-bulk', headers: adminHeaders, payload: {
+      promotionId: festivalD.json().id as string, productIds: [product2Id], discountType: 'percent', discountValue: 25, moveFromFestival: true } });
+    assert.equal((bulk3.json() as { summary: { moved: number } }).summary.moved, 1, bulk3.body);
+
     // P: delete guard — product has promotion history → hard delete refused.
     const blockedDelete = await app.inject({ method: 'DELETE', url: `/api/v1/products/${productId}`, headers: adminHeaders });
     assert.equal(blockedDelete.statusCode, 409, 'P: product with history cannot be hard-deleted');

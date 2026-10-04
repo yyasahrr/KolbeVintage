@@ -1624,6 +1624,13 @@ export const promotionRulesApi = {
   /** DEC-PRICING-001 (Option A): explicit reactivation of a festival-suspended rule. */
   reactivateRule: (id: string) =>
     authFetch<Record<string, unknown>>(`/promotions/rules/${id}/reactivate`, { method: "POST" }),
+  /** §17.10: bulk festival assignment from «همه کالاها» — one call, per-item results. */
+  festivalBulk: (payload: { promotionId: string; productIds: string[]; discountType: "percent" | "fixed_rial"; discountValue: number | string; moveFromFestival?: boolean }) =>
+    authFetch<{
+      promotionId: string; promotionName: string;
+      summary: { total: number; added: number; moved: number; alreadyInFestival: number; needsConfirmation: number; errors: number };
+      results: { productId: string; productName: string | null; status: string; message: string }[];
+    }>("/promotions/festival-bulk", { method: "POST", body: JSON.stringify(payload) }),
   resolveVariantPrice: (variantId: string, channel: "retail" | "wholesale" = "retail", paymentMode: "cash" | "four_installments" = "cash") =>
     publicApi.get<Record<string, unknown>>(`/pricing/variants/${variantId}?channel=${channel}&paymentMode=${paymentMode}`),
   /** A1/A4/A5: per-product promotion snapshot for the «تخفیف و جشنواره» column. */

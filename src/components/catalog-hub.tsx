@@ -10,9 +10,11 @@
  *  - status columns stay in their own domains (§45): catalog status ≠ sale ≠ setup.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PackagePlus, RefreshCw } from "lucide-react";
-import { Btn, Card, Empty, ErrorState, Field, LoadingState, Modal, SearchBox, Segmented, WorkspaceModal } from "./primitives";
+import { BadgePercent, PackagePlus, PartyPopper, RefreshCw } from "lucide-react";
+import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, WorkspaceModal } from "./primitives";
 import { MarketplaceReviewPanel } from "./marketplace-review-panel";
+import { DiscountManager } from "./discount-manager";
+import { promoApi, promotionRulesApi } from "../data/api";
 import { ProductStudio } from "../portals/admin-product";
 import {
   catalogOpsApi, inventoryApi, productsApi, seriesTemplatesApi, sizeGuidesApi, specsApi,
@@ -70,8 +72,8 @@ export function CatalogHub({ flash }: { flash: F }) {
       )}
       {sub === "needs-setup" && <NeedsSetupPanel flash={flash} />}
       {sub === "review" && <MarketplaceReviewPanel flash={flash} />}
-      {sub === "all" && <AllProductsPanel mode="active" />}
-      {sub === "archive" && <AllProductsPanel mode="archived" />}
+      {sub === "all" && <AllProductsPanel mode="active" flash={flash} />}
+      {sub === "archive" && <AllProductsPanel mode="archived" flash={flash} />}
     </div>
   );
 }
@@ -291,13 +293,18 @@ function InventorySetupWorkspace({ product, flash, onClose, onDone }: {
 
 /* ------------------------------ §44: all products / archive ------------------------------ */
 
-function AllProductsPanel({ mode }: { mode: "active" | "archived" }) {
+function AllProductsPanel({ mode, flash }: { mode: "active" | "archived"; flash?: F }) {
   const [rows, setRows] = useState<AdminProductRow[] | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [owner, setOwner] = useState<"all" | "kolbe" | "supplier">("all");
   const [page, setPage] = useState(0);
+  // §17.10: bulk festival assignment + per-row discount drill
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [festivalModal, setFestivalModal] = useState(false);
+  const [bulkResult, setBulkResult] = useState<Awaited<ReturnType<typeof promotionRulesApi.festivalBulk>> | null>(null);
+  const [discountFor, setDiscountFor] = useState<AdminProductRow | null>(null);
   const limit = 30;
   const load = useCallback(() => {
     setError(null);
@@ -323,12 +330,24 @@ function AllProductsPanel({ mode }: { mode: "active" | "archived" }) {
         <div className="overflow-x-auto">
           <table className="kv-table w-full text-xs">
             {/* §44 columns: product | owner | catalog status | retail | wholesale | marketplace | setup — NO vague «فعال» badge. */}
-            <thead><tr><th>محصول</th><th>مالک</th><th>وضعیت کاتالوگ</th><th>موجودی خرده</th><th>موجودی عمده (سری)</th><th>پیشنهاد فعال بازارچه</th><th>راه‌اندازی موجودی</th></tr></thead>
+            <thead><tr>
+              {mode === "active" && <th className="w-8">
+                <input type="checkbox" className="accent-[var(--kv-accent)]" aria-label="انتخاب همه"
+                  checked={rows.length > 0 && rows.every((p) => selected.has(p.id))}
+                  onChange={(e) => setSelected((prev) => { const next = new Set(prev); for (const p of rows) { if (e.target.checked) next.add(p.id); else next.delete(p.id); } return next; })} />
+              </th>}
+              <th>محصول</th><th>مالک</th><th>وضعیت کاتالوگ</th><th>موجودی خرده</th><th>موجودی عمده (سری)</th><th>پیشنهاد فعال بازارچه</th><th>راه‌اندازی موجودی</th>{mode === "active" && <th>اقدام</th>}
+            </tr></thead>
             <tbody>
               {rows.map((p) => {
                 const pending = p.inventory_setup === "pending";
                 return (
                   <tr key={p.id}>
+                    {mode === "active" && <td>
+                      <input type="checkbox" className="accent-[var(--kv-accent)]" aria-label={`انتخاب ${p.name}`}
+                        checked={selected.has(p.id)}
+                        onChange={(e) => setSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(p.id); else next.delete(p.id); return next; })} />
+                    </td>}
                     <td><div className="font-bold">{p.name}</div><div className="text-[10.5px] text-[var(--kv-muted)]">{p.brand ?? "—"} · {p.category} · {fa(p.variant_count)} واریانت</div></td>
                     <td>{p.owner_type === "kolbe" ? "کلبه" : <span>تأمین‌کننده{p.supplier_name ? ` — ${p.supplier_name}` : ""}</span>}</td>
                     <td><Pill map={CATALOG_BADGE} value={p.status} /></td>
@@ -337,6 +356,9 @@ function AllProductsPanel({ mode }: { mode: "active" | "archived" }) {
                     <td className="font-bold">{p.owner_type !== "kolbe" ? "—" : pending ? <span className="text-[var(--kv-muted)]">—</span> : fa(p.wholesale_series_available)}</td>
                     <td>{p.active_offers > 0 ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10.5px] font-bold text-emerald-800">{fa(p.active_offers)} پیشنهاد</span> : "—"}</td>
                     <td>{p.owner_type === "kolbe" ? <Pill map={SETUP_BADGE} value={p.inventory_setup} /> : "—"}</td>
+                    {mode === "active" && <td>
+                      <Btn size="sm" variant="ghost" onClick={() => setDiscountFor(p)}><BadgePercent size={13} /> تخفیف و جشنواره</Btn>
+                    </td>}
                   </tr>
                 );
               })}
@@ -351,7 +373,134 @@ function AllProductsPanel({ mode }: { mode: "active" | "archived" }) {
           <Btn size="sm" variant="ghost" disabled={(page + 1) * limit >= total} onClick={() => setPage((p) => p + 1)}>بعدی</Btn>
         </div>
       )}
+      {mode === "active" && selected.size > 0 && (
+        <div className="sticky bottom-2 z-10 mt-3 flex flex-wrap items-center gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 py-2 shadow-[var(--shadow-soft-lg)]">
+          <span className="text-[12px] font-bold">{fa(selected.size)} کالا انتخاب شده</span>
+          <Btn size="sm" variant="accent" onClick={() => setFestivalModal(true)}><PartyPopper size={13} /> افزودن به جشنواره</Btn>
+          <Btn size="sm" variant="ghost" onClick={() => setSelected(new Set())}>لغو انتخاب</Btn>
+        </div>
+      )}
+      {festivalModal && (
+        <BulkFestivalModal
+          productIds={[...selected]}
+          onClose={() => setFestivalModal(false)}
+          onDone={(result) => { setFestivalModal(false); setBulkResult(result); setSelected(new Set()); load(); }}
+        />
+      )}
+      {bulkResult && (
+        <Modal open onClose={() => setBulkResult(null)} title={`نتیجه افزودن به «${bulkResult.promotionName}»`} max="max-w-[560px]">
+          <div className="space-y-3 text-[12.5px]">
+            <div className="flex flex-wrap gap-2">
+              {bulkResult.summary.added > 0 && <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-bold text-emerald-800">{fa(bulkResult.summary.added)} اضافه شد</span>}
+              {bulkResult.summary.moved > 0 && <span className="rounded-full bg-sky-100 px-2.5 py-1 font-bold text-sky-800">{fa(bulkResult.summary.moved)} منتقل شد</span>}
+              {bulkResult.summary.alreadyInFestival > 0 && <span className="rounded-full bg-gray-100 px-2.5 py-1 font-bold text-gray-600">{fa(bulkResult.summary.alreadyInFestival)} از قبل عضو</span>}
+              {bulkResult.summary.needsConfirmation > 0 && <span className="rounded-full bg-amber-100 px-2.5 py-1 font-bold text-amber-800">{fa(bulkResult.summary.needsConfirmation)} نیازمند تأیید انتقال</span>}
+              {bulkResult.summary.errors > 0 && <span className="rounded-full bg-red-100 px-2.5 py-1 font-bold text-red-700">{fa(bulkResult.summary.errors)} خطا</span>}
+            </div>
+            <ul className="max-h-72 space-y-1 overflow-y-auto">
+              {bulkResult.results.map((r) => (
+                <li key={r.productId} className="flex items-start justify-between gap-2 rounded-[8px] bg-[var(--kv-surface-2)] px-2.5 py-1.5">
+                  <span className="font-semibold">{r.productName ?? r.productId.slice(0, 8)}</span>
+                  <span className={cn("text-[11.5px]", r.status === "error" ? "text-red-600" : r.status === "needs_confirmation" ? "text-amber-700" : "text-[var(--kv-muted)]")}>{r.message}</span>
+                </li>
+              ))}
+            </ul>
+            {bulkResult.summary.needsConfirmation > 0 && (
+              <p className="rounded-[10px] bg-amber-50 px-3 py-2 text-[11.5px] leading-6 text-amber-800">
+                کالاهای نیازمند تأیید، در جشنواره دیگری فعال‌اند. برای انتقال، دوباره انتخاب‌شان کنید و در پنجره جشنواره گزینه «انتقال از جشنواره قبلی» را فعال کنید.
+              </p>
+            )}
+          </div>
+        </Modal>
+      )}
+      {discountFor && (
+        <DiscountManager
+          productId={discountFor.id}
+          productName={discountFor.name}
+          onClose={() => { setDiscountFor(null); load(); }}
+          flash={flash ?? (() => undefined)}
+        />
+      )}
     </Card>
+  );
+}
+
+/** §17.10: festival chooser for the bulk action — pick festival + discount, explicit move confirmation. */
+function BulkFestivalModal({ productIds, onClose, onDone }: {
+  productIds: string[];
+  onClose: () => void;
+  onDone: (result: Awaited<ReturnType<typeof promotionRulesApi.festivalBulk>>) => void;
+}) {
+  const [festivals, setFestivals] = useState<{ id: string; name: string; active: boolean; kind?: string }[] | null>(null);
+  const [pick, setPick] = useState("");
+  const [dType, setDType] = useState<"percent" | "fixed_rial">("percent");
+  const [dValue, setDValue] = useState("");
+  const [move, setMove] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    promoApi.festivals()
+      .then((r) => {
+        const list = ((r.items ?? []) as { id: string; name: string; active: boolean; kind?: string }[]).filter((f) => f.active !== false);
+        setFestivals(list);
+        if (list.length === 1) setPick(list[0]!.id);
+      })
+      .catch(() => setFestivals([]));
+  }, []);
+  const submit = async () => {
+    if (!pick) { setError("یک جشنواره انتخاب کنید."); return; }
+    const value = Number(dValue);
+    if (!dValue.trim() || !Number.isFinite(value) || value <= 0) { setError("مقدار تخفیف معتبر نیست."); return; }
+    if (dType === "percent" && (value < 1 || value > 95)) { setError("درصد تخفیف باید بین ۱ تا ۹۵ باشد."); return; }
+    setBusy(true); setError(null);
+    try {
+      const result = await promotionRulesApi.festivalBulk({
+        promotionId: pick, productIds, discountType: dType,
+        discountValue: dType === "percent" ? Math.round(value) : String(Math.round(value)),
+        moveFromFestival: move,
+      });
+      onDone(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "خطا در افزودن به جشنواره");
+    } finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title={`افزودن ${fa(productIds.length)} کالا به جشنواره`} max="max-w-[480px]">
+      <div className="space-y-3">
+        {!festivals && <LoadingState label="در حال دریافت جشنواره‌ها..." />}
+        {festivals && !festivals.length && <Empty title="جشنواره فعالی وجود ندارد" desc="ابتدا از «تخفیف و جشنواره‌ها» یک جشنواره بسازید." />}
+        {festivals && festivals.length > 0 && (
+          <>
+            <Field label="جشنواره">
+              <select className={SELECT_CLS} value={pick} onChange={(e) => setPick(e.target.value)}>
+                <option value="">انتخاب کنید…</option>
+                {festivals.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+            </Field>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <Field label="نوع تخفیف">
+                <Segmented options={[{ v: "percent", label: "درصدی" }, { v: "fixed_rial", label: "مبلغ ثابت" }]} value={dType} onChange={setDType} />
+              </Field>
+              <Field label={dType === "percent" ? "درصد (۱ تا ۹۵)" : "مبلغ (ریال)"}>
+                <Input value={dValue} onChange={setDValue} placeholder={dType === "percent" ? "مثلاً 20" : "مثلاً 500000"} />
+              </Field>
+            </div>
+            <label className="flex items-center gap-2 text-[12px] font-semibold">
+              <input type="checkbox" className="accent-[var(--kv-accent)]" checked={move} onChange={(e) => setMove(e.target.checked)} />
+              انتقال از جشنواره قبلی (در صورت عضویت فعلی)
+            </label>
+            <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
+              با ورود به جشنواره، تخفیف‌های مستقل این کالاها «معلق» می‌شوند (حذف نمی‌شوند) و پس از پایان جشنواره فقط با «فعال‌سازی مجدد» برمی‌گردند.
+            </p>
+            {error && <p className="rounded-[10px] bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <Btn size="sm" variant="ghost" onClick={onClose} disabled={busy}>انصراف</Btn>
+              <Btn size="sm" variant="accent" onClick={() => void submit()} disabled={busy}>{busy ? "در حال اعمال…" : "تأیید و اعمال"}</Btn>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 
