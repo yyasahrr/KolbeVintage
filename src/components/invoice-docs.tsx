@@ -34,7 +34,7 @@ const KIND_LABEL: Record<string, string> = {
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "پیش‌نویس", issued: "صادرشده", partially_paid: "پرداخت جزئی", paid: "پرداخت‌شده",
-  cancelled: "لغوشده", refunded: "بازپرداخت‌شده", void: "بطول‌شده", credited: "اعتباری", revised: "اصلاح‌شده",
+  cancelled: "لغوشده", refunded: "بازپرداخت‌شده", void: "باطل‌شده", credited: "اعتباری", revised: "اصلاح‌شده",
 };
 
 const SECTION_TYPES = ["keyValues", "table", "totals", "paragraph", "signature"] as const;
@@ -216,7 +216,7 @@ function DocumentDrawer({ invoiceId, onClose, onChanged }: {
             )}
             {status !== "draft" && status !== "void" && status !== "cancelled" && (
               <Btn variant="soft" size="sm" icon={<Ban size={14} />} disabled={busy || reason.trim().length < 3}
-                onClick={() => void run(() => invoiceDocsApi.void(invoiceId, reason.trim()))}>بطول کردن</Btn>
+                onClick={() => void run(() => invoiceDocsApi.void(invoiceId, reason.trim()))}>ابطال سند</Btn>
             )}
             {status !== "draft" && status !== "void" && status !== "cancelled" && status !== "refunded" && (
               <Btn variant="soft" size="sm" icon={<Undo2 size={14} />} disabled={busy || reason.trim().length < 3}
@@ -227,7 +227,7 @@ function DocumentDrawer({ invoiceId, onClose, onChanged }: {
                 window.open(url, "_blank", "noopener"); setTimeout(() => URL.revokeObjectURL(url), 60_000);
               }).catch((e) => setError(e instanceof Error ? e.message : "دانلود ناموفق"))}>دانلود PDF</Btn>
             <span className="mr-auto" />
-            <div className="w-[260px]"><Input value={reason} onChange={setReason} placeholder="دلیل بطول/بازپرداخت (اجباری)" /></div>
+            <div className="w-[260px]"><Input value={reason} onChange={setReason} placeholder="دلیل ابطال/بازپرداخت (اجباری)" /></div>
             <Checkbox checked={full} onChange={setFull} label="بازپرداخت کامل" />
           </div>
         </Card>

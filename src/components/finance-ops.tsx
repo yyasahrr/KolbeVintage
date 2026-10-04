@@ -206,7 +206,7 @@ function DashboardTab({ range, setRange, flash }: { range: Range; setRange: (r: 
       <Card className="p-5">
         <SectionHead title="هدف ماهانه" desc="هدف در تنظیمات سرور ذخیره و با فروش واقعی همان ماه مقایسه می‌شود" />
         <div className="mt-4 grid gap-3 sm:grid-cols-[160px_220px_auto] sm:items-end">
-          <Field label="ماه میلادی (کلید ذخیره)"><Input value={month} onChange={setMonth} placeholder="2026-09" /></Field>
+          <Field label="ماه هدف" hint="کلید ذخیره سرور به شکل سال-ماه، مثلاً 2026-09"><Input value={month} onChange={setMonth} placeholder="2026-09" /></Field>
           <Field label="هدف (تومان)" hint={targets.data ? `فروش واقعی: ${fmtToman(targets.data.actualRial)} · سفارش: ${fmtNum(targets.data.orders)}` : undefined}>
             <Input value={targetToman} onChange={setTargetToman} placeholder="مثلاً ۵۰۰۰۰۰۰۰" />
           </Field>
@@ -356,9 +356,9 @@ function StatementDrawer({ supplierId, range, onClose, flash }: { supplierId: st
           <>
             {pos && (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-                {([["Settlement Hold", pos.heldRial], ["مسدود", pos.blockedRial], ["آماده تسویه", pos.eligibleRial],
+                {([["نگه‌داشت تسویه (Hold)", pos.heldRial], ["مسدود", pos.blockedRial], ["آماده تسویه", pos.eligibleRial],
                   ["در تسویه برنامه‌ریزی‌شده", pos.scheduledRial], ["تسویه‌شده", pos.settledRial],
-                  ["Recovery باز", pos.openRecoveryRial]] as const).map(([label, v]) => (
+                  ["مطالبات بازگشتی باز (Recovery)", pos.openRecoveryRial]] as const).map(([label, v]) => (
                   <div key={label} className="rounded-[12px] border border-[var(--kv-line)] p-3">
                     <p className="text-[11px] text-[var(--kv-muted)]">{label}</p>
                     <p className="text-[13.5px] font-extrabold tabular-nums">{fmtToman(v)}</p>
@@ -449,7 +449,7 @@ function StatementDrawer({ supplierId, range, onClose, flash }: { supplierId: st
 }
 
 const EVENT_LABEL: Record<string, string> = {
-  payable_accrual: "ثبت سند فروش (Payable)", refund: "بازپرداخت", recovery: "Recovery", settlement_paid: "واریز تسویه",
+  payable_accrual: "ثبت سند فروش (Payable)", refund: "بازپرداخت", recovery: "مطالبات بازگشتی (Recovery)", settlement_paid: "واریز تسویه",
   order_sale: "فروش سفارش", commission: "کارمزد", shipping_charge: "هزینه حمل",
   return_cost: "مرجوعی", adjustment_credit: "اصلاح بستانکار", adjustment_debit: "اصلاح بدهکار",
   settlement: "تسویه/پرداخت", prepayment: "پیش‌پرداخت", prepayment_applied: "اعمال پیش‌پرداخت",

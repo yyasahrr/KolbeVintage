@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { PRODUCTS, fmtMoney, fmtNum } from "../data/catalog";
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
+import { ORDER_STATUS_FA } from "../data/fa-labels";
 import { type Buyer } from "../data/platform";
 import { useStore } from "../data/store";
 import { TicketCenter } from "../components/support";
@@ -339,7 +340,7 @@ export default function AccountExperience({
                   <button key={order.id} onClick={() => { setTab("orders"); }} className="flex w-full flex-wrap items-center gap-4 py-4 text-right hover:text-[var(--kv-accent)]">
                     <img src={order.lines?.[0]?.image ?? order.items?.[0]?.image ?? ""} alt="" className="h-16 w-13 rounded-[10px] object-cover" />
                     <span className="min-w-0 flex-1"><b className="block text-sm tabular-nums">{order.reference ?? order.id}</b><span className="text-[12px] text-[var(--kv-muted)]">{order.created_at ?? order.createdAt} · {fmtNum(order.lines?.reduce((n:any,l:any)=>n+(l.qty??l.quantity),0) ?? 0)} قلم</span></span>
-                    <Status value={order.status} /><b className="text-sm tabular-nums">{fmtMoney(order.total_rial ?? order.total ?? 0)}</b>
+                    <Status value={ORDER_STATUS_FA[String(order.status)] ?? order.status} /><b className="text-sm tabular-nums">{fmtMoney(order.total_rial ?? order.total ?? 0)}</b>
                   </button>
                 ))}</div> : <Empty title="هنوز سفارشی ندارید" desc="اولین خرید شما پس از ثبت، همین‌جا دیده می‌شود." action={<Btn variant="accent" size="sm" onClick={onShop}>دیدن فروشگاه</Btn>} />}
               </section>
@@ -372,7 +373,7 @@ export default function AccountExperience({
           {tab === "wholesale" && (
             <section>
               <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-[21px] font-extrabold">سفارش‌های عمده</h2><p className="mt-1 text-[13px] text-[var(--kv-muted)]">همان حساب مشتری، با خریدهای تجاری مستقل از سفارش خرده.</p></div>{isVip && <Btn variant="soft" size="sm" onClick={onWholesale}>ورود به بازارچه</Btn>}</div>
-              {isVip ? effectiveWholesaleOrders.length ? <div className="space-y-3">{effectiveWholesaleOrders.map((order:any) => <div key={order.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4"><p className="text-sm font-bold">{order.reference ?? order.id}</p><p className="text-xs text-[var(--kv-muted)]">{order.created_at ?? order.createdAt} · {order.status}</p></div>)}</div> : <Empty title="سفارش عمده ندارید" desc="پس از اولین خرید سری از بازارچه، سفارش مادر و زیرسفارش‌ها اینجا دیده می‌شوند." action={<Btn variant="accent" size="sm" onClick={onWholesale}>مشاهده بازارچه عمده</Btn>} />
+              {isVip ? effectiveWholesaleOrders.length ? <div className="space-y-3">{effectiveWholesaleOrders.map((order:any) => <div key={order.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4"><p className="text-sm font-bold">{order.reference ?? order.id}</p><p className="text-xs text-[var(--kv-muted)]">{order.created_at ?? order.createdAt} · {ORDER_STATUS_FA[String(order.status)] ?? order.status}</p></div>)}</div> : <Empty title="سفارش عمده ندارید" desc="پس از اولین خرید سری از بازارچه، سفارش مادر و زیرسفارش‌ها اینجا دیده می‌شوند." action={<Btn variant="accent" size="sm" onClick={onWholesale}>مشاهده بازارچه عمده</Btn>} />
                 : <Empty title={pending ? "درخواست عضویت در حال بررسی است" : "برای خرید عمده، همین حساب را ارتقا دهید"} desc={pending ? "بعد از تأیید کلبه، قیمت‌ها و سفارش‌های عمده همین‌جا فعال می‌شوند." : "حساب جدید لازم نیست؛ عضویت عمده به حساب فعلی شما اضافه می‌شود."} action={<Btn variant="accent" size="sm" onClick={() => setTab("membership")}>{pending ? "پیگیری درخواست" : "درخواست عضویت"}</Btn>} />}
             </section>
           )}

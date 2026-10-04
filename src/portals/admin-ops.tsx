@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatPersianDate } from "../data/persian-date";
 import { ArrowDown, ArrowUp, Ban, Check, Crown, Eye, Landmark, Pencil, Plus, ShieldAlert, Trash2, X } from "lucide-react";
 import { SUPPLIERS, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
@@ -413,7 +414,7 @@ export function ApplicationsCenter({ flash }: { flash: F }) {
         <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
           <div className="space-y-2">
             {applications.length === 0 && <Empty title="درخواستی نرسیده" desc="درخواست‌های فرم همکاری اینجا نمایش داده می‌شوند." />}
-            {applications.map((a) => <button key={a.id} onClick={() => setSel(a.id)} className={cn("w-full rounded-[12px] border p-3 text-right", sel === a.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.05]" : "border-[var(--kv-line)] bg-[var(--kv-surface)]")}><div className="flex items-center justify-between gap-2"><b className="text-[13px]">{a.name}</b><Status value={APP_STATUS[a.status]} /></div><p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">{a.id} · {a.createdAt} · {a.values["f-city"] ?? ""}</p></button>)}
+            {applications.map((a) => <button key={a.id} onClick={() => setSel(a.id)} className={cn("w-full rounded-[12px] border p-3 text-right", sel === a.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.05]" : "border-[var(--kv-line)] bg-[var(--kv-surface)]")}><div className="flex items-center justify-between gap-2"><b className="text-[13px]">{a.name}</b><Status value={APP_STATUS[a.status]} /></div><p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">{a.createdAt ? formatPersianDate(a.createdAt) : "—"} · {a.values["f-city"] ?? ""}</p></button>)}
           </div>
           <Card className="p-5">
             {!cur ? <Empty title="درخواستی انتخاب نشده" desc="یک درخواست را باز کنید." /> : (
