@@ -385,7 +385,8 @@ export const inventoryApi = {
   },
   transfer: (payload: { fromWarehouseId: string; toWarehouseId: string; lines: { variantId: string; quantity: number }[]; reference?: string }) =>
     authFetch<unknown>("/inventory/transfers", { method: "POST", body: JSON.stringify(payload) }),
-  completeTransfer: (id: string) => authFetch<unknown>(`/inventory/transfers/${id}/complete`, { method: "POST" }),
+  completeTransfer: (id: string, receipt?: { receivedQty: number; damagedQty: number }) =>
+    authFetch<unknown>(`/inventory/transfers/${id}/complete`, { method: "POST", ...(receipt ? { body: JSON.stringify(receipt) } : {}) }),
   transfers: () => authFetch<{ items: unknown[] }>("/inventory/transfers"),
 
   /** Item 52: bulk receipt — creates and immediately receives (≤200 lines). */

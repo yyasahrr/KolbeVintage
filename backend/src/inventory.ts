@@ -1334,6 +1334,17 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       throw forbidden('شما مجوز تکمیل انتقال موجودی را ندارید.');
     }
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    // §17.4 / QA2-WMS-013: optional destination receipt with discrepancy.
+    // Mode A: { receivedQty, damagedQty }; Mode B: { lines: [{ variantId, receivedQty, damagedQty }] }.
+    const receipt = z.object({
+      receivedQty: z.number().int().min(0).optional(),
+      damagedQty: z.number().int().min(0).optional(),
+      lines: z.array(z.object({
+        variantId: z.uuid(),
+        receivedQty: z.number().int().min(0),
+        damagedQty: z.number().int().min(0).default(0),
+      })).max(500).optional(),
+    }).strict().parse(request.body ?? {});
     return transaction(pool, async (client) => {
       const tr = await one<{
         id: string;
@@ -1362,17 +1373,22 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       }
 
       if (tr.variant_id && tr.quantity) {
-        // Mode A: Single-variant domain transfer completion
+        // Mode A: Single-variant domain transfer completion (with optional discrepancy receipt)
         const dstWhId = tr.destination_warehouse_id ?? tr.to_warehouse_id!;
         const dstDomain = tr.destination_domain ?? 'retail';
+        const receivedQty = receipt.receivedQty ?? tr.quantity;
+        const damagedQty = receipt.damagedQty ?? 0;
+        if (receivedQty + damagedQty !== tr.quantity) {
+          throw badRequest(`جمع دریافتی سالم (${receivedQty}) و آسیب‌دیده (${damagedQty}) باید برابر تعداد ارسالی (${tr.quantity}) باشد.`);
+        }
         const received = await one<{ on_hand: number; incoming: number; reserved: number; damaged: number }>(
           client,
           `UPDATE stock_balances
-           SET incoming = incoming - $4, on_hand = on_hand + $4, version = version + 1, updated_at = now()
+           SET incoming = incoming - $4, on_hand = on_hand + $5, damaged = damaged + $6, version = version + 1, updated_at = now()
            WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3
              AND incoming >= $4
            RETURNING on_hand, incoming, reserved, damaged`,
-          [tr.variant_id, dstWhId, dstDomain, tr.quantity],
+          [tr.variant_id, dstWhId, dstDomain, tr.quantity, receivedQty, damagedQty],
         );
         if (!received) {
           throw conflict('موجودی در راه مقصد برای دریافت کافی نیست.');
@@ -1380,17 +1396,20 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
         await client.query(
           `INSERT INTO stock_movements(
-            id, variant_id, warehouse_id, inventory_domain, on_hand_delta, incoming_delta, reason,
+            id, variant_id, warehouse_id, inventory_domain, on_hand_delta, incoming_delta, damaged_delta, reason,
             reference_type, reference_id, actor_id, idempotency_key
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,'stock_transfer',$8,$9,$10)`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'stock_transfer',$9,$10,$11)`,
           [
             randomUUID(),
             tr.variant_id,
             dstWhId,
             dstDomain,
-            tr.quantity,
+            receivedQty,
             -tr.quantity,
-            `دریافت قطعی در ${dstDomain} بابت انتقال ${tr.transfer_number}`,
+            damagedQty,
+            damagedQty > 0
+              ? `دریافت در ${dstDomain} بابت انتقال ${tr.transfer_number} — ${receivedQty} سالم، ${damagedQty} آسیب‌دیده`
+              : `دریافت قطعی در ${dstDomain} بابت انتقال ${tr.transfer_number}`,
             tr.id,
             user.id,
             `transfer-complete:${tr.id}`,
@@ -1400,17 +1419,21 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
         // Q: anbar transfer ≠ store publication. Completing a wholesale→retail transfer
         // must NOT auto-enable retail sale; that remains an explicit admin decision.
 
+        const finalStatus = damagedQty > 0 ? 'completed_with_discrepancy' : 'completed';
         await client.query(
           `UPDATE stock_transfers
-           SET status = 'completed', completed_by = $2, completed_at = now(), updated_at = now()
+           SET status = $3, received_qty = $4, damaged_qty = $5,
+               completed_by = $2, completed_at = now(), updated_at = now()
            WHERE id = $1`,
-          [tr.id, user.id],
+          [tr.id, user.id, finalStatus, receivedQty, damagedQty],
         );
 
         const out = {
           id: tr.id,
           transferNumber: tr.transfer_number,
-          status: 'completed',
+          status: finalStatus,
+          receivedQty,
+          damagedQty,
           destinationDomain: dstDomain,
           destinationAvailable: received.on_hand - received.reserved - received.damaged,
         };
@@ -1419,25 +1442,39 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
         return out;
       }
 
-      // Mode B: Multi-line WMS warehouse transfer completion
+      // Mode B: Multi-line WMS warehouse transfer completion (per-line discrepancy receipt)
       const domain = tr.destination_domain ?? 'retail';
       const dstWhId = tr.to_warehouse_id ?? tr.destination_warehouse_id!;
-      const lines = await client.query<{ variant_id: string; quantity: number }>(
-        'SELECT variant_id, quantity FROM stock_transfer_lines WHERE transfer_id = $1',
+      const lines = await client.query<{ id: string; variant_id: string; quantity: number }>(
+        'SELECT id, variant_id, quantity FROM stock_transfer_lines WHERE transfer_id = $1',
         [id]);
+      const receiptByVariant = new Map((receipt.lines ?? []).map((l) => [l.variantId, l]));
+      let anyDamage = false;
       for (const line of lines.rows) {
+        const lineReceipt = receiptByVariant.get(line.variant_id);
+        const receivedQty = lineReceipt ? lineReceipt.receivedQty : line.quantity;
+        const damagedQty = lineReceipt ? lineReceipt.damagedQty : 0;
+        if (receivedQty + damagedQty !== line.quantity) {
+          throw badRequest(`جمع دریافتی سالم (${receivedQty}) و آسیب‌دیده (${damagedQty}) باید برابر تعداد ارسالی (${line.quantity}) باشد.`);
+        }
+        if (damagedQty > 0) anyDamage = true;
         await client.query(
-          `UPDATE stock_balances SET incoming = GREATEST(0, incoming - $4), on_hand = on_hand + $4, version = version + 1
+          `UPDATE stock_balances SET incoming = GREATEST(0, incoming - $4), on_hand = on_hand + $5, damaged = damaged + $6, version = version + 1
            WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = $3`,
-          [line.variant_id, dstWhId, domain, line.quantity]);
+          [line.variant_id, dstWhId, domain, line.quantity, receivedQty, damagedQty]);
         await client.query(
-          `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,incoming_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
-           VALUES ($1,$2,$3,$4,$5,$6,'transfer completed','transfer',$7,$8,$9)`,
-          [randomUUID(), line.variant_id, dstWhId, domain, line.quantity, -line.quantity, id, user.id, `trf-complete:${id}:${line.variant_id}`]);
+          `INSERT INTO stock_movements(id,variant_id,warehouse_id,inventory_domain,on_hand_delta,incoming_delta,damaged_delta,reason,reference_type,reference_id,actor_id,idempotency_key)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'transfer',$9,$10,$11)`,
+          [randomUUID(), line.variant_id, dstWhId, domain, receivedQty, -line.quantity, damagedQty,
+            damagedQty > 0 ? `transfer completed — ${receivedQty} سالم، ${damagedQty} آسیب‌دیده` : 'transfer completed',
+            id, user.id, `trf-complete:${id}:${line.variant_id}`]);
+        await client.query('UPDATE stock_transfer_lines SET received_qty = $2, damaged_qty = $3 WHERE id = $1',
+          [line.id, receivedQty, damagedQty]);
       }
-      await client.query(`UPDATE stock_transfers SET status = 'completed', completed_by = $2, completed_at = now(), updated_at = now() WHERE id = $1`, [id, user.id]);
-      await audit(client, user.id, 'inventory.transfer_completed', 'stock_transfer', id, { status: tr.status }, { status: 'completed' }, request.ip);
-      return { id, status: 'completed' };
+      const finalStatus = anyDamage ? 'completed_with_discrepancy' : 'completed';
+      await client.query(`UPDATE stock_transfers SET status = $3, completed_by = $2, completed_at = now(), updated_at = now() WHERE id = $1`, [id, user.id, finalStatus]);
+      await audit(client, user.id, 'inventory.transfer_completed', 'stock_transfer', id, { status: tr.status }, { status: finalStatus, receipt: receipt.lines ?? null }, request.ip);
+      return { id, status: finalStatus };
     });
   });
 
@@ -1672,7 +1709,8 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
               v.sku, v.sku AS variant_sku, v.size_label, v.color_label, p.name AS product_name, p.owner_type,
               sw.code AS source_warehouse_code, sw.name AS source_warehouse_name,
               dw.code AS destination_warehouse_code, dw.name AS destination_warehouse_name,
-              COALESCE(jsonb_agg(jsonb_build_object('variantId', l.variant_id, 'quantity', l.quantity))
+              COALESCE(jsonb_agg(jsonb_build_object('variantId', l.variant_id, 'quantity', l.quantity,
+                'receivedQty', l.received_qty, 'damagedQty', l.damaged_qty))
                 FILTER (WHERE l.id IS NOT NULL), '[]'::jsonb) AS lines
        FROM stock_transfers t
        LEFT JOIN product_variants v ON v.id = t.variant_id

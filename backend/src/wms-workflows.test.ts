@@ -611,3 +611,78 @@ test('Festival XOR standalone discounts (A5/A6) + product delete guard (P)', { s
     await pool.end();
   }
 });
+
+test('§17.4: transfer receipt with discrepancy — 20 sent, 18 healthy, 2 damaged', { skip: !testDbUrl }, async () => {
+  const app = await buildApp(baseConfig);
+  const pool = createPool(baseConfig);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { adminHeaders } = await createActors(app, pool, suffix);
+    const wh = await createWarehouse(app, adminHeaders, `DW${suffix.slice(0, 6).toUpperCase()}`, 'انبار مبدا/مقصد');
+
+    // Kolbe-owned product so domain transfers need no ownership conversion.
+    const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers: adminHeaders, payload: {
+      brand: 'Kolbe', name: `شلوار انتقال ${suffix}`, category: 'شلوار', cashPriceRial: '3000000',
+      variants: [{ size: 'L', color: 'navy' }] } });
+    assert.equal(product.statusCode, 201, product.body);
+    const variant = (product.json().variants as Array<{ id: string }>)[0]!;
+
+    // Stock arrives into the wholesale domain: 40 received clean.
+    const receipt = await app.inject({ method: 'POST', url: '/api/v1/inventory/receipts',
+      headers: { ...adminHeaders, 'idempotency-key': `rc-${suffix}-d` },
+      payload: { warehouseId: wh, variantId: variant.id, inventoryDomain: 'wholesale', quantity: 40 } });
+    assert.equal(receipt.statusCode, 201, receipt.body);
+    const received = await app.inject({ method: 'POST', url: `/api/v1/inventory/receipts/${receipt.json().id}/receive`,
+      headers: adminHeaders, payload: { receivedQuantity: 40 } });
+    assert.equal(received.statusCode, 200, received.body);
+
+    // Official transfer document: 20 units wholesale → retail.
+    const transfer = await app.inject({ method: 'POST', url: '/api/v1/inventory/transfers',
+      headers: { ...adminHeaders, 'idempotency-key': `tr-${suffix}-d` },
+      payload: { variantId: variant.id, sourceDomain: 'wholesale', destinationDomain: 'retail',
+        sourceWarehouseId: wh, destinationWarehouseId: wh, quantity: 20, reason: 'انتقال با مغایرت' } });
+    assert.equal(transfer.statusCode, 201, transfer.body);
+    const transferId = transfer.json().id as string;
+    const approve = await app.inject({ method: 'POST', url: `/api/v1/inventory/transfers/${transferId}/approve`, headers: adminHeaders });
+    assert.equal(approve.statusCode, 200, approve.body);
+
+    // Receipt totals must reconcile: 17 + 2 ≠ 20 → rejected, nothing moves.
+    const badReceipt = await app.inject({ method: 'POST', url: `/api/v1/inventory/transfers/${transferId}/complete`,
+      headers: adminHeaders, payload: { receivedQty: 17, damagedQty: 2 } });
+    assert.equal(badReceipt.statusCode, 400, 'received+damaged must equal sent quantity');
+
+    // 18 healthy + 2 damaged = 20 → completed_with_discrepancy.
+    const complete = await app.inject({ method: 'POST', url: `/api/v1/inventory/transfers/${transferId}/complete`,
+      headers: adminHeaders, payload: { receivedQty: 18, damagedQty: 2 } });
+    assert.equal(complete.statusCode, 200, complete.body);
+    assert.equal(complete.json().status, 'completed_with_discrepancy');
+    assert.equal(complete.json().receivedQty, 18);
+    assert.equal(complete.json().damagedQty, 2);
+
+    const retail = await balance(pool, variant.id, wh, 'retail');
+    assert.equal(retail.on_hand, 18, 'only healthy units become sellable on_hand');
+    assert.equal(retail.damaged, 2, 'damaged units land in the damaged bucket');
+    assert.equal(retail.incoming, 0, 'in-transit fully consumed');
+
+    // The transfer document preserves the receipt + discrepancy status (history, §17.4).
+    const doc = await pool.query('SELECT status, received_qty, damaged_qty FROM stock_transfers WHERE id = $1', [transferId]);
+    assert.equal(doc.rows[0].status, 'completed_with_discrepancy');
+    assert.equal(Number(doc.rows[0].received_qty), 18);
+    assert.equal(Number(doc.rows[0].damaged_qty), 2);
+
+    // A clean full receipt still completes normally (default = full quantities).
+    const transfer2 = await app.inject({ method: 'POST', url: '/api/v1/inventory/transfers',
+      headers: { ...adminHeaders, 'idempotency-key': `tr-${suffix}-c` },
+      payload: { variantId: variant.id, sourceDomain: 'wholesale', destinationDomain: 'retail',
+        sourceWarehouseId: wh, destinationWarehouseId: wh, quantity: 5, reason: 'انتقال سالم' } });
+    assert.equal(transfer2.statusCode, 201, transfer2.body);
+    await app.inject({ method: 'POST', url: `/api/v1/inventory/transfers/${transfer2.json().id}/approve`, headers: adminHeaders });
+    const complete2 = await app.inject({ method: 'POST', url: `/api/v1/inventory/transfers/${transfer2.json().id}/complete`, headers: adminHeaders });
+    assert.equal(complete2.statusCode, 200, complete2.body);
+    assert.equal(complete2.json().status, 'completed');
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});
+

@@ -29,6 +29,7 @@ const TRANSFER_BADGE: Record<string, { label: string; cls: string }> = {
   approved: { label: "تأییدشده", cls: "bg-amber-100 text-amber-800" },
   in_transit: { label: "در راه", cls: "bg-amber-100 text-amber-800" },
   completed: { label: "تکمیل‌شده", cls: "bg-emerald-100 text-emerald-800" },
+  completed_with_discrepancy: { label: "تکمیل با مغایرت", cls: "bg-orange-100 text-orange-800" },
   cancelled: { label: "لغوشده", cls: "bg-gray-100 text-gray-500" },
 };
 const REQUEST_BADGE: Record<string, { label: string; cls: string }> = {
@@ -62,6 +63,7 @@ type TransferRow = {
   is_reverse: boolean; original_transfer_id: string | null; reversed_quantity: number; batch_reference: string | null;
   sku: string | null; product_name: string | null; reason: string; created_at: string;
   source_warehouse_name?: string | null; destination_warehouse_name?: string | null;
+  received_qty?: number | null; damaged_qty?: number | null;
 };
 type ReceiptRow = {
   id: string; reference: string; warehouse_id: string; variant_id: string | null; quantity: number | null; status: string;
@@ -1029,6 +1031,7 @@ function TransfersCenter({ flash, statusFilter, hideCreate }: { flash: F; status
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reverseFor, setReverseFor] = useState<TransferRow | null>(null);
+  const [receiveFor, setReceiveFor] = useState<TransferRow | null>(null);
 
   // creation form
   const [inv, setInv] = useState<InvRow[]>([]);
@@ -1145,7 +1148,7 @@ function TransfersCenter({ flash, statusFilter, hideCreate }: { flash: F; status
                     <td className="font-bold" dir="ltr">{t.transfer_number ?? t.reference}{t.is_reverse && <span className="mr-1 rounded-full bg-amber-100 px-1.5 text-[10px] font-bold text-amber-800">برگشتی</span>}</td>
                     <td>{t.product_name ?? "—"} <span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{t.sku ?? ""}</span></td>
                     <td className="text-[11.5px]">{t.source_domain === "wholesale" ? "عمده" : "خرده"} ← {t.destination_domain === "retail" ? "خرده" : "عمده"}</td>
-                    <td className="tabular-nums">{t.quantity !== null ? fa(t.quantity) : "—"}{t.reversed_quantity > 0 && <span className="mr-1 text-[10.5px] text-amber-700">({fa(t.reversed_quantity)} برگشت)</span>}</td>
+                    <td className="tabular-nums">{t.quantity !== null ? fa(t.quantity) : "—"}{t.reversed_quantity > 0 && <span className="mr-1 text-[10.5px] text-amber-700">({fa(t.reversed_quantity)} برگشت)</span>}{(t.damaged_qty ?? 0) > 0 && <span className="mr-1 block text-[10.5px] text-orange-700">{fa(t.received_qty ?? 0)} سالم · {fa(t.damaged_qty ?? 0)} آسیب‌دیده</span>}</td>
                     <td className="text-[11.5px]" dir="ltr">{t.batch_reference ?? "—"}</td>
                     <td><Badge map={TRANSFER_BADGE} value={t.status} /></td>
                     <td className="text-[11px] text-[var(--kv-muted)]">{formatPersianDateTimeFull(t.created_at)}</td>
@@ -1158,7 +1161,7 @@ function TransfersCenter({ flash, statusFilter, hideCreate }: { flash: F; status
                       </>)}
                       {(t.status === "in_transit" || t.status === "approved") && (
                         <button className="text-[11.5px] font-bold text-emerald-600" disabled={busy}
-                          onClick={() => void act(() => inventoryApi.completeTransfer(t.id), "کالا در مقصد دریافت و نهایی شد.")}>دریافت در مقصد</button>
+                          onClick={() => setReceiveFor(t)}>دریافت در مقصد</button>
                       )}
                       {t.status === "completed" && !t.is_reverse && t.quantity !== null && t.quantity - t.reversed_quantity > 0 && (
                         <button className="inline-flex items-center gap-1 text-[11.5px] font-bold text-amber-700" disabled={busy}
@@ -1177,7 +1180,53 @@ function TransfersCenter({ flash, statusFilter, hideCreate }: { flash: F; status
         <ReverseModal transfer={reverseFor} onClose={() => setReverseFor(null)}
           onDone={() => { setReverseFor(null); void reload(); }} flash={flash} />
       )}
+      {receiveFor && (
+        <TransferReceiveModal transfer={receiveFor} onClose={() => setReceiveFor(null)}
+          onDone={() => { setReceiveFor(null); void reload(); }} flash={flash} />
+      )}
     </div>
+  );
+}
+
+/** §17.4: destination receipt — healthy vs damaged must reconcile with the sent quantity. */
+function TransferReceiveModal({ transfer, onClose, onDone, flash }: { transfer: TransferRow; onClose: () => void; onDone: () => void; flash: F }) {
+  const sent = transfer.quantity ?? 0;
+  const [healthy, setHealthy] = useState(String(sent));
+  const [damaged, setDamaged] = useState("0");
+  const [busy, setBusy] = useState(false);
+  const h = Number(healthy), d = Number(damaged);
+  const valid = Number.isInteger(h) && Number.isInteger(d) && h >= 0 && d >= 0 && (sent === 0 || h + d === sent);
+  return (
+    <Modal open onClose={onClose} title={`دریافت در مقصد — ${transfer.transfer_number ?? ""}`}>
+      <div className="space-y-3 p-4">
+        <p className="text-[12.5px] leading-6 text-[var(--kv-muted)]">
+          تعداد ارسالی: <b>{fa(sent)}</b> عدد. اگر بخشی از کالا آسیب‌دیده رسیده، تعداد سالم و آسیب‌دیده را جدا ثبت کنید؛
+          جمع دو عدد باید برابر تعداد ارسالی باشد. کالای آسیب‌دیده به موجودی قابل‌فروش اضافه نمی‌شود.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="تعداد سالم"><Input value={healthy} onChange={(v) => setHealthy(v.replace(/\D/g, ""))} /></Field>
+          <Field label="تعداد آسیب‌دیده"><Input value={damaged} onChange={(v) => setDamaged(v.replace(/\D/g, ""))} /></Field>
+        </div>
+        {sent > 0 && h + d !== sent && (
+          <p className="rounded-[10px] bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+            جمع سالم و آسیب‌دیده ({fa(h + d)}) با تعداد ارسالی ({fa(sent)}) برابر نیست.
+          </p>
+        )}
+        <div className="flex gap-2">
+          <Btn size="sm" variant="accent" disabled={busy || !valid} onClick={async () => {
+            setBusy(true);
+            try {
+              await inventoryApi.completeTransfer(transfer.id, d > 0 || sent > 0 ? { receivedQty: h, damagedQty: d } : undefined);
+              flash(d > 0 ? `دریافت با مغایرت ثبت شد: ${fa(h)} سالم، ${fa(d)} آسیب‌دیده.` : "کالا در مقصد دریافت و نهایی شد.");
+              onDone();
+            } catch (e) {
+              flash(e instanceof Error ? e.message : "خطا در ثبت دریافت");
+            } finally { setBusy(false); }
+          }}>ثبت دریافت</Btn>
+          <Btn size="sm" variant="ghost" onClick={onClose} disabled={busy}>انصراف</Btn>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
