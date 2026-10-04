@@ -9,7 +9,7 @@ import { useStore } from "../data/store";
 import { KOLBE, SUB_STATUS, isTerminal } from "../data/platform";
 import { Btn, Card, Status, SearchBox, Timeline, Field, Input, Segmented } from "../components/primitives";
 import { ShippingAdmin } from "./admin-retail";
-import { PlansCenter, RestrictionsCenter, ApplicationsCenter } from "./admin-ops";
+import { PlansCenter, RestrictionsCenter, ApplicationsCenter, SupportHub } from "./admin-ops";
 import { SmsCenter } from "./admin-growth";
 
 import { SeriesTemplateManager } from "./series-templates";
@@ -33,7 +33,6 @@ import { IntegrationsPanel } from "../components/integrations-panel";
 import { ServerConnectionState } from "../components/server-connection";
 import { ModuleBoundary, moduleBoundary } from "../components/boundary";
 import { NotificationsPanel } from "../components/notifications-panel";
-import { TicketBoardPanel } from "../components/ticket-board-panel";
 import { useDialogFocus } from "../components/focus-trap";
 import { ProductStructurePanel } from "../components/product-structure-panel";
 import { ImportCenterPanel } from "../components/import-center-panel";
@@ -440,7 +439,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "plans" && <PlansCenter flash={flash} />}
           {tab === "applications" && <ApplicationsCenter flash={flash} />}
           {tab === "restrictions" && <RestrictionsCenter flash={flash} />}
-          {tab === "support" && <TicketBoardPanel />}
+          {/* پشتیبانی و مرجوعی: دو زیرسیستم مجزا (تیکت‌ها / صف مرجوعی خرده با بازرسی و بازگشت موجودی) */}
+          {tab === "support" && moduleBoundary("پشتیبانی و مرجوعی", <SupportHub />)}
           {/* plans-legacy demo block removed (dead code — nav/redirects never reach it; real plans = PlansCenter) */}
 
           {/* ---------- Retail modules ---------- */}
@@ -486,7 +486,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
           {/* ---------- Support ---------- */}
           {tab === "audit" && <AuditLogPanel />}
-          {/* support-legacy demo block removed (dead code with fake SLA numbers; real support = TicketBoardPanel) */}
+          {/* support-legacy demo block removed (dead code with fake SLA numbers; real support = SupportHub) */}
 
           {/* ---------- Settings ---------- */}
           {tab === "settings" && (

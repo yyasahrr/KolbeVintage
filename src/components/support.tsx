@@ -365,6 +365,17 @@ export function ReturnsCenter({ onSync }: { onSync?: (r: ReturnReq) => void }) {
       onSync?.(r as unknown as ReturnReq);
     } catch { /* surfaced by the list refresh */ }
   };
+  // بازرسی کالا پس از دریافت: قابل فروش → برگشت به موجودی قابل فروش، آسیب‌دیده → شمارش damaged.
+  // سرور به‌صورت ایدمپوتنت (idempotency_key) سند انبار می‌سازد و وضعیت را «دریافت‌شده» می‌کند.
+  const [inspectError, setInspectError] = useState<string | null>(null);
+  const inspect = async (r: RetView, result: "sellable" | "damaged") => {
+    if (isDemoRet) return;
+    setInspectError(null);
+    try {
+      await apiClient.post(`/returns/${r.serverId}/inspect`, { result });
+      load();
+    } catch (e) { setInspectError(e instanceof Error ? e.message : "بازرسی ثبت نشد"); }
+  };
   const RES: Record<ReturnReq["resolution"], string> = { refund: "بازپرداخت وجه", exchange: "تعویض کالا", credit: "اعتبار کیف پول" };
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -399,9 +410,14 @@ export function ReturnsCenter({ onSync }: { onSync?: (r: ReturnReq) => void }) {
             <div className="mt-4"><Timeline items={cur.events.map((e) => ({ t: e.t, d: "", time: e.at, done: true }))} /></div>
             <div className="mt-4 flex flex-wrap gap-2">
               {cur.status === "requested" && <><Btn variant="accent" size="sm" icon={<Check size={14} />} onClick={() => void move(cur, "approved", "مرجوعی تأیید شد؛ جمع‌آوری کالا برنامه‌ریزی شد")}>تأیید</Btn><Btn variant="soft" size="sm" icon={<Ban size={14} />} onClick={() => void move(cur, "rejected", "درخواست رد شد")}>رد</Btn></>}
-              {cur.status === "approved" && <Btn variant="accent" size="sm" icon={<Truck size={14} />} onClick={() => void move(cur, "received", "کالا در انبار دریافت و کنترل کیفیت شد")}>ثبت دریافت کالا</Btn>}
+              {cur.status === "approved" && !isDemoRet && <>
+                <Btn variant="accent" size="sm" icon={<Check size={14} />} onClick={() => void inspect(cur, "sellable")}>دریافت و بازرسی: قابل فروش (برگشت به موجودی)</Btn>
+                <Btn variant="soft" size="sm" icon={<Ban size={14} />} onClick={() => void inspect(cur, "damaged")}>دریافت و بازرسی: آسیب‌دیده</Btn>
+              </>}
+              {cur.status === "approved" && isDemoRet && <Btn variant="accent" size="sm" icon={<Truck size={14} />} onClick={() => void move(cur, "received", "کالا در انبار دریافت و کنترل کیفیت شد")}>ثبت دریافت کالا</Btn>}
               {cur.status === "received" && <Btn variant="accent" size="sm" icon={<RotateCcw size={14} />} onClick={() => void move(cur, "refunded", cur.resolution === "exchange" ? "کالای جایگزین ارسال شد" : cur.resolution === "credit" ? "مبلغ به کیف پول مشتری افزوده شد" : "مبلغ به حساب مشتری بازپرداخت شد")}>{cur.resolution === "exchange" ? "ارسال جایگزین" : "بازپرداخت"}</Btn>}
             </div>
+            {inspectError && <p role="alert" className="mt-2 text-[12px] font-semibold text-[var(--kv-danger)]">{inspectError}</p>}
           </div>
         )}
       </div>
