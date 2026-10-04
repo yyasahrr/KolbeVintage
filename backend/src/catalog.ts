@@ -8,7 +8,7 @@ import { asRial, rial } from './money.js';
 import { audit, outbox } from './operations.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { validateSpecifications, type SpecField } from './profile.js';
-import { validateCategoryRequirements } from './product-lifecycle.js';
+import { categoryProfileFor, validateCategoryRequirements } from './product-lifecycle.js';
 import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
 import { resolveVariantPrice } from './promotions.js';
 
@@ -466,7 +466,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         throw new ApiError(403, 'FORBIDDEN', 'محصول تأمین‌کننده فقط در کانال عمده مجاز است.');
     }
 
-    if (body.productTypeId) await assertTypeSizes(pool, body.productTypeId, body.variants.map((v) => v.size ?? undefined));
+    const categoryProfile = await categoryProfileFor(pool, body.category);
+    if (!categoryProfile && body.productTypeId) await assertTypeSizes(pool, body.productTypeId, body.variants.map((v) => v.size ?? undefined));
     // §8: Category is the source of truth for the NEW flow — allowed sizes + required specs
     // come from the category profile (product_type stays only as deprecated legacy data).
     await validateCategoryRequirements(pool, body.category, body.specifications, body.variants.map((v) => v.size));
@@ -474,7 +475,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     for (const season of new Set(body.seasons)) await assertTaxonomy(pool, 'season', season);
 
     const productId = randomUUID();
-    const { specifications } = await resolveTypeSpecs(pool, body.productTypeCode, body.specifications, body.variants.map((v) => v.size));
+    const { specifications } = categoryProfile ? { specifications: body.specifications }
+      : await resolveTypeSpecs(pool, body.productTypeCode, body.specifications, body.variants.map((v) => v.size));
     const ownerType = isSupplierOnly ? 'supplier' : 'kolbe';
     const retailEnabled = isSupplierOnly ? false : (body.retailEnabled ?? true);
     const wholesaleEnabled = isSupplierOnly ? true : (body.wholesaleEnabled ?? (wholesale !== null && wholesale > 0n));
@@ -598,7 +600,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       } else {
         requirePermission(user, 'products:write');
       }
-      if (product.product_type_id)
+      if (product.product_type_id && !await categoryProfileFor(client, product.category))
         await assertTypeSizes(client as unknown as DbPool, product.product_type_id, items.map((variant) => variant.size ?? undefined));
       // §8/§14 (final UAT gate): category profile bounds new variant sizes too — the rule
       // that guards product CREATE must also guard later variant additions (server-side,
@@ -667,13 +669,21 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     if (!isSupplierOwner) requirePermission(user, 'products:write');
     else await assertSupplierMay(pool, user.id, 'product_edit', { resource: 'product', resourceId: id, ip: request.ip });
     return transaction(pool, async (client) => {
-      const before = await one<{ supplier_id: string | null; status: string; product_type_code: string | null; owner_type: string }>(client,
-        'SELECT supplier_id, status, product_type_code, owner_type FROM products WHERE id = $1 FOR UPDATE', [id]);
+      const before = await one<{ supplier_id: string | null; status: string; product_type_code: string | null; owner_type: string;
+        category: string; specifications: Record<string, unknown> }>(client,
+        'SELECT supplier_id, status, product_type_code, owner_type, category, specifications FROM products WHERE id = $1 FOR UPDATE', [id]);
+      if (!before) throw notFound();
+      const category = body.category ?? before.category;
+      const categoryProfile = await categoryProfileFor(client, category);
       if (before && (body.specifications !== undefined || body.productTypeCode !== undefined)) {
         const code = body.productTypeCode === null ? undefined : body.productTypeCode ?? before.product_type_code ?? undefined;
-        body.specifications = (await resolveTypeSpecs(client, code, body.specifications ?? {}, [])).specifications;
+        if (!categoryProfile) body.specifications = (await resolveTypeSpecs(client, code, body.specifications ?? before.specifications ?? {}, [])).specifications;
       }
-      if (!before) throw notFound();
+      if (body.category !== undefined || body.specifications !== undefined) {
+        const variants = await client.query<{ size_label: string | null }>(
+          'SELECT size_label FROM product_variants WHERE product_id = $1 AND active', [id]);
+        await validateCategoryRequirements(client, category, body.specifications ?? before.specifications ?? {}, variants.rows.map((v) => v.size_label));
+      }
       const isSupplierOwner = before.supplier_id === user.id && user.roles.includes('supplier');
       if (!isSupplierOwner) requirePermission(user, 'products:write');
       if (isSupplierOwner && (body.retailEnabled === true || body.wholesaleEnabled === false))

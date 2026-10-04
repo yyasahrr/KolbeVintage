@@ -246,6 +246,14 @@ test('category profiles: category is the schema source of truth — no product t
     // §14 regression (final UAT gate): the category size bound also guards LATER variant
     // additions — POST /products/:id/variants with an out-of-profile size must be 400.
     const productId = ok.json().id as string;
+    const clearSpecs = await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}`, headers,
+      payload: { specifications: {} } });
+    assert.equal(clearSpecs.statusCode, 400, clearSpecs.body);
+    const savedSpecs = await pool.query('SELECT specifications FROM products WHERE id = $1', [productId]);
+    assert.equal(savedSpecs.rows[0].specifications[attrCode], 'نخ پنبه');
+    const rename = await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}`, headers,
+      payload: { name: 'نام تازه بدون تغییر مشخصات' } });
+    assert.equal(rename.statusCode, 200, rename.body);
     const badVariant = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/variants`, headers,
       payload: { color: 'مشکی', size: 'XXL' } });
     assert.equal(badVariant.statusCode, 400, badVariant.body);
