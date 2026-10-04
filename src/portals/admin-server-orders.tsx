@@ -152,7 +152,8 @@ const nextStatus: Partial<Record<OrderStatus, OrderStatus>> = {
   paid: "processing", processing: "preparing", preparing: "ready_to_ship", ready_to_ship: "in_transit",
   in_transit: "shipped", shipped: "delivered",
 };
-const money = (value: string | undefined) => value ? `${new Intl.NumberFormat("fa-IR").format(BigInt(value))} ریال` : "۰ ریال";
+/** Canonical admin display unit is تومان (storage stays integer rial; ÷۱۰ for display only). */
+const money = (value: string | undefined) => value ? `${new Intl.NumberFormat("fa-IR").format(BigInt(value) / 10n)} تومان` : "۰ تومان";
 const date = (value: string) => new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 const makeIdemKey = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -723,6 +724,7 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
                     <div className="flex justify-between"><span className="text-[var(--kv-muted)]">جمع اقلام</span><b className="tabular-nums">{money(snapshot.baseSubtotalRial)}</b></div>
                     {BigInt(snapshot.planDiscountRial) > 0n && <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تخفیف پلن عمده</span><b className="tabular-nums">−{money(snapshot.planDiscountRial)}</b></div>}
                     {BigInt(snapshot.promoDiscountRial) > 0n && <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تخفیف جشنواره/کوپن ({snapshot.promoSource})</span><b className="tabular-nums">−{money(snapshot.promoDiscountRial)}</b></div>}
+                    {BigInt(snapshot.walletRedeemedRial ?? "0") > 0n && <div className="flex justify-between"><span className="text-[var(--kv-muted)]">کیف پول کش‌بک</span><b className="tabular-nums">−{money(snapshot.walletRedeemedRial)}</b></div>}
                     <div className="flex justify-between"><span className="text-[var(--kv-muted)]">هزینه ارسال{detail.shipping_name ? ` (${detail.shipping_name})` : ""}{snapshot.shipping ? ` · ${snapshot.shipping.totalWeightGrams.toLocaleString("fa-IR")} گرم` : ""}</span><b className="tabular-nums">{snapshot.shippingRial === "0" ? "رایگان" : money(snapshot.shippingRial)}</b></div>
                     <div className="flex justify-between border-t border-[var(--kv-line)] pt-1"><span className="font-bold">جمع کل</span><b className="tabular-nums">{money(snapshot.totalRial)}</b></div>
                     {snapshot.installment && (
