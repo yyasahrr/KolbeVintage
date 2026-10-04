@@ -13,7 +13,7 @@ import { promoApi, publicApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps, resolveVariantPromotion } from "../data/ops";
 import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage, normalizeTaxonomies, readPricingSnapshot, readShippingQuote, type PricingSnapshot, type Taxonomy } from "../data/contracts";
-import { cmsApi, ordersApi, productStructureApi, shippingApi } from "../data/api";
+import { cashbackApi, cmsApi, ordersApi, productStructureApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
 import { CmsSections } from "../components/cms-blocks";
 import { ProductReviews } from "../components/product-reviews";
@@ -369,6 +369,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [saveCheckoutAddress, setSaveCheckoutAddress] = useState(true);
   const [checkoutError, setCheckoutError] = useState("");
   const [paymentMode, setPaymentMode] = useState<"cash" | "four_installments">("cash");
+  /* کیف پول کش‌بک — سهمیه از سرور؛ کیف پول هرگز هزینه ارسال را پرداخت نمی‌کند (سقف سرور = کالاها). */
+  const [walletQuote, setWalletQuote] = useState<{ enabled: boolean; reason: string | null; availableRial: string; maxRedeemRial: string } | null>(null);
+  const [walletInput, setWalletInput] = useState("");
   const [placedOrderId, setPlacedOrderId] = useState("");
   const [placedSnapshot, setPlacedSnapshot] = useState<PricingSnapshot | null>(null);
   const store = useStore();
@@ -609,6 +612,19 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const baseShip = !ship || cart.length === 0 ? 0 : quotedShip !== null ? quotedShip : ship.freeAbove !== null && cartTotal >= ship.freeAbove ? 0 : ship.price;
   const shipCost = validCoupon?.type === "freeShip" ? 0 : baseShip;
   const totalDiscount = festivalDiscount + couponDiscount;
+  /* سهمیه کیف پول: مبنای محاسبه = کالاها پس از تخفیف و کوپن (بدون ارسال) — همان قاعده سرور. */
+  const merchNetToman = Math.max(0, (paymentMode === "cash" ? cartTotal : installmentCartTotal) - totalDiscount);
+  useEffect(() => {
+    if (isDemo || view !== "checkout" || !account || merchNetToman <= 0) { setWalletQuote(null); return; }
+    let active = true;
+    void cashbackApi.redemptionQuote(String(merchNetToman * 10), paymentMode)
+      .then((q) => { if (active) setWalletQuote(q); })
+      .catch(() => { if (active) setWalletQuote(null); });
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDemo, view, account?.id, merchNetToman, paymentMode]);
+  const walletMaxToman = walletQuote?.enabled ? Math.floor(Number(walletQuote.maxRedeemRial) / 10) : 0;
+  const walletApplied = Math.min(Math.max(0, Math.floor(Number(digitsOnly(walletInput)) || 0)), walletMaxToman, merchNetToman);
   const custRestrict = account ? ops.restrictionFor("customer", account.id) : null;
   const applyCoupon = async () => {
     const code = couponInput.trim().toUpperCase();
@@ -677,12 +693,15 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       };
       if (validCoupon) body.couponCode = validCoupon.code;
       else if (couponCode) body.couponCode = couponCode;
+      if (walletApplied > 0) body.walletRial = String(walletApplied * 10); // سرور سقف و موجودی را دوباره کنترل می‌کند
+
       const res = await ordersApi.create(body, `retail-${crypto.randomUUID().replace(/-/g, "")}`) as { id: string; reference: string; pricingSnapshot?: unknown; shippingRial?: string; totalRial?: string };
       if (!res.reference && !(res as any).id) throw new Error("خطا در ثبت سفارش");
       setPlacedOrderId(res.reference ?? (res as any).id);
       try { setPlacedSnapshot(res.pricingSnapshot ? readPricingSnapshot(res.pricingSnapshot) : null); } catch { setPlacedSnapshot(null); }
       if (q.trim()) recordSearchEvent(q, "conversion");
     setCart([]); // order placed → empty the cart (signed in: PUT /profile/saved-cart with no items)
+      setWalletInput("");
       setCheckStep(0);
       setView("success");
     } catch (e) {
@@ -735,6 +754,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
               <p className="mb-2 font-extrabold">صورت‌حساب ثبت‌شده در سرور</p>
               <div className="flex justify-between"><span className="text-[var(--kv-muted)]">جمع اقلام</span><b className="tabular-nums">{fmtMoney(Number(placedSnapshot.baseSubtotalRial) / 10)}</b></div>
               {BigInt(placedSnapshot.promoDiscountRial) > 0n && <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تخفیف</span><b className="tabular-nums">−{fmtMoney(Number(placedSnapshot.promoDiscountRial) / 10)}</b></div>}
+              {BigInt(placedSnapshot.walletRedeemedRial) > 0n && <div className="flex justify-between text-[var(--kv-success)]"><span>کیف پول کش‌بک</span><b className="tabular-nums">−{fmtMoney(Number(placedSnapshot.walletRedeemedRial) / 10)}</b></div>}
               <div className="flex justify-between"><span className="text-[var(--kv-muted)]">هزینه ارسال</span><b className="tabular-nums">{placedSnapshot.shippingRial === "0" ? "رایگان" : fmtMoney(Number(placedSnapshot.shippingRial) / 10)}</b></div>
               <div className="flex justify-between border-t border-[var(--kv-line)] pt-2 text-[15px] font-extrabold"><span>جمع کل</span><span className="tabular-nums">{fmtMoney(Number(placedSnapshot.totalRial) / 10)}</span></div>
               {placedSnapshot.installment && (
@@ -838,8 +858,27 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
               {festivalDiscount > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>تخفیف قوانین و جشنواره</span><span className="tabular-nums">−{fmtMoney(festivalDiscount)}</span></div>}
               {couponDiscount > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>کوپن {validCoupon?.code}</span><span className="tabular-nums">−{fmtMoney(couponDiscount)}</span></div>}
               <div className="flex justify-between text-[var(--kv-muted)]"><span>هزینه ارسال{ship ? ` (${ship.name})` : ""}{quotedWeight !== null && quotedWeight > 0 ? ` · ${quotedWeight.toLocaleString("fa-IR")} گرم` : ""}</span><span>{shipCost === 0 ? "رایگان" : fmtMoney(shipCost)}</span></div>
-              <div className="flex justify-between border-t border-[var(--kv-line)] pt-3 text-[15px] font-extrabold"><span>مبلغ نهایی</span><span className="tabular-nums">{fmtMoney(Math.max(0, (paymentMode === "cash" ? cartTotal : installmentCartTotal) - totalDiscount) + shipCost)}</span></div>
-              {paymentMode === "four_installments" && <p className="text-[12px] text-[var(--kv-muted)]">۴ قسطِ {fmtMoney(Math.ceil((Math.max(0, installmentCartTotal - totalDiscount) + shipCost) / 4))} بر پایه قیمت چهارقسطه محصولات</p>}
+              {walletApplied > 0 && <div className="flex justify-between text-[var(--kv-success)]"><span>کیف پول کش‌بک</span><span className="tabular-nums">−{fmtMoney(walletApplied)}</span></div>}
+              <div className="flex justify-between border-t border-[var(--kv-line)] pt-3 text-[15px] font-extrabold"><span>مبلغ نهایی</span><span className="tabular-nums">{fmtMoney(Math.max(0, merchNetToman - walletApplied) + shipCost)}</span></div>
+              {paymentMode === "four_installments" && <p className="text-[12px] text-[var(--kv-muted)]">۴ قسطِ {fmtMoney(Math.ceil((Math.max(0, installmentCartTotal - totalDiscount - walletApplied) + shipCost) / 4))} بر پایه قیمت چهارقسطه محصولات</p>}
+              {walletQuote && Number(walletQuote.availableRial) > 0 && (
+                <div className="rounded-[10px] bg-[var(--kv-surface-2)]/70 p-3">
+                  <p className="text-[12px] font-bold">کیف پول کش‌بک</p>
+                  <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">موجودی قابل استفاده: <b className="tabular-nums">{fmtMoney(Math.floor(Number(walletQuote.availableRial) / 10))}</b>{walletQuote.enabled ? <> · حداکثر برای این سفارش: <b className="tabular-nums">{fmtMoney(walletMaxToman)}</b></> : null}</p>
+                  {walletQuote.enabled ? (
+                    <>
+                      <div className="mt-2 flex gap-2">
+                        <input inputMode="numeric" value={walletInput} onChange={(e) => setWalletInput(e.target.value)} placeholder="مبلغ به تومان" dir="ltr" aria-label="مبلغ استفاده از کیف پول (تومان)" className="h-9 min-w-0 flex-1 rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px] text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" />
+                        <Btn size="sm" variant="soft" onClick={() => setWalletInput(String(walletMaxToman))}>حداکثر</Btn>
+                        {walletApplied > 0 && <Btn size="sm" variant="ghost" onClick={() => setWalletInput("")}>حذف</Btn>}
+                      </div>
+                      <p className="mt-1.5 text-[10.5px] text-[var(--kv-faint)]">کیف پول فقط برای کالاها مصرف می‌شود و هزینه ارسال را پوشش نمی‌دهد.</p>
+                    </>
+                  ) : (
+                    <p className="mt-1.5 text-[11px] text-[var(--kv-muted)]">{walletQuote.reason ?? "استفاده از کیف پول برای این سفارش در دسترس نیست."}</p>
+                  )}
+                </div>
+              )}
               <div className="pt-2">
                 <label className="mb-1.5 block text-[12px] font-semibold text-[var(--kv-ink-2)]" htmlFor="coupon">کد تخفیف</label>
                 <div className="flex gap-2"><input id="coupon" value={couponInput} onChange={(e) => setCouponInput(e.target.value)} placeholder="مثلاً PAIZ1404" dir="ltr" className="h-10 min-w-0 flex-1 rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px] uppercase text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" /><Btn size="sm" variant="soft" disabled={!couponInput.trim()} onClick={applyCoupon}>اعمال</Btn></div>

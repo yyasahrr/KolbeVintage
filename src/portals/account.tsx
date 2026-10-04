@@ -18,11 +18,11 @@ import { CustomerOrdersPanel } from "../components/customer-orders-panel";
 import { SecurityCenter as CustomerSecurityCenter } from "../components/security-center";
 import { cn } from "../utils/cn";
 import { addressesApi, authApi, membershipApi, ordersApi, returnsApi, wishlistApi } from "../data/api";
-import { CouponWallet, CustomerTimelineView, DashboardOverview, InvoiceCenter, ProfileCenter, ReviewCenter, SavedStylesCenter, SecurityCenter } from "./account-center";
-import { FileText, Gift, History, Star } from "lucide-react";
+import { CashbackWalletView, CouponWallet, CustomerTimelineView, DashboardOverview, InvoiceCenter, ProfileCenter, ReviewCenter, SavedStylesCenter, SecurityCenter } from "./account-center";
+import { Coins, FileText, Gift, History, Star } from "lucide-react";
 
 export type AccountTab = "overview" | "orders" | "wholesale" | "wishlist" | "addresses" | "styles" | "membership" | "support" | "notifications" | "profile"
-  | "coupons" | "reviews" | "invoices" | "security" | "timeline";
+  | "coupons" | "reviews" | "invoices" | "security" | "timeline" | "wallet";
 
 const emptyAddress = (account: CustomerAccount): CustomerAddress => ({
   id: "", title: "خانه", recipient: account.name === "مشتری کلبه" ? "" : account.name,
@@ -139,6 +139,7 @@ export default function AccountExperience({
     { id: "styles", label: "استایل‌های ذخیره‌شده", icon: <Sparkles size={17} /> },
     { id: "membership", label: "عضویت عمده", icon: <Crown size={17} /> },
     { id: "support", label: "پشتیبانی", icon: <CircleHelp size={17} /> },
+    { id: "wallet", label: "کیف پول کش‌بک", icon: <Coins size={17} /> },
     { id: "coupons", label: "کوپن‌های من", icon: <Gift size={17} /> },
     { id: "reviews", label: "مرکز نظرات", icon: <Star size={17} /> },
     { id: "invoices", label: "فاکتورها", icon: <FileText size={17} /> },
@@ -327,6 +328,7 @@ export default function AccountExperience({
 
         <div className="min-w-0 animate-[fadeIn_0.25s_ease]" key={tab}>
           {tab === "overview" && !isDemo && <DashboardOverview go={go} onOpenProduct={onOpenProduct} onShop={onShop} onStudio={onStudio} cartCount={cartCount} />}
+          {tab === "wallet" && <CashbackWalletView />}
           {tab === "coupons" && <CouponWallet />}
           {tab === "reviews" && <ReviewCenter />}
           {tab === "invoices" && <InvoiceCenter />}

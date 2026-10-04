@@ -1369,7 +1369,7 @@ export const ORDER_SORT_LABEL: Record<OrderSort, string> = {
 /** Server-authoritative pricing breakdown stored on every order (never recomputed client-side). */
 export type PricingSnapshot = {
   baseSubtotalRial: string; planDiscountRial: string; promoDiscountRial: string; promoSource: string;
-  totalDiscountRial: string; shippingRial: string; totalRial: string;
+  totalDiscountRial: string; walletRedeemedRial: string; shippingRial: string; totalRial: string;
   installment: { eligible: boolean; count: number; perInstallmentRial?: string; totalRial?: string; reason?: string | null } | null;
   policies: { productId: string; policy: string }[];
   shipping: { methodId: string | null; ruleId: string | null; pricingType: string; totalWeightGrams: number } | null;
@@ -1386,6 +1386,7 @@ export function readPricingSnapshot(raw: unknown): PricingSnapshot | null {
     promoDiscountRial: asString(row.promoDiscountRial, "0"),
     promoSource: asString(row.promoSource, "none"),
     totalDiscountRial: asString(row.totalDiscountRial, "0"),
+    walletRedeemedRial: asString(row.walletRedeemedRial, "0"),
     shippingRial: asString(row.shippingRial, "0"),
     totalRial: asString(row.totalRial, "0"),
     installment: installment ? {

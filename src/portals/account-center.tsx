@@ -7,9 +7,10 @@ import {
   accountApi, mediaSrc, profileApi, rialToToman, styleApi, type CommerceProduct, type Coupon, type DashboardResponse, type OtpTicket,
   type ProfileResponse, type SavedStyle,
 } from "../data/experience-api";
-import { getAccessToken, getApiBaseUrl } from "../data/api";
+import { cashbackApi, getAccessToken, getApiBaseUrl } from "../data/api";
 import { fmtMoney } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
+import { CASHBACK_TX_FA } from "../data/fa-labels";
 import { PersianDatePicker } from "../components/persian-date-picker";
 import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, Status } from "../components/primitives";
 import { StarInput } from "../components/product-reviews";
@@ -387,6 +388,63 @@ export function SecurityCenter({ onLoggedOut }: { onLoggedOut: () => void }) {
 }
 
 /* ============================ Coupons, styles, reviews, invoices, timeline ============================ */
+
+/** کیف پول کش‌بک — اعتبار وفاداری خرید خرده؛ قابل برداشت یا انتقال نیست و فقط هنگام پرداخت مصرف می‌شود. */
+export function CashbackWalletView() {
+  const { data, error, load } = useLoad(cashbackApi.wallet);
+  if (error) return <ErrorState message={error} onRetry={load} />;
+  if (!data) return <LoadingState />;
+  const toman = (v: unknown) => fmtMoney(Math.round(Number(String(v ?? "0")) / 10));
+  const rows = (data.items as Record<string, unknown>[]) ?? [];
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-[21px] font-extrabold">کیف پول کش‌بک</h2>
+        <p className="mt-1 text-[13px] text-[var(--kv-muted)]">با هر خرید خرده، درصدی از مبلغ به‌صورت اعتبار به شما برمی‌گردد و در خرید بعدی قابل استفاده است.</p>
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {([
+          ["موجودی قابل استفاده", toman(data.availableRial), true],
+          ["در انتظار آزادسازی", toman(data.pendingRial), false],
+          ["استفاده‌شده", toman(data.usedRial), false],
+          ["منقضی‌شده", toman(data.expiredRial), false],
+        ] as [string, string, boolean][]).map(([label, value, hot]) => (
+          <Card key={label} className="p-4">
+            <p className="text-[11.5px] text-[var(--kv-muted)]">{label}</p>
+            <p className={`mt-1 text-[15px] font-extrabold tabular-nums ${hot ? "text-[var(--kv-accent)]" : ""}`}>{value}</p>
+          </Card>
+        ))}
+      </div>
+      <p className="rounded-[12px] bg-[var(--kv-surface-2)]/70 p-3 text-[11.5px] leading-6 text-[var(--kv-muted)]">
+        اعتبار کش‌بک پس از تحویل سفارش و گذشت مهلت مرجوعی «قابل استفاده» می‌شود، هنگام پرداخت (تا سقف تعیین‌شده) از مبلغ کالاها کم می‌شود
+        و قابل برداشت نقدی یا انتقال نیست. در صورت لغو یا مرجوع شدن سفارش، اعتبار مصرف‌شده به کیف پول برمی‌گردد.
+      </p>
+      <div>
+        <p className="mb-2 text-[14px] font-bold">تاریخچه اعتبار</p>
+        {rows.length === 0 ? <Empty title="هنوز اعتباری ثبت نشده" desc="با اولین خرید خرده، کش‌بک شما همین‌جا نمایش داده می‌شود." /> : (
+          <div className="divide-y divide-[var(--kv-line)] border-y border-[var(--kv-line)]">
+            {rows.map((t) => {
+              const amount = Number(String(t.amount_rial ?? "0"));
+              return (
+                <div key={String(t.id)} className="flex flex-wrap items-center gap-3 py-3 text-[12.5px]">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold">{CASHBACK_TX_FA[String(t.tx_type)] ?? String(t.tx_type)}</p>
+                    <p className="mt-0.5 text-[11px] text-[var(--kv-muted)]">
+                      {t.created_at ? formatPersianDateTime(String(t.created_at)) : ""}
+                      {t.order_reference ? ` · سفارش ${String(t.order_reference)}` : ""}
+                      {t.expires_at && String(t.tx_type) === "cashback_pending" ? ` · انقضا: ${formatPersianDate(String(t.expires_at))}` : ""}
+                    </p>
+                  </div>
+                  <b className={`tabular-nums ${amount < 0 ? "text-[var(--kv-danger)]" : "text-[var(--kv-success)]"}`}>{amount < 0 ? "−" : "+"}{toman(Math.abs(amount))}</b>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function CouponWallet() {
   const { data, error, load } = useLoad(accountApi.coupons);
