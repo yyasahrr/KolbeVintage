@@ -21,7 +21,7 @@ import { useToast } from "../components/toast";
 import { accountApi, siteApi, type CommerceProduct, type SitePage } from "../data/experience-api";
 import { isAuthenticated } from "../data/api";
 void Hero; void TrustBar;
-import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
+import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input, Modal } from "../components/primitives";
 import { cn } from "../utils/cn";
 
 import { ProductReviewsBlock, ProductVideo, RecommendationStrip } from "../components/product-social";
@@ -209,6 +209,22 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
   useEffect(() => { if (isAuthenticated()) accountApi.view(p.id); }, [p.id]);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
   const resolved = resolveVariantPromotion(p, color?.id ?? color?.name, size, ops.promotionRules, ops.festivals);
+  // QA2-PDP-008: size guide + structured specs come from the canonical public endpoints.
+  const isServerProduct = /^[0-9a-f-]{36}$/i.test(p.id);
+  const [sizeGuide, setSizeGuide] = useState<{ name?: string; description?: string; columns: { id: string; code: string; label: string; unit: string | null }[]; rows: { id: string; values: Record<string, string | number> }[] } | null>(null);
+  const [specValues, setSpecValues] = useState<{ id: string; label: string; unit: string | null; value: unknown; variant_id: string | null }[]>([]);
+  const [guideOpen, setGuideOpen] = useState(false);
+  useEffect(() => {
+    if (!isServerProduct) { setSizeGuide(null); setSpecValues([]); return; }
+    let live = true;
+    publicApi.get<{ guide: { name?: string; description?: string; columns: { id: string; code: string; label: string; unit: string | null }[]; rows: { id: string; values: Record<string, string | number> }[] } | null }>(`/products/${p.id}/size-guide`)
+      .then((r) => { if (live) setSizeGuide(r.guide && r.guide.columns?.length ? r.guide : null); })
+      .catch(() => { if (live) setSizeGuide(null); });
+    publicApi.get<{ values: { id: string; label: string; unit: string | null; value: unknown; variant_id: string | null }[] }>(`/products/${p.id}/specs`)
+      .then((r) => { if (live) setSpecValues((r.values ?? []).filter((v) => !v.variant_id && v.value !== null && v.value !== "")); })
+      .catch(() => { if (live) setSpecValues([]); });
+    return () => { live = false; };
+  }, [p.id, isServerProduct]);
   return (
     <div className="animate-[fadeUp_0.4s_ease]">
       <button onClick={onBack} className="kv-press mb-5 inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]">
@@ -270,7 +286,9 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
           <div className="mt-5">
             <div className="mb-2.5 flex items-center justify-between">
               <p className="text-[13px] font-bold">انتخاب سایز</p>
-              <button className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-accent)]"><Ruler size={13} /> راهنمای سایز</button>
+              {sizeGuide && (
+                <button onClick={() => setGuideOpen(true)} className="kv-press inline-flex items-center gap-1 text-xs font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-accent)]"><Ruler size={13} /> راهنمای سایز</button>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {sizes.map((s) => (
@@ -292,6 +310,19 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
           <div className="mt-5 space-y-3 border-t border-[var(--kv-line)] pt-5 text-[13px] leading-7 text-[var(--kv-muted)]">
             <p><span className="font-bold text-[var(--kv-ink)]">درباره این محصول — </span>{p.desc}</p>
             <p><span className="font-bold text-[var(--kv-ink)]">جنس پارچه: </span>{p.fabric}</p>
+            {specValues.length > 0 && (
+              <div>
+                <p className="mb-1.5 font-bold text-[var(--kv-ink)]">مشخصات محصول</p>
+                <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+                  {specValues.map((spec) => (
+                    <div key={spec.id} className="flex items-baseline justify-between gap-3 border-b border-dashed border-[var(--kv-line)] py-1">
+                      <dt className="shrink-0 font-semibold">{spec.label}</dt>
+                      <dd className="text-left text-[var(--kv-ink)]">{Array.isArray(spec.value) ? spec.value.map((item) => String(item)).join("، ") : typeof spec.value === "boolean" ? (spec.value ? "بله" : "خیر") : String(spec.value)}{spec.unit ? ` ${spec.unit}` : ""}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
             {((p.genderCode ?? "") !== "" || (p.seasons ?? []).length > 0) && (
               <p>
                 <span className="font-bold text-[var(--kv-ink)]">مناسب: </span>
@@ -308,6 +339,36 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
         </div>
       </div>
       <ProductReviews productId={p.id} />
+      <Modal open={guideOpen} onClose={() => setGuideOpen(false)} title="راهنمای سایز" max="max-w-[640px]">
+        {sizeGuide ? (
+          <div className="space-y-3">
+            {sizeGuide.description ? <p className="text-[13px] leading-6 text-[var(--kv-muted)]">{sizeGuide.description}</p> : null}
+            <div className="overflow-x-auto rounded-[12px] border border-[var(--kv-line)]">
+              <table className="w-full min-w-[320px] text-[13px]">
+                <thead>
+                  <tr className="bg-[var(--kv-surface-2)] text-right">
+                    {sizeGuide.columns.map((col) => (
+                      <th key={col.id} className="whitespace-nowrap px-3 py-2.5 font-bold">{col.label}{col.unit ? <span className="mr-1 font-medium text-[var(--kv-muted)]">({col.unit})</span> : null}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sizeGuide.rows.map((row) => (
+                    <tr key={row.id} className="border-t border-[var(--kv-line)]">
+                      {sizeGuide.columns.map((col) => (
+                        <td key={col.id} className="whitespace-nowrap px-3 py-2 tabular-nums">{row.values?.[col.code] ?? "—"}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-[var(--kv-muted)]">اندازه‌ها بر اساس جدول رسمی این محصول است؛ اگر بین دو سایز هستید، سایز بزرگ‌تر را انتخاب کنید.</p>
+          </div>
+        ) : (
+          <Empty title="راهنمای سایز ثبت نشده" desc="برای این محصول هنوز جدول سایز ثبت نشده است." />
+        )}
+      </Modal>
     </div>
   );
 }
