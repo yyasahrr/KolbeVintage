@@ -272,7 +272,7 @@ try {
     body.includes('روش ارسالی ثبت نشده') || body.includes('روش ارسال') , '');
   await shot('02-shipping-empty');
 
-  await openTab('انبار و نقل‌وانتقالات');
+  await openTab('انبار و موجودی (WMS)');
   await clickByText('تنظیمات انبار');
   body = await text();
   checkFresh(freshDb, 'WMS first-run card offers «ساخت انبار»', () => body.includes('ساخت انبار'));
@@ -443,33 +443,42 @@ try {
   check('shipping table has no raw ISO dates', !/\d{4}-\d{2}-\d{2}T/.test(body));
   await shot('08-shipping-seeded');
 
-  await openTab('انبار و نقل‌وانتقالات');
+  await openTab('انبار و موجودی (WMS)');
   await warehouseUxSmoke({ page, check, apiPort, clickByText, setInput, text, waitForText });
   await shot('09-wms-seeded');
 
-  // §14: product definition lives at انبار و نقل‌وانتقالات → کالاها (legacy «تعریف محصول» redirects).
-  await openTab('انبار و نقل‌وانتقالات');
-  await clickByText('کالاها');
-  const catalogueReady = await waitForText('موجودی (WMS)');
-  check('ProductStudio lists the real catalogue rows', catalogueReady, (await text()).replace(/\n+/g, ' | ').slice(0, 90));
-  const inventoryOpened = await clickByText('موجودی و انبار');
-  check('ProductStudio exposes a per-product inventory view', inventoryOpened);
-  await sleep(2500);
+  // Product Studio owns the canonical list and opens Product 360 as a centered WorkspaceModal.
+  await openTab('استودیو محصول');
+  await clickByText('همه کالاها');
+  const catalogueReady = await waitForText('همه کالاها');
+  check('Product Studio canonical list is reachable', catalogueReady);
+  const firstProduct = await page.evaluate(() => document.querySelector('tbody tr td button')?.textContent?.trim() ?? '');
+  const productOpened = firstProduct ? await clickByText(firstProduct) : false;
+  check('Product 360 opens from the canonical list', productOpened);
+  await sleep(2200);
   body = await text();
-  check('product inventory drawer reads GET /admin/products/:id/inventory',
-    sawCall('GET', '/admin/products/') && sawCall('GET', '/inventory'),
-    apiCalls.filter((call) => call.includes('/inventory')).slice(-2).join(' , '));
-  check('ProductStudio has no hardcoded warehouse option (real warehouses only)',
-    !/انبار مرکزی — تهران|انبار اصفهان"/.test(body) || body.includes('KV-TEH-01') || body.includes('انبار مرکزی تهران'));
-  check('product inventory is read from WMS (per-variant balances, read-only)',
-    body.includes('قابل فروش') && (body.includes('رسید ورودی') || body.includes('اصلاح موجودی') || body.includes('تراز انبار')),
-    body.split('\n').filter((line) => line.includes('قابل فروش')).slice(0, 1).join(' | '));
-  check('product inventory does not offer a direct stock PATCH field',
-    !body.includes('PATCH') && !body.includes('موجودی اولیه محصول'));
-  await shot('10-product-inventory');
-
+  const dialogBox = await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"][aria-modal="true"]');
+    if (!dialog) return null;
+    const r = dialog.getBoundingClientRect();
+    return { x: r.x, width: r.width, viewport: innerWidth, title: dialog.getAttribute('aria-label') };
+  });
+  check('Product 360 is a centered accessible WorkspaceModal', Boolean(dialogBox)
+    && Math.abs((dialogBox.x + dialogBox.width / 2) - dialogBox.viewport / 2) < 3
+    && Boolean(dialogBox.title));
+  const product360Tabs = ['نمای کلی', 'واریانت‌ها', 'مشخصات فنی', 'راهنمای سایز', 'رسانه', 'قیمت‌گذاری خرده', 'عمده و سری‌ها', 'موجودی', 'SEO', 'تاریخچه'];
+  check('Product 360 exposes all ten useful read areas', product360Tabs.every((label) => body.includes(label)));
+  await clickByText('موجودی'); await sleep(1800); body = await text();
+  check('Product 360 inventory is read-only and reads the WMS balance endpoint',
+    body.includes('موجودی به تفکیک واریانت و انبار') || body.includes('موجودی‌ای ثبت نشده')
+      ? sawCall('GET', '/admin/products/') && sawCall('GET', '/inventory')
+      : body.includes('در حال خواندن تراز انبار'));
+  check('Product 360 inventory offers no physical stock write controls',
+    !/ثبت رسید|ثبت اصلاح|انتقال موجودی|موجودی اولیه محصول/.test(body));
+  await shot('10-product-360-inventory');
   await page.keyboard.press('Escape');
   await sleep(500);
+  check('Product 360 closes accessibly on Escape', !(await text()).includes('نمای جامع محصول'));
   await openTab('کوپن و جشنواره');
   body = await text();
   check('seeded coupon row renders a Jalali expiry (۱۴۰۵/…)',
@@ -505,9 +514,9 @@ try {
   await shot('13-ledger-after-seed');
 
   // ---- full console walk: every section of the sidebar, in order ----
-  // Final consolidated sidebar (Prompt 4): one business capability = one entry.
+  // Product Studio and WMS are separate entries; the rest of the sidebar is consolidated.
   const allTabs = [
-    'مرکز سفارشات', 'انبار و نقل‌وانتقالات', 'برج کنترل', 'مرکز ورود داده', 'اسناد و صورت‌حساب',
+    'مرکز سفارشات', 'استودیو محصول', 'انبار و موجودی (WMS)', 'برج کنترل', 'مرکز ورود داده', 'اسناد و صورت‌حساب',
     'درخواست همکاری', 'پلن‌های عضویت', 'ساختار محصولات و سری‌ها', 'مرکز CRM', 'کوپن و جشنواره',
     'محتوا (CMS)', 'مرکز SEO', 'مجله و رسانه‌ها', 'اعلان‌ها', 'مرکز مالی', 'یکپارچه‌سازی‌ها',
     'اتوماسیون و n8n', 'نظرات و امتیازها', 'توصیه‌گر هوشمند', 'تیکت و مرجوعی', 'گزارش حسابرسی',

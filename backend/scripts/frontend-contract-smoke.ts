@@ -530,14 +530,23 @@ try {
     vipSrc.includes('availableSeries') && !vipSrc.includes('p.stock >=') && !vipSrc.includes('p.stock <'));
   const hubHead = hubSrc.slice(hubSrc.indexOf('export function WarehouseHub'), hubSrc.indexOf('tab === "retail"'));
   const hubOptions = hubHead.slice(hubHead.indexOf('options={['), hubHead.indexOf(']}'));
-  // Prompt-1 §14: کالاها became the FIFTH primary tab (product definition + lifecycle moved into the hub).
-  check('warehouse hub has exactly 5 primary tabs incl. کالاها + تنظیمات انبار — no settings drawer remains',
-    (hubOptions.match(/\{ v: "/g) ?? []).length === 5 && hubOptions.includes('کالاها') &&
-    hubOptions.includes('تنظیمات انبار') && !hubSrc.includes('<Drawer open={settingsOpen}'));
+  check('WMS has exactly 4 physical-inventory tabs and no product lifecycle list',
+    (hubOptions.match(/\{ v: "/g) ?? []).length === 4 &&
+    ['خرده‌فروشی', 'نقل‌وانتقالات', 'انبار عمده', 'تنظیمات انبار'].every((label) => hubOptions.includes(label)) &&
+    !hubOptions.includes('کالاها') && !hubSrc.includes('CatalogHub'));
+  const adminSrc = readFileSync(join(repoRoot, 'src/portals/admin.tsx'), 'utf8');
+  check('Product Studio and WMS resolve to separate render branches while legacy product route is preserved',
+    adminSrc.includes('rproducts: "wms:goods"') && adminSrc.includes('hubSub === "goods"') &&
+    adminSrc.includes('<CatalogHub flash={flash} />') && adminSrc.includes('<WarehouseHub flash={flash} initial={hubSub} />'));
   const catalogHubSrc = readFileSync(join(repoRoot, 'src/components/catalog-hub.tsx'), 'utf8');
-  check('کالاها hub has the §14 sub-views and NO owner picker in the definition flow',
+  check('Product Studio owns the canonical list/lifecycle and has no owner picker in product definition',
     ['تعریف محصول', 'نیازمند راه‌اندازی', 'بازبینی تأمین‌کنندگان', 'همه کالاها', 'آرشیو'].every((t) => catalogHubSrc.includes(t)) &&
     !catalogHubSrc.includes('مالک محصول'));
+  const product360Src = readFileSync(join(repoRoot, 'src/components/product-360.tsx'), 'utf8');
+  check('Product 360 is a WorkspaceModal with all ten separate read areas and explicit inventory/history tabs',
+    product360Src.includes('<WorkspaceModal') &&
+    ['نمای کلی', 'واریانت‌ها', 'مشخصات فنی', 'راهنمای سایز', 'رسانه', 'قیمت‌گذاری خرده', 'عمده و سری‌ها', 'موجودی', 'SEO', 'تاریخچه'].every((t) => product360Src.includes(t)) &&
+    product360Src.includes('view="inventory"') && product360Src.includes('view="history"'));
   const supplierChildPanelSrc = readFileSync(join(repoRoot, 'src/components/supplier-child-orders-panel.tsx'), 'utf8');
   check('supplier wholesale panel offers exactly the §71 actions (تأیید کامل/پیشنهاد کمتر/عدم امکان) + server-resolved dispatch',
     ['تأیید کامل', 'پیشنهاد کمتر', 'عدم امکان'].every((t) => supplierChildPanelSrc.includes(t)) &&

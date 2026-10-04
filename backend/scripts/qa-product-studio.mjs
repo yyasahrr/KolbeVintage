@@ -86,6 +86,22 @@ const serverSeriesBefore = await count('SELECT count(*)::int AS n FROM series_te
 const browser = await puppeteer.launch({ executablePath: process.env.KV_CHROME_PATH ?? '/tmp/chromium', headless: 'shell',
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process', '--no-zygote'] });
 const page = await browser.newPage();
+const browserDiagnostics = { consoleErrors: [], pageErrors: [], apiErrors: [], httpErrors: [], requestFailures: [] };
+page.on('console', (message) => {
+  if (message.type() !== 'error') return;
+  const detail = { text: message.text(), location: message.location() };
+  if (!browserDiagnostics.consoleErrors.some((item) => item.text === detail.text && item.location?.url === detail.location?.url))
+    browserDiagnostics.consoleErrors.push(detail);
+});
+page.on('pageerror', (error) => browserDiagnostics.pageErrors.push(error.message));
+page.on('requestfailed', (request) => browserDiagnostics.requestFailures.push({ url: request.url(), method: request.method(), error: request.failure()?.errorText }));
+page.on('response', (response) => {
+  if (response.status() >= 400) browserDiagnostics.httpErrors.push({ status: response.status(), url: response.url(), method: response.request().method() });
+  if (response.status() >= 400 && /\/api\/v1\/(products|series-templates|files|admin\/category-profiles|admin\/product-colors)/.test(response.url())) {
+    void response.json().then((body) => browserDiagnostics.apiErrors.push({ status: response.status(), url: response.url(), body }))
+      .catch(() => browserDiagnostics.apiErrors.push({ status: response.status(), url: response.url() }));
+  }
+});
 const text = () => page.evaluate(() => document.body.innerText);
 const shot = (name) => page.screenshot({ path: `${SHOTS}/${name}.png` });
 const waitText = async (needle, attempts = 30) => {
@@ -140,19 +156,33 @@ const loginConsole = async () => {
   return (await text()).includes('برج کنترل');
 };
 const gotoProducts = async () => {
-  await clickText('button, a', 'انبار و نقل‌وانتقالات');
-  await sleep(1200);
-  await clickExact('button', 'کالاها');      /* hub tab */
+  await clickExact('button', 'استودیو محصول');
+  await sleep(1000);
+  await clickExact('button', 'تعریف محصول'); /* canonical lifecycle sub-view in Product Studio */
   await sleep(700);
-  await clickExact('button', 'تعریف محصول'); /* catalog sub-tab (product definitions list) */
-  await sleep(900);
   return waitText('تعریف محصول جدید');
 };
 
 try {
   await page.setViewport({ width: 1440, height: 1000 });
   check('admin console login', await loginConsole());
-  check('کالاها hub reachable', await gotoProducts());
+  // Ignore expected unauthenticated bootstrap probes; collect browser diagnostics only for
+  // authenticated Product Studio/WMS acceptance flows below.
+  Object.assign(browserDiagnostics, { consoleErrors: [], pageErrors: [], apiErrors: [], httpErrors: [], requestFailures: [] });
+  await clickExact('button', 'استودیو محصول');
+  await sleep(1000);
+  const studioLanding = await text();
+  check('Product Studio owns definition, setup queue, and canonical catalog list',
+    ['تعریف محصول', 'نیازمند راه‌اندازی', 'همه کالاها'].every((label) => studioLanding.includes(label)));
+  await clickExact('button', 'انبار و موجودی (WMS)');
+  await sleep(1200);
+  await waitText('موجودی فیزیکی', 25);
+  const wmsLanding = await text();
+  check('WMS is physical inventory only (no product lifecycle/catalog tabs)',
+    ['خرده‌فروشی', 'نقل‌وانتقالات', 'انبار عمده', 'تنظیمات انبار'].every((label) => wmsLanding.includes(label))
+      && !['تعریف محصول', 'نیازمند راه‌اندازی', 'همه کالاها'].some((label) => wmsLanding.includes(label)));
+  check('WMS opens on a physical inventory screen', wmsLanding.includes('موجودی فیزیکی'));
+  check('Product Studio browser route is reachable', await gotoProducts());
 
   await clickText('button', 'تعریف محصول جدید');
   await sleep(1200);
@@ -171,7 +201,38 @@ try {
   });
   check('§9 no «نوع محصول» field in create mode', !probe.typeField);
   check('§4 no «موجودی اولیه» step / no warehouse selector', !probe.stockStep && !probe.warehouseField);
-  check('§6 all capability sections present incl. review', ['اطلاعات پایه', 'رنگ و سایز', 'تصویر و ویدیو', 'تصویر استایل‌بیلدر', 'قیمت‌گذاری', 'سری‌های عمده', 'مشخصات فنی و راهنمای سایز', 'سئو و کانال‌ها', 'بازبینی و انتشار'].every((s) => probe.steps.some((x) => x.includes(s))), probe.steps.join('|'));
+  check('§6 all capability sections present incl. review', ['اطلاعات پایه', 'رنگ و سایز', 'تصویر و ویدیو', 'تصویر استایل‌بیلدر', 'قیمت‌گذاری', 'سری‌های عمده', 'مشخصات فنی', 'راهنمای سایز', 'سئو و کانال‌ها', 'بازبینی و انتشار'].every((s) => probe.steps.some((x) => x.includes(s))), probe.steps.join('|'));
+  const saleModeLabels = await page.evaluate(() => [...document.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim()));
+  check('§6 sales-mode selector exposes retail, wholesale and both', ['فقط خرده', 'فقط عمده', 'خرده + عمده'].every((label) => saleModeLabels.includes(label)), saleModeLabels.filter((label) => ['فقط خرده', 'فقط عمده', 'خرده + عمده'].includes(label)).join('|'));
+  await clickText('button', 'فقط خرده');
+  await sleep(250);
+  check('§6 retail-only mode hides wholesale series step', !(await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="بخش‌های تعریف محصول"] button')].some((b) => (b.textContent ?? '').includes('سری‌های عمده')))));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'قیمت‌گذاری');
+  const retailOnlyFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
+  check('§6 retail-only shows retail price without wholesale MOQ', retailOnlyFields.some((s) => s.includes('قیمت پایه خرده')) && !retailOnlyFields.some((s) => s.includes('حداقل سفارش عمده')));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'اطلاعات پایه');
+  await clickText('button', 'فقط عمده');
+  await sleep(250);
+  const wholesaleSteps = await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="بخش‌های تعریف محصول"] button')].map((b) => b.textContent ?? '').join('|'));
+  check('§6 wholesale-only mode keeps series step', wholesaleSteps.includes('سری‌های عمده'));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'قیمت‌گذاری');
+  const wholesaleOnlyFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
+  check('§6 wholesale-only hides retail price', !wholesaleOnlyFields.some((s) => s.includes('قیمت پایه خرده')));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'سری‌های عمده');
+  const wholesaleOnlySeriesFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
+  check('§6 wholesale-only shows MOQ and series controls', wholesaleOnlySeriesFields.some((s) => s.includes('حداقل سفارش عمده')));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'اطلاعات پایه');
+  await clickText('button', 'خرده + عمده');
+  await sleep(250);
+  const bothSteps = await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="بخش‌های تعریف محصول"] button')].map((b) => b.textContent ?? '').join('|'));
+  check('§6 both-channel mode restores retail pricing and wholesale-series steps', bothSteps.includes('قیمت‌گذاری') && bothSteps.includes('سری‌های عمده'));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'قیمت‌گذاری');
+  const bothPriceFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
+  check('§6 both-channel mode shows retail price controls', bothPriceFields.some((s) => s.includes('قیمت پایه خرده')));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'سری‌های عمده');
+  const bothSeriesFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
+  check('§6 both-channel mode also shows wholesale MOQ and series controls', bothSeriesFields.some((s) => s.includes('حداقل سفارش عمده')));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'اطلاعات پایه');
 
   /* ---------- §7/§8: hierarchical picker + schema loads live ---------- */
   const NAME = `پیراهن QA نهایی ${ts}`;
@@ -220,29 +281,30 @@ try {
   /* ---------- §12/§13: colors + sizes ---------- */
   await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'رنگ و سایز');
   await sleep(700);
-  /* keep exactly مشکی from the palette, then create کرم inline.
-     IMPORTANT: one click per evaluate — React chip handlers close over stale
-     state, so batch-clicking several chips in one evaluate loses updates. */
-  const paletteOp = (op, name) => page.evaluate((o, nm) => {
+  /* Normalize the palette to exactly one known color before adding the second.
+     The persisted server palette contains many colors; the draft may also carry a
+     default selection, so read and toggle one live chip per React render. */
+  const selectedPaletteColors = () => page.evaluate(() => {
     const p = [...document.querySelectorAll('p')].find((n) => (n.textContent ?? '').trim() === 'رنگ‌های محصول');
-    const wrap = p?.nextElementSibling;
-    if (!wrap) return null;
-    const chips = [...wrap.querySelectorAll('button')];
-    if (o === 'next-on') { /* first pressed chip that is NOT مشکی */
-      const b = chips.find((c) => c.getAttribute('aria-pressed') === 'true' && !(c.textContent ?? '').includes('مشکی'));
-      if (!b) return false;
-      b.click(); return true;
-    }
-    if (o === 'toggle') {
-      const b = chips.find((c) => (c.textContent ?? '').includes(nm));
-      if (!b) return false;
-      if (b.getAttribute('aria-pressed') !== 'true') b.click();
-      return true;
-    }
-    return null;
-  }, op, name ?? '');
-  for (let i = 0; i < 20 && (await paletteOp('next-on')) === true; i += 1) await sleep(350);
-  await paletteOp('toggle', 'مشکی');
+    return [...(p?.nextElementSibling?.querySelectorAll('button[aria-pressed="true"]') ?? [])]
+      .map((b) => (b.textContent ?? '').trim());
+  });
+  for (let i = 0; i < 20; i += 1) {
+    const selected = await selectedPaletteColors();
+    const remove = selected.find((name) => !name.includes('مشکی'));
+    if (!remove) break;
+    await page.evaluate((name) => {
+      const p = [...document.querySelectorAll('p')].find((n) => (n.textContent ?? '').trim() === 'رنگ‌های محصول');
+      const chip = [...(p?.nextElementSibling?.querySelectorAll('button') ?? [])].find((b) => (b.textContent ?? '').trim().includes(name));
+      chip?.click();
+    }, remove);
+    await sleep(350);
+  }
+  await page.evaluate(() => {
+    const p = [...document.querySelectorAll('p')].find((n) => (n.textContent ?? '').trim() === 'رنگ‌های محصول');
+    const black = [...(p?.nextElementSibling?.querySelectorAll('button') ?? [])].find((b) => (b.textContent ?? '').includes('مشکی'));
+    if (black?.getAttribute('aria-pressed') !== 'true') black?.click();
+  });
   await sleep(400);
   const CREAM = `کرم QA${ts}`;
   check('§12 new color name typed', await typeIntoField('نام رنگ', CREAM));
@@ -266,6 +328,9 @@ try {
   });
   check('§13 S/M/L offered and selected (no XL from defaults)', sizeState.all.join(',') === 'S,M,L' && sizeState.on.join(',') === 'S,M,L', JSON.stringify(sizeState));
   check('§13 add-size CTA says «افزودن به پروفایل این دسته»', (await text()).includes('افزودن به پروفایل این دسته'));
+  const selectedColors = await selectedPaletteColors();
+  check('§12 exactly two product colors selected', selectedColors.length === 2
+    && selectedColors.some((c) => c.includes('مشکی')) && selectedColors.some((c) => c.includes(CREAM)), JSON.stringify(selectedColors));
 
   /* ---------- §15: true matrix — disable کرم/S ---------- */
   const cellsOnBefore = await page.evaluate(() => [...document.querySelectorAll('td button')].filter((b) => (b.textContent ?? '').includes('ساخته می‌شود')).length);
@@ -326,56 +391,91 @@ try {
   await sleep(700);
   check('§24 wholesale channel is ON for this product', (await text()).includes('حداقل سفارش عمده'));
   await typeIntoField('حداقل سفارش عمده', '12');
-  /* define two owner templates through the canonical manager UI */
-  const makeTemplate = async (name, comp) => {
-    await clickText('button', (await text()).includes('هنوز قالب سری ندارید') ? 'تعریف قالب سری' : 'مدیریت قالب‌ها');
-    await sleep(900);
-    await clickText('button', 'قالب جدید');
-    await sleep(700);
-    await typeIntoField('نام قالب', name);
-    await selectOption('پیراهن و شومیز');
-    await sleep(500);
-    for (const [size, n] of Object.entries(comp)) {
-      for (let i = 0; i < n; i += 1) {
-        await page.evaluate((sz) => {
-          const btn = [...document.querySelectorAll(`button[aria-label="افزایش ${sz}"]`)].pop();
-          btn?.click();
-        }, size);
-        await sleep(120);
-      }
-    }
-    await clickText('button', 'ذخیره قالب');
-    await sleep(600);
-    const err = await page.evaluate(() => [...document.querySelectorAll('[role="alert"]')].map((n) => n.textContent).join(' | '));
-    if (err) console.log('DIAG template save:', err);
-    await page.evaluate(() => { [...document.querySelectorAll('button[aria-label="بستن"]')].pop()?.click(); });
-    await sleep(700);
-  };
-  await makeTemplate(`سری استاندارد QA${ts}`, { S: 1, M: 2, L: 2 });
-  check('§25 template «سری استاندارد» S×1/M×2/L×2 visible', await waitText(`سری استاندارد QA${ts}`, 10));
-  await makeTemplate(`سری سایز بزرگ QA${ts}`, { M: 1, L: 2 });
-  check('§25 second template supported', await waitText(`سری سایز بزرگ QA${ts}`, 10));
-  /* pick both series, price them */
-  const pickSeries = async (name, price, moq) => {
-    await page.evaluate((n) => {
-      const card = [...document.querySelectorAll('label')].find((l) => (l.textContent ?? '').includes(n));
-      card?.querySelector('input[type=checkbox]')?.click();
-    }, name);
-    await sleep(500);
-    await page.evaluate((price2, moq2) => {
-      const fields = [...document.querySelectorAll('label')].filter((l) => (l.querySelector('span')?.textContent ?? '').includes('قیمت هر سری'));
-      const empty = fields.map((f) => f.querySelector('input')).find((i) => i && !i.value);
+  /* Configure two actual per-product recipes in Product Studio. Saving the product
+     atomically writes these as canonical series_templates + series_template_items. */
+  await clickText('button', 'افزودن سری');
+  await sleep(400);
+  await clickText('button', 'افزودن سری');
+  await sleep(500);
+  const seriesCardCount = await page.evaluate(() => {
+    const candidate = (el) => [...el.classList].includes('rounded-[18px]')
+      && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'نام سری')
+      && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'رنگ سری');
+    const all = [...document.querySelectorAll('div')].filter(candidate);
+    return all.filter((el) => !all.some((other) => other !== el && el.contains(other))).length;
+  });
+  const setSeriesInput = async (index, labelName, value) => {
+    const ok = await page.evaluate(({ index: i, labelName: labelText, value: v }) => {
+      const candidate = (el) => [...el.classList].includes('rounded-[18px]')
+        && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'نام سری')
+        && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'رنگ سری');
+      const all = [...document.querySelectorAll('div')].filter(candidate);
+      const cards = all.filter((el) => !all.some((other) => other !== el && el.contains(other)));
+      const card = cards[i];
+      const input = labelText.startsWith('تعداد سایز ')
+        ? card?.querySelector(`input[aria-label="${labelText}"]`)
+        : [...(card?.querySelectorAll('label') ?? [])].find((node) => node.querySelector('span')?.textContent?.trim() === labelText)?.querySelector('input');
+      if (!input) return false;
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      if (empty) { setter.call(empty, price2); empty.dispatchEvent(new Event('input', { bubbles: true })); }
-      const moqFields = [...document.querySelectorAll('label')].filter((l) => (l.querySelector('span')?.textContent ?? '').trim() === 'حداقل سفارش (سری)');
-      const last = moqFields.map((f) => f.querySelector('input')).pop();
-      if (last) { setter.call(last, moq2); last.dispatchEvent(new Event('input', { bubbles: true })); }
-    }, price, moq);
-    await sleep(400);
+      setter.call(input, v); input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    }, { index, labelName, value });
+    await sleep(180);
+    return ok;
   };
-  await pickSeries(`سری استاندارد QA${ts}`, '7400000', '2');
-  await pickSeries(`سری سایز بزرگ QA${ts}`, '4500000', '1');
-  check('§25 both series priced and available', !(await text()).includes('قیمت، حداقل سفارش و دست‌کم یک رنگ لازم است.'));
+  const setSeriesColor = async (index, colorName) => {
+    const ok = await page.evaluate(({ index: i, colorName: name }) => {
+      const candidate = (el) => [...el.classList].includes('rounded-[18px]')
+        && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'نام سری')
+        && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'رنگ سری');
+      const all = [...document.querySelectorAll('div')].filter(candidate);
+      const cards = all.filter((el) => !all.some((other) => other !== el && el.contains(other)));
+      const label = [...(cards[i]?.querySelectorAll('label') ?? [])].find((node) => node.querySelector('span')?.textContent?.trim() === 'رنگ سری');
+      const select = label?.querySelector('select');
+      const option = [...(select?.options ?? [])].find((entry) => (entry.textContent ?? '').trim() === name);
+      if (!select || !option) return false;
+      select.value = option.value; select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }, { index, colorName });
+    await sleep(180);
+    return ok;
+  };
+  const configureCard = async (index, { name, color, moq, price, composition }) => {
+    const result = { name: await setSeriesInput(index, 'نام سری', name), color: await setSeriesColor(index, color),
+      moq: await setSeriesInput(index, 'حداقل سفارش (سری)', moq), price: await setSeriesInput(index, 'قیمت کل سری (تومان)', price), quantities: {} };
+    for (const [size, quantity] of Object.entries(composition)) {
+      result.quantities[size] = await setSeriesInput(index, `تعداد سایز ${size}`, String(quantity));
+    }
+    return result;
+  };
+  const configureSeriesCards = {
+    count: seriesCardCount,
+    first: await configureCard(0, { name: `سری A QA${ts}`, color: 'مشکی', moq: '2', price: '7400000', composition: { S: 1, M: 2, L: 2 } }),
+    second: await configureCard(1, { name: `سری B QA${ts}`, color: CREAM, moq: '1', price: '4500000', composition: { S: 0, M: 1, L: 2 } }),
+  };
+  const allFieldsSet = (card) => Boolean(card?.name && card?.color && card?.moq && card?.price)
+    && Object.values(card?.quantities ?? {}).every(Boolean);
+  check('§25 canonical series editor configured two cards and exact compositions', configureSeriesCards.count === 2
+    && allFieldsSet(configureSeriesCards.first) && allFieldsSet(configureSeriesCards.second), JSON.stringify(configureSeriesCards));
+  const seriesEditorSnapshot = await page.evaluate(() => {
+    const candidate = (el) => [...el.classList].includes('rounded-[18px]')
+      && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'نام سری')
+      && [...el.querySelectorAll('label span')].some((s) => s.textContent?.trim() === 'رنگ سری');
+    const all = [...document.querySelectorAll('div')].filter(candidate);
+    const cards = all.filter((el) => !all.some((other) => other !== el && el.contains(other)));
+    return cards.map((card) => {
+      const field = (name) => [...card.querySelectorAll('label')].find((el) => el.querySelector('span')?.textContent?.trim() === name);
+      return { name: field('نام سری')?.querySelector('input')?.value,
+        color: field('رنگ سری')?.querySelector('select')?.selectedOptions?.[0]?.textContent?.trim(),
+        moq: field('حداقل سفارش (سری)')?.querySelector('input')?.value,
+        price: field('قیمت کل سری (تومان)')?.querySelector('input')?.value,
+        composition: Object.fromEntries([...card.querySelectorAll('input[aria-label^="تعداد سایز "]')].map((input) => [input.getAttribute('aria-label')?.replace('تعداد سایز ', ''), input.value])) };
+    });
+  });
+  check('§25 Series A and B names, colors, compositions, MOQ and prices are visible in editor',
+    seriesEditorSnapshot.length === 2 && seriesEditorSnapshot.some((row) => row.name === `سری A QA${ts}` && row.color === 'مشکی' && row.moq === '2' && row.price === '7400000' && row.composition.S === '1' && row.composition.M === '2' && row.composition.L === '2')
+      && seriesEditorSnapshot.some((row) => row.name === `سری B QA${ts}` && row.color === CREAM && row.moq === '1' && row.price === '4500000' && row.composition.S === '0' && row.composition.M === '1' && row.composition.L === '2'), JSON.stringify(seriesEditorSnapshot));
+  check('§25 both series priced and available', !(await text()).includes('برای انتشار تکمیل کنید: سری‌های عمده'));
   check('§26 max wholesale order: NOT IMPLEMENTED (recorded honestly)', true, 'فیلد سقف سفارش عمده در سیستم وجود ندارد — جعل نشد');
   await shot('04-series');
 
@@ -413,13 +513,16 @@ try {
   check('§31/§93 stock_movements unchanged by create', movesAfterCreate === movesBefore, `${movesBefore} → ${movesAfterCreate}`);
   check('§31/§93 stock_receipts unchanged by create', receiptsAfterCreate === receiptsBefore, `${receiptsBefore} → ${receiptsAfterCreate}`);
 
-  const prodRow = (await db.query('SELECT id, inventory_setup, owner_type, product_type_id, supplier_id, wholesale_moq, cash_price_rial, specifications, metadata FROM products WHERE name = $1', [NAME])).rows[0];
+  const prodRow = (await db.query('SELECT id, inventory_setup, owner_type, product_type_id, supplier_id, wholesale_moq, cash_price_rial, installment_price_rial, wholesale_price_rial, retail_enabled, wholesale_enabled, category_id, specifications, metadata FROM products WHERE name = $1', [NAME])).rows[0];
   check('§31 product persisted', Boolean(prodRow));
   const PRODUCT_ID = prodRow?.id;
   check('§31 inventory_setup=pending, owner=kolbe, supplier NULL', prodRow?.inventory_setup === 'pending' && prodRow?.owner_type === 'kolbe' && prodRow?.supplier_id === null);
   check('§9 created WITHOUT product_type_id', prodRow?.product_type_id === null);
   check('§22 cash price server-side = 4,500,000 rial', String(prodRow?.cash_price_rial) === '4500000', prodRow?.cash_price_rial);
+  check('§22 four-installment amount persisted separately = 4,800,000 rial', String(prodRow?.installment_price_rial) === '4800000', prodRow?.installment_price_rial);
+  check('§24 both retail and wholesale channels persisted', prodRow?.retail_enabled === true && prodRow?.wholesale_enabled === true);
   check('§26 MOQ=12 persisted server-side', Number(prodRow?.wholesale_moq) === 12, prodRow?.wholesale_moq);
+  check('§7 canonical category identity persisted', Boolean(prodRow?.category_id));
   const specs = prodRow?.specifications ?? {};
   check('§10 required spec value persisted', String(specs[`qa_jens_${ts}`] ?? '').includes('نخ پنبه'), JSON.stringify(specs).slice(0, 80));
   const meta = prodRow?.metadata ?? {};
@@ -440,18 +543,40 @@ try {
   check('§34 pre-setup inventory shown as «نیازمند راه‌اندازی» (not 0)', (await text()).includes('نیازمند راه‌اندازی'));
   await shot('07-needs-setup');
 
-  /* ================= PHASE E — API-side: series, invalid size, spoof, RBAC ================= */
-  /* §25/§27: canonical SERVER series template from real variant recipe (Black S×1/M×2/L×2) */
-  const bySize = Object.fromEntries(variants.filter((v) => v.color_label === 'مشکی').map((v) => [v.size_label, v.id]));
-  const serverSeries = await api('POST', '/series-templates', { productId: PRODUCT_ID, name: `سری سرور مشکی QA${ts}`,
-    items: [{ variantId: bySize.S, quantityPerSeries: 1 }, { variantId: bySize.M, quantityPerSeries: 2 }, { variantId: bySize.L, quantityPerSeries: 2 }] });
-  check('§25 canonical server series template created (S1/M2/L2)', serverSeries.status === 201, `status=${serverSeries.status}`);
+  /* ================= PHASE E — API-side: canonical recipes, invalid size, spoof, RBAC ================= */
+  const recipeRows = (await db.query(`SELECT t.id,t.name,t.pricing_mode,t.total_price_rial::text,t.min_order_series,t.color_label,
+      i.quantity_per_series,v.size_label,v.color_label AS variant_color
+    FROM series_templates t JOIN series_template_items i ON i.series_template_id=t.id
+    JOIN product_variants v ON v.id=i.variant_id WHERE t.product_id=$1 ORDER BY t.name,v.size_label`, [PRODUCT_ID])).rows;
+  const recipeMap = new Map();
+  for (const row of recipeRows) {
+    const recipe = recipeMap.get(row.id) ?? { name: row.name, pricingMode: row.pricing_mode,
+      price: row.total_price_rial, moq: Number(row.min_order_series), color: row.color_label, composition: {} };
+    recipe.composition[row.size_label] = Number(row.quantity_per_series);
+    recipeMap.set(row.id, recipe);
+  }
+  const recipeA = [...recipeMap.values()].find((r) => r.name === `سری A QA${ts}`);
+  const recipeB = [...recipeMap.values()].find((r) => r.name === `سری B QA${ts}`);
+  const recipeIs = (actual, expected) => Boolean(actual)
+    && Object.entries(expected).every(([size, quantity]) => (actual[size] ?? 0) === quantity)
+    && Object.keys(actual).every((size) => Object.hasOwn(expected, size));
+  check('§25 canonical Series A S1/M2/L2 and Series B M0/L1/L2 persisted with distinct prices/MOQs',
+    recipeMap.size === 2 && recipeA?.pricingMode === 'series_total' && recipeA.price === '74000000' && recipeA.moq === 2
+      && recipeA.color === 'مشکی' && recipeIs(recipeA.composition, { L: 2, M: 2, S: 1 })
+      && recipeB?.pricingMode === 'series_total' && recipeB.price === '45000000' && recipeB.moq === 1
+      && recipeB.color === CREAM && recipeIs(recipeB.composition, { L: 2, M: 1 }), JSON.stringify([...recipeMap.values()]));
+  const seriesApi = await api('GET', `/series-templates?productId=${PRODUCT_ID}&withAvailability=1`);
+  check('§25 canonical series are readable from the server API with composition and persisted price',
+    seriesApi.status === 200 && seriesApi.json?.items?.length === 2
+      && seriesApi.json.items.some((r) => r.name === `سری A QA${ts}` && r.price_per_series_rial === '74000000' && r.moq_series === 2 && r.items?.length === 3)
+      && seriesApi.json.items.some((r) => r.name === `سری B QA${ts}` && r.price_per_series_rial === '45000000' && r.moq_series === 1 && r.items?.length === 2),
+    JSON.stringify(seriesApi.json?.items?.map((r) => ({ name: r.name, price: r.price_per_series_rial, moq: r.moq_series, items: r.items?.length }))));
   const movesAfterSeries = await count('SELECT count(*)::int AS n FROM stock_movements');
   const receiptsAfterSeries = await count('SELECT count(*)::int AS n FROM stock_receipts');
   const balancesAfterSeries = await count('SELECT count(*)::int AS n FROM stock_balances');
-  check('§27 series creation produced ZERO inventory (DB)', movesAfterSeries === movesBefore && receiptsAfterSeries === receiptsBefore && balancesAfterSeries === balancesBefore,
+  check('§27 series definition produces ZERO inventory (DB)', movesAfterSeries === movesBefore && receiptsAfterSeries === receiptsBefore && balancesAfterSeries === balancesBefore,
     `moves ${movesBefore}→${movesAfterSeries}, receipts ${receiptsBefore}→${receiptsAfterSeries}, balances ${balancesBefore}→${balancesAfterSeries}`);
-  check('§25 server series count +1 (metadata series ≠ inventory)', await count('SELECT count(*)::int AS n FROM series_templates') === serverSeriesBefore + 1);
+  check('§25 exactly two canonical templates created by product save', await count('SELECT count(*)::int AS n FROM series_templates') === serverSeriesBefore + 2);
 
   /* §14: server rejects out-of-profile size on variant add — then accepts after official extension */
   const xxl = await api('POST', `/products/${PRODUCT_ID}/variants`, { color: 'مشکی', size: 'XXL' });
@@ -721,6 +846,8 @@ try {
   check('§34 inventory_setup flipped to configured', setupState?.inventory_setup === 'configured');
   const needsList = await api('GET', '/admin/products/needs-setup');
   check('§33 product left the needs-setup queue', !(needsList.json?.items ?? []).some((p) => p.id === PRODUCT_ID));
+  check('browser has no uncaught page exceptions during Product Studio flow', browserDiagnostics.pageErrors.length === 0, browserDiagnostics.pageErrors.join(' | '));
+  console.log('BROWSER_DIAGNOSTICS:', JSON.stringify(browserDiagnostics));
 } catch (err) {
   check('script completed without crash', false, String(err?.message ?? err).slice(0, 180));
 } finally {

@@ -111,8 +111,7 @@ try {
   /* ---- §25/§26 two-step marketplace review; approval must NOT mutate stock ---- */
   const stockBefore = await api('GET', '/inventory?inventoryDomain=retail&withTotal=1&limit=100', admin);
   const sumBefore = (stockBefore.json?.items ?? []).reduce((a, r) => a + r.on_hand, 0);
-  await openSidebar('انبار و نقل‌وانتقالات');
-  await clickText('button', 'کالاها'); await sleep(1200);
+  await openSidebar('استودیو محصول');
   await clickText('button', 'بازبینی تأمین‌کنندگان'); await sleep(1500);
   const reviewOpen = await waitText(pendingName, 30);
   check('Review §25: pending supplier product appears in review queue', reviewOpen);

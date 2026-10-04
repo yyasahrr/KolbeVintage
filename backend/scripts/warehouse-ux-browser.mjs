@@ -19,8 +19,8 @@ export async function warehouseUxSmoke({ page, check, apiPort, clickByText, setI
   const b = await createReceipt(3, 'CTN-B');
   await page.reload(); await waitForText('کنسول مدیریت');
   // Refresh sidebar warehouse module after reload defaults back to its primary tab.
-  await page.evaluate(() => [...document.querySelectorAll('aside button')].find((button) => button.textContent.includes('انبار و نقل‌وانتقالات'))?.click());
-  // §14: the hub now opens on «کالاها» (product definition); the retail stock table lives under «خرده‌فروشی».
+  await page.evaluate(() => [...document.querySelectorAll('aside button')].find((button) => button.textContent.includes('انبار و موجودی (WMS)'))?.click());
+  // WMS opens on physical retail inventory; product lifecycle is a separate Product Studio module.
   await clickByText('خرده‌فروشی');
   await page.waitForSelector('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]');
   await page.type('input[placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…"]', String(suffix));

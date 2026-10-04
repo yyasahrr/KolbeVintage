@@ -1,10 +1,10 @@
 # ماتریس شکاف محصول، عمده و انبار
 
-تاریخ: 2026-10-04 · مبنا: `origin/arena/01a0f798-kolbevintage@c49bb6e3834b3b4511f85bcd18c20f63931fd38a` · شاخه: `codex/product-wms-wholesale-remediation`.
+تاریخ تدوین اولیه: 2026-10-04 · تاریخ بازبینی نهایی: 2026-10-05 · شاخهٔ پیگیری: `arena/01a10817-kolbevintage` · نقطهٔ شروع بازبینی نهایی: `3eaa71834ea6ce092e67f13a5effb5cb484974f7` · upstream: `origin/main@3cd9dace97e00e3131af018fb5b696f8c18d67fc`.
 
 ## قرارداد شواهد
 
-این نسخه حاصل بررسی کد، migrationها، قرارداد API و تست‌های موجود است. هیچ ادعای PASS مرورگر یا اجرای تست در این نسخه وجود ندارد. وضعیت «درست» یعنی مسیر پیاده‌سازی مطابق قاعده یافت شده؛ تأیید اجرایی مستقل در tracker ثبت می‌شود. موارد MEDIUM پیش از اصلاح نیازمند بازتولیدند. مشخصات کامل مالک محصول خوانده شد و در آغاز عنوان مدیریت سفارشات پایان می‌یابد؛ معماری سفارش تازه‌ای تعریف نمی‌شود.
+نسخهٔ اولیه حاصل بررسی کد، migrationها، قرارداد API و تست‌های موجود بود و عمداً هیچ PASS اجرایی ادعا نمی‌کرد. نتایج اجرای نهایی این شاخه در پیوست «شواهد اجرایی 2026-10-05» آمده‌اند؛ وضعیت آن پیوست فقط برای مواردی است که واقعاً دوباره اجرا شدند و جایگزین کشف‌های خارج از این محدوده نیست. وضعیت «درست» در ماتریس یعنی مسیر پیاده‌سازی مطابق قاعده یافت شده است. موارد MEDIUM پیش از هر اصلاح نیازمند بازتولیدند. مشخصات کامل مالک محصول خوانده شد و در آغاز عنوان مدیریت سفارشات پایان می‌یابد؛ معماری سفارش تازه‌ای تعریف نمی‌شود.
 
 منابع: PO = فایل «کلبه وینتیج.md» و درخواست جاری؛ DR = KOLBE_DOMAIN_RULES؛ ST = KOLBE_SOURCE_OF_TRUTH؛ BM = KOLBE_BUSINESS_MODEL؛ UX = USER_JOURNEYS/DOMAIN_EXPECTATIONS؛ SC = REAL_WORLD_SCENARIOS؛ DEC = PRODUCT_DECISIONS_REQUIRED. همه مسیرهای اسناد در `docs/product/` هستند. تصمیم‌های DEC-PRICING-001 و DEC-SUPPLIER-004 و DEC-SEED-005 قطعی‌اند و دوباره پرسیده نمی‌شوند.
 
@@ -68,11 +68,40 @@
 4. MODE-02: WMS کانال فروش کاتالوگ را فعال می‌کند؛ حذف writer و گارد.
 5. WMS-01: پنل محصول عملیات انبار موازی ارائه می‌کند؛ خلاصه read-only.
 6. SERIES-02: قیمت سری همیشه مشتق از یک قیمت واحد محصول است؛ مدل قیمت مستقل سری.
-7. UNPACK-02: replay همزمان create بدون claim/hash؛ exact-once canonical.
-8. UNPACK-01: سناریوی دقیق ۱۸ عدد هنوز اجرا نشده؛ تست persist/ledger/ownership.
+7. UNPACK-02: پس از اجرای embedded، replay همزمان با همان کلید و payload متفاوت، conflict و atomicity دوباره سبز شدند؛ این دور defectی نشان نداد.
+8. UNPACK-01: سناریوی دقیق S2/M2/L2 × 3 دوباره PASS شد؛ 18 عدد retail و ledger، موجودی عمده باقیمانده و recipe snapshot بررسی شدند.
 9. HIST-01: تغییر recipe/guide باید از معنای تاریخی جدا بماند؛ trace snapshots.
 10. SUP-05: دادهٔ ساختگی تولید در پنل واقعی؛ اجرای DEC-SUPPLIER-004.
 
 ## تصمیم‌های محصول
 
 در این نسخه تصمیم جدیدی مطرح نشده است. نبود تست یا بررسی‌نشدن مصرف‌کننده، PRODUCT_DECISION_REQUIRED نیست. خطر snapshot راهنمای سایز ابتدا در کد و سفارش‌های ذخیره‌شده trace می‌شود؛ فقط اگر رفتار واقعاً در منابع تعیین نشده باشد سؤال مطرح خواهد شد.
+
+## شواهد اجرایی 2026-10-05 — شاخهٔ `arena/01a10817-kolbevintage`
+
+این پیوست فقط شواهد اجرای زنده/تست برای پذیرش Product/WMS همین کار را ثبت می‌کند. وضعیت‌های جدول کشف بالا به‌صورت سراسری عوض نشده‌اند؛ موردی که اینجا نیامده VERIFIED نیست.
+
+| ID / محور | نتیجهٔ دوباره‌اجراشده | شواهد |
+|---|---|---|
+| CAT-01 / CAT-04 | نام دستهٔ canonical در ویرایش Product Studio با مقدار ذخیره‌شده یکی است؛ دسته به‌صورت شناسه/slug در UI نشت نمی‌کند. | Product Studio browser UAT `145/145`؛ mode/category browser `26/26`؛ migration verifier `43/43` (backfill دسته‌ها و حفظ شناسهٔ CMS). |
+| MODE-01 / MODE-02 / UI-01 | سه حالت فقط خرده، فقط عمده، و خرده+عمده پس از ذخیره، navigation و reload پابرجا هستند؛ فقط‌عمده خرده را فعال نمی‌کند. WMS نیز کانال فروش را تغییر نمی‌دهد. | browser `26/26`؛ Product Studio `145/145`؛ embedded backend `187/187`، شامل تست گارد WMS. |
+| VAR-01 | ماتریس رنگ×سایز در 360/390/768/1024/1440 px بدون overflow صفحه رندر می‌شود؛ تغییر پایدار selectorها پس از UAT فاقد هشدار duplicate-key است. | matrix browser `7/7` (پنج عرض + نشست/خروج)؛ Product Studio `145/145`؛ بدون هشدار React duplicate-key در log پس از اصلاح. |
+| SERIES-01 / SERIES-02 | ساخت سری تازه از Product Studio، شناسهٔ relational فعال روی سرور، بارگذاری مجدد در فرم، و حذف از فرم به‌صورت archive (بدون hard delete) تأیید شد؛ ویرایش سری موجود نیز save/reload و سپس restore شد. | Series create/reload `9/9`؛ sales-mode/series edit `26/26`؛ migration `070` در verifier و embedded pricing test. |
+| MEDIA-01 | تصویر پیش‌نمایش Cutout از فایل خصوصی ادمین استفاده می‌کند؛ هیچ درخواست `/product-media/:id` در این جریان صادر نشد. فایل محصول draft همچنان از endpoint عمومی `404` می‌گیرد؛ سیاست published-only تضعیف نشده است. | CDP/browser privacy `5/5`؛ Product Studio upload/edit `145/145`؛ embedded test «published catalog media…» PASS. |
+| WMS-01 / UI-02 | Product 360 یک WorkspaceModal متمرکز با 10 ناحیهٔ خواندنی است؛ موجودی/تاریخچه read-oriented، بدون write، focus/scroll/escape درست و هر 10 ناحیه در پنج عرض بدون overflow است. | Product 360 browser `22/22`; عرض‌ها `360/390/768/1024/1440`. |
+| WMS-02 / UI-03 | WMS چهار تب عملیاتی/تنظیمی در پنج عرض قابل استفاده و بدون overflow صفحه است؛ مسیرهای رسید/اصلاح/دریافت/وضعیت فروش از browser helper اجرا شدند. | WMS helper `28/28`; WMS responsive `20/20`. |
+| UNPACK-01 / UNPACK-02 | سناریوی دقیق 3 سریِ S2/M2/L2 با replay همزمان، payload conflict، rollback، recipe snapshot و مالکیت دوباره اجرا شد؛ `18` قطعه به retail رسید، ledger با `18` برابر بود و 2 سری wholesale باقی ماند. | embedded test `series-inventory.test.ts`, case `PO acceptance: S2 M2 L2 × 3`; included in `187/187` PASS. |
+| SUP-01 | Supplier 360 موجودی فیزیکی WMS را از ظرفیت تجاری جدا می‌کند: نمونهٔ کارگاه نیلگون در UI موجودی فیزیکی `۰` و ظرفیت/قابل‌درخواست `۲۰` نشان داد؛ خواندن و Escape هیچ write نداشت. | Supplier 360 browser `15/15`; مقایسهٔ DB با UI: on-hand `0`, declared capacity `20`. |
+| SERIES/UI responsive | کارت و ترکیب Series Builder و CTA در پنج viewport بدون overflow و قابل استفاده بود. | Series Builder responsive `5/5`. |
+
+### جمع‌بندی تست خودکار و تشخیص
+
+- `backend npm test`: 142 مورد؛ 77 PASS، 65 SKIP، صفر FAIL؛ TAP duration `50867.304 ms` (skips در اجرای بدون embedded DB).
+- `backend npm run test:embedded`: 187/187 PASS، صفر SKIP/FAIL؛ TAP duration `118564.609 ms`.
+- `npm run test:contract`: 104/104، 10.173 ثانیهٔ wall؛ `node scripts/verify-migrations.mjs`: 43/43، 10.015 ثانیهٔ wall.
+- Product Studio UAT: 145/145، 82.126 ثانیهٔ wall؛ backend build: 12.606 ثانیه؛ frontend build: 7.020 ثانیه. build خروجی tracked `dist/index.html` بود و فقط artifact تولیدی برگردانده می‌شود.
+- تشخیص مرورگر UAT: page errors `0`؛ duplicate-key warning `0`؛ یک `PATCH 400` عمداً تزریق‌شده برای تست خطای ذخیره و در UI مدیریت شد؛ 68 خطای بارگذاری منابع خارجی (`images.pexels.com` و `fonts.googleapis.com`) به‌علت بسته‌بودن egress sandbox. هیچ‌یک خطای Product/WMS محلی نبود.
+
+### مورد بازِ صریح
+
+حداکثر تعداد سفارش عمده در فرم Product Studio پیاده‌سازی نشده و UAT آن را صریحاً `NOT IMPLEMENTED` ثبت کرد؛ در این کارِ صرفاً verification / بدون PASS 2 تغییر داده نشد. این مورد را PASS/VERIFIED حساب نکنید. سایر ردیف‌های ماتریس که در جدول شواهد بالا نیامده‌اند نیز با این اجرا تأیید نشده‌اند.
