@@ -39,7 +39,8 @@ import { ImportCenterPanel } from "../components/import-center-panel";
 import { Supplier360Workspace } from "../components/supplier-360";
 import { InvoiceDocumentsPanel } from "../components/invoice-docs";
 import { FinanceOpsPanel } from "../components/finance-ops";
-import { ReceiptText } from "lucide-react";
+import { ReceiptText, Coins } from "lucide-react";
+import { CashbackCenter } from "../components/cashback-center";
 import { Buyer360Panel } from "../components/buyer-360-panel";
 import { CrmCenter } from "../components/crm-center";
 import { AutomationCenter } from "../components/automation-center";
@@ -248,6 +249,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
     { g: "مالی" },
     { v: "finance", label: "مرکز مالی", icon: <Wallet size={17} /> },
+    { v: "cashback", label: "کیف پول کش‌بک", icon: <Coins size={17} /> },
     { v: "supplier-docs", label: "اسناد و صورت‌حساب", icon: <ReceiptText size={17} /> },
     { g: "محتوا و رشد" },
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
@@ -289,6 +291,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     media: ["مجله و Media Library", "مدیریت مقاله، ویدیو و رسانه‌های محصولات"],
     notifs: ["سیستم اعلان", "قالب‌های رویدادی و ارسال دستی"],
     finance: ["مرکز عملیات مالی", "دفتر کل دوسویه، حساب تأمین‌کنندگان، تسویه، مغایرت‌یابی، پیش‌پرداخت، گزارش و دوره‌ها"],
+    cashback: ["کیف پول کش‌بک", "اعتبار وفاداری خرید خرده — قوانین تعلق، کیف پول مشتریان، دفترکل و انقضا"],
     "finance-ledger": ["دفتر کل", "روزنامه، حساب‌ها، بدهکار/بستانکار و مغایرت"],
     integrations: ["یکپارچه‌سازی‌ها", "CRM، حسابداری، پیامک، پرداخت و لجستیک"],
     support: ["پشتیبانی و تیکت‌ها", "SLA و صف پاسخ‌گویی"],
@@ -472,6 +475,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {/* Prompt 4 §15: one Finance Center with the final 6-domain IA. Legacy sibling
               tabs (دفتر کل → حسابداری، کیف پول demo → removed: duplicated real settlement/bank flows). */}
           {tab === "finance" && moduleBoundary("مرکز مالی", <FinanceOpsPanel flash={flash} />)}
+          {tab === "cashback" && moduleBoundary("کیف پول کش‌بک", <CashbackCenter flash={flash} />)}
           {tab === "integrations" && moduleBoundary("یکپارچه‌سازی‌ها", <HubTabs initial={hubSub} tabs={[
             { v: "connections", label: "اتصال‌ها", node: <IntegrationsPanel /> },
             { v: "sms", label: "پنل پیامک", node: <SmsCenter flash={flash} /> },

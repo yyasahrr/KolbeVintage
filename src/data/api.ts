@@ -428,6 +428,32 @@ export const returnsApi = {
     authFetch<{ id: string; reference: string }>("/returns", { method: "POST", body: JSON.stringify(payload) }),
 };
 
+/* ------------------------------- cashback -------------------------------- */
+
+export type CashbackWallet = {
+  pendingRial: string; availableRial: string; usedRial: string; expiredRial: string;
+  policy: { redemptionEnabled: boolean; maxPercentOfOrder: number; minRedeemRial: string; redeemOnInstallments: boolean };
+  items: Record<string, unknown>[];
+};
+
+export const cashbackApi = {
+  wallet: () => authFetch<CashbackWallet>("/cashback/wallet"),
+  redemptionQuote: (merchNetRial: string, paymentMode: "cash" | "four_installments" = "cash") =>
+    authFetch<{ enabled: boolean; reason: string | null; availableRial: string; maxRedeemRial: string }>(
+      `/cashback/redemption-quote?merchNetRial=${merchNetRial}&paymentMode=${paymentMode}`),
+  adminOverview: () => authFetch<Record<string, unknown>>("/admin/cashback/overview"),
+  adminRules: () => authFetch<{ items: Record<string, unknown>[] }>("/admin/cashback/rules"),
+  createRule: (payload: unknown) => authFetch<{ id: string }>("/admin/cashback/rules", { method: "POST", body: JSON.stringify(payload) }),
+  updateRule: (id: string, payload: unknown) => authFetch<{ id: string }>(`/admin/cashback/rules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  adminWallets: (params?: Record<string, string | number>) => authFetch<{ total: number; items: Record<string, unknown>[] }>(`/admin/cashback/wallets${query(params)}`),
+  adminTransactions: (params?: Record<string, string | number>) => authFetch<{ total: number; items: Record<string, unknown>[] }>(`/admin/cashback/transactions${query(params)}`),
+  adminExpiring: (days = 30) => authFetch<{ items: Record<string, unknown>[] }>(`/admin/cashback/expiring?days=${days}`),
+  adjust: (payload: { customerId: string; direction: "credit" | "debit"; amountRial: string; reason: string }) =>
+    authFetch<{ id: string | null }>("/admin/cashback/adjust", { method: "POST", body: JSON.stringify(payload) }),
+  settings: () => authFetch<Record<string, unknown>>("/admin/cashback/settings"),
+  saveSettings: (payload: unknown) => authFetch<Record<string, unknown>>("/admin/cashback/settings", { method: "PUT", body: JSON.stringify(payload) }),
+};
+
 /* ------------------------------- membership ------------------------------- */
 
 export const membershipApi = {

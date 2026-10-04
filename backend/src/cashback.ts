@@ -577,6 +577,7 @@ export function registerCashbackRoutes(app: FastifyInstance, pool: DbPool, confi
     requirePermission(user, 'cashback:read');
     const query = z.object({
       search: z.string().max(120).optional(),
+      customerId: z.uuid().optional(),
       limit: z.coerce.number().int().min(1).max(200).default(50),
       offset: z.coerce.number().int().min(0).default(0),
     }).parse(request.query);
@@ -590,9 +591,10 @@ export function registerCashbackRoutes(app: FastifyInstance, pool: DbPool, confi
               count(*) OVER()::int AS total_rows
        FROM cashback_transactions t JOIN users u ON u.id = t.customer_id
        WHERE ($1::text IS NULL OR u.display_name ILIKE '%' || $1 || '%' OR u.phone ILIKE '%' || $1 || '%' OR u.email ILIKE '%' || $1 || '%')
+         AND ($4::uuid IS NULL OR t.customer_id = $4)
        GROUP BY t.customer_id, u.display_name, u.phone, u.email
        ORDER BY max(t.created_at) DESC LIMIT $2 OFFSET $3`,
-      [query.search ?? null, query.limit, query.offset]);
+      [query.search ?? null, query.limit, query.offset, query.customerId ?? null]);
     const total = rows.rows.length ? Number((rows.rows[0] as { total_rows: number }).total_rows) : 0;
     return { total, items: rows.rows.map(({ total_rows: _t, ...rest }) => rest) };
   });

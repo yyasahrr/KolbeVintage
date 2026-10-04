@@ -113,6 +113,18 @@ export function faEvent(code: unknown): string {
   return EVENT_PREFIX_FA[prefix] ?? "رویداد";
 }
 
+/** Cashback wallet ledger vocabulary (admin + customer surfaces). */
+export const CASHBACK_TX_FA: Record<string, string> = {
+  cashback_pending: "کش‌بک در انتظار",
+  cashback_released: "آزادسازی اعتبار",
+  cashback_redeemed: "استفاده در خرید",
+  cashback_reversed: "برگشت اعتبار",
+  cashback_expired: "انقضای اعتبار",
+  refund_restore: "بازگشت اعتبار پس از مرجوعی",
+  admin_credit: "افزایش دستی (ادمین)",
+  admin_debit: "کاهش دستی (ادمین)",
+};
+
 /** Notification routing vocabulary (admin «اعلان‌ها»): channels/roles/priorities in Persian. */
 export const NOTIF_CHANNEL_FA: Record<string, string> = {
   in_app: "داخل برنامه", inapp: "داخل برنامه", email: "ایمیل", sms: "پیامک", webhook: "وب‌هوک", push: "پوش",

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { HelpCircle, RefreshCw, UserRound } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
-import { buyersApi, crmApi, crmIntelApi } from "../data/api";
+import { buyersApi, cashbackApi, crmApi, crmIntelApi } from "../data/api";
 import { Btn, Card, Checkbox, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status, Textarea, WorkspaceModal } from "./primitives";
-import { ACCOUNT_STATUS_FA, ORDER_STATUS_FA, ORDER_TYPE_FA, PAYMENT_MODE_FA, RETURN_STATUS_FA, REVIEW_STATUS_FA, TICKET_STATUS_FA, faEvent, faLabel } from "../data/fa-labels";
+import { ACCOUNT_STATUS_FA, ORDER_STATUS_FA, ORDER_TYPE_FA, PAYMENT_MODE_FA, RETURN_STATUS_FA, REVIEW_STATUS_FA, TICKET_STATUS_FA, CASHBACK_TX_FA, faEvent, faLabel } from "../data/fa-labels";
 
 /** Money arrives as rial strings; UI copy shows toman (÷۱۰). */
 const toman = (value: unknown) => `${fmtNum(Math.round(Number(String(value ?? "0")) / 10))} تومان`;
@@ -172,16 +172,57 @@ export function CrmRetailPanel() {
   );
 }
 
-type TabKey = "overview" | "purchases" | "activity" | "interests" | "support" | "marketing" | "history";
+type TabKey = "overview" | "purchases" | "wallet" | "activity" | "interests" | "support" | "marketing" | "history";
 const TABS: { v: TabKey; label: string }[] = [
   { v: "overview", label: "نمای کلی" },
   { v: "purchases", label: "خریدها" },
+  { v: "wallet", label: "کیف پول کش‌بک" },
   { v: "activity", label: "فعالیت‌ها" },
   { v: "interests", label: "علاقه‌مندی‌ها" },
   { v: "support", label: "پشتیبانی" },
   { v: "marketing", label: "بازاریابی" },
   { v: "history", label: "تاریخچه" },
 ];
+
+/** کیف پول کش‌بک مشتری — موجودی‌ها از دفترکل سرور؛ اعتبار وفاداری، غیرقابل برداشت/انتقال. */
+function CustomerWalletTab({ userId }: { userId: string }) {
+  const [wallet, setWallet] = useState<Row | null | undefined>(undefined);
+  const [txs, setTxs] = useState<Row[] | null>(null);
+  useEffect(() => {
+    let active = true;
+    void cashbackApi.adminWallets({ customerId: userId }).then((r) => { if (active) setWallet((r.items[0] as Row) ?? null); }).catch(() => { if (active) setWallet(null); });
+    void cashbackApi.adminTransactions({ customerId: userId, limit: 50 }).then((r) => { if (active) setTxs(r.items as Row[]); }).catch(() => { if (active) setTxs([]); });
+    return () => { active = false; };
+  }, [userId]);
+  if (wallet === undefined || txs === null) return <LoadingState label="در حال بارگذاری کیف پول…" />;
+  if (!wallet && txs.length === 0) return <Empty title="کیف پول کش‌بک خالی است" desc="با نخستین کش‌بکِ تعلق‌گرفته (پس از پرداخت سفارش خرده)، این بخش فعال می‌شود." />;
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {([
+          ["در انتظار آزادسازی", toman(wallet?.pending_rial)],
+          ["قابل استفاده", toman(wallet?.available_rial)],
+          ["استفاده‌شده", toman(wallet?.used_rial)],
+          ["منقضی‌شده", toman(wallet?.expired_rial)],
+        ] as [string, React.ReactNode][]).map(([label, value]) => (
+          <div key={label} className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2.5">
+            <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
+            <p className="mt-0.5 text-[13px] font-extrabold tabular-nums">{value}</p>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-[var(--kv-muted)]">اعتبار وفاداری است؛ قابل برداشت یا انتقال نیست و فقط در پرداخت سفارش خرده مصرف می‌شود. اصلاح دستی از «کیف پول کش‌بک» در بخش مالی انجام می‌شود.</p>
+      <Mini head={["زمان", "نوع", "مبلغ", "سفارش", "شرح"]} empty="تراکنشی ثبت نشده است."
+        rows={txs.map((t) => [
+          t.created_at ? formatPersianDateTime(String(t.created_at)) : "ثبت نشده",
+          faLabel(CASHBACK_TX_FA, t.tx_type),
+          toman(t.amount_rial),
+          text(t.order_reference),
+          text(t.description),
+        ])} />
+    </div>
+  );
+}
 
 function Mini({ head, rows, empty }: { head: string[]; rows: React.ReactNode[][]; empty: string }) {
   if (!rows.length) return <p className="py-3 text-[12.5px] text-[var(--kv-muted)]">{empty}</p>;
@@ -373,6 +414,8 @@ function Customer360Workspace({ loading, data, userId, onRefresh, onClose }: {
                 ])} />
             </div>
           )}
+
+          {tab === "wallet" && <CustomerWalletTab userId={userId} />}
 
           {tab === "activity" && (
             <Mini head={["رویداد", "عنوان", "زمان"]} empty="فعالیتی ثبت نشده است."
