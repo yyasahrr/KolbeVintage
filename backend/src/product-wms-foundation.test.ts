@@ -28,6 +28,9 @@ test('published catalog media and canonical series projection do not expose priv
   try {
     const admin = await makeUser(pool, ['admin', 'operations'], 'رسانه محصول');
     const supplier = await makeUser(pool, ['supplier'], 'مالک رسانه');
+    // Ensure the attack reaches the media ownership check, not the missing-profile gate.
+    await pool.query("INSERT INTO supplier_profiles(user_id,brand_name,cooperation_status) VALUES ($1,$2,'approved')",
+      [supplier.id, 'مالک رسانه']);
     const headers = await login(app, admin.email); const supplierHeaders = await login(app, supplier.email);
     const uploaded = await app.inject({ method: 'POST', url: '/api/v1/files', headers, payload: {
       originalName: 'pixel.png', mime: 'image/png', dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7WQAAAAASUVORK5CYII=',
