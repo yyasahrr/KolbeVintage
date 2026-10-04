@@ -68,7 +68,9 @@ function ValueInput({ attribute, value, onChange }: { attribute: SpecAttribute; 
  * fields); nothing is hardcoded. Extra per-product fields can stay local to
  * the product or be promoted into the template (item 127).
  */
-export function ProductSpecsEditor({ productId, flash }: { productId: string; flash: F }) {
+/** QA2-SPEC-007 (§17.3): specs and size guide are independent concerns; `section`
+ *  renders only one of them so the product editor can expose them as two separate steps. */
+export function ProductSpecsEditor({ productId, flash, section = "all" }: { productId: string; flash: F; section?: "all" | "specs" | "size-guide" }) {
   const [specs, setSpecs] = useState<ProductSpecs | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [variantValues, setVariantValues] = useState<Record<string, Record<string, unknown>>>({});
@@ -187,7 +189,7 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
 
   return (
     <div className="space-y-5">
-      <div>
+      {section !== "size-guide" && <div>
         <p className="mb-1 text-[13px] font-extrabold">مشخصات فنی</p>
         {!specs.template ? (
           specs.values.length === 0 ? (
@@ -231,9 +233,9 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
           )}
         </div>
         <Btn variant="accent" size="sm" className="mt-3" disabled={saving} onClick={() => void save()}>ذخیره مشخصات</Btn>
-      </div>
+      </div>}
 
-      {variantAttrs.length > 0 && (
+      {section !== "size-guide" && variantAttrs.length > 0 && (
         <Card className="p-4">
           <p className="text-[13px] font-extrabold">مشخصات سطح واریانت</p>
           <p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">این فیلدها برای هر واریانت جداگانه ذخیره می‌شوند (مثلاً وزن، SKU).</p>
@@ -254,7 +256,7 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
         </Card>
       )}
 
-      <Card className="p-4">
+      {section !== "size-guide" && <Card className="p-4">
         <p className="text-[13px] font-extrabold">+ افزودن مشخصه اختصاصی</p>
         <p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">ویژگی خارج از قالب: فقط همین محصول، یا افزودن به قالب برای محصولات بعدی (نیازمند دسترسی ساختار).</p>
         {!extra ? (
@@ -290,9 +292,9 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
             </div>
           </div>
         )}
-      </Card>
+      </Card>}
 
-      <Card className="p-4">
+      {section !== "specs" && <Card className="p-4">
         <p className="text-[13px] font-extrabold">راهنمای سایز</p>
         {attached?.guide ? (
           <div className="mt-2">
@@ -323,7 +325,7 @@ export function ProductSpecsEditor({ productId, flash }: { productId: string; fl
             <Btn variant="soft" size="sm" disabled={!attachDraft.guideId} icon={<Plus size={14} />} onClick={() => void (async () => { try { await sizeGuidesApi.attachToProduct(productId, { guideId: attachDraft.guideId, mode: attachDraft.mode }); const link = await sizeGuidesApi.productGuide(productId) as { mode?: string; guide?: unknown }; setAttached({ mode: link.mode ?? "link", guide: link.guide ? normalizeSizeGuide(link.guide) : null }); flash("راهنمای سایز متصل شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()}>اتصال</Btn>
           </div>
         )}
-      </Card>
+      </Card>}
     </div>
   );
 }

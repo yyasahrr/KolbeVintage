@@ -711,7 +711,8 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const secs = [
     ["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"],
     ["price", "قیمت‌گذاری"], ["series", "سری‌های عمده"],
-    ["specs", "مشخصات فنی و راهنمای سایز"], ["seo", "سئو و کانال‌ها"], ["review", "بازبینی و انتشار"],
+    // QA2-SPEC-007 (§17.3): specs and size guide are two independent steps.
+    ["specs", "مشخصات فنی"], ["sizeguide", "راهنمای سایز"], ["seo", "سئو و کانال‌ها"], ["review", "بازبینی و انتشار"],
   ];
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
@@ -1108,7 +1109,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                   <Field label="نگهداری"><Input value={d.care} onChange={(v) => setD({ ...d, care: v })} /></Field>
                 </div>
                 {editing ? (
-                  <ProductSpecsEditor key={editing.id} productId={editing.id} flash={flash} />
+                  <ProductSpecsEditor key={editing.id} productId={editing.id} flash={flash} section="specs" />
                 ) : categoryDriven && (catSchema?.specFields.length ?? 0) > 0 ? (
                   /* §10 (final gate): the CATEGORY schema fields render right here in create mode —
                      required blanks produce a field-specific Persian error and block publish. */
@@ -1161,6 +1162,17 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                     title="مشخصات ساختاریافته و راهنمای سایز پس از ذخیره"
                     desc="ویرایشگر مشخصات فنی (بر اساس ساختار دسته‌بندی) و اتصال راهنمای سایز به شناسه محصول روی سرور نیاز دارند؛ بعد از «ذخیره و انتشار»، از دکمه «ویرایش» همین بخش فعال می‌شود."
                   />
+                )}
+              </div>
+            )}
+            {sec === "sizeguide" && (
+              <div className="space-y-4">
+                {editing ? (
+                  <ProductSpecsEditor key={`sg-${editing.id}`} productId={editing.id} flash={flash} section="size-guide" />
+                ) : (
+                  <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
+                    راهنمای سایز پس از «ذخیره» محصول از همین بخش به آن متصل می‌شود؛ ابتدا محصول را ذخیره کنید.
+                  </p>
                 )}
               </div>
             )}

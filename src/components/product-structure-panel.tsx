@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Pencil, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { Btn, Card, Drawer, Empty, Field, Input, LoadingState, Select, Segmented, Status, Switch, Textarea } from "./primitives";
-import { productStructureApi, specsApi, sizeGuidesApi } from "../data/api";
+import { filesApi, productStructureApi, specsApi, sizeGuidesApi } from "../data/api";
 import {
   SPEC_TYPES, SPEC_TYPE_LABEL, SIZE_GUIDE_STATUS_LABEL, isSpecAttributeType,
   normalizeProductTypes, normalizeTaxonomies, normalizeSpecAttributes, normalizeSpecTemplate, normalizeSizeGuides, normalizeSizeGuide,
@@ -465,7 +465,11 @@ function GuidesSection({ flash }: { flash: F }) {
   const [edit, setEdit] = useState<{ id?: string; code: string; name: string; description: string; status: string } | null>(null);
   const [columnDraft, setColumnDraft] = useState({ code: "", label: "", unit: "" });
   const [rowDraft, setRowDraft] = useState<Record<string, string>>({});
-  const [mediaDraft, setMediaDraft] = useState({ fileId: "", kind: "image", caption: "" });
+  const [mediaDraft, setMediaDraft] = useState({ kind: "image", caption: "" });
+  const [mediaBusy, setMediaBusy] = useState(false);
+  // QA2-SIZE-005: in-place column rename + row edit state
+  const [colEdit, setColEdit] = useState<{ id: string; label: string; unit: string } | null>(null);
+  const [rowEdit, setRowEdit] = useState<{ id: string; values: Record<string, string> } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -517,8 +521,18 @@ function GuidesSection({ flash }: { flash: F }) {
             <div className="mt-4 border-t border-[var(--kv-line)] pt-4">
               <p className="mb-2 text-[13px] font-extrabold">ستون‌ها</p>
               <div className="flex flex-wrap gap-2">
-                {detail.columns.map((column) => (
+                {detail.columns.map((column, index) => colEdit?.id === column.id ? (
+                  <span key={column.id} className="inline-flex items-center gap-1.5 rounded-full border border-[var(--kv-accent)] bg-[var(--kv-surface)] px-2 py-1 text-[12px]">
+                    <input className="w-24 bg-transparent font-bold outline-none" value={colEdit.label} onChange={(e) => setColEdit({ ...colEdit, label: e.target.value })} aria-label="برچسب ستون" />
+                    <input className="w-12 bg-transparent text-[var(--kv-muted)] outline-none" value={colEdit.unit} onChange={(e) => setColEdit({ ...colEdit, unit: e.target.value })} placeholder="واحد" aria-label="واحد ستون" />
+                    <button disabled={!colEdit.label.trim()} onClick={() => void (async () => { try { await sizeGuidesApi.updateColumn(detail.id, column.id, { label: colEdit.label.trim(), unit: colEdit.unit.trim() || null }); setColEdit(null); await refreshDetail(detail.id); flash("ستون ویرایش شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="text-emerald-600" aria-label="ثبت ویرایش ستون"><Check size={13} /></button>
+                    <button onClick={() => setColEdit(null)} className="text-[var(--kv-faint)]" aria-label="انصراف"><X size={13} /></button>
+                  </span>
+                ) : (
                   <span key={column.id} className="inline-flex items-center gap-1.5 rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-[12px] font-bold">{column.label}{column.unit && <span className="text-[var(--kv-muted)]">({column.unit})</span>}
+                    <button onClick={() => setColEdit({ id: column.id, label: column.label, unit: column.unit ?? "" })} className="text-[var(--kv-faint)] hover:text-[var(--kv-accent)]" aria-label={`ویرایش ستون ${column.label}`}><Pencil size={12} /></button>
+                    {index > 0 && <button onClick={() => void (async () => { try { const prev = detail.columns[index - 1]!; await sizeGuidesApi.updateColumn(detail.id, column.id, { position: index - 1 }); await sizeGuidesApi.updateColumn(detail.id, prev.id, { position: index }); await refreshDetail(detail.id); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="text-[var(--kv-faint)] hover:text-[var(--kv-ink)]" aria-label={`جابه‌جایی ${column.label} به راست`}><ArrowRight size={12} /></button>}
+                    {index < detail.columns.length - 1 && <button onClick={() => void (async () => { try { const next = detail.columns[index + 1]!; await sizeGuidesApi.updateColumn(detail.id, column.id, { position: index + 1 }); await sizeGuidesApi.updateColumn(detail.id, next.id, { position: index }); await refreshDetail(detail.id); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="text-[var(--kv-faint)] hover:text-[var(--kv-ink)]" aria-label={`جابه‌جایی ${column.label} به چپ`}><ArrowLeft size={12} /></button>}
                     <button onClick={() => void (async () => { try { await sizeGuidesApi.deleteColumn(detail.id, column.id); await refreshDetail(detail.id); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="text-[var(--kv-faint)] hover:text-[var(--kv-danger)]" aria-label={`حذف ستون ${column.label}`}><Trash2 size={12} /></button>
                   </span>
                 ))}
@@ -538,9 +552,25 @@ function GuidesSection({ flash }: { flash: F }) {
                   <table className="kv-table min-w-[480px]">
                     <thead><tr>{detail.columns.map((c) => <th key={c.id}>{c.label}</th>)}<th></th></tr></thead>
                     <tbody>
-                      {detail.rows.map((row) => (
+                      {detail.rows.map((row, rowIndex) => rowEdit?.id === row.id ? (
+                        <tr key={row.id} className="bg-[var(--kv-accent)]/[0.05]">
+                          {detail.columns.map((c) => (
+                            <td key={c.id}><input className="w-20 rounded-[6px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-1.5 py-1 text-[12px] outline-none focus:border-[var(--kv-accent)]" value={rowEdit.values[c.code] ?? ""} onChange={(e) => setRowEdit({ ...rowEdit, values: { ...rowEdit.values, [c.code]: e.target.value } })} aria-label={`مقدار ${c.label}`} /></td>
+                          ))}
+                          <td className="whitespace-nowrap">
+                            <button onClick={() => void (async () => { try { await sizeGuidesApi.replaceRows(detail.id, detail.rows.map((r) => r.id === row.id ? rowEdit.values : r.values)); setRowEdit(null); await refreshDetail(detail.id); flash("سطر ویرایش شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="text-emerald-600" aria-label="ثبت ویرایش سطر"><Check size={14} /></button>
+                            <button onClick={() => setRowEdit(null)} className="mr-1.5 text-[var(--kv-faint)]" aria-label="انصراف"><X size={14} /></button>
+                          </td>
+                        </tr>
+                      ) : (
                         <tr key={row.id}>{detail.columns.map((c) => <td key={c.id}>{row.values[c.code] ?? "—"}</td>)}
-                          <td><button onClick={() => void (async () => { try { await sizeGuidesApi.replaceRows(detail.id, detail.rows.filter((r) => r.id !== row.id).map((r) => r.values)); await refreshDetail(detail.id); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="text-[var(--kv-faint)] hover:text-[var(--kv-danger)]" aria-label="حذف سطر"><Trash2 size={14} /></button></td></tr>
+                          <td className="whitespace-nowrap">
+                            <button onClick={() => setRowEdit({ id: row.id, values: Object.fromEntries(detail.columns.map((c) => [c.code, row.values[c.code] ?? ""])) })} className="text-[var(--kv-faint)] hover:text-[var(--kv-accent)]" aria-label="ویرایش سطر"><Pencil size={14} /></button>
+                            {rowIndex > 0 && <button onClick={() => void (async () => { try { const next = detail.rows.map((r) => r.values); [next[rowIndex - 1], next[rowIndex]] = [next[rowIndex]!, next[rowIndex - 1]!]; await sizeGuidesApi.replaceRows(detail.id, next); await refreshDetail(detail.id); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="mr-1.5 text-[var(--kv-faint)] hover:text-[var(--kv-ink)]" aria-label="انتقال سطر به بالا"><ArrowUp size={14} /></button>}
+                            {rowIndex < detail.rows.length - 1 && <button onClick={() => void (async () => { try { const next = detail.rows.map((r) => r.values); [next[rowIndex + 1], next[rowIndex]] = [next[rowIndex]!, next[rowIndex + 1]!]; await sizeGuidesApi.replaceRows(detail.id, next); await refreshDetail(detail.id); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="mr-1.5 text-[var(--kv-faint)] hover:text-[var(--kv-ink)]" aria-label="انتقال سطر به پایین"><ArrowDown size={14} /></button>}
+                            <button onClick={() => void (async () => { try { await sizeGuidesApi.replaceRows(detail.id, detail.rows.filter((r) => r.id !== row.id).map((r) => r.values)); await refreshDetail(detail.id); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} className="mr-1.5 text-[var(--kv-faint)] hover:text-[var(--kv-danger)]" aria-label="حذف سطر"><Trash2 size={14} /></button>
+                          </td>
+                        </tr>
                       ))}
                     </tbody>
                   </table>
@@ -565,11 +595,28 @@ function GuidesSection({ flash }: { flash: F }) {
                   </div>
                 ))}
               </div>
-              <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_140px_1fr_auto] sm:items-end">
-                <Field label="شناسه فایل (POST /files)"><Input value={mediaDraft.fileId} onChange={(v) => setMediaDraft({ ...mediaDraft, fileId: v })} placeholder="uuid" /></Field>
-                <Field label="نوع"><Select options={["image", "diagram", "video", "gif"]} value={mediaDraft.kind} onChange={(v) => setMediaDraft({ ...mediaDraft, kind: v })} /></Field>
-                <Field label="زیرنویس"><Input value={mediaDraft.caption} onChange={(v) => setMediaDraft({ ...mediaDraft, caption: v })} /></Field>
-                <Btn variant="soft" size="sm" disabled={!mediaDraft.fileId.trim()} onClick={() => void (async () => { try { await sizeGuidesApi.addMedia(detail.id, { fileId: mediaDraft.fileId.trim(), kind: mediaDraft.kind as "image", caption: mediaDraft.caption.trim() }); setMediaDraft({ fileId: "", kind: "image", caption: "" }); await refreshDetail(detail.id); flash("رسانه اضافه شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا — شناسه فایل معتبر نیست؟"); } })()} icon={<Plus size={13} />}>افزودن</Btn>
+              {/* QA2-SIZE-006: direct file upload — no raw UUID / API jargon for the operator */}
+              <div className="mt-2 grid gap-2 sm:grid-cols-[140px_1fr_auto] sm:items-end">
+                <Field label="نوع رسانه"><Select options={["تصویر", "نمودار", "ویدیو", "گیف"]} value={mediaDraft.kind === "image" ? "تصویر" : mediaDraft.kind === "diagram" ? "نمودار" : mediaDraft.kind === "video" ? "ویدیو" : "گیف"} onChange={(v) => setMediaDraft({ ...mediaDraft, kind: v === "تصویر" ? "image" : v === "نمودار" ? "diagram" : v === "ویدیو" ? "video" : "gif" })} /></Field>
+                <Field label="زیرنویس (اختیاری)"><Input value={mediaDraft.caption} onChange={(v) => setMediaDraft({ ...mediaDraft, caption: v })} placeholder="مثلاً نحوه اندازه‌گیری دور سینه" /></Field>
+                <div>
+                  <input id={`sg-media-${detail.id}`} type="file" accept="image/*,video/mp4" className="sr-only" onChange={(e) => {
+                    const file = e.target.files?.[0]; e.target.value = "";
+                    if (!file) return;
+                    setMediaBusy(true);
+                    void (async () => {
+                      try {
+                        const uploaded = await filesApi.upload(file);
+                        await sizeGuidesApi.addMedia(detail.id, { fileId: String((uploaded as { id: string }).id), kind: mediaDraft.kind as "image", caption: mediaDraft.caption.trim() });
+                        setMediaDraft({ kind: "image", caption: "" });
+                        await refreshDetail(detail.id);
+                        flash("رسانه بارگذاری و اضافه شد");
+                      } catch (err) { flash(err instanceof Error ? err.message : "خطا در بارگذاری رسانه"); }
+                      finally { setMediaBusy(false); }
+                    })();
+                  }} />
+                  <Btn variant="soft" size="sm" disabled={mediaBusy} icon={<Upload size={13} />} onClick={() => document.getElementById(`sg-media-${detail.id}`)?.click()}>{mediaBusy ? "در حال بارگذاری…" : "بارگذاری فایل"}</Btn>
+                </div>
               </div>
             </div>
           </div>

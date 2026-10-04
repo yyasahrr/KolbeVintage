@@ -606,6 +606,32 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
     }
     return reply.code(201).send({ id: columnId, guideId: id, ...body });
   });
+  // QA2-SIZE-005: in-place column rename / unit change / reorder.
+  app.patch('/api/v1/admin/size-guides/:id/columns/:columnId', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'catalog:structure');
+    const params = z.object({ id: z.uuid(), columnId: z.uuid() }).parse(request.params);
+    const body = z.object({
+      label: z.string().trim().min(1).max(120).optional(),
+      unit: z.string().trim().max(40).nullable().optional(),
+      position: z.number().int().min(0).max(100000).optional(),
+    }).strict().parse(request.body);
+    return transaction(pool, async (client) => {
+      const existing = await one<{ id: string; label: string; unit: string | null; position: number }>(
+        client, 'SELECT id, label, unit, position FROM size_guide_columns WHERE id = $1 AND guide_id = $2 FOR UPDATE',
+        [params.columnId, params.id]);
+      if (!existing) throw notFound();
+      const next = {
+        label: body.label ?? existing.label,
+        unit: body.unit !== undefined ? body.unit : existing.unit,
+        position: body.position ?? existing.position,
+      };
+      await client.query('UPDATE size_guide_columns SET label = $2, unit = $3, position = $4 WHERE id = $1',
+        [params.columnId, next.label, next.unit, next.position]);
+      await audit(client, user.id, 'size_guide.column_updated', 'size_guide', params.id,
+        { columnId: params.columnId, ...existing }, { columnId: params.columnId, ...next }, request.ip);
+      return { id: params.columnId, guideId: params.id, ...next };
+    });
+  });
   app.delete('/api/v1/admin/size-guides/:id/columns/:columnId', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'catalog:structure');
     const params = z.object({ id: z.uuid(), columnId: z.uuid() }).parse(request.params);

@@ -954,6 +954,9 @@ export const sizeGuidesApi = {
   remove: (id: string) => apiClient.del<unknown>(`/admin/size-guides/${id}`),
   addColumn: (guideId: string, payload: { code: string; label: string; unit?: string | null; position?: number }) =>
     apiClient.post<unknown>(`/admin/size-guides/${guideId}/columns`, payload),
+  /** QA2-SIZE-005: in-place column rename / unit / reorder. */
+  updateColumn: (guideId: string, columnId: string, payload: { label?: string; unit?: string | null; position?: number }) =>
+    apiClient.patch<unknown>(`/admin/size-guides/${guideId}/columns/${columnId}`, payload),
   deleteColumn: (guideId: string, columnId: string) =>
     apiClient.del<unknown>(`/admin/size-guides/${guideId}/columns/${columnId}`),
   replaceRows: (guideId: string, rows: Record<string, string>[]) =>
