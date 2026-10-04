@@ -18,6 +18,7 @@ import { quoteShipping } from './shipping.js';
 import { resolveVariantPrice, type ResolvedVariantPrice } from './promotions.js';
 import { loadSeriesComposition } from './series.js';
 import { applySeriesMovement, buildRecipeSnapshot } from './series-inventory.js';
+import { earnCashbackOnPaid, quoteRedemption, redeemCashback, restoreRedeemedCashback, reverseCashbackForOrder, scheduleCashbackRelease } from './cashback.js';
 
 const defaultShippingAddress = {
   recipient: 'تحویل در انبار/آدرس ثبت‌شده',
@@ -52,6 +53,8 @@ const checkout = z.object({
   }).default(defaultShippingAddress),
   couponCode: z.string().trim().max(40).optional(),
   shippingMethodId: z.uuid().optional(),
+  // Retail cashback wallet: how much loyalty credit pays for this order (rial, server-validated).
+  walletRial: z.string().regex(/^\d+$/).optional(),
 }).strict();
 
 const orderStatus = z.enum([
@@ -555,7 +558,22 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         shippingQuote = { ruleId: quote.ruleId, pricingType: quote.pricingType, totalWeightGrams: quote.totalWeightGrams };
       }
 
-      const total = baseSubtotal - discount + shippingRial;
+      // Retail cashback wallet — calculation order: base → promotions → coupon → wallet → shipping.
+      // The wallet pays part of the merchandise net (never shipping); validation is fully
+      // server-side (policy, available balance, % cap) under the per-customer advisory lock,
+      // so concurrent checkouts cannot double-spend the same credit.
+      const merchNet = baseSubtotal - discount;
+      let walletUsed = 0n;
+      if (body.walletRial && rial(body.walletRial) > 0n) {
+        const requested = rial(body.walletRial);
+        const quote = await quoteRedemption(client, user.id, merchNet, body.paymentMode, body.orderType);
+        if (!quote.enabled) throw badRequest(quote.reason ?? 'استفاده از کیف پول ممکن نیست.');
+        if (requested > quote.maxRedeemRial)
+          throw badRequest(`حداکثر مبلغ قابل استفاده از کیف پول ${quote.maxRedeemRial.toString()} ریال است.`);
+        walletUsed = requested;
+      }
+
+      const total = baseSubtotal - discount - walletUsed + shippingRial;
       const installmentCount = 4;
       const pricingSnapshot = {
         baseSubtotalRial: baseSubtotal.toString(),
@@ -564,6 +582,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         promoDiscountRial: promo.discountRial.toString(),
         promoSource: promo.source !== 'none' ? promo.source : (lineDiscountTotal > 0n ? 'promotion_rule' : 'none'),
         totalDiscountRial: discount.toString(),
+        walletRedeemedRial: walletUsed.toString(),
         shippingRial: shippingRial.toString(),
         totalRial: total.toString(),
         installment: body.paymentMode === 'four_installments'
@@ -587,8 +606,8 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         `INSERT INTO orders(
           id, reference, buyer_id, order_type, payment_mode, subtotal_rial, discount_rial, shipping_rial,
           shipping_method_id, total_rial, shipping_address, pricing_snapshot, fulfillment_via, inventory_domain, wholesale_fulfillment_status,
-          series_snapshot
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'kolbe_warehouse',$13,$14,$15)`,
+          series_snapshot, cashback_redeemed_rial
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'kolbe_warehouse',$13,$14,$15,$16)`,
         [
           orderId,
           reference,
@@ -605,8 +624,15 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
           requiredDomain,
           initialWholesaleStatus,
           seriesSnapshot ? JSON.stringify({ series: seriesSnapshot }) : null,
+          walletUsed.toString(),
         ],
       );
+
+      // Post the wallet redemption against the freshly created order (same transaction —
+      // all-or-nothing with the order itself; idempotent key cb-redeem:{orderId}).
+      if (walletUsed > 0n) {
+        await redeemCashback(client, user.id, orderId, walletUsed, merchNet, body.paymentMode, body.orderType);
+      }
 
       // Requirement 1: Create Supplier Fulfillments routed to Kolbe Central Warehouse for supplier-owned wholesale items
       const supplierFulfillmentBySupplier = new Map<string, string>();
@@ -1202,6 +1228,13 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       if (status === 'delivered') await postSupplierEarnings(client, id);
       if (status === 'cancelled') {
         await client.query("UPDATE payment_intents SET status = 'failed' WHERE order_id = $1 AND status = 'pending'", [id]);
+      }
+      // Retail cashback lifecycle (all idempotent — a re-sent transition cannot double-post):
+      if (status === 'paid') await earnCashbackOnPaid(client, id);                 // manual/offline paid path
+      if (status === 'delivered') await scheduleCashbackRelease(client, id);       // start release-delay clock
+      if (status === 'cancelled' || status === 'returned') {
+        await reverseCashbackForOrder(client, id, user.id, 'برگشت کش‌بک به دلیل لغو/مرجوعی سفارش');
+        await restoreRedeemedCashback(client, id, 'cancel', user.id);              // give spent credit back
       }
       await client.query(
         'INSERT INTO order_events(id,order_id,from_status,to_status,actor_id,note) VALUES ($1,$2,$3,$4,$5,$6)',

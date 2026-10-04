@@ -11,6 +11,7 @@ import { issueInvoiceForOrder } from './invoices.js';
 import { ACCOUNTS, postJournalEntry } from './ledger.js';
 import { applyChildPaymentAllocations } from './wholesale-oms.js';
 import { grantTryonCredits } from './tryon-commerce.js';
+import { earnCashbackOnPaid } from './cashback.js';
 
 const limitsSchema = z.object({
   sources: z.enum(['all', 'kolbe']).default('all'),
@@ -85,6 +86,8 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
         [randomUUID(), intent.order_id, `پرداخت تأیید شد: ${payment.providerReference}`]);
       await outbox(client, 'order.paid', 'order', intent.order_id, { orderId: intent.order_id, paymentIntentId: intent.id });
       await issueInvoiceForOrder(client, intent.order_id);
+      // Retail cashback: earn on paid (idempotent — duplicate gateway callbacks are no-ops).
+      await earnCashbackOnPaid(client, intent.order_id);
     }
     if (intent.membership_id) {
       const membership = await one<{ user_id: string; status: string; source: string }>(client,

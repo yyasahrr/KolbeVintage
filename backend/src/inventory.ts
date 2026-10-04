@@ -8,6 +8,7 @@ import { rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, notifyByPermission, outbox, requestHash } from './operations.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { assertNotRestricted } from './console.js';
+import { restoreRedeemedCashback, reverseCashbackForOrder } from './cashback.js';
 
 export type InventoryDomain = 'retail' | 'wholesale';
 
@@ -1842,6 +1843,18 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       if (!allowed[ret.status]?.includes(body.status)) throw badRequest('تغییر وضعیت مجاز نیست.');
       await client.query(`UPDATE return_requests SET status = $2, updated_at = now() WHERE id = $1`, [id, body.status]);
       await audit(client, user.id, 'return.status_changed', 'return', id, { status: ret.status }, { status: body.status, note: body.note }, request.ip);
+      if (body.status === 'refunded') {
+        // Retail cashback: restore the credit spent on this order (proportional for line-level
+        // returns, capped at redeemed − already-restored) and claw back the earned credit of the
+        // refunded portion (bounded — the wallet never goes negative). Both idempotent per return.
+        const order = await one<{ subtotal_rial: string; discount_rial: string }>(client,
+          'SELECT subtotal_rial::text, discount_rial::text FROM orders WHERE id = $1', [ret.order_id]);
+        const merchNet = order ? BigInt(order.subtotal_rial) - BigInt(order.discount_rial) : 0n;
+        const portion = BigInt(ret.amount_rial ?? '0') > 0n && merchNet > 0n
+          ? { refundRial: BigInt(ret.amount_rial), orderMerchRial: merchNet } : undefined;
+        await restoreRedeemedCashback(client, ret.order_id, id, user.id, portion);
+        await reverseCashbackForOrder(client, ret.order_id, user.id, 'برگشت کش‌بک به دلیل مرجوعی', { portion, idemSuffix: id });
+      }
       return { id, reference: ret.reference, status: body.status };
     });
   });
