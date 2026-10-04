@@ -35,6 +35,7 @@ import { ModuleBoundary, moduleBoundary } from "../components/boundary";
 import { NotificationsPanel } from "../components/notifications-panel";
 import { useDialogFocus } from "../components/focus-trap";
 import { ProductStructurePanel } from "../components/product-structure-panel";
+import { CatalogHub } from "../components/catalog-hub";
 import { ImportCenterPanel } from "../components/import-center-panel";
 import { Supplier360Workspace } from "../components/supplier-360";
 import { InvoiceDocumentsPanel } from "../components/invoice-docs";
@@ -145,7 +146,7 @@ const TAB_REDIRECT: Record<string, string> = {
   // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
   wproducts: "wms:wholesale-review",
   mreview: "wms:wholesale-review",
-  // ---- Prompt-1 §14: product definition lives at انبار و موجودی → کالاها ----
+  // ---- Product Studio owns product definition; preserve old product bookmarks ----
   rproducts: "wms:goods",
 };
 
@@ -463,7 +464,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             { v: "series", label: "قالب‌های سری کلبه", node: <SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /> },
           ]} />)}
           {tab === "imports" && moduleBoundary("مرکز ورود داده", <ImportCenterPanel flash={flash} />)}
-          {tab === "wms" && moduleBoundary("انبار و نقل‌وانتقالات", <WarehouseHub flash={flash} initial={hubSub} />)}
+          {tab === "wms" && hubSub === "goods" && moduleBoundary("استودیو محصول", <CatalogHub flash={flash} />)}
+          {tab === "wms" && hubSub !== "goods" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
           {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
           {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
             // §109: legacy CrmPanel removed (contacts/notes/360 live in بازاریابی→CrmCenter; old

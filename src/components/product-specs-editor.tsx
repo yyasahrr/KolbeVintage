@@ -12,6 +12,7 @@ type F = (message: string) => void;
 type VariantOption = { variantId: string; sku: string; color: string | null; size: string | null };
 
 const faNum = (value: number | string) => String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
+const CREATE_EXTRA_ATTRIBUTE_OPTION = "__create_extra_attribute__";
 const isEmpty = (value: unknown) => value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
 
 function ValueInput({ attribute, value, onChange }: { attribute: SpecAttribute; value: unknown; onChange: (value: unknown) => void }) {
@@ -179,6 +180,12 @@ export function ProductSpecsEditor({ productId, flash, section = "all" }: { prod
   const groups = specs.template?.groups ?? [];
   const extraCandidates = allAttributes.filter((a) => a.scope === "product" && !templateAttributes.some((t) => t.id === a.id));
   const extraAttribute = extra ? allAttributes.find((a) => a.id === extra.attributeId) ?? null : null;
+  const extraOptionLabels = Object.fromEntries(extraCandidates.map((attribute) => [
+    attribute.id,
+    extraCandidates.some((candidate) => candidate.id !== attribute.id && candidate.label === attribute.label)
+      ? `${attribute.label} · ${attribute.code}`
+      : attribute.label,
+  ]));
   const selVariantLabel = variants.find((v) => v.variantId === selVariant);
 
   const renderField = (attribute: SpecAttribute, value: unknown, onChange: (value: unknown) => void) => (
@@ -265,9 +272,10 @@ export function ProductSpecsEditor({ productId, flash, section = "all" }: { prod
           <div className="mt-3 space-y-3">
             <Field label="مشخصه">
               <Select
-                options={["ساخت مشخصه جدید…", ...extraCandidates.map((a) => a.label)]}
-                value={extraAttribute?.label ?? "ساخت مشخصه جدید…"}
-                onChange={(label) => setExtra({ ...extra, attributeId: extraCandidates.find((a) => a.label === label)?.id ?? "" })}
+                options={[CREATE_EXTRA_ATTRIBUTE_OPTION, ...extraCandidates.map((a) => a.id)]}
+                value={extra.attributeId || CREATE_EXTRA_ATTRIBUTE_OPTION}
+                labels={{ [CREATE_EXTRA_ATTRIBUTE_OPTION]: "ساخت مشخصه جدید…", ...extraOptionLabels }}
+                onChange={(attributeId) => setExtra({ ...extra, attributeId: attributeId === CREATE_EXTRA_ATTRIBUTE_OPTION ? "" : attributeId })}
               />
             </Field>
             {!extra.attributeId && (

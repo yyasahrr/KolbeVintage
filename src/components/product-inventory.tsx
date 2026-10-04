@@ -17,12 +17,14 @@ const fa = (value: number | string) => String(value).replace(/\d/g, (d) => "۰۱
  * movements (`receipt → receive`, `adjustment`, `transfer`) — never a `PATCH /products`.
  */
 export function ProductInventoryDrawer({
-  product, warehouses, onClose,
+  product, warehouses, onClose, view = "all", showClose = true,
 }: {
   product: { id: string; name: string } | null;
   warehouses: Warehouse[];
   onClose: () => void;
   onFlash: (message: string) => void;
+  view?: "all" | "inventory" | "history";
+  showClose?: boolean;
 }) {
   const [data, setData] = useState<ProductInventory | null>(null);
   const [balances, setBalances] = useState<StockBalance[]>([]);
@@ -65,57 +67,60 @@ export function ProductInventoryDrawer({
       {error && <ErrorState message={error} onRetry={load} />}
       {data && !loading && (
         <>
-          <div className="grid gap-3 sm:grid-cols-4">
-            {([
-              [L.onHand, data.totals.available + data.totals.reserved + data.totals.damaged, ""],
-              [L.reserved, data.totals.reserved, "text-[var(--kv-accent)]"],
-              [L.damaged, data.totals.damaged, "text-[var(--kv-danger)]"],
-              [L.available, data.totals.available, "font-extrabold text-[#3E6B4A]"],
-            ] as const).map(([label, value, tone]) => (
-              <Card key={label} className="p-3">
-                <p className="text-[11.5px] text-[var(--kv-muted)]">{label}</p>
-                <p className={cn("mt-1 text-lg font-extrabold tabular-nums", tone)}>{fa(value)}</p>
-              </Card>
-            ))}
-          </div>
+          {view !== "history" && <>
+            <div className="grid gap-3 sm:grid-cols-5">
+              {([
+                [L.onHand, data.totals.available + data.totals.reserved + data.totals.damaged, ""],
+                [L.reserved, data.totals.reserved, "text-[var(--kv-accent)]"],
+                [L.incoming, data.totals.incoming, "text-[var(--kv-muted)]"],
+                [L.damaged, data.totals.damaged, "text-[var(--kv-danger)]"],
+                [L.available, data.totals.available, "font-extrabold text-[#3E6B4A]"],
+              ] as const).map(([label, value, tone]) => (
+                <Card key={label} className="p-3">
+                  <p className="text-[11.5px] text-[var(--kv-muted)]">{label}</p>
+                  <p className={cn("mt-1 text-lg font-extrabold tabular-nums", tone)}>{fa(value)}</p>
+                </Card>
+              ))}
+            </div>
 
-          <Card className="overflow-hidden">
-            <div className="px-4 py-3 text-[13px] font-bold">موجودی به تفکیک واریانت و انبار</div>
-            {balances.length === 0 ? (
-              <Empty title="موجودی‌ای ثبت نشده است" desc="برای این محصول هنوز رسید ورودی ثبت نشده؛ راه‌اندازی و دریافت کالا را از بخش انبار انجام دهید." />
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="kv-table min-w-[760px] text-xs">
-                  <thead>
-                    <tr>
-                      <th>{L.sku}</th><th>{L.color}</th><th>{L.size}</th><th>{L.warehouse}</th>
-                      <th>{L.onHand}</th><th>{L.reserved}</th><th>{L.damaged}</th><th>{L.incoming}</th><th>{L.available}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {balances.map((row) => (
-                      <tr key={`${row.variantId}-${row.warehouseId}`}>
-                        <td className="font-mono tabular-nums" dir="ltr">{row.sku}</td>
-                        <td>{row.color ?? "—"}</td><td>{row.size ?? "—"}</td><td>{row.warehouseName}</td>
-                        <td className="tabular-nums">{fa(row.onHand)}</td>
-                        <td className="tabular-nums text-[var(--kv-accent)]">{fa(row.reserved)}</td>
-                        <td className="tabular-nums text-[var(--kv-danger)]">{fa(row.damaged)}</td>
-                        <td className="tabular-nums text-[var(--kv-muted)]">{fa(row.incoming)}</td>
-                        <td className="font-extrabold tabular-nums text-[#3E6B4A]">{fa(row.available)}</td>
+            <Card className="overflow-hidden">
+              <div className="px-4 py-3 text-[13px] font-bold">موجودی به تفکیک واریانت و انبار</div>
+              {balances.length === 0 ? (
+                <Empty title="موجودی‌ای ثبت نشده است" desc="برای این محصول هنوز رسید ورودی ثبت نشده؛ راه‌اندازی و دریافت کالا را از بخش انبار انجام دهید." />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="kv-table min-w-[760px] text-xs">
+                    <thead>
+                      <tr>
+                        <th>{L.sku}</th><th>{L.color}</th><th>{L.size}</th><th>{L.warehouse}</th>
+                        <th>{L.onHand}</th><th>{L.reserved}</th><th>{L.damaged}</th><th>{L.incoming}</th><th>{L.available}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
+                    </thead>
+                    <tbody>
+                      {balances.map((row) => (
+                        <tr key={`${row.variantId}-${row.warehouseId}`}>
+                          <td className="font-mono tabular-nums" dir="ltr">{row.sku}</td>
+                          <td>{row.color ?? "—"}</td><td>{row.size ?? "—"}</td><td>{row.warehouseName}</td>
+                          <td className="tabular-nums">{fa(row.onHand)}</td>
+                          <td className="tabular-nums text-[var(--kv-accent)]">{fa(row.reserved)}</td>
+                          <td className="tabular-nums text-[var(--kv-danger)]">{fa(row.damaged)}</td>
+                          <td className="tabular-nums text-[var(--kv-muted)]">{fa(row.incoming)}</td>
+                          <td className="font-extrabold tabular-nums text-[#3E6B4A]">{fa(row.available)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          </>}
 
-          <Card className="p-4"><h3 className="mb-3 text-sm font-bold">تاریخچه گردش موجودی (۵۰ رویداد اخیر)</h3>
-            {!movements.length ? <Empty title="گردشی ثبت نشده" desc="ثبت رسید، انتقال و بازکردن سری در انبار، در اینجا قابل پیگیری است." /> : <div className="overflow-x-auto"><table className="kv-table min-w-[650px] w-full text-xs"><thead><tr><th>تاریخ</th><th>کد کالا</th><th>انبار</th><th>بخش</th><th>تغییر موجودی</th><th>علت</th></tr></thead><tbody>{movements.map((m) => <tr key={String(m.id)}><td>{new Date(String(m.created_at)).toLocaleString("fa-IR")}</td><td>{String(m.sku)}</td><td>{String(m.warehouse_name)}</td><td>{m.inventory_domain === "wholesale" ? "عمده" : "خرده"}</td><td>{fa(String(m.on_hand_delta))}</td><td>{String(m.reason ?? "—")}</td></tr>)}</tbody></table></div>}
-          </Card>
+          {view !== "inventory" && <Card className="p-4"><h3 className="mb-3 text-sm font-bold">تاریخچه گردش موجودی (۵۰ رویداد اخیر)</h3>
+            {!movements.length ? <Empty title="گردشی ثبت نشده" desc="ثبت رسید، انتقال و بازکردن سری در انبار، در اینجا قابل پیگیری است." /> : <div className="overflow-x-auto"><table className="kv-table min-w-[650px] w-full text-xs"><thead><tr><th>تاریخ</th><th>کد کالا</th><th>انبار</th><th>بخش</th><th>تغییر موجودی</th><th>علت</th></tr></thead><tbody>{movements.map((m) => <tr key={String(m.id)}><td>{new Date(String(m.created_at)).toLocaleString("fa-IR")}</td><td dir="ltr">{String(m.sku)}</td><td>{String(m.warehouse_name)}</td><td>{m.inventory_domain === "wholesale" ? "عمده" : "خرده"}</td><td>{fa(String(m.on_hand_delta))}</td><td>{String(m.reason ?? "—")}</td></tr>)}</tbody></table></div>}
+          </Card>}
         </>
       )}
-      <div className="flex justify-end"><Btn variant="ghost" size="sm" onClick={onClose}>بستن</Btn></div>
+      {showClose && <div className="flex justify-end"><Btn variant="ghost" size="sm" onClick={onClose}>بستن</Btn></div>}
     </div>
   );
 }

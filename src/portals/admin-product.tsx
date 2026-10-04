@@ -251,13 +251,21 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         })).filter((field) => field.code);
         setCatSchema({ configured: r.configured, allowedSizes: r.allowedSizes ?? [], sizeGuide: r.sizeGuide, specFields: fields });
         // §8: in CREATE mode the selected sizes follow the category profile automatically —
-        // no manual reload, and no out-of-profile size can linger from the previous category.
+        // no manual reload and no out-of-profile default can remain hidden in the matrix.
         if (!editing && r.configured && (r.allowedSizes ?? []).length) {
           setD((cur) => {
-            if (cur.category.trim() !== r.category || cur.series.length || JSON.stringify(cur.sizes) !== JSON.stringify(automaticSizes.current)) return cur;
-            const sizes = (r.allowedSizes ?? []).slice(0, 4);
-            automaticSizes.current = sizes;
-            return { ...cur, sizes };
+            if (cur.category.trim() !== d.category.trim()) return cur; // ignore a stale response after another category pick
+            const allowed = (r.allowedSizes ?? []).slice(0, 4);
+            const unchangedDefault = JSON.stringify(cur.sizes) === JSON.stringify(automaticSizes.current);
+            const sizes = unchangedDefault ? allowed : cur.sizes.filter((size) => allowed.includes(size));
+            const sizeSetChanged = JSON.stringify(sizes) !== JSON.stringify(cur.sizes);
+            const series = cur.series.map((item) => {
+              const composition = Object.fromEntries(Object.entries(item.composition).filter(([size]) => allowed.includes(size)));
+              return { ...item, composition, pieces: Object.values(composition).reduce((sum, quantity) => sum + quantity, 0) };
+            });
+            const seriesChanged = series.some((item, index) => JSON.stringify(item.composition) !== JSON.stringify(cur.series[index]?.composition));
+            automaticSizes.current = allowed;
+            return sizeSetChanged || seriesChanged ? { ...cur, sizes, series } : cur;
           });
         }
       })
@@ -1061,7 +1069,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                   </div>}
               </div>
             </>}
-            {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images.map((image) => image.url)} flash={flash} />}
+            {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images.map((image) => image.previewUrl ?? image.url)} flash={flash} />}
             {sec === "price" && <>
               <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
                 چهار مفهوم قیمتی جدا از هم‌اند: <b>قیمت پایه خرده</b> (مبنای فروش تک‌عدد)، <b>قیمت چهارقسطه</b> (مخصوص پرداخت اقساطی)،

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarketplaceReviewPanel } from "../components/marketplace-review-panel";
-import { CatalogHub } from "../components/catalog-hub";
 import { AdminSupplierInboundsPanel, AdminSupplierStockPanel } from "../components/supplier-wholesale-panel";
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ClipboardCheck, RotateCcw, Settings, Store, Truck } from "lucide-react";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Textarea } from "../components/primitives";
@@ -78,17 +77,19 @@ type RequestRow = {
 type F = (msg: string) => void;
 
 /**
- * §3: «انبار و نقل‌وانتقالات» — the single warehouse hub.
+ * §3: «انبار و موجودی (WMS)» — the physical warehouse operations hub.
  * Exactly FOUR primary tabs: retail inventory / transfers (incl. reverse) /
  * wholesale (inventory, supplier requests, inbound & QC) / warehouse settings.
- * Settings is configuration-only (§4); operations stay in their domain tabs.
+ * Product definition and lifecycle live in Product Studio, not in WMS. Settings is
+ * configuration-only (§4); operations stay in their domain tabs.
  */
 export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | null }) {
   // §2 deep link: legacy wproducts/mreview routes land on انبار عمده → محصولات و بازبینی.
-  const [tab, setTab] = useState<"goods" | "retail" | "transfers" | "wholesale" | "settings">(initial === "wholesale-review" ? "wholesale" : "goods");
+  const [tab, setTab] = useState<"retail" | "transfers" | "wholesale" | "settings">(
+    initial === "wholesale-review" ? "wholesale" : "retail",
+  );
   useEffect(() => {
     if (initial === "wholesale-review") setTab("wholesale");
-    if (initial === "goods") setTab("goods"); // legacy «تعریف محصول» sidebar entry
   }, [initial]);
   const [lowStockReport, setLowStockReport] = useState<LowStock[] | null>(null);
   return (
@@ -96,7 +97,6 @@ export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Segmented
           options={[
-            { v: "goods", label: "کالاها" },
             { v: "retail", label: "خرده‌فروشی" },
             { v: "transfers", label: "نقل‌وانتقالات" },
             { v: "wholesale", label: "انبار عمده" },
@@ -105,8 +105,6 @@ export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | 
           value={tab} onChange={setTab}
         />
       </div>
-      {/* §14: کالاها = single home of product definition + lifecycle (تعریف/نیازمند راه‌اندازی/بازبینی/همه/آرشیو). */}
-      {tab === "goods" && <CatalogHub flash={flash} />}
       {tab === "retail" && <RetailInventoryTab flash={flash} />}
       {tab === "transfers" && <TransfersOpsCenter flash={flash} />}
       {tab === "wholesale" && <WholesaleCenter flash={flash} initialSub={initial === "wholesale-review" ? "review" : undefined} />}
