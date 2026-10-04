@@ -92,6 +92,23 @@ export function DiscountManager({ productId, productName, productImage, sku, onC
   const sizes = useMemo(() => [...new Set(variants.map((v) => v.size).filter(Boolean))] as string[], [variants]);
   const inFestival = !!summary?.activeFestival;
 
+  /** §17.8: effective standalone discount per matrix cell — variant > color > size > product. */
+  const cellRule = useCallback((color: string | null, size: string | null, variantId: string | null): RuleRow | null => {
+    const live = rules.filter((r) => r.active && !r.effectively_suspended && !r.promotion_id);
+    return live.find((r) => r.target_type === "variant" && r.variant_id === variantId)
+      ?? live.find((r) => r.target_type === "color" && (r.color_id ?? "") === (color ?? ""))
+      ?? live.find((r) => r.target_type === "size" && (r.size_code ?? "").toUpperCase() === (size ?? "").toUpperCase())
+      ?? live.find((r) => r.target_type === "product")
+      ?? null;
+  }, [rules]);
+  const cellBadge = (rule: RuleRow | null) => {
+    if (!rule) return <span className="text-[10px] text-gray-300">بدون تخفیف</span>;
+    const label = rule.discount_type === "percent" ? `${fa(Number(rule.discount_value))}٪` : money(rule.discount_value);
+    const tone = rule.target_type === "variant" ? "bg-violet-100 text-violet-800" : rule.target_type === "color" ? "bg-sky-100 text-sky-800" : rule.target_type === "size" ? "bg-teal-100 text-teal-800" : "bg-emerald-100 text-emerald-800";
+    const src = rule.target_type === "variant" ? "تنوع" : rule.target_type === "color" ? "رنگ" : rule.target_type === "size" ? "سایز" : "محصول";
+    return <span className={cn("inline-block whitespace-nowrap rounded-full px-1.5 py-0.5 text-[9.5px] font-bold", tone)} title={`منبع: تخفیف سطح ${src}`}>{label}</span>;
+  };
+
   const toggle = (set: Set<string>, value: string, apply: (next: Set<string>) => void) => {
     const next = new Set(set);
     if (next.has(value)) next.delete(value); else next.add(value);
@@ -305,9 +322,13 @@ export function DiscountManager({ productId, productName, productImage, sku, onC
                           return (
                             <td key={size} className="text-center">
                               {variant
-                                ? <input type="checkbox" className="h-4 w-4 accent-[var(--kv-accent)]"
-                                    checked={pickedVariants.has(variant.id)}
-                                    onChange={() => toggle(pickedVariants, variant.id, setPickedVariants)} />
+                                ? <label className="flex cursor-pointer flex-col items-center gap-1 py-0.5">
+                                    <input type="checkbox" className="h-4 w-4 accent-[var(--kv-accent)]"
+                                      checked={pickedVariants.has(variant.id)}
+                                      onChange={() => toggle(pickedVariants, variant.id, setPickedVariants)} />
+                                    {/* §17.8: current effective discount of this cell (server rules) */}
+                                    {cellBadge(cellRule(color, size, variant.id))}
+                                  </label>
                                 : <span className="text-gray-300" title="این ترکیب رنگ و سایز وجود ندارد">—</span>}
                             </td>
                           );

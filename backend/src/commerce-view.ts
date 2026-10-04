@@ -117,8 +117,9 @@ export function toCommerceProduct(row: Record<string, unknown>): CommerceProduct
   const installmentBase = installment ?? cash;
   const installmentEnabled = Boolean(row.installment_enabled);
   const discount = Number(row.discount_percent ?? 0);
-  const compare = metadata.compareAtRial ? String(metadata.compareAtRial)
-    : discount > 0 ? ((cash * 100n) / BigInt(100 - Math.min(discount, 95))).toString() : null;
+  // QA2-PRICE-010 / §17.7: the manual metadata.compareAtRial is NOT pricing truth and is no
+  // longer rendered; the strikethrough derives only from the server-side discount engine.
+  const compare = discount > 0 ? ((cash * 100n) / BigInt(100 - Math.min(discount, 95))).toString() : null;
   const createdAt = new Date(String(row.created_at));
   const flatLay = (row.flat_lay_media as string | null)
     ?? (cutout?.status === 'ready' && cutout.src && /^https?:\/\/|^\/api\/v1\/media\//.test(cutout.src) ? cutout.src : null);
