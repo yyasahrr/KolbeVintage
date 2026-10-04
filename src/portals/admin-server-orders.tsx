@@ -812,7 +812,7 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
+                <div className="kv-scroll kv-scroll-x">
                   <table className="w-full text-right text-xs">
                     <thead>
                       <tr className="border-b border-[var(--kv-line)] text-[var(--kv-muted)]">
@@ -949,7 +949,7 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
                 <option value="retail">فقط دامنه خرده‌فروشی (Retail)</option>
               </select>
             </div>
-            <div className="overflow-x-auto">
+            <div className="kv-scroll kv-scroll-x">
               <table className="w-full text-right text-xs">
                 <thead>
                   <tr className="border-b border-[var(--kv-line)] text-[var(--kv-muted)]">
@@ -1285,7 +1285,7 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
 
           <div className="rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4">
             <h3 className="mb-3 text-sm font-bold">قوانین تخفیف ثبت‌شده در پایگاه‌داده</h3>
-            <div className="overflow-x-auto">
+            <div className="kv-scroll kv-scroll-x">
               <table className="w-full text-right text-xs">
                 <thead>
                   <tr className="border-b border-[var(--kv-line)] text-[var(--kv-muted)]">

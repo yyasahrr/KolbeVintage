@@ -149,7 +149,8 @@ export function ShippingAdmin({ flash }: { flash: (message: string) => void }) {
 
   return (
     <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_340px]">
-      <div>
+      {/* min-w-0: جداول min-w داخلی باید داخل کارت اسکرول شوند، نه اینکه کارت از لبه viewport بیرون بزند (ممیزی §23 — بریدگی ۱۴۴۰ و سرریز ۳۶۰) */}
+      <div className="min-w-0">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <p className="text-[13px] text-[var(--kv-muted)]">
             روش‌های فعال در تسویه‌حساب خرده و ثبت سفارش عمده نمایش داده می‌شوند. ({fa(activeCount)} فعال از {fa(items?.length ?? 0)})
@@ -252,7 +253,7 @@ export function ShippingAdmin({ flash }: { flash: (message: string) => void }) {
               )}
               <div className="border-t border-[var(--kv-line)] p-4">
                 <p className="mb-2 flex items-center gap-1.5 text-[13px] font-extrabold"><Ruler size={14} />تست نرخ (همان موتوری که تسویه‌حساب استفاده می‌کند)</p>
-                <div className="grid gap-2 sm:grid-cols-[1fr_90px_140px_140px_auto] sm:items-end">
+                <div className="grid gap-2 sm:grid-cols-2 sm:items-end xl:grid-cols-[1fr_90px_140px_140px_auto]">
                   <Field label="شناسه واریانت"><Input value={quote.variantId} onChange={(v) => setQuote({ ...quote, variantId: v })} placeholder="uuid — از کشوی موجودی محصول" /></Field>
                   <Field label="تعداد"><Input value={quote.quantity} onChange={(v) => setQuote({ ...quote, quantity: v.replace(/\D/g, "") })} /></Field>
                   <Field label="جمع سبد (ریال)"><Input value={quote.subtotalRial} onChange={(v) => setQuote({ ...quote, subtotalRial: v.replace(/\D/g, "") })} /></Field>

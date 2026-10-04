@@ -723,7 +723,8 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { const fresh = blank(); setD(fresh); setOpenSnapshot(JSON.stringify(fresh)); setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
       </div>
       <Card className="overflow-hidden">
-        <div className="kv-scroll overflow-x-auto">
+        {/* kv-scroll-x: سایه لبه = نشانه دیداری ستون‌های بریده (ممیزی §2 — ستون ویرایش در ۱۴۴۰) */}
+        <div className="kv-scroll kv-scroll-x">
           <table className="kv-table min-w-[920px]">
             <thead><tr><th>محصول</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>موجودی (WMS)</th><th>تخفیف و جشنواره</th><th>سری</th><th>رسانه</th><th>استایل‌بیلدر</th><th>مشخصات</th><th>ویرایش</th><th>انتشار</th></tr></thead>
             <tbody>
