@@ -386,10 +386,10 @@ export function CategoryProfilesPanel({ flash }: { flash: F }) {
     <Card className="p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-bold">پروفایل دسته‌بندی‌ها (منبع ساختار محصول)</h3>
+          <h3 className="text-sm font-bold">پروفایل دسته‌بندی‌ها (اتصال دسته به ساختار محصول)</h3>
           <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
             دسته‌بندی تعیین می‌کند چه مشخصاتی الزامی است، چه سایزهایی مجازند و کدام راهنمای سایز نمایش داده می‌شود.
-            «نوع محصول» قدیمی فقط برای داده‌های قبلی نگه داشته شده است.
+            خودِ قالب‌های مشخصات و راهنمای سایز در بخش «ساختار محصولات و سری‌ها» (منوی محصول و انبار) تعریف می‌شوند؛ این‌جا فقط به دسته متصل می‌شوند.
           </p>
         </div>
         <Btn size="sm" variant="accent" onClick={() => setEditing({ category: "", specTemplateId: "", sizeGuideId: "", sizes: "" })}>پروفایل جدید</Btn>

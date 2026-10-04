@@ -2,12 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Radar, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check,
   ShieldCheck, Sun, Moon, LogOut, Warehouse, Crown, Contact,
-  LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2, Workflow, Star, Sparkles,
+  LayoutTemplate, BellRing, Plug, Settings, Workflow, Star, Sparkles,
 } from "lucide-react";
 import { fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
-import { KOLBE, SUB_STATUS, isTerminal, type VipPlan } from "../data/platform";
-import { Btn, Card, Status, SearchBox, Timeline, Field, Input, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
+import { KOLBE, SUB_STATUS, isTerminal } from "../data/platform";
+import { Btn, Card, Status, SearchBox, Timeline, Field, Input, Segmented } from "../components/primitives";
 import { ShippingAdmin } from "./admin-retail";
 import { PlansCenter, RestrictionsCenter, ApplicationsCenter } from "./admin-ops";
 import { SmsCenter } from "./admin-growth";
@@ -140,7 +140,7 @@ const TAB_REDIRECT: Record<string, string> = {
   users: "crm:customers",        // فهرست کاربران → CRM / مشتریان خرده
   buyers: "crm:vip",             // خریداران عمده → CRM / خریداران VIP
   suppliers: "crm:suppliers",    // تأمین‌کنندگان ۳۶۰° → CRM / تأمین‌کنندگان
-  sms: "crm:marketing",          // پنل پیامک → CRM / بازاریابی
+  sms: "integrations:sms",       // پنل پیامک → سیستم / یکپارچه‌سازی‌ها (پیکربندی ارسال)
   "crm-center": "crm:marketing", buyers360: "crm:vip",
   // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
   wproducts: "wms:wholesale-review",
@@ -164,7 +164,7 @@ function HubTabs({ tabs, initial }: { tabs: { v: string; label: string; node: Re
 
 function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; setDark: (v: boolean) => void; request: ApiRequest; onLogout: () => void }) {
   const store = useStore();
-  const { products, orders, buyers, plans, accounts, upsertPlan, removePlan, setTicketStatus } = store;
+  const { products, orders, buyers } = store;
   const pending = products.filter((p) => p.status === "pending");
   const allSubs = orders.flatMap((o) => (o.subOrders ?? []).map((sub) => ({ parent: o, sub })));
   const kolbeSubs = allSubs.filter(
@@ -184,7 +184,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const awaitingPay = allSubs.filter((i) => i.sub.status === "approved");
   const pendingBuyers = buyers.filter((b) => b.status === "در انتظار تأیید");
   const ops = useOps();
-  const customerTickets = accounts.flatMap((account) => account.tickets.map((ticket) => ({ account, ticket })));
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   // Settings reads the real warehouses and the configured default fulfillment warehouse.
   const [settingsWarehouses, setSettingsWarehouses] = useState<{ id: string; code: string; name: string }[] | null>(null);
@@ -227,7 +226,6 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   }, []);
   const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
   const [toast, setToast] = useState<string | null>(null);
-  const [planEdit, setPlanEdit] = useState<VipPlan | null>(null);
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
   // Hub-based navigation: one business capability = one entry. Tab keys are unchanged so every
@@ -443,39 +441,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "applications" && <ApplicationsCenter flash={flash} />}
           {tab === "restrictions" && <RestrictionsCenter flash={flash} />}
           {tab === "support" && <TicketBoardPanel />}
-          {tab === "plans-legacy" && (
-            <div className="animate-[fadeUp_0.35s_ease]">
-              <div className="mb-4 flex items-center justify-between">
-                <p className="text-[13px] text-[var(--kv-muted)]">این پلن‌ها در صفحه عضویت بازارچه عمده به خریداران نمایش داده می‌شود.</p>
-                <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => setPlanEdit({ id: `plan-${Date.now()}`, name: "", yearly: 0, creditLimit: 0, features: [], active: true })}>پلن جدید</Btn>
-              </div>
-              <div className="grid gap-4 md:grid-cols-3">
-                {plans.map((p) => (
-                  <Card key={p.id} className={cn("flex flex-col p-5", !p.active && "opacity-60")}>
-                    <div className="flex items-center justify-between"><p className="text-[16px] font-extrabold">{p.name}</p><div className="flex items-center gap-2">{p.recommended && <span className="rounded-full bg-[var(--kv-accent)]/12 px-2 py-0.5 text-[10.5px] font-bold text-[var(--kv-accent)]">پیشنهادی</span>}<Switch on={p.active} onToggle={() => { upsertPlan({ ...p, active: !p.active }); flash(`پلن ${p.name} ${p.active ? "غیرفعال" : "فعال"} شد`); }} /></div></div>
-                    <p className="mt-2 text-[18px] font-extrabold tabular-nums">{p.yearly === 0 ? "رایگان" : fmtMoney(p.yearly)}{p.yearly > 0 && <span className="text-[11px] font-medium text-[var(--kv-muted)]"> / سال</span>}</p>
-                    <p className="text-xs text-[var(--kv-muted)]">اعتبار: {p.creditLimit ? fmtMoney(p.creditLimit) : "—"} · {fmtNum(buyers.filter((b) => b.planId === p.id).length)} عضو</p>
-                    <ul className="mt-3 flex-1 space-y-1.5 text-[12.5px]">{p.features.map((f) => <li key={f} className="flex items-center gap-1.5"><Check size={13} className="text-[var(--kv-success)]" />{f}</li>)}</ul>
-                    <div className="mt-4 flex gap-2"><Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setPlanEdit(p)}>ویرایش</Btn><Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} disabled={buyers.some((b) => b.planId === p.id)} onClick={() => { removePlan(p.id); flash("پلن حذف شد"); }}>حذف</Btn></div>
-                  </Card>
-                ))}
-              </div>
-              <Drawer open={!!planEdit} onClose={() => setPlanEdit(null)} title={planEdit?.name ? `ویرایش پلن ${planEdit.name}` : "پلن جدید"}>
-                {planEdit && (
-                  <div className="space-y-4">
-                    <Field label="نام پلن"><Input value={planEdit.name} onChange={(v) => setPlanEdit({ ...planEdit, name: v })} /></Field>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <Field label="هزینه سالانه (تومان)" hint="۰ = رایگان"><Input value={String(planEdit.yearly)} onChange={(v) => setPlanEdit({ ...planEdit, yearly: Number(v.replace(/\D/g, "")) || 0 })} /></Field>
-                      <Field label="سقف اعتبار"><Input value={String(planEdit.creditLimit)} onChange={(v) => setPlanEdit({ ...planEdit, creditLimit: Number(v.replace(/\D/g, "")) || 0 })} /></Field>
-                    </div>
-                    <Field label="قابلیت‌ها" hint="هر خط یک قابلیت"><Textarea rows={5} value={planEdit.features.join("\n")} onChange={(v) => setPlanEdit({ ...planEdit, features: v.split("\n").map((x) => x.trim()).filter(Boolean) })} /></Field>
-                    <Checkbox checked={!!planEdit.recommended} onChange={(v) => setPlanEdit({ ...planEdit, recommended: v })} label="نمایش به‌عنوان پیشنهاد کلبه" />
-                    <Btn variant="accent" className="w-full" disabled={!planEdit.name.trim()} onClick={() => { upsertPlan(planEdit); setPlanEdit(null); flash(`پلن ${planEdit.name} ذخیره شد`); }}>ذخیره پلن</Btn>
-                  </div>
-                )}
-              </Drawer>
-            </div>
-          )}
+          {/* plans-legacy demo block removed (dead code — nav/redirects never reach it; real plans = PlansCenter) */}
 
           {/* ---------- Retail modules ---------- */}
           {tab === "structure" && moduleBoundary("ساختار محصولات و سری‌ها", <HubTabs tabs={[
@@ -494,7 +460,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             // §68/§87 (corrective): the ۳۶۰° file opens from EVERY supplier row (WorkspaceModal);
             // the old collapsed «پروفایل ۳۶۰° و مدیریت» block was a duplicate surface and is gone.
             { v: "suppliers", label: "تأمین‌کنندگان", node: <CrmSuppliersHub flash={flash} /> },
-            { v: "marketing", label: "بازاریابی", node: <div className="space-y-5"><SmsCenter flash={flash} /><CrmCenter flash={flash} /></div> },
+            // SMS provider config lives in سیستم → یکپارچه‌سازی‌ها (ADM audit: duplicate SMS surfaces);
+            // marketing keeps the CRM growth center only.
+            { v: "marketing", label: "بازاریابی", node: <CrmCenter flash={flash} /> },
           ]} />)}
           {tab === "automation" && moduleBoundary("اتوماسیون و n8n", <AutomationCenter flash={flash} />)}
           {tab === "reviews" && moduleBoundary("نظرات و امتیازها", <ReviewsCenter flash={flash} />)}
@@ -504,7 +472,10 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {/* Prompt 4 §15: one Finance Center with the final 6-domain IA. Legacy sibling
               tabs (دفتر کل → حسابداری، کیف پول demo → removed: duplicated real settlement/bank flows). */}
           {tab === "finance" && moduleBoundary("مرکز مالی", <FinanceOpsPanel flash={flash} />)}
-          {tab === "integrations" && moduleBoundary("یکپارچه‌سازی‌ها", <IntegrationsPanel />)}
+          {tab === "integrations" && moduleBoundary("یکپارچه‌سازی‌ها", <HubTabs initial={hubSub} tabs={[
+            { v: "connections", label: "اتصال‌ها", node: <IntegrationsPanel /> },
+            { v: "sms", label: "پنل پیامک", node: <SmsCenter flash={flash} /> },
+          ]} />)}
           {tab === "promo" && moduleBoundary("کوپن و جشنواره", <HubTabs tabs={[
             { v: "promo", label: "کوپن و جشنواره", node: <PromoPanel /> },
             { v: "safety", label: "ایمنی تخفیف و کوپن شخصی", node: <PromoSafetyPanel flash={flash} /> },
@@ -515,46 +486,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
           {/* ---------- Support ---------- */}
           {tab === "audit" && <AuditLogPanel />}
-          {tab === "support-legacy" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] lg:grid-cols-[1fr_360px]">
-              <Card className="overflow-hidden">
-                <div className="kv-scroll overflow-x-auto">
-                  <table className="kv-table min-w-[640px]">
-                    <thead><tr><th>تیکت</th><th>موضوع</th><th>کاربر</th><th>کانال</th><th>اولویت</th><th>وضعیت</th><th>اقدام / SLA</th></tr></thead>
-                    <tbody>
-                      {customerTickets.map(({ account, ticket }) => <tr key={ticket.id}>
-                        <td className="font-bold tabular-nums">{ticket.id}</td><td><b>{ticket.subject}</b><p className="max-w-[240px] truncate text-[11px] text-[var(--kv-muted)]">{ticket.message}</p></td><td>{account.name}</td><td>حساب مشتری</td><td>عادی</td><td><Status value={ticket.status} /></td>
-                        <td>{ticket.status === "در انتظار" ? <button onClick={() => { setTicketStatus(account.id, ticket.id, "در حال بررسی"); flash("تیکت به کارشناس ارجاع شد"); }} className="text-[12px] font-bold text-[var(--kv-accent)]">شروع بررسی</button> : ticket.status === "در حال بررسی" ? <button onClick={() => { setTicketStatus(account.id, ticket.id, "تأیید شد"); flash("تیکت بسته شد"); }} className="text-[12px] font-bold text-[var(--kv-success)]">بستن تیکت</button> : <span className="text-[var(--kv-muted)]">بسته</span>}</td>
-                      </tr>)}
-                      {[
-                        ["#4412", "تأخیر باربری زیرسفارش WO-1004-2", "پوشاک رادین", "عمده", "بالا", "در حال بررسی", "۲ ساعت"],
-                        ["#4410", "اعتراض به رد زیرسفارش WO-1003-3", "بوتیک آوا", "عمده", "بالا", "در انتظار", "۴ ساعت"],
-                        ["#4408", "درخواست مرجوعی KV-88176", "امیر رضایی", "خرده", "متوسط", "در حال بررسی", "۸ ساعت"],
-                        ["#4405", "خطای آپلود تصویر محصول", "فراسو", "تأمین‌کننده", "پایین", "در انتظار", "۱۲ ساعت"],
-                        ["#4399", "درخواست ارتقا به پلاتینیوم", "پوشاک رادین", "عمده", "پایین", "تأیید شد", "—"],
-                      ].map((r) => (
-                        <tr key={r[0]}>
-                          <td className="font-bold tabular-nums" dir="ltr">{r[0]}</td><td><b>{r[1]}</b></td><td>{r[2]}</td><td><span className="rounded-full bg-[var(--kv-surface-2)] px-2 py-0.5 text-[11px] font-bold">{r[3]}</span></td>
-                          <td><span className={cn("rounded-full px-2.5 py-1 text-[11px] font-bold", r[4] === "بالا" ? "bg-[#A8483C]/10 text-[#8A3B30] dark:text-[#D07A6A]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>{r[4]}</span></td>
-                          <td><Status value={r[5]} /></td><td className="tabular-nums text-[var(--kv-muted)]">{r[6]}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-              <Card className="h-fit p-5">
-                <p className="text-[14px] font-extrabold">عملکرد SLA</p>
-                <p className="mt-2 text-3xl font-extrabold tabular-nums">۹۴٪ <span className="text-[13px] font-medium text-[var(--kv-muted)]">پاسخ در مهلت</span></p>
-                <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--kv-surface-3)]"><div className="h-full w-[94%] rounded-full bg-[var(--kv-success)]" /></div>
-                <div className="mt-4 space-y-2 text-[12.5px]">
-                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">میانگین پاسخ</span><b className="tabular-nums">۴۷ دقیقه</b></div>
-                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تیکت باز</span><b className="tabular-nums">{fmtNum(18)}</b></div>
-                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">رضایت</span><b className="tabular-nums">۴.۷ / ۵</b></div>
-                </div>
-              </Card>
-            </div>
-          )}
+          {/* support-legacy demo block removed (dead code with fake SLA numbers; real support = TicketBoardPanel) */}
 
           {/* ---------- Settings ---------- */}
           {tab === "settings" && (

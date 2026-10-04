@@ -538,7 +538,18 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
   return (
     <section aria-label="سفارش‌های واقعی" className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h2 className="text-lg font-bold">سفارش‌های ثبت‌شده در سرور</h2><p className="text-xs text-[var(--kv-muted)]">مرتب‌سازی، فیلتر و مبالغ همگی از پایگاه‌داده می‌آیند.</p></div>
+        {/* ADM-WMS-003: when mounted inside another hub via `only`, the header must describe THAT
+            capability — the old «سفارش‌های ثبت‌شده در سرور» title leaked into every WMS tab. */}
+        <div>
+          <h2 className="text-lg font-bold">{
+            only === "inbound-qc" ? "دریافت انبار کلبه و کنترل کیفیت (QC)"
+            : only === "inventory-transfers" ? "دامنه‌های موجودی و حواله انتقال"
+            : only === "server-promotions" ? "قوانین تخفیف سمت سرور"
+            : "سفارش‌های ثبت‌شده در سرور"}</h2>
+          <p className="text-xs text-[var(--kv-muted)]">{
+            only ? "داده‌ها مستقیم از پایگاه‌داده خوانده و ثبت می‌شوند."
+            : "مرتب‌سازی، فیلتر و مبالغ همگی از پایگاه‌داده می‌آیند."}</p>
+        </div>
         <div className={only ? "hidden" : "flex flex-wrap items-center gap-2"}>
           {!hideOrders && <button
             type="button"
