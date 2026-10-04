@@ -245,6 +245,8 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
       if (product.owner_type !== 'kolbe') throw forbidden('راه‌اندازی موجودی فقط برای محصولات کلبه است؛ موجودی تأمین‌کننده از مسیر ورودی امانی وارد می‌شود.');
       if (product.status === 'archived') throw conflict('محصول آرشیوشده قابل راه‌اندازی نیست.');
       if (product.inventory_setup === 'configured') throw conflict('پروفایل موجودی این محصول قبلاً راه‌اندازی شده است؛ تغییرات از عملیات عادی انبار انجام می‌شود.');
+      if (body.retail && !product.retail_enabled) throw conflict('فروش خرده این محصول فعال نیست؛ نوع فروش را در استودیو محصول تنظیم کنید.');
+      if (body.wholesale && !product.wholesale_enabled) throw conflict('فروش عمده این محصول فعال نیست؛ نوع فروش را در استودیو محصول تنظیم کنید.');
 
       const summary: Record<string, unknown> = {};
 
@@ -325,12 +327,7 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
       }
 
       await client.query(
-        `UPDATE products SET inventory_setup = 'configured',
-           retail_enabled = CASE WHEN $2::boolean THEN true ELSE retail_enabled END,
-           wholesale_enabled = CASE WHEN $3::boolean THEN true ELSE wholesale_enabled END,
-           updated_at = now()
-         WHERE id = $1`,
-        [id, Boolean(body.retail), Boolean(body.wholesale)]);
+        `UPDATE products SET inventory_setup = 'configured', updated_at = now() WHERE id = $1`, [id]);
       await audit(client, user.id, 'product.inventory_setup', 'product', id, { inventory_setup: 'pending' },
         { inventory_setup: 'configured', ...summary }, request.ip);
       await outbox(client, 'product.inventory_setup', 'product', id, { productId: id, ...summary });

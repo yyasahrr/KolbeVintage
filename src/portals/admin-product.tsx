@@ -15,10 +15,10 @@ import { ProductSpecsEditor } from "../components/product-specs-editor";
 import { ProductInventoryDrawer } from "../components/product-inventory";
 import { DiscountManager } from "../components/discount-manager";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
-import { AdaptiveSpecForm, ProductTypesManager, missingRequiredSpecs } from "./admin-product-types";
+import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
 import { catalogOpsApi } from "../data/api";
-import { Btn, Card, Drawer, Empty, Field, Input, Modal, Segmented, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
+import { Btn, Card, WorkspaceModal, Empty, Field, Input, Modal, Segmented, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
 import { cn } from "../utils/cn";
 
 type F = (m: string) => void;
@@ -235,7 +235,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   type CategorySpecField = { code: string; label: string; type: string; unit: string | null; required: boolean; options: { value: string; label: string }[] };
   const [catSchema, setCatSchema] = useState<{ configured: boolean; allowedSizes: string[]; sizeGuide: { name: string } | null; specFields: CategorySpecField[] } | null>(null);
   const [vibeOptions, setVibeOptions] = useState<{ slug: string; name: string }[]>([]);
-  const [typesOpen, setTypesOpen] = useState(false);
+  const automaticSizes = useRef(blank().sizes);
   const loadTypes = () => { if (!isDemo) productTypesApi.list().then((r) => setTypes(r.items)).catch(() => setTypes([])); };
   useEffect(() => {
     if (isDemo || !d.category.trim()) { setCatSchema(null); return; }
@@ -253,9 +253,10 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         // no manual reload, and no out-of-profile size can linger from the previous category.
         if (!editing && r.configured && (r.allowedSizes ?? []).length) {
           setD((cur) => {
-            if (cur.category.trim() !== r.category) return cur;
-            const kept = cur.sizes.filter((size) => (r.allowedSizes ?? []).includes(size));
-            return { ...cur, sizes: kept.length ? kept : (r.allowedSizes ?? []).slice(0, 4) };
+            if (cur.category.trim() !== r.category || cur.series.length || JSON.stringify(cur.sizes) !== JSON.stringify(automaticSizes.current)) return cur;
+            const sizes = (r.allowedSizes ?? []).slice(0, 4);
+            automaticSizes.current = sizes;
+            return { ...cur, sizes };
           });
         }
       })
@@ -713,15 +714,14 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
     ["price", "قیمت‌گذاری"], ["series", "سری‌های عمده"],
     // QA2-SPEC-007 (§17.3): specs and size guide are two independent steps.
     ["specs", "مشخصات فنی"], ["sizeguide", "راهنمای سایز"], ["seo", "سئو و کانال‌ها"], ["review", "بازبینی و انتشار"],
-  ];
+  ].filter(([key]) => (d.retailOn || !["price", "cutout"].includes(key!)) && (d.wholesaleOn || key !== "series"));
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       {!open && (<>
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <div className="min-w-[200px] flex-1"><SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول یا SKU…" /></div>
         <Btn variant="soft" size="sm" onClick={() => setManage(true)}>قالب‌های سری کلبه</Btn>
-        {!isDemo && <Btn variant="soft" size="sm" onClick={() => setTypesOpen(true)}>انواع محصول و قالب مشخصات</Btn>}
-        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { const fresh = blank(); setD(fresh); setOpenSnapshot(JSON.stringify(fresh)); setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
+        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { const fresh = blank(); automaticSizes.current = fresh.sizes; setD(fresh); setOpenSnapshot(JSON.stringify(fresh)); setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
       </div>
       <Card className="overflow-hidden">
         {/* kv-scroll-x: سایه لبه = نشانه دیداری ستون‌های بریده (ممیزی §2 — ستون ویرایش در ۱۴۴۰) */}
@@ -785,6 +785,11 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
           ))}</nav>
           <div className="min-w-0 space-y-4">
             {sec === "base" && <>
+              <Field label="نوع فروش" hint="تنظیمات محصول بر اساس بازار انتخاب‌شده نمایش داده می‌شود؛ موجودی در انبار مدیریت می‌شود.">
+                <Segmented options={[{ v: "retail", label: "فقط خرده" }, { v: "wholesale", label: "فقط عمده" }, { v: "both", label: "خرده + عمده" }]}
+                  value={d.retailOn ? (d.wholesaleOn ? "both" : "retail") : "wholesale"}
+                  onChange={(mode) => setD((cur) => ({ ...cur, retailOn: mode !== "wholesale", wholesaleOn: mode !== "retail" }))} />
+              </Field>
               <Field label="نام محصول"><Input value={d.name} onChange={(v) => setD({ ...d, name: v })} placeholder="مثلاً کت پشمی دو‌دکمه" /></Field>
               <div className="grid gap-3 sm:grid-cols-3"><Field label="برند"><Input value={d.brand} onChange={(v) => setD({ ...d, brand: v })} /></Field><Field label="دسته" hint={!isDemo && categories.length ? "سلسله‌مراتبی از سرور (زیر‌دسته‌ها با — تورفتگی)" : undefined}>
                   <div className="space-y-1.5">
@@ -804,7 +809,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                       onChange={(v) => {
                         if (v === NEW_CATEGORY_OPTION) { setNewCategory({ open: true, name: "", parentId: "" }); return; }
                         const name = v.replace(/^(?:— )+/, "");
-                        setD({ ...d, category: name, sizes: seriesSizesFor(name).slice(0, 4), series: [] });
+                        setD({ ...d, category: name });
                       }} />
                   </div>
                 </Field><Field label="SKU"><Input value={d.sku} onChange={(v) => setD({ ...d, sku: v })} placeholder="خودکار · در صورت نیاز قابل تغییر" /></Field></div>
@@ -840,13 +845,6 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                     </div>
                   </Field>
                 )}
-                {!!editing && !categoryDriven && typeOptions.length > 0 && (
-                  <Field label="نوع محصول (سازگاری تاریخی)" hint="فقط برای محصولات قدیمی — در جریان جدید، دسته‌بندی منبع ساختار است">
-                    <Select options={["انتخاب کنید", ...typeOptions.map((t) => t.name)]}
-                      value={typeOptions.find((t) => t.id === d.productTypeId || t.code === d.typeCode)?.name ?? "انتخاب کنید"}
-                      onChange={(label) => { const t = typeOptions.find((x) => x.name === label); setD({ ...d, typeCode: t?.code ?? "", productTypeId: t?.id ?? "", specs: {}, sizes: t?.sizeCodes.length ? t.sizeCodes : d.sizes, series: [] }); }} />
-                  </Field>
-                )}
                 <Field label="جنسیت / مخاطب">
                   <Select
                     options={genderTaxonomies.length ? ["نامشخص", ...genderTaxonomies.map((t) => t.label)] : FALLBACK_GENDER.map((g) => g.label)}
@@ -876,7 +874,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                     {seasonTaxonomies.length === 0 && taxonomies.length > 0 && <span className="text-[12px] text-[var(--kv-muted)]">از «ساختار محصولات» فصل بسازید.</span>}
                   </div>
                 </Field>
-                {!isDemo && <div className="sm:col-span-3"><Field label="وایب‌ها (چندانتخابی مدیریت‌شده)" hint="جست‌وجو، انتخاب/حذف و ساخت وایب جدید — همه روی سرور">
+                {!isDemo && d.retailOn && <div className="sm:col-span-3"><Field label="وایب‌ها (چندانتخابی مدیریت‌شده)" hint="جست‌وجو، انتخاب/حذف و ساخت وایب جدید — همه روی سرور">
                   <div className="space-y-2">
                     {d.vibes.length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
@@ -906,7 +904,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                     </div>
                   </div>
                 </Field></div>}
-                {isDemo && vibeOptions.length > 0 && <div className="sm:col-span-3"><Field label="وایب‌ها"><div className="flex flex-wrap gap-1.5">{vibeOptions.map((v) => <button key={v.slug} type="button" aria-pressed={d.vibes.includes(v.slug)} onClick={() => setD({ ...d, vibes: d.vibes.includes(v.slug) ? d.vibes.filter((x) => x !== v.slug) : [...d.vibes, v.slug] })} className={cn("rounded-full border px-2.5 py-1 text-[11.5px]", d.vibes.includes(v.slug) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)]")}>{v.name}</button>)}</div></Field></div>}
+                {isDemo && d.retailOn && vibeOptions.length > 0 && <div className="sm:col-span-3"><Field label="وایب‌ها"><div className="flex flex-wrap gap-1.5">{vibeOptions.map((v) => <button key={v.slug} type="button" aria-pressed={d.vibes.includes(v.slug)} onClick={() => setD({ ...d, vibes: d.vibes.includes(v.slug) ? d.vibes.filter((x) => x !== v.slug) : [...d.vibes, v.slug] })} className={cn("rounded-full border px-2.5 py-1 text-[11.5px]", d.vibes.includes(v.slug) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10" : "border-[var(--kv-line)]")}>{v.name}</button>)}</div></Field></div>}
               </div>
               {selectedType && <AdaptiveSpecForm type={selectedType} values={d.specs} onChange={(specs) => setD({ ...d, specs })} />}
               <Field label="توضیحات"><Textarea rows={4} value={d.desc} onChange={(v) => setD({ ...d, desc: v })} /></Field>
@@ -1059,7 +1057,6 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
             </>}
             {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images.map((image) => image.url)} flash={flash} />}
             {sec === "price" && <>
-              <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span><b className="text-[13px]">فروش خرده در kolbe.ir</b><span className="block text-[11.5px] text-[var(--kv-muted)]">قیمت تک‌عدد برای همه مشتریان</span></span><Switch on={d.retailOn} onToggle={() => setD({ ...d, retailOn: !d.retailOn })} /></div>
               <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
                 چهار مفهوم قیمتی جدا از هم‌اند: <b>قیمت پایه خرده</b> (مبنای فروش تک‌عدد)، <b>قیمت چهارقسطه</b> (مخصوص پرداخت اقساطی)،
                 <b> قیمت عمده</b> (در بخش «سری‌های عمده» تعیین می‌شود) و <b>تخفیف</b> که فقط از موتور پروموشن/جشنواره اعمال می‌شود، نه از این فرم.
@@ -1069,7 +1066,6 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
               <Field label="سیاست قسط" hint="سرور در تسویه‌حساب همین سیاست را اعمال می‌کند"><Select options={([...INSTALLMENT_POLICIES]).map((p) => INSTALLMENT_POLICY_LABEL[p])} value={INSTALLMENT_POLICY_LABEL[d.installmentPolicy]} onChange={(label) => { const found = ([...INSTALLMENT_POLICIES]).find((p) => INSTALLMENT_POLICY_LABEL[p] === label); if (found) setD({ ...d, installmentPolicy: found }); }} /></Field>
             </>}
             {sec === "series" && <>
-              <div className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3"><span><b className="text-[13px]">فروش در بازارچه عمده · بخش کلبه وینتیج</b><span className="block text-[11.5px] text-[var(--kv-muted)]">سری‌ها از قالب‌های تعریف‌شده انتخاب می‌شوند</span></span><Switch on={d.wholesaleOn} onToggle={() => setD({ ...d, wholesaleOn: !d.wholesaleOn })} /></div>
               {d.wholesaleOn && <Field label="حداقل سفارش عمده (عدد)" hint="سرور در ثبت سفارش عمده همین کف را برای مجموع واریانت‌های این محصول اعمال می‌کند"><Input value={d.wholesaleMoq} onChange={(v) => setD({ ...d, wholesaleMoq: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۲" /></Field>}
               {d.wholesaleOn && <SeriesTemplatePicker ownerId={KOLBE.id} category={d.category} colors={d.colors} value={d.series} onChange={(s) => setD({ ...d, series: s })} onManage={() => setManage(true)} productTypeId={d.productTypeId || undefined} />}
             </>}
@@ -1244,15 +1240,14 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       </div>
       )}
 
-      <Drawer open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""} wide>
+      <WorkspaceModal open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""}>
         {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={async (c) => { if (!isDemo) { try { const existing = ((products.find((x) => x.id === cutFor.id) as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {}); await productsApi.update(cutFor.id, { metadata: { ...existing, cutout: c } }); flash("تصویر استایل‌بیلدر ذخیره شد"); await reload(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } updateProduct(cutFor.id, { cutout: c }); }} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
-      </Drawer>
-      <Drawer open={typesOpen} onClose={() => setTypesOpen(false)} title="انواع محصول، سایزها و قالب مشخصات" wide><ProductTypesManager flash={flash} onChanged={loadTypes} /></Drawer>
-      <Drawer open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه" wide><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></Drawer>
-      <Drawer open={!!specsFor} onClose={() => setSpecsFor(null)} title={specsFor ? `مشخصات · ${specsFor.name}` : ""} wide>
+      </WorkspaceModal>
+      <WorkspaceModal open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه"><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></WorkspaceModal>
+      <WorkspaceModal open={!!specsFor} onClose={() => setSpecsFor(null)} title={specsFor ? `مشخصات · ${specsFor.name}` : ""}>
         {specsFor && <ProductSpecsEditor key={specsFor.id} productId={specsFor.id} flash={flash} />}
-      </Drawer>
-      <Drawer open={!!inventoryFor} onClose={() => setInventoryFor(null)} title={inventoryFor ? `موجودی · ${inventoryFor.name}` : ""} wide>
+      </WorkspaceModal>
+      <WorkspaceModal open={!!inventoryFor} onClose={() => setInventoryFor(null)} title={inventoryFor ? `موجودی · ${inventoryFor.name}` : ""}>
         <ProductInventoryDrawer product={inventoryFor} warehouses={warehouses ?? []} onClose={() => setInventoryFor(null)} onFlash={flash} />
         {discountFor && (
           <DiscountManager
@@ -1264,7 +1259,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
             flash={flash}
           />
         )}
-      </Drawer>
+      </WorkspaceModal>
       {/* §44 (corrective): post-create summary — catalog facts + honest inventory state. */}
       <Modal open={!!createdSummary} onClose={() => setCreatedSummary(null)} title="محصول با موفقیت تعریف شد">
         {createdSummary && (

@@ -21,6 +21,7 @@ import {
   type AdminProductRow, type NeedsSetupRow,
 } from "../data/api";
 import { cn } from "../utils/cn";
+import { siteApi } from "../data/experience-api";
 
 type F = (message: string) => void;
 const fa = (value: number | string) => String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
@@ -140,8 +141,8 @@ function InventorySetupWorkspace({ product, flash, onClose, onDone }: {
   const [templates, setTemplates] = useState<TemplateLite[]>([]);
   const [busy, setBusy] = useState(false);
   // channel selection (§17: retail / wholesale / both)
-  const [retailOn, setRetailOn] = useState(true);
-  const [wholesaleOn, setWholesaleOn] = useState(false);
+  const [retailOn, setRetailOn] = useState(product.retail_enabled);
+  const [wholesaleOn, setWholesaleOn] = useState(product.wholesale_enabled && !product.retail_enabled);
   // retail config (§19)
   const [retailWh, setRetailWh] = useState("");
   const [mode, setMode] = useState<"zero" | "equal" | "per_variant">("zero");
@@ -214,7 +215,7 @@ function InventorySetupWorkspace({ product, flash, onClose, onDone }: {
       <div className="grid gap-5 lg:grid-cols-2">
         <Card className="space-y-4 p-4">
           <label className="flex items-center gap-2 text-sm font-bold">
-            <input type="checkbox" checked={retailOn} onChange={(e) => setRetailOn(e.target.checked)} /> کانال خرده‌فروشی (واحد: عدد)
+            <input type="checkbox" checked={retailOn} disabled={!product.retail_enabled} onChange={(e) => setRetailOn(e.target.checked)} /> موجودی خرده‌فروشی (واحد: عدد)
           </label>
           {retailOn && (
             <div className="space-y-3">
@@ -256,7 +257,7 @@ function InventorySetupWorkspace({ product, flash, onClose, onDone }: {
         </Card>
         <Card className="space-y-4 p-4">
           <label className="flex items-center gap-2 text-sm font-bold">
-            <input type="checkbox" checked={wholesaleOn} onChange={(e) => setWholesaleOn(e.target.checked)} /> کانال عمده‌فروشی (واحد: سری)
+            <input type="checkbox" checked={wholesaleOn} disabled={!product.wholesale_enabled} onChange={(e) => setWholesaleOn(e.target.checked)} /> موجودی عمده‌فروشی (واحد: سری)
           </label>
           {wholesaleOn && (
             <div className="space-y-3">
@@ -509,6 +510,7 @@ function BulkFestivalModal({ productIds, onClose, onDone }: {
 /** Category = source of truth: spec template + size guide + allowed sizes per category.
  *  Rendered inside the hub's SETTINGS tab (configuration-only area). */
 export function CategoryProfilesPanel({ flash }: { flash: F }) {
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [profiles, setProfiles] = useState<Record<string, unknown>[] | null>(null);
   const [templates, setTemplates] = useState<{ id: string; name: string }[]>([]);
   const [guides, setGuides] = useState<{ id: string; name: string }[]>([]);
@@ -521,7 +523,9 @@ export function CategoryProfilesPanel({ flash }: { flash: F }) {
       catalogOpsApi.categoryProfiles(),
       specsApi.templates().catch(() => ({ items: [] as unknown[] })),
       sizeGuidesApi.adminList().catch(() => ({ items: [] as unknown[] })),
-    ]).then(([p, t, g]) => {
+      siteApi.categories(),
+    ]).then(([p, t, g, c]) => {
+      setCategories(c.items);
       setProfiles(p.items);
       setTemplates((t.items as { id: string; name: string }[]).filter((x) => x?.id));
       setGuides((g.items as { id: string; name: string }[]).filter((x) => x?.id));
@@ -572,8 +576,11 @@ export function CategoryProfilesPanel({ flash }: { flash: F }) {
         <Modal open onClose={() => setEditing(null)} title="پروفایل دسته‌بندی">
           <h3 className="mb-3 text-sm font-bold">پروفایل دسته‌بندی</h3>
           <div className="space-y-3">
-            <Field label="نام دسته‌بندی (همان مقدار فیلد دسته‌بندی محصول)">
-              <input className={cn(NUM_CLS, "w-full")} value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })} aria-label="دسته‌بندی" />
+            <Field label="دسته‌بندی" hint="دسته جدید را در استودیو محصول بسازید؛ این بخش پیش‌فرض‌های همان دسته را تنظیم می‌کند.">
+              <select className={SELECT_CLS} value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })} aria-label="دسته‌بندی">
+                <option value="">انتخاب دسته‌بندی…</option>
+                {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
             </Field>
             <Field label="قالب مشخصات فنی">
               <select className={SELECT_CLS} value={editing.specTemplateId} onChange={(e) => setEditing({ ...editing, specTemplateId: e.target.value })} aria-label="قالب مشخصات">

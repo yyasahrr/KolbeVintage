@@ -1,177 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Pencil, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { Btn, Card, Drawer, Empty, Field, Input, LoadingState, Select, Segmented, Status, Switch, Textarea } from "./primitives";
+import { CategoryProfilesPanel } from "./catalog-hub";
 import { filesApi, productStructureApi, specsApi, sizeGuidesApi } from "../data/api";
 import {
   SPEC_TYPES, SPEC_TYPE_LABEL, SIZE_GUIDE_STATUS_LABEL, isSpecAttributeType,
-  normalizeProductTypes, normalizeTaxonomies, normalizeSpecAttributes, normalizeSpecTemplate, normalizeSizeGuides, normalizeSizeGuide,
-  type ProductType, type SpecAttribute, type SpecTemplate, type SizeGuide, type Taxonomy, type SpecAttributeType,
+  normalizeTaxonomies, normalizeSpecAttributes, normalizeSpecTemplate, normalizeSizeGuides, normalizeSizeGuide,
+  type SpecAttribute, type SpecTemplate, type SizeGuide, type Taxonomy, type SpecAttributeType,
 } from "../data/contracts";
 import { cn } from "../utils/cn";
 import { SeriesTemplateManager } from "../portals/series-templates";
 import { KOLBE } from "../data/platform";
 
 type F = (message: string) => void;
-
-/* ================= Product types + sizes (items 4-7) ================= */
-
-function TypesSection({ flash }: { flash: F }) {
-  const [types, setTypes] = useState<ProductType[] | null>(null);
-  const [templates, setTemplates] = useState<SpecTemplate[]>([]);
-  const [sel, setSel] = useState<string | null>(null);
-  const [edit, setEdit] = useState<{ id?: string; code: string; name: string; description: string; active: boolean; position: string; specTemplateId: string } | null>(null);
-  const [sizeDraft, setSizeDraft] = useState({ code: "", label: "" });
-  const [sizeRename, setSizeRename] = useState<{ id: string; label: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const [typeList, templateList] = await Promise.all([
-        productStructureApi.types().then(normalizeProductTypes),
-        specsApi.templates().then((raw) => (((raw ?? {}) as { items?: unknown[] }).items ?? [])
-          .map((entry) => normalizeSpecTemplate({ ...(entry as object), groups: [], attributes: [] }))
-          .filter((t): t is SpecTemplate => t !== null)),
-      ]);
-      setTypes(typeList);
-      setTemplates(templateList);
-      setSel((current) => (current && typeList.some((t) => t.id === current) ? current : typeList[0]?.id ?? null));
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری انواع محصول"); }
-  }, [flash]);
-  useEffect(() => { void load(); }, [load]);
-
-  const current = types?.find((t) => t.id === sel) ?? null;
-  const save = async () => {
-    if (!edit) return;
-    setBusy(true);
-    try {
-      const payload = {
-        code: edit.code.trim().toLowerCase(), name: edit.name.trim(), description: edit.description.trim(),
-        active: edit.active, position: Number(edit.position) || 0,
-        specTemplateId: edit.specTemplateId || null,
-      };
-      if (edit.id) await productStructureApi.updateType(edit.id, payload);
-      else await productStructureApi.createType(payload);
-      setEdit(null);
-      await load();
-      flash(edit.id ? "نوع محصول به‌روزرسانی شد" : "نوع محصول ساخته شد");
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره نوع محصول"); }
-    finally { setBusy(false); }
-  };
-  const addSize = async () => {
-    if (!current || !sizeDraft.code.trim() || !sizeDraft.label.trim()) return;
-    setBusy(true);
-    try {
-      await productStructureApi.createSize(current.id, {
-        code: sizeDraft.code.trim(), label: sizeDraft.label.trim(),
-        position: current.sizes.length + 1,
-      });
-      setSizeDraft({ code: "", label: "" });
-      await load();
-      flash(`سایز ${sizeDraft.label.trim()} اضافه شد`);
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
-    finally { setBusy(false); }
-  };
-  const moveSize = async (index: number, direction: -1 | 1) => {
-    if (!current) return;
-    const order = current.sizes.map((s) => s.id);
-    const target = index + direction;
-    if (target < 0 || target >= order.length) return;
-    [order[index], order[target]] = [order[target]!, order[index]!];
-    try {
-      await productStructureApi.reorderSizes(current.id, order);
-      await load();
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در جابه‌جایی سایز"); }
-  };
-
-  if (!types) return <LoadingState label="در حال بارگذاری انواع محصول…" />;
-  return (
-    <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)]">
-      <Card className="h-fit p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <p className="text-sm font-extrabold">انواع محصول ({types.length.toLocaleString("fa-IR")})</p>
-          <Btn variant="accent" size="sm" icon={<Plus size={14} />} onClick={() => setEdit({ code: "", name: "", description: "", active: true, position: "0", specTemplateId: "" })}>نوع جدید</Btn>
-        </div>
-        <div className="space-y-1.5">
-          {types.map((type) => (
-            <button key={type.id} onClick={() => setSel(type.id)} className={cn("flex w-full items-center gap-2 rounded-[10px] border px-3 py-2.5 text-right", sel === type.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>
-              <span className="min-w-0 flex-1"><b className="block truncate text-[13px]">{type.name}</b><span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{type.code} · {type.sizes.length.toLocaleString("fa-IR")} سایز</span></span>
-              {!type.active && <Status value="غیرفعال" />}
-            </button>
-          ))}
-          {types.length === 0 && <Empty title="نوعی ثبت نشده" desc="نخستین نوع محصول (مثلاً کت، کفش) را بسازید." />}
-        </div>
-      </Card>
-      <Card className="h-fit p-5">
-        {!current ? <Empty title="نوعی انتخاب نشده" desc="از فهرست سمت راست یک نوع محصول را انتخاب کنید." /> : (
-          <div>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div><h3 className="text-[15px] font-extrabold">{current.name}</h3><p className="text-xs text-[var(--kv-muted)]">کد نوع: <span dir="ltr">{current.code}</span></p></div>
-              <div className="flex gap-2">
-                <Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setEdit({ id: current.id, code: current.code, name: current.name, description: current.description, active: current.active, position: String(current.position), specTemplateId: current.specTemplateId ?? "" })}>ویرایش</Btn>
-                <Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} onClick={async () => { try { await productStructureApi.deleteType(current.id); await load(); flash("نوع محصول حذف شد"); } catch (e) { flash(e instanceof Error ? e.message : "حذف ممکن نیست — احتمالاً در محصولی استفاده شده است"); } }}>حذف</Btn>
-              </div>
-            </div>
-            {current.description && <p className="mt-2 text-[12.5px] text-[var(--kv-muted)]">{current.description}</p>}
-            <p className="mt-3 text-[12.5px] text-[var(--kv-muted)]">قالب مشخصات: <b className="text-[var(--kv-ink)]">{templates.find((t) => t.id === current.specTemplateId)?.name ?? "—"}</b></p>
-            <div className="mt-4 border-t border-[var(--kv-line)] pt-4">
-              <p className="mb-2 text-[13px] font-extrabold">سایزها <span className="font-medium text-[var(--kv-muted)]">(به همین ترتیب در فروشگاه نمایش داده می‌شوند)</span></p>
-              <div className="space-y-1.5">
-                {current.sizes.map((size, index) => (
-                  <div key={size.id} className={cn("flex items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2", !size.active && "opacity-55")}>
-                    {sizeRename?.id === size.id ? (
-                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                        <Input value={sizeRename.label} onChange={(v) => setSizeRename({ id: size.id, label: v })} placeholder="برچسب نمایشی" />
-                        <Btn variant="accent" size="sm" disabled={!sizeRename.label.trim()} onClick={() => void (async () => { try { await productStructureApi.updateSize(current.id, size.id, { label: sizeRename.label.trim() }); setSizeRename(null); await load(); flash("نام سایز به‌روز شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()}>ذخیره</Btn>
-                        <Btn variant="ghost" size="sm" onClick={() => setSizeRename(null)}>انصراف</Btn>
-                      </span>
-                    ) : (
-                      <>
-                        <b className="min-w-[52px] text-[13px]">{size.label}</b>
-                        <span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{size.code}</span>
-                      </>
-                    )}
-                    <span className="mr-auto flex items-center gap-1">
-                      {sizeRename?.id !== size.id && <button onClick={() => setSizeRename({ id: size.id, label: size.label })} className="rounded p-1 text-[var(--kv-muted)] hover:text-[var(--kv-ink)]" aria-label={`ویرایش ${size.label}`}><Pencil size={14} /></button>}
-                      <button onClick={() => void moveSize(index, -1)} disabled={index === 0} className="rounded p-1 hover:bg-[var(--kv-surface-2)] disabled:opacity-30" aria-label="بالا"><ArrowUp size={14} /></button>
-                      <button onClick={() => void moveSize(index, 1)} disabled={index === current.sizes.length - 1} className="rounded p-1 hover:bg-[var(--kv-surface-2)] disabled:opacity-30" aria-label="پایین"><ArrowDown size={14} /></button>
-                      <Switch on={size.active} onToggle={() => void (async () => { try { await productStructureApi.updateSize(current.id, size.id, { active: !size.active }); await load(); } catch (e) { flash(e instanceof Error ? e.message : "تغییر وضعیت سایز ممکن نشد"); } })()} />
-                      <button onClick={() => void (async () => { try { await productStructureApi.deleteSize(current.id, size.id); await load(); flash("سایز حذف شد"); } catch (e) { flash(e instanceof Error ? e.message : "حذف سایز ممکن نیست — در واریانتی استفاده شده است"); } })()} className="rounded p-1 text-[var(--kv-faint)] hover:text-[var(--kv-danger)]" aria-label={`حذف ${size.label}`}><Trash2 size={14} /></button>
-                    </span>
-                  </div>
-                ))}
-                {current.sizes.length === 0 && <p className="py-2 text-[12.5px] text-[var(--kv-muted)]">هنوز سایزی تعریف نشده است.</p>}
-              </div>
-              <div className="mt-3 flex flex-wrap items-end gap-2">
-                <Field label="کد سایز"><Input value={sizeDraft.code} onChange={(v) => setSizeDraft({ ...sizeDraft, code: v })} placeholder="M" /></Field>
-                <Field label="برچسب نمایشی"><Input value={sizeDraft.label} onChange={(v) => setSizeDraft({ ...sizeDraft, label: v })} placeholder="مدیوم" /></Field>
-                <Btn variant="soft" size="sm" disabled={busy || !sizeDraft.code.trim() || !sizeDraft.label.trim()} onClick={() => void addSize()} icon={<Plus size={14} />}>افزودن سایز</Btn>
-              </div>
-            </div>
-          </div>
-        )}
-      </Card>
-      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش نوع محصول" : "نوع محصول جدید"}>
-        {edit && (
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="کد (انگلیسی، یکتا)"><Input value={edit.code} onChange={(v) => setEdit({ ...edit, code: v })} placeholder="coat" /></Field>
-              <Field label="نام"><Input value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="کت / مانتو" /></Field>
-            </div>
-            <Field label="توضیحات"><Textarea rows={2} value={edit.description} onChange={(v) => setEdit({ ...edit, description: v })} /></Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="ترتیب نمایش"><Input value={edit.position} onChange={(v) => setEdit({ ...edit, position: v.replace(/\D/g, "") })} /></Field>
-              <Field label="قالب مشخصات" hint="فرم مشخصات کالاهای این نوع از این قالب ساخته می‌شود">
-                <Select options={["بدون قالب", ...templates.map((t) => t.name)]} value={templates.find((t) => t.id === edit.specTemplateId)?.name ?? "بدون قالب"} onChange={(label) => setEdit({ ...edit, specTemplateId: templates.find((t) => t.name === label)?.id ?? "" })} />
-              </Field>
-            </div>
-            <label className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-[13px] font-bold">فعال<Switch on={edit.active} onToggle={() => setEdit({ ...edit, active: !edit.active })} /></label>
-            <Btn variant="accent" className="w-full" disabled={busy || !edit.code.trim() || edit.name.trim().length < 2} onClick={() => void save()}>ذخیره</Btn>
-          </div>
-        )}
-      </Drawer>
-    </div>
-  );
-}
 
 /* ================= Gender / season taxonomies (items 245-247) ================= */
 
@@ -642,12 +483,12 @@ function GuidesSection({ flash }: { flash: F }) {
 /* ================= Section shell (item 135) ================= */
 
 export function ProductStructurePanel({ flash }: { flash: F }) {
-  const [tab, setTab] = useState<"types" | "taxonomy" | "attributes" | "templates" | "guides" | "series">("types");
+  const [tab, setTab] = useState<"categories" | "taxonomy" | "attributes" | "templates" | "guides" | "series">("categories");
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <Segmented options={[
-          { v: "types", label: "انواع محصول و سایز" },
+          { v: "categories", label: "دسته‌بندی و پیش‌فرض‌ها" },
           { v: "taxonomy", label: "جنسیت و فصل" },
           { v: "attributes", label: "فیلدهای مشخصات" },
           { v: "templates", label: "قالب‌های مشخصات" },
@@ -656,7 +497,7 @@ export function ProductStructurePanel({ flash }: { flash: F }) {
         ]} value={tab} onChange={setTab} />
         <span className="mr-auto text-[12px] text-[var(--kv-muted)]">فرم تعریف محصول و فیلترهای فروشگاه از همین‌جا ساخته می‌شوند — بدون جدول ثابت در فرانت‌اند.</span>
       </div>
-      {tab === "types" && <TypesSection flash={flash} />}
+      {tab === "categories" && <CategoryProfilesPanel flash={flash} />}
       {tab === "taxonomy" && <TaxonomySection flash={flash} />}
       {tab === "attributes" && <AttributesSection flash={flash} />}
       {tab === "templates" && <TemplatesSection flash={flash} />}

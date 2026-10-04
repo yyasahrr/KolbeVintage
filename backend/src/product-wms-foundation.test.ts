@@ -116,6 +116,29 @@ test('admin product: always kolbe-owned (spoof ignored), no stock on save, needs
   } finally { await pool.end(); await app.close(); }
 });
 
+test('WMS setup cannot enable a catalog sales channel', { skip: !enabled }, async () => {
+  const app = await buildApp(config); const pool = createPool(config);
+  try {
+    const admin = await makeUser(pool, ['admin', 'operations'], 'مدیر کانال فروش');
+    const headers = await login(app, admin.email);
+    const warehouseId = await makeWarehouse(pool, 'retail', 'انبار خرده کانال');
+    const created = await app.inject({ method: 'POST', url: '/api/v1/products', headers, payload: {
+      name: 'کالای فقط عمده', brand: 'کلبه', category: 'هودی', cashPriceRial: '0', wholesalePriceRial: '80000000',
+      retailEnabled: false, wholesaleEnabled: true, variants: [{ color: 'کرم', size: 'M' }],
+    } });
+    assert.equal(created.statusCode, 201, created.body);
+    const id = created.json().id as string;
+    const setup = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${id}/inventory-setup`,
+      headers: { ...headers, 'idempotency-key': `channel-${id}` },
+      payload: { retail: { warehouseId, mode: 'equal', quantity: 6 } } });
+    assert.equal(setup.statusCode, 409, setup.body);
+    const row = await pool.query('SELECT retail_enabled, wholesale_enabled, inventory_setup FROM products WHERE id = $1', [id]);
+    assert.deepEqual(row.rows[0], { retail_enabled: false, wholesale_enabled: true, inventory_setup: 'pending' });
+    const balances = await pool.query('SELECT count(*)::int AS n FROM stock_balances b JOIN product_variants v ON v.id = b.variant_id WHERE v.product_id = $1', [id]);
+    assert.equal(balances.rows[0].n, 0);
+  } finally { await pool.end(); await app.close(); }
+});
+
 test('opening stock: equal/per-variant/wholesale series through audited receipts, idempotent (§19/§20)', { skip: !enabled }, async () => {
   const app = await buildApp(config); const pool = createPool(config);
   try {
@@ -264,6 +287,18 @@ test('category profiles: category is the schema source of truth — no product t
     const okVariant = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/variants`, headers,
       payload: { color: 'مشکی', size: 'XXL' } });
     assert.equal(okVariant.statusCode, 201, okVariant.body);
+    const identity = await pool.query('SELECT category_id FROM products WHERE id = $1', [productId]);
+    const categoryId = identity.rows[0].category_id;
+    assert.ok(categoryId);
+    const profileIdentity = await pool.query('SELECT category_id FROM category_profiles WHERE category = $1', [category]);
+    assert.equal(profileIdentity.rows[0].category_id, categoryId);
+    const renamed = `${category} جدید`;
+    await pool.query('UPDATE cms_categories SET name = $2 WHERE id = $1', [categoryId, renamed]);
+    const projected = await pool.query('SELECT category, category_id FROM products WHERE id = $1', [productId]);
+    assert.deepEqual(projected.rows[0], { category: renamed, category_id: categoryId });
+    const renamedSchema = await app.inject({ method: 'GET', url: `/api/v1/catalog/categories/${encodeURIComponent(renamed)}/schema`, headers });
+    assert.equal(renamedSchema.json().configured, true);
+    assert.equal(renamedSchema.json().sizeGuide.id, guideId);
   } finally { await pool.end(); await app.close(); }
 });
 
