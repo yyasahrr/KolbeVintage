@@ -70,6 +70,9 @@ export function registerBuyerRoutes(app: FastifyInstance, pool: DbPool, config: 
       actorType: z.enum(['all', 'vip', 'wholesale_buyer', 'customer']).default('all'),
       // §14-§15 master phase: server-backed saved views for the VIP CRM tab.
       view: z.enum(['all', 'expiring', 'top_buyers', 'low_activity', 'expired_plan']).default('all'),
+      // Admin-finalization (ADM-CRM-004): the VIP tab must list only canonical wholesale members —
+      // users with a membership record or a wholesale/VIP actor type — never every retail customer.
+      vipOnly: z.coerce.boolean().default(false),
       limit: z.coerce.number().int().min(1).max(200).default(50),
       offset: z.coerce.number().int().min(0).max(1000000).default(0),
     }).parse(request.query);
@@ -99,14 +102,15 @@ export function registerBuyerRoutes(app: FastifyInstance, pool: DbPool, config: 
          AND ($2 = 'all' OR COALESCE(c.actor_type, 'customer') = $2)
        )
        SELECT *, count(*) OVER()::int AS total_rows FROM base
-       WHERE CASE $5
+       WHERE ($6::boolean = false OR plan_status IS NOT NULL OR COALESCE(actor_type, 'customer') IN ('vip', 'wholesale_buyer'))
+         AND CASE $5
                WHEN 'expiring' THEN (plan_ends_at IS NOT NULL AND plan_ends_at BETWEEN now() AND now() + interval '30 days')
                WHEN 'top_buyers' THEN total_spent_rial::numeric > 0
                WHEN 'low_activity' THEN (last_order_at IS NULL OR last_order_at < now() - interval '90 days')
                WHEN 'expired_plan' THEN (plan_code IS NULL AND plan_status IS NOT NULL)
                ELSE true END
        ORDER BY total_spent_rial::numeric DESC NULLS LAST, created_at DESC LIMIT $3 OFFSET $4`,
-      [query.search ?? null, query.actorType, query.limit, query.offset, query.view]);
+      [query.search ?? null, query.actorType, query.limit, query.offset, query.view, query.vipOnly]);
     const total = rows.rows.length ? Number(rows.rows[0]!.total_rows) : 0;
     return {
       total, limit: query.limit, offset: query.offset,

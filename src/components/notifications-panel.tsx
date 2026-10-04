@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Card, Btn, LoadingState, ErrorState, Empty } from "../components/primitives";
 import { notificationsApi } from "../data/api";
+import { NOTIF_CHANNEL_FA, NOTIF_PRIORITY_FA, ROLE_FA, faEvent, faLabel } from "../data/fa-labels";
 
 export function NotificationsPanel() {
   const [items, setItems] = useState<unknown[]|null>(null);
@@ -26,7 +27,7 @@ export function NotificationsPanel() {
   return (
     <div className="space-y-6 animate-[fadeUp_0.35s_ease]">
       <div className="flex items-center justify-between">
-        <p className="text-[13px] font-bold">صندوق اعلان‌ها (In-App) — outbox + notification_routes</p>
+        <p className="text-[13px] font-bold">صندوق اعلان‌های داخل برنامه</p>
         <Btn size="sm" variant="soft" onClick={()=>void markAll()}>خواندن همه</Btn>
       </div>
       <Card className="overflow-hidden">
@@ -48,12 +49,18 @@ export function NotificationsPanel() {
             <thead><tr><th>رویداد</th><th>نقش‌ها</th><th>کانال‌های ارسال</th><th>اولویت</th><th>فعال</th></tr></thead>
             <tbody>
               {(routes ?? []).length ? (routes as {id:string; event_type:string; roles:string[]; channels:string[]; priority:string; active:boolean}[]).map(r=>(
-                <tr key={r.id}><td className="font-mono">{r.event_type}</td><td>{r.roles.join("، ")}</td><td>{r.channels.join("، ")}</td><td>{r.priority}</td><td>{r.active ? "بله" : "خیر"}</td></tr>
+                <tr key={r.id}>
+                  <td>{faEvent(r.event_type)}</td>
+                  <td>{r.roles.map((role) => faLabel(ROLE_FA, role)).join("، ")}</td>
+                  <td>{r.channels.map((ch) => faLabel(NOTIF_CHANNEL_FA, ch)).join("، ")}</td>
+                  <td>{faLabel(NOTIF_PRIORITY_FA, r.priority)}</td>
+                  <td>{r.active ? "فعال" : "غیرفعال"}</td>
+                </tr>
               )) : <tr><td colSpan={5} className="text-center text-[var(--kv-muted)]">مسیری تعریف نشده</td></tr>}
             </tbody>
           </table>
         </div>
-        <p className="px-4 py-3 text-[11px] text-[var(--kv-muted)]">ویرایش مسیر: PATCH /admin/notification-routes/:id (roles/priority/channels/active) با حسابرسی کامل.</p>
+        <p className="px-4 py-3 text-[11px] text-[var(--kv-muted)]">تغییر نقش‌ها، کانال‌ها و اولویت هر مسیر از سمت سرور انجام و در گزارش حسابرسی ثبت می‌شود.</p>
       </Card>
     </div>
   );

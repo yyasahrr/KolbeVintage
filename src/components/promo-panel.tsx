@@ -26,11 +26,15 @@ export function PromoPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"coupons" | "festivals">("coupons");
+  // Percent and fixed amounts are kept in SEPARATE fields: switching the type must never carry a
+  // rial amount into the percent box (the old single `value` produced «۱۰۰۰۰۰ درصد» coupons).
   const [newCoupon, setNewCoupon] = useState({
-    code: "", type: "percent" as "percent" | "fixed", value: "100000",
+    code: "", type: "percent" as "percent" | "fixed", percentValue: "10", fixedValue: "100000",
     minOrderRial: "0", endsAt: addDaysIso(todayIso(), 7), dailyStartTime: "",
     audience: "customer" as "customer" | "vip" | "wholesale", scope: "productIds" as "productIds" | "categories",
   });
+  const percentInvalid = newCoupon.type === "percent" && (!newCoupon.percentValue || Number(newCoupon.percentValue) < 1 || Number(newCoupon.percentValue) > 100);
+  const fixedInvalid = newCoupon.type === "fixed" && (!newCoupon.fixedValue || Number(newCoupon.fixedValue) <= 0);
   const [newFestival, setNewFestival] = useState({
     code: "", name: "", startsAt: todayIso(), endsAt: addDaysIso(todayIso(), 7),
     discountPercent: "15", themePaletteCode: "", audience: "customer" as "customer" | "vip" | "wholesale",
@@ -53,7 +57,7 @@ export function PromoPanel() {
         ...(newCoupon.code ? { code: newCoupon.code.toUpperCase() } : {}),
         campaignName: newCoupon.code ? `کمپین ${newCoupon.code.toUpperCase()}` : undefined,
         type: newCoupon.type,
-        value: newCoupon.value,
+        value: newCoupon.type === "percent" ? newCoupon.percentValue : newCoupon.fixedValue,
         minOrderRial: newCoupon.minOrderRial || "0",
         audience: [newCoupon.audience],
         scope: { productIds: [], categories: [] },
@@ -62,7 +66,7 @@ export function PromoPanel() {
         endsAt: newCoupon.endsAt,
       });
       setNotice("کد تخفیف ساخته شد.");
-      setNewCoupon({ ...newCoupon, code: "", value: "100000" });
+      setNewCoupon({ ...newCoupon, code: "", percentValue: "10", fixedValue: "100000" });
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : "خطا در ساخت کد تخفیف"); }
     finally { setBusy(false); }
@@ -124,9 +128,15 @@ export function PromoPanel() {
                   onChange={(label) => setNewCoupon({ ...newCoupon, type: label === COUPON_TYPE_LABEL.percent ? "percent" : "fixed" })}
                 />
               </Field>
-              <Field label={newCoupon.type === "percent" ? "درصد تخفیف (۱ تا ۱۰۰)" : "مبلغ ثابت (ریال)"}>
-                <Input value={newCoupon.value} onChange={(v) => setNewCoupon({ ...newCoupon, value: v.replace(/\D/g, "") })} />
-              </Field>
+              {newCoupon.type === "percent" ? (
+                <Field label="درصد تخفیف (۱ تا ۱۰۰)" hint={percentInvalid ? "عدد بین ۱ تا ۱۰۰ وارد کنید" : undefined}>
+                  <Input value={newCoupon.percentValue} onChange={(v) => setNewCoupon({ ...newCoupon, percentValue: v.replace(/\D/g, "").slice(0, 3) })} placeholder="مثلاً ۱۵" />
+                </Field>
+              ) : (
+                <Field label="مبلغ ثابت (ریال)" hint={fixedInvalid ? "مبلغ ریالی بزرگ‌تر از صفر وارد کنید" : undefined}>
+                  <Input value={newCoupon.fixedValue} onChange={(v) => setNewCoupon({ ...newCoupon, fixedValue: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۰۰۰۰۰" />
+                </Field>
+              )}
               <Field label="حداقل مبلغ سفارش (ریال)">
                 <Input value={newCoupon.minOrderRial} onChange={(v) => setNewCoupon({ ...newCoupon, minOrderRial: v.replace(/\D/g, "") })} />
               </Field>
@@ -151,7 +161,7 @@ export function PromoPanel() {
                   onChange={(label) => setNewCoupon({ ...newCoupon, scope: label === PROMO_SCOPE_LABEL.categories ? "categories" : "productIds" })}
                 />
               </Field>
-              <div className="flex items-end"><Btn variant="accent" disabled={busy} onClick={() => void createCoupon()} icon={<Percent size={15} />}>ایجاد کد تخفیف</Btn></div>
+              <div className="flex items-end"><Btn variant="accent" disabled={busy || percentInvalid || fixedInvalid} onClick={() => void createCoupon()} icon={<Percent size={15} />}>ایجاد کد تخفیف</Btn></div>
             </div>
           </Card>
 

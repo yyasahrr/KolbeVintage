@@ -9,6 +9,7 @@ export const ACCOUNT_STATUS_FA: Record<string, string> = {
 
 export const ROLE_FA: Record<string, string> = {
   customer: "مشتری", supplier: "تأمین‌کننده", admin: "مدیر", staff: "کارمند", buyer: "خریدار عمده",
+  vip: "خریدار VIP", wholesale_buyer: "خریدار عمده", support: "پشتیبانی", finance: "مالی", operator: "اپراتور",
 };
 
 export const ORDER_STATUS_FA: Record<string, string> = {
@@ -111,6 +112,15 @@ export function faEvent(code: unknown): string {
   const prefix = key.split(".")[0] ?? "";
   return EVENT_PREFIX_FA[prefix] ?? "رویداد";
 }
+
+/** Notification routing vocabulary (admin «اعلان‌ها»): channels/roles/priorities in Persian. */
+export const NOTIF_CHANNEL_FA: Record<string, string> = {
+  in_app: "داخل برنامه", inapp: "داخل برنامه", email: "ایمیل", sms: "پیامک", webhook: "وب‌هوک", push: "پوش",
+};
+
+export const NOTIF_PRIORITY_FA: Record<string, string> = {
+  low: "کم", normal: "عادی", medium: "متوسط", high: "زیاد", urgent: "فوری", critical: "بحرانی",
+};
 
 /** Lookup with a safe Persian fallback — never echoes the raw enum into the UI. */
 export function faLabel(map: Record<string, string>, value: unknown, fallback = "نامشخص"): string {

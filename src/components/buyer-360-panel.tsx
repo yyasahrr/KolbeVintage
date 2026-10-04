@@ -2,12 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Ban, Check, FileText, HelpCircle, ShieldCheck, UserCog } from "lucide-react";
 import { REVIEW_STATUS_FA, SMS_STATUS_FA, TICKET_STATUS_FA, faEvent, faLabel } from "../data/fa-labels";
 import { fmtNum } from "../data/catalog";
+import { fmtToman } from "../data/contracts";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
 import { buyersApi, membershipLifecycleApi, type Buyer360Payload } from "../data/api";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Status, Tag, Textarea, WorkspaceModal } from "./primitives";
 
-/** Rial values arrive as strings (money is never a JS float). */
-const rial = (value: unknown) => `${fmtNum(Number(String(value ?? "0")))} ریال`;
+/** Rial values arrive as strings (money is never a JS float); admin displays تومان (rial ÷ ۱۰). */
+const rial = (value: unknown) => fmtToman(value ?? "0");
 const day = (value: unknown) => (value ? formatPersianDate(String(value)) : "—");
 const text = (value: unknown, fallback = "—") => (value === null || value === undefined || value === "" ? fallback : String(value));
 
@@ -73,7 +74,8 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
   const PAGE = 25;
   const loadList = useCallback(async () => {
     try {
-      const res = await buyersApi.list({ search: search || undefined, view: listView, limit: PAGE, offset });
+      // vipOnly: this tab is «خریداران VIP (عمده)» — only canonical members, not every retail user.
+      const res = await buyersApi.list({ search: search || undefined, view: listView, vipOnly: "true", limit: PAGE, offset });
       setList(res.items); setTotal(Number(res.total ?? res.items.length));
     } catch (e) { setError(e instanceof Error ? e.message : "خطا در بارگذاری خریداران"); }
   }, [search, listView, offset]);

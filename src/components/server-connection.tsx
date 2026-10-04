@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, CloudOff, RefreshCw } from "lucide-react";
 import { Btn } from "./primitives";
 import {
-  adminApi, cmsApi, crmApi, financeApi, integrationsApi, inventoryApi, ordersApi,
-  notificationsApi, promoApi, shippingApi, ticketsApi,
+  adminApi, apiClient, automationApi, cmsApi, crmApi, financeApi, importsApi, integrationsApi, inventoryApi,
+  invoicesApi, notificationsApi, ordersApi, promoApi, recommendationsApi, reviewsApi, shippingApi, ticketsApi,
 } from "../data/api";
+import { productTypesApi, seoApi } from "../data/experience-api";
 
 type Probe = { label: string; run: () => Promise<unknown> };
 
@@ -37,6 +38,16 @@ const PROBES: Record<string, Probe> = {
   // Prompt 5 QA: settings now hosts server-backed modules (پیکربندی حمل‌ونقل + کاربران سیستم),
   // so it must probe the server instead of claiming to be local.
   settings: { label: "پیکربندی حمل‌ونقل و کاربران", run: () => shippingApi.adminList() },
+  // Admin-finalization: these sections previously showed «روی داده محلی اجرا می‌شود» although they
+  // are fully server-backed — each now probes its own real endpoint so the banner is truthful.
+  imports: { label: "مرکز ورود داده", run: () => importsApi.history(1) },
+  "supplier-docs": { label: "اسناد و صورت‌حساب", run: () => invoicesApi.list({ limit: "1" }) },
+  structure: { label: "ساختار محصولات", run: () => productTypesApi.adminList() },
+  seo: { label: "مرکز SEO", run: () => seoApi.list() },
+  media: { label: "مجله و رسانه‌ها", run: () => apiClient.get("/admin/editorial?limit=1") },
+  reviews: { label: "نظرات و امتیازها", run: () => reviewsApi.adminList({ limit: 1 }) },
+  recs: { label: "توصیه‌گر هوشمند", run: () => recommendationsApi.adminSlots() },
+  automation: { label: "اتوماسیون و رویدادها", run: () => automationApi.readiness() },
 };
 
 type State =

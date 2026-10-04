@@ -217,7 +217,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     return value || undefined;
   };
 
-  const [tab, setTab] = useState("server-orders");
+  const [tab, setTab] = useState("tower"); // landing = نمای کلی (برج کنترل)
   // deep-link sub-tab inside a hub (legacy redirects like users → crm:customers)
   const [hubSub, setHubSub] = useState<string | null>(null);
   const go = useCallback((next: string) => {
@@ -230,33 +230,38 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const [planEdit, setPlanEdit] = useState<VipPlan | null>(null);
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
+  // Hub-based navigation: one business capability = one entry. Tab keys are unchanged so every
+  // legacy deep-link (`#hub` or `hub:sub`) keeps resolving; only grouping and labels moved.
   const nav: NavItem[] = [
-    { g: "دادهٔ واقعی" },
-    { v: "server-orders", label: "مرکز سفارشات", icon: <ClipboardList size={17} /> },
-    { v: "wms", label: "انبار و نقل‌وانتقالات", icon: <Boxes size={17} /> },
     { g: "نمای کلی" },
     { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: badge(summary ? summary.pendingProducts + summary.pendingSupplierActions + summary.pendingMemberships : undefined, pending.length + kolbePending.length + pendingBuyers.length) },
+    { g: "فروش و سفارش" },
+    { v: "server-orders", label: "مرکز سفارشات", icon: <ClipboardList size={17} /> },
+    { v: "promo", label: "تخفیف و جشنواره", icon: <TicketPercent size={17} /> },
+    { g: "محصول و انبار" },
+    { v: "wms:goods", label: "استودیو محصول", icon: <Store size={17} /> },
+    { v: "structure", label: "ساختار محصولات و سری‌ها", icon: <Layers size={17} /> },
+    { v: "wms", label: "انبار و موجودی (WMS)", icon: <Boxes size={17} /> },
+    { g: "مشتریان و پشتیبانی" },
+    { v: "crm", label: "مشتریان (CRM)", icon: <Contact size={17} /> },
+    { v: "support", label: "پشتیبانی و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
+    { v: "reviews", label: "نظرات و امتیازها", icon: <Star size={17} /> },
     { g: "بازار عمده" },
-    { v: "imports", label: "مرکز ورود داده", icon: <Download size={17} /> },
-    { v: "supplier-docs", label: "اسناد و صورت‌حساب", icon: <ReceiptText size={17} /> },
     { v: "applications", label: "درخواست همکاری", icon: <FileSignature size={17} />, badge: badge(summary?.pendingSupplierActions, ops.applications.filter((a) => a.status === "new").length) },
     { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
-    { g: "خرده‌فروشی و محصول" },
-    { v: "structure", label: "ساختار محصولات و سری‌ها", icon: <Layers size={17} /> },
-    { v: "crm", label: "مرکز CRM", icon: <Contact size={17} /> },
-    { v: "promo", label: "کوپن و جشنواره", icon: <TicketPercent size={17} /> },
+    { g: "مالی" },
+    { v: "finance", label: "مرکز مالی", icon: <Wallet size={17} /> },
+    { v: "supplier-docs", label: "اسناد و صورت‌حساب", icon: <ReceiptText size={17} /> },
+    { g: "محتوا و رشد" },
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
     { v: "seo", label: "مرکز SEO", icon: <Globe2 size={17} /> },
     { v: "media", label: "مجله و رسانه‌ها", icon: <FileVideo2 size={17} /> },
-    { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
-    { v: "finance", label: "مرکز مالی", icon: <Wallet size={17} /> },
-    { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
-    { g: "رشد و اتوماسیون" },
-    { v: "automation", label: "اتوماسیون و n8n", icon: <Workflow size={17} /> },
-    { v: "reviews", label: "نظرات و امتیازها", icon: <Star size={17} /> },
     { v: "recs", label: "توصیه‌گر هوشمند", icon: <Sparkles size={17} /> },
     { g: "سیستم" },
-    { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
+    { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
+    { v: "automation", label: "اتوماسیون و n8n", icon: <Workflow size={17} /> },
+    { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
+    { v: "imports", label: "مرکز ورود داده", icon: <Download size={17} /> },
     { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
     { v: "restrictions", label: "محدودیت کاربران", icon: <ShieldAlert size={17} /> },
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
@@ -305,7 +310,11 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     recs: ["توصیه‌گر هوشمند", "جایگاه‌ها، استراتژی‌ها و تحلیل نمایش/کلیک/تبدیل"],
     "promo-safety": ["ایمنی تخفیف و کوپن شخصی", "قواعد سقف‌دار، تست خشک، قالب کمپین و کوپن اختصاصی"],
   };
-  const [t, d] = titles[tab] ?? titles.tower;
+  // Composite keys (hub:sub) get their own header so e.g. «استودیو محصول» is not titled as WMS.
+  const compositeTitles: Record<string, [string, string]> = {
+    "wms:goods": ["استودیو محصول", "تعریف و ویرایش محصولات کلبه — کاتالوگ، واریانت، قیمت و کانال فروش (بدون دستکاری موجودی)"],
+  };
+  const [t, d] = (hubSub ? compositeTitles[`${tab}:${hubSub}`] : undefined) ?? titles[tab] ?? titles.tower;
 
 
   const sidebar = (
@@ -315,14 +324,15 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
         <div><p className="text-sm font-extrabold">کنسول مدیریت</p><p className="text-[11.5px] text-[var(--kv-muted)]">دسترسی کامل · ادمین ارشد</p></div>
       </div>
       <nav className="kv-scroll flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
+        {summaryError && !isDemo && <p role="alert" className="px-3 py-1 text-[10.5px] leading-5 text-[var(--kv-muted)]">خلاصه سرور در دسترس نیست — اعداد محلی موقت است.</p>}
         {nav.map((n, i) =>
           "g" in n ? <p key={i} className="px-3 pb-1 pt-4 text-[11px] font-bold text-[var(--kv-faint)]">{n.g}</p> : (
             <button key={n.v} onClick={() => { go(n.v); setDrawer(false); }}
               className={cn("kv-press flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-[13px] font-semibold",
-                tab === n.v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
+                (n.v.includes(":") ? n.v === `${tab}:${hubSub ?? ""}` : tab === n.v && !nav.some((m) => "v" in m && m.v === `${tab}:${hubSub ?? ""}`))
+                  ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
               {n.icon}{n.label}
               {n.badge && <span className="mr-auto rounded-full bg-[var(--kv-danger)] px-2 py-0.5 text-[10.5px] font-bold text-white tabular-nums">{fmtNum(n.badge)}</span>}
-              {summaryError && !isDemo && <p role="alert" className="px-2 py-1 text-[10.5px] leading-5 text-[var(--kv-muted)]">خلاصه سرور در دسترس نیست — اعداد محلی موقت است.</p>}
             </button>
           )
         )}
