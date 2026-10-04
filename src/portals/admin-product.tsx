@@ -5,7 +5,7 @@ import { useStore } from "../data/store";
 import { KOLBE } from "../data/platform";
 import { useOps } from "../data/ops";
 import { fileToUrl, removeBackground, sendToN8n } from "../components/media";
-import { filesApi, integrationsApi, inventoryApi, productColorsApi, productStructureApi, productsApi } from "../data/api";
+import { authBlobUrl, filesApi, integrationsApi, inventoryApi, productColorsApi, productStructureApi, productsApi, seriesTemplatesApi } from "../data/api";
 import {
   INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, buildProductCreatePayload, normalizeProductTypes, normalizeTaxonomies, normalizeWarehouses,
   productVariantSkus, readProductCreateResponse, rialFromToman, variantKey, variantMatrix,
@@ -14,12 +14,13 @@ import {
 import { ProductSpecsEditor } from "../components/product-specs-editor";
 import { ProductInventoryDrawer } from "../components/product-inventory";
 import { DiscountManager } from "../components/discount-manager";
-import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
+import { seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
 import { catalogOpsApi } from "../data/api";
 import { Btn, Card, WorkspaceModal, Empty, Field, Input, Modal, Segmented, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
 import { cn } from "../utils/cn";
+import { CanonicalSeriesLibrary, ProductSeriesEditor, productSeriesPayload } from "../components/product-series-editor";
 
 type F = (m: string) => void;
 type Cutout = NonNullable<Product["cutout"]>;
@@ -134,7 +135,7 @@ export function CutoutImg({ src, alt, className }: { src: string; alt: string; c
 
 /* ============ Product definition (Kolbe) ============ */
 /** Product media = server file reference (persisted) + local preview URL (display only). */
-type DraftImage = { fileId: string | null; url: string };
+type DraftImage = { fileId: string | null; url: string; previewUrl?: string };
 type Draft = {
   name: string; brand: string; category: string; sku: string; desc: string; fabric: string; care: string;
   retail: string; installment: string; compare: string; seoTitle: string; slug: string; retailOn: boolean; wholesaleOn: boolean;
@@ -400,16 +401,6 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
       return;
     }
-    if (!isDemo && d.productTypeId) {
-      try {
-        await productStructureApi.createSize(d.productTypeId, { code, label: code });
-        loadTypes();
-        setD((cur) => ({ ...cur, sizes: cur.sizes.includes(code) ? cur.sizes : [...cur.sizes, code] }));
-        setNewSize("");
-        flash(`سایز «${code}» به نوع محصول اضافه شد`);
-      } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
-      return;
-    }
     // No profile and no legacy type: the size belongs to this product only.
     setD((cur) => ({ ...cur, sizes: cur.sizes.includes(code) ? cur.sizes : [...cur.sizes, code] }));
     setNewSize("");
@@ -461,6 +452,20 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         installmentPolicy: (detail.installment_policy as InstallmentPolicy) ?? "enabled",
         wholesaleMoq: detail.wholesale_moq === null || detail.wholesale_moq === undefined ? "" : String(detail.wholesale_moq),
       };
+      loadedDraft.images = await Promise.all(loadedDraft.images.map(async (image) => image.fileId ? {
+        ...image, url: `/api/v1/product-media/${image.fileId}`, previewUrl: await authBlobUrl(`/files/${image.fileId}`),
+      } : image));
+      if (loadedDraft.videoFileId) loadedDraft.video = await authBlobUrl(`/files/${loadedDraft.videoFileId}`);
+      const templates = await seriesTemplatesApi.list(p.id);
+      const recipes = await Promise.all(templates.items.map((t) => seriesTemplatesApi.detail(String(t.id))));
+      loadedDraft.series = recipes.map((t, index) => ({
+        id: String(templates.items[index]!.id), name: t.name,
+        composition: Object.fromEntries(t.items.map((i) => [i.size_label ?? "", i.quantity_per_series])),
+        pieces: t.pairsPerSeries, moqSeries: t.moqSeries, pricePerSeries: Number(t.pricePerSeriesRial ?? 0) / 10,
+        available: t.active, colorIds: [loadedDraft.colors.find((c) => c.name === t.items[0]?.color_label)?.id ?? ""],
+        pricingMode: t.pricingMode === "component_sum" ? "component_sum" : "series_total",
+        componentPrices: Object.fromEntries(t.items.map((i) => [i.size_label ?? "", Number(i.unit_price_rial ?? 0) / 10])),
+      }));
       setD(loadedDraft);
       setOpenSnapshot(JSON.stringify(loadedDraft));
       setEditing({ id: p.id, metadata: meta });
@@ -518,9 +523,10 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         ...(d.genderCode ? { genderCode: d.genderCode } : {}),
         productTypeId: d.productTypeId || null,
         retailEnabled: d.retailOn, wholesaleEnabled: d.wholesaleOn,
+        wholesaleSeries: productSeriesPayload(d.series, d.colors),
         installmentPolicy: d.installmentPolicy,
         wholesaleMoq: d.wholesaleMoq ? Number(d.wholesaleMoq) : null,
-        ...(d.typeCode ? { productTypeCode: d.typeCode, specifications: d.specs } : {}),
+        specifications: d.specs,
       });
       flash(`«${d.name}» ذخیره شد`);
       setOpen(false); setEditing(null); setD(blank());
@@ -628,7 +634,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const uploadImage = async (file: File): Promise<DraftImage> => {
     if (isDemo) return { fileId: null, url: (await fileToUrl(file)).url };
     const uploaded = await filesApi.upload(file);
-    return { fileId: uploaded.id, url: URL.createObjectURL(file) };
+    return { fileId: uploaded.id, url: `/api/v1/product-media/${uploaded.id}`, previewUrl: URL.createObjectURL(file) };
   };
   const uploadVideo = async (file: File) => {
     if (file.size > 50 * 1024 * 1024) { flash("حجم ویدیو باید کمتر از ۵۰ مگابایت باشد"); return; }
@@ -691,7 +697,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       // Adaptive form data (Req 325-326): the server validates specs against the type template.
       // §10: category-driven specs ALWAYS travel with the create payload (the server validates
       // required attributes of the category profile against exactly this object).
-      const adaptivePayload = { ...payload, variants: enabledVariants, specifications: d.specs, ...(d.typeCode ? { productTypeCode: d.typeCode } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
+      const adaptivePayload = { ...payload, wholesalePriceRial: d.wholesaleOn && d.series.length ? rialFromToman(Math.max(1, Math.floor(Math.min(...d.series.map((series) => series.pricePerSeries / Math.max(1, series.pieces)))))) : undefined, wholesaleSeries: d.wholesaleOn ? productSeriesPayload(d.series, d.colors) : [], variants: enabledVariants, specifications: d.specs, ...(d.typeCode ? { productTypeCode: d.typeCode } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
       const res = readProductCreateResponse(await productsApi.create(adaptivePayload));
       const skus = productVariantSkus(res);
 
@@ -1036,7 +1042,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
               <div>
                 <div className="mb-2 flex items-center justify-between"><p className="text-[13px] font-semibold">تصاویر فروشگاه ({fmtNum(d.images.length)})</p><span className="text-[11.5px] text-[var(--kv-muted)]">اولین تصویر، کاور است · نسبت ۳:۴</span></div>
                 <div className="grid grid-cols-4 gap-2">
-                  {d.images.map((im, i) => <div key={`${im.fileId ?? im.url}-${i}`} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><img src={im.url} alt="" className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<span className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-bold text-white">{im.fileId ? "ذخیره‌شده" : "محلی"}</span><button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
+                  {d.images.map((im, i) => <div key={`${im.fileId ?? im.url}-${i}`} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><img src={im.previewUrl ?? im.url} alt="" className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<span className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-bold text-white">{im.fileId ? "ذخیره‌شده" : "محلی"}</span><button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
                   <input ref={imgRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" onChange={async (e) => { const files = Array.from(e.target.files ?? []).slice(0, 8); if (!files.length) return; setMediaBusy(true); try { const uploaded: DraftImage[] = []; for (const file of files) uploaded.push(await uploadImage(file)); setD((prev) => ({ ...prev, images: [...prev.images, ...uploaded] })); if (!isDemo) flash(`${uploaded.length.toLocaleString("fa-IR")} تصویر روی سرور ذخیره شد`); } catch (err) { flash(err instanceof Error ? err.message : "خطا در بارگذاری تصویر"); } finally { setMediaBusy(false); } }} />
                   <button onClick={() => imgRef.current?.click()} className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-[10px] border-2 border-dashed border-[var(--kv-line-strong)] text-[11.5px] font-semibold text-[var(--kv-muted)] hover:border-[var(--kv-accent)]"><ImageIcon size={18} />افزودن تصویر</button>
                 </div>
@@ -1067,7 +1073,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
             </>}
             {sec === "series" && <>
               {d.wholesaleOn && <Field label="حداقل سفارش عمده (عدد)" hint="سرور در ثبت سفارش عمده همین کف را برای مجموع واریانت‌های این محصول اعمال می‌کند"><Input value={d.wholesaleMoq} onChange={(v) => setD({ ...d, wholesaleMoq: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۲" /></Field>}
-              {d.wholesaleOn && <SeriesTemplatePicker ownerId={KOLBE.id} category={d.category} colors={d.colors} value={d.series} onChange={(s) => setD({ ...d, series: s })} onManage={() => setManage(true)} productTypeId={d.productTypeId || undefined} />}
+              {d.wholesaleOn && <ProductSeriesEditor colors={d.colors} sizes={d.sizes} value={d.series} onChange={(series) => setD({ ...d, series })} />}
             </>}
             {/* §4 (corrective): the «موجودی اولیه» step was removed from Product Definition.
                 Opening stock lives ONLY in کالاها → نیازمند راه‌اندازی (audited WMS document).
@@ -1243,7 +1249,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       <WorkspaceModal open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""}>
         {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={async (c) => { if (!isDemo) { try { const existing = ((products.find((x) => x.id === cutFor.id) as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {}); await productsApi.update(cutFor.id, { metadata: { ...existing, cutout: c } }); flash("تصویر استایل‌بیلدر ذخیره شد"); await reload(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } updateProduct(cutFor.id, { cutout: c }); }} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
       </WorkspaceModal>
-      <WorkspaceModal open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه"><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></WorkspaceModal>
+      <WorkspaceModal open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه"><CanonicalSeriesLibrary /></WorkspaceModal>
       <WorkspaceModal open={!!specsFor} onClose={() => setSpecsFor(null)} title={specsFor ? `مشخصات · ${specsFor.name}` : ""}>
         {specsFor && <ProductSpecsEditor key={specsFor.id} productId={specsFor.id} flash={flash} />}
       </WorkspaceModal>

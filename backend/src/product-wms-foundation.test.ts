@@ -23,6 +23,46 @@ const config: Config = {
 type Pool = ReturnType<typeof createPool>;
 type App = Awaited<ReturnType<typeof buildApp>>;
 
+test('published catalog media and canonical series projection do not expose private files or metadata recipes', { skip: !enabled }, async () => {
+  const app = await buildApp(config); const pool = createPool(config);
+  try {
+    const admin = await makeUser(pool, ['admin', 'operations'], 'رسانه محصول');
+    const supplier = await makeUser(pool, ['supplier'], 'مالک رسانه');
+    const headers = await login(app, admin.email); const supplierHeaders = await login(app, supplier.email);
+    const uploaded = await app.inject({ method: 'POST', url: '/api/v1/files', headers, payload: {
+      originalName: 'pixel.png', mime: 'image/png', dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7WQAAAAASUVORK5CYII=',
+    } });
+    assert.equal(uploaded.statusCode, 201, uploaded.body); const fileId = uploaded.json().id;
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/product-media/${fileId}` })).statusCode, 404);
+    const body = { name: `رسانه ${randomUUID().slice(0, 6)}`, brand: 'کلبه', category: 'رسانه آزمون', cashPriceRial: '100000',
+      variants: [{ color: 'مشکی', size: 'S' }, { color: 'مشکی', size: 'M' }, { color: 'مشکی', size: 'L' }],
+      wholesaleSeries: [{ name: 'سری واقعی', color: 'مشکی', pricingMode: 'series_total', totalPriceRial: '12000001', minOrderSeries: 2,
+        items: ['S', 'M', 'L'].map((size) => ({ size, quantityPerSeries: 2 })) }],
+      metadata: { images: [{ fileId, url: 'blob:temporary' }], series: [{ name: 'سری جعلی', pieces: 99 }] },
+    };
+    const stolen = await app.inject({ method: 'POST', url: '/api/v1/products', headers: supplierHeaders, payload: body });
+    assert.equal(stolen.statusCode, 400, stolen.body);
+    const created = await app.inject({ method: 'POST', url: '/api/v1/products', headers, payload: body });
+    assert.equal(created.statusCode, 201, created.body); const id = created.json().id;
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/product-media/${fileId}` })).statusCode, 404, 'unpublished media stays private');
+    const published = await app.inject({ method: 'PATCH', url: `/api/v1/products/${id}/status`, headers, payload: { status: 'published' } });
+    assert.equal(published.statusCode, 200, published.body);
+    const media = await app.inject({ method: 'GET', url: `/api/v1/product-media/${fileId}` });
+    assert.equal(media.statusCode, 200, media.body); assert.equal(media.headers['content-type'], 'image/png');
+    const catalog = await app.inject({ method: 'GET', url: '/api/v1/products?channel=all&limit=100' });
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    const product = catalog.json().items.find((p: { id: string }) => p.id === id);
+    assert.equal(product.metadata.images[0].url, `/api/v1/product-media/${fileId}`);
+    assert.equal(product.series.length, 1); assert.equal(product.series[0].name, 'سری واقعی');
+    assert.equal(product.series[0].pieces, 6); assert.equal(product.series[0].pricePerSeriesRial, '12000001');
+    assert.equal(product.series[0].availableSeries, 0, 'catalog recipe creates no stock');
+    const category = await pool.query('SELECT category_id FROM products WHERE id=$1', [id]);
+    await pool.query('UPDATE cms_categories SET name=$2 WHERE id=$1', [category.rows[0].category_id, `دسته تغییرنام ${id.slice(0, 6)}`]);
+    const renamed = await pool.query('SELECT category FROM products WHERE id=$1', [id]);
+    assert.equal(renamed.rows[0].category, `دسته تغییرنام ${id.slice(0, 6)}`);
+  } finally { await pool.end(); await app.close(); }
+});
+
 async function makeUser(pool: Pool, roles: string[], label: string) {
   const id = randomUUID();
   const email = `${label}-${id.slice(0, 8)}@example.test`;
@@ -113,6 +153,33 @@ test('admin product: always kolbe-owned (spoof ignored), no stock on save, needs
       headers: { ...headers, 'idempotency-key': `setup2-${productId}` },
       payload: { retail: { warehouseId: retailWh, mode: 'equal', quantity: 5 } } });
     assert.equal(again.statusCode, 409, again.body);
+  } finally { await pool.end(); await app.close(); }
+});
+
+test('Studio saves canonical series atomically with catalog, never physical stock', { skip: !enabled }, async () => {
+  const app = await buildApp(config); const pool = createPool(config);
+  try {
+    const admin = await makeUser(pool, ['admin'], 'مدیر تعریف سری');
+    const headers = await login(app, admin.email);
+    const payload = { name: 'کت سه سایز کرم', brand: 'کلبه', category: 'کت', cashPriceRial: '0', wholesalePriceRial: '2000000',
+      retailEnabled: false, wholesaleEnabled: true, variants: ['S','M','L'].map((size) => ({ color: 'کرم', size })),
+      wholesaleSeries: [{ name: 'سری A', color: 'کرم', pricingMode: 'series_total', totalPriceRial: '12000000', minOrderSeries: 1,
+        items: ['S','M','L'].map((size) => ({ size, quantityPerSeries: 2 })) }] };
+    const created = await app.inject({ method: 'POST', url: '/api/v1/products', headers, payload });
+    assert.equal(created.statusCode, 201, created.body);
+    const id = created.json().id as string;
+    const templates = await app.inject({ method: 'GET', url: `/api/v1/series-templates?productId=${id}`, headers });
+    assert.equal(templates.json().items.length, 1);
+    assert.equal(templates.json().items[0].pairs_per_series, 6);
+    assert.equal(templates.json().items[0].price_per_series_rial, '12000000');
+    const stock = await pool.query('SELECT count(*)::int AS n FROM series_stock_balances WHERE series_template_id=$1', [templates.json().items[0].id]);
+    assert.equal(stock.rows[0].n, 0);
+    const badName = `bad-recipe-${randomUUID()}`;
+    const bad = await app.inject({ method: 'POST', url: '/api/v1/products', headers,
+      payload: { ...payload, name: badName, wholesaleSeries: [{ ...payload.wholesaleSeries[0], color: 'سبز' }] } });
+    assert.equal(bad.statusCode, 400, bad.body);
+    const rolledBack = await pool.query('SELECT count(*)::int AS n FROM products WHERE name=$1', [badName]);
+    assert.equal(rolledBack.rows[0].n, 0);
   } finally { await pool.end(); await app.close(); }
 });
 

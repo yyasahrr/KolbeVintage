@@ -16,6 +16,7 @@ import { MarketplaceReviewPanel } from "./marketplace-review-panel";
 import { DiscountManager } from "./discount-manager";
 import { promoApi, promotionRulesApi } from "../data/api";
 import { ProductStudio } from "../portals/admin-product";
+import { Product360 } from "./product-360";
 import {
   catalogOpsApi, inventoryApi, productsApi, seriesTemplatesApi, sizeGuidesApi, specsApi,
   type AdminProductRow, type NeedsSetupRow,
@@ -306,6 +307,7 @@ function AllProductsPanel({ mode, flash }: { mode: "active" | "archived"; flash?
   const [festivalModal, setFestivalModal] = useState(false);
   const [bulkResult, setBulkResult] = useState<Awaited<ReturnType<typeof promotionRulesApi.festivalBulk>> | null>(null);
   const [discountFor, setDiscountFor] = useState<AdminProductRow | null>(null);
+  const [focusedProduct, setFocusedProduct] = useState<AdminProductRow | null>(null);
   const limit = 30;
   const load = useCallback(() => {
     setError(null);
@@ -349,7 +351,7 @@ function AllProductsPanel({ mode, flash }: { mode: "active" | "archived"; flash?
                         checked={selected.has(p.id)}
                         onChange={(e) => setSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(p.id); else next.delete(p.id); return next; })} />
                     </td>}
-                    <td><div className="font-bold">{p.name}</div><div className="text-[10.5px] text-[var(--kv-muted)]">{p.brand ?? "—"} · {p.category} · {fa(p.variant_count)} واریانت</div></td>
+                    <td><button className="font-bold text-[var(--kv-accent)]" onClick={() => setFocusedProduct(p)}>{p.name}</button><div className="text-[10.5px] text-[var(--kv-muted)]">{p.brand ?? "—"} · {p.category} · {fa(p.variant_count)} واریانت</div></td>
                     <td>{p.owner_type === "kolbe" ? "کلبه" : <span>تأمین‌کننده{p.supplier_name ? ` — ${p.supplier_name}` : ""}</span>}</td>
                     <td><Pill map={CATALOG_BADGE} value={p.status} /></td>
                     {/* §16: «—» = پیکربندی‌نشده؛ عدد (حتی ۰) = پیکربندی‌شده. */}
@@ -414,6 +416,7 @@ function AllProductsPanel({ mode, flash }: { mode: "active" | "archived"; flash?
           </div>
         </Modal>
       )}
+      {focusedProduct && <Product360 product={focusedProduct} onClose={() => setFocusedProduct(null)} onPricing={() => { setDiscountFor(focusedProduct); setFocusedProduct(null); }} />}
       {discountFor && (
         <DiscountManager
           productId={discountFor.id}

@@ -144,6 +144,7 @@ export async function resolveVariantPrice(
     orderType?: 'retail' | 'wholesale';
     paymentMode?: 'cash' | 'four_installments';
     now?: Date;
+      basePriceRial?: string;
   } = {},
 ): Promise<ResolvedVariantPrice> {
   const orderType = options.orderType ?? 'retail';
@@ -167,12 +168,12 @@ export async function resolveVariantPrice(
   // price as the retail base; promotions then discount the overridden base.
   // The deliberate installment price stays authoritative for 4-installment mode;
   // the override only replaces the cash price (and its installment fallback).
-  const rawBasePrice =
+    const rawBasePrice = options.basePriceRial ?? (
     orderType === 'wholesale'
       ? variant.wholesale_price_rial
       : paymentMode === 'four_installments'
         ? (variant.installment_price_rial ?? variant.price_override_rial ?? variant.cash_price_rial)
-        : (variant.price_override_rial ?? variant.cash_price_rial);
+          : (variant.price_override_rial ?? variant.cash_price_rial));
 
   if (rawBasePrice === null) {
     throw badRequest(`قیمت فروش برای SKU ${variant.sku} تعریف نشده است.`);

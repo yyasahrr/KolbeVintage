@@ -1759,6 +1759,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     const user = await principal(request, pool, config);
     const query = z.object({
       variantId: z.uuid().optional(),
+      productId: z.uuid().optional(),
       inventoryDomain: z.enum(['retail', 'wholesale']).optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
     }).parse(request.query);
@@ -1770,8 +1771,9 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
        WHERE ($1::uuid IS NULL OR m.variant_id = $1)
          AND ($2::boolean = true OR w.owner_id = $3)
          AND ($5::text IS NULL OR m.inventory_domain = $5)
+         AND ($6::uuid IS NULL OR p.id = $6)
        ORDER BY m.created_at DESC LIMIT $4`,
-      [query.variantId ?? null, user.permissions.includes('inventory:read'), user.id, query.limit, query.inventoryDomain ?? null]);
+      [query.variantId ?? null, user.permissions.includes('inventory:read'), user.id, query.limit, query.inventoryDomain ?? null, query.productId ?? null]);
     return { items: rows.rows };
   });
 

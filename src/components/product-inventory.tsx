@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, PackageCheck, RefreshCw, Scale, Truck } from "lucide-react";
-import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Select } from "./primitives";
+import { RefreshCw } from "lucide-react";
+import { Btn, Card, Empty, ErrorState, LoadingState } from "./primitives";
 import { inventoryApi } from "../data/api";
 import {
   readProductInventory, WMS_LABEL as L,
@@ -11,13 +11,13 @@ import { cn } from "../utils/cn";
 const fa = (value: number | string) => String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
 
 /**
- * Read/operational inventory view for one product.
+ * Read-only inventory summary for one product.
  *
  * There is deliberately NO stock write path here: quantity changes only happen through the WMS
  * movements (`receipt → receive`, `adjustment`, `transfer`) — never a `PATCH /products`.
  */
 export function ProductInventoryDrawer({
-  product, warehouses, onClose, onFlash,
+  product, warehouses, onClose,
 }: {
   product: { id: string; name: string } | null;
   warehouses: Warehouse[];
@@ -26,25 +26,20 @@ export function ProductInventoryDrawer({
 }) {
   const [data, setData] = useState<ProductInventory | null>(null);
   const [balances, setBalances] = useState<StockBalance[]>([]);
+  const [movements, setMovements] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [warehouseId, setWarehouseId] = useState(warehouses[0]?.id ?? "");
-  const [receipt, setReceipt] = useState({ variantId: "", quantity: "1" });
-  const [adjust, setAdjust] = useState({ variantId: "", delta: "1", reason: "شمارش دوره‌ای", reference: "" });
-  const [transfer, setTransfer] = useState({ to: "", variantId: "", quantity: "1" });
+
 
   const load = useCallback(async () => {
     if (!product) return;
     setLoading(true); setError(null);
     try {
-      const inventory = readProductInventory(await inventoryApi.productInventory(product.id));
+      const [rawInventory, history] = await Promise.all([inventoryApi.productInventory(product.id), inventoryApi.productMovements(product.id)]);
+      const inventory = readProductInventory(rawInventory);
       setData(inventory);
       setBalances(inventory.items);
-      setWarehouseId((current) => current || warehouses[0]?.id || "");
-      setReceipt((current) => ({ ...current, variantId: current.variantId || inventory.variants[0]?.variantId || "" }));
-      setAdjust((current) => ({ ...current, variantId: current.variantId || inventory.variants[0]?.variantId || "" }));
-      setTransfer((current) => ({ ...current, variantId: current.variantId || inventory.variants[0]?.variantId || "" }));
+      setMovements(history.items);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطا در بارگذاری موجودی محصول");
     } finally { setLoading(false); }
@@ -53,55 +48,11 @@ export function ProductInventoryDrawer({
 
   if (!product) return null;
 
-  const lines = data?.variants ?? [];
-  const runReceipt = async () => {
-    if (!warehouseId || !receipt.variantId) { setError("واریانت و انبار را انتخاب کنید."); return; }
-    try {
-      setBusy(true);
-      const created = await inventoryApi.receipt({
-        warehouseId, variantId: receipt.variantId, quantity: Number(receipt.quantity) || 1, reference: `RCV-${Date.now()}`,
-      }, `rcpt-${receipt.variantId}-${Date.now()}`) as { id?: string };
-      if (created?.id) await inventoryApi.receiveReceipt(created.id);
-      onFlash("رسید ورودی ثبت و تأیید شد");
-      await load();
-    } catch (e) { setError(e instanceof Error ? e.message : "خطا در ثبت رسید"); }
-    finally { setBusy(false); }
-  };
-  const runAdjust = async () => {
-    if (!warehouseId || !adjust.variantId) { setError("واریانت و انبار را انتخاب کنید."); return; }
-    try {
-      setBusy(true);
-      await inventoryApi.adjust({
-        warehouseId, variantId: adjust.variantId, delta: Number(adjust.delta) || 0,
-        reason: adjust.reason.trim() || "اصلاح موجودی", reference: adjust.reference.trim() || `ADJ-${Date.now()}`,
-      }, `adj-${Date.now()}`);
-      onFlash("اصلاح موجودی ثبت شد");
-      await load();
-    } catch (e) { setError(e instanceof Error ? e.message : "خطا در اصلاح موجودی"); }
-    finally { setBusy(false); }
-  };
-  const runTransfer = async () => {
-    if (!warehouseId || !transfer.to || !transfer.variantId) { setError("مبدأ، مقصد و واریانت را انتخاب کنید."); return; }
-    if (warehouseId === transfer.to) { setError("مبدأ و مقصد باید متفاوت باشند."); return; }
-    try {
-      setBusy(true);
-      const created = await inventoryApi.transfer({
-        fromWarehouseId: warehouseId, toWarehouseId: transfer.to,
-        lines: [{ variantId: transfer.variantId, quantity: Number(transfer.quantity) || 1 }],
-      }) as { id?: string };
-      if (created?.id) await inventoryApi.completeTransfer(created.id);
-      onFlash("انتقال بین انبارها انجام شد");
-      await load();
-    } catch (e) { setError(e instanceof Error ? e.message : "خطا در انتقال"); }
-    finally { setBusy(false); }
-  };
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-[14px] font-extrabold">{product.name}</p>
-          <p className="text-[11.5px] text-[var(--kv-muted)]" dir="ltr">{product.id}</p>
         </div>
         <Btn variant="soft" size="sm" icon={<RefreshCw size={14} />} onClick={() => void load()}>به‌روزرسانی</Btn>
       </div>
@@ -131,7 +82,7 @@ export function ProductInventoryDrawer({
           <Card className="overflow-hidden">
             <div className="px-4 py-3 text-[13px] font-bold">موجودی به تفکیک واریانت و انبار</div>
             {balances.length === 0 ? (
-              <Empty title="موجودی‌ای ثبت نشده است" desc="برای این محصول هنوز رسید ورودی ثبت نشده؛ از فرم پایین استفاده کنید." />
+              <Empty title="موجودی‌ای ثبت نشده است" desc="برای این محصول هنوز رسید ورودی ثبت نشده؛ راه‌اندازی و دریافت کالا را از بخش انبار انجام دهید." />
             ) : (
               <div className="overflow-x-auto">
                 <table className="kv-table min-w-[760px] text-xs">
@@ -159,60 +110,9 @@ export function ProductInventoryDrawer({
             )}
           </Card>
 
-          <div className="grid gap-3 lg:grid-cols-3">
-            <Card className="p-4">
-              <p className="flex items-center gap-1.5 text-[13px] font-bold"><PackageCheck size={14} />{L.receipt}</p>
-              <div className="mt-2 space-y-2">
-                <Select
-                  options={["انتخاب کد کالا…", ...lines.map((line) => `${line.sku}${line.color ? ` / ${line.color}` : ""}${line.size ? ` / ${line.size}` : ""}`)]}
-                  value={lines.find((line) => line.variantId === receipt.variantId) ? `${lines.find((line) => line.variantId === receipt.variantId)!.sku}` : "انتخاب کد کالا…"}
-                  onChange={(label) => setReceipt({ ...receipt, variantId: lines.find((line) => label.startsWith(line.sku))?.variantId ?? "" })}
-                />
-                <Field label={L.qty}><Input value={receipt.quantity} onChange={(v) => setReceipt({ ...receipt, quantity: v.replace(/\D/g, "") || "1" })} /></Field>
-                <Btn variant="accent" size="sm" className="w-full" disabled={busy} onClick={() => void runReceipt()}>ثبت و تأیید رسید ورودی</Btn>
-              </div>
-            </Card>
-
-            <Card className="p-4">
-              <p className="flex items-center gap-1.5 text-[13px] font-bold"><Scale size={14} />{L.adjustment}</p>
-              <div className="mt-2 space-y-2">
-                <Select
-                  options={["انتخاب کد کالا…", ...lines.map((line) => line.sku)]}
-                  value={lines.find((line) => line.variantId === adjust.variantId)?.sku ?? "انتخاب کد کالا…"}
-                  onChange={(label) => setAdjust({ ...adjust, variantId: lines.find((line) => line.sku === label)?.variantId ?? "" })}
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <Field label="مقدار تغییر"><Input value={adjust.delta} onChange={(v) => setAdjust({ ...adjust, delta: v })} /></Field>
-                  <Field label={L.reference}><Input value={adjust.reference} onChange={(v) => setAdjust({ ...adjust, reference: v })} /></Field>
-                </div>
-                <Field label={L.reason}><Input value={adjust.reason} onChange={(v) => setAdjust({ ...adjust, reason: v })} /></Field>
-                <Btn variant="soft" size="sm" className="w-full" disabled={busy} onClick={() => void runAdjust()}>ثبت اصلاح موجودی</Btn>
-              </div>
-            </Card>
-
-            <Card className="p-4">
-              <p className="flex items-center gap-1.5 text-[13px] font-bold"><Truck size={14} />{L.transfer}</p>
-              <div className="mt-2 space-y-2">
-                <Field label={L.from}>
-                  <Select options={warehouses.map((w) => w.name)} value={warehouses.find((w) => w.id === warehouseId)?.name ?? ""}
-                    onChange={(label) => setWarehouseId(warehouses.find((w) => w.name === label)?.id ?? "")} />
-                </Field>
-                <Field label={L.to}>
-                  <Select options={warehouses.filter((w) => w.id !== warehouseId).map((w) => w.name)}
-                    value={warehouses.find((w) => w.id === transfer.to)?.name ?? ""}
-                    onChange={(label) => setTransfer({ ...transfer, to: warehouses.find((w) => w.name === label)?.id ?? "" })} />
-                </Field>
-                <Select
-                  options={["انتخاب کد کالا…", ...lines.map((line) => line.sku)]}
-                  value={lines.find((line) => line.variantId === transfer.variantId)?.sku ?? "انتخاب کد کالا…"}
-                  onChange={(label) => setTransfer({ ...transfer, variantId: lines.find((line) => line.sku === label)?.variantId ?? "" })}
-                />
-                <Field label={L.qty}><Input value={transfer.quantity} onChange={(v) => setTransfer({ ...transfer, quantity: v.replace(/\D/g, "") || "1" })} /></Field>
-                <Btn variant="soft" size="sm" className="w-full" disabled={busy || warehouses.length < 2} onClick={() => void runTransfer()}>ثبت انتقال</Btn>
-                {warehouses.length < 2 && <p className="text-[11.5px] text-[var(--kv-muted)]"><AlertTriangle size={11} className="inline" /> برای انتقال حداقل دو انبار لازم است.</p>}
-              </div>
-            </Card>
-          </div>
+          <Card className="p-4"><h3 className="mb-3 text-sm font-bold">تاریخچه گردش موجودی (۵۰ رویداد اخیر)</h3>
+            {!movements.length ? <Empty title="گردشی ثبت نشده" desc="ثبت رسید، انتقال و بازکردن سری در انبار، در اینجا قابل پیگیری است." /> : <div className="overflow-x-auto"><table className="kv-table min-w-[650px] w-full text-xs"><thead><tr><th>تاریخ</th><th>کد کالا</th><th>انبار</th><th>بخش</th><th>تغییر موجودی</th><th>علت</th></tr></thead><tbody>{movements.map((m) => <tr key={String(m.id)}><td>{new Date(String(m.created_at)).toLocaleString("fa-IR")}</td><td>{String(m.sku)}</td><td>{String(m.warehouse_name)}</td><td>{m.inventory_domain === "wholesale" ? "عمده" : "خرده"}</td><td>{fa(String(m.on_hand_delta))}</td><td>{String(m.reason ?? "—")}</td></tr>)}</tbody></table></div>}
+          </Card>
         </>
       )}
       <div className="flex justify-end"><Btn variant="ghost" size="sm" onClick={onClose}>بستن</Btn></div>

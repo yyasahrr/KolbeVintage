@@ -10,6 +10,21 @@ import { badRequest, notFound, forbidden } from './errors.js';
 import { getFile, putFile, MAX_FILE_BYTES } from './storage.js';
 
 export function registerFileRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
+  // Only published catalog media is public. Documents and unattached uploads
+  // keep the existing authenticated /files permission boundary.
+  app.get('/api/v1/product-media/:id', async (request, reply) => {
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const file = await one<{ storage_key: string; mime_type: string; size_bytes: number }>(pool,
+      `SELECT f.storage_key,f.mime_type,f.size_bytes FROM files f WHERE f.id=$1
+       AND (f.mime_type LIKE 'image/%' OR f.mime_type LIKE 'video/%')
+       AND EXISTS (SELECT 1 FROM products p WHERE p.status='published' AND
+         (p.metadata->'images' @> $2::jsonb OR p.metadata->>'videoFileId'=$1::text))`,
+      [id, JSON.stringify([{ fileId: id }])]);
+    if (!file) throw notFound();
+    reply.header('Content-Type', file.mime_type).header('Content-Length', file.size_bytes)
+      .header('X-Content-Type-Options', 'nosniff').header('Cache-Control', 'public,max-age=300');
+    return reply.send(await getFile(file.storage_key));
+  });
   // Generic file upload (multipart)
   // Requires @fastify/multipart — if not registered, we handle json fallback for tests
   app.post('/api/v1/files', async (request, reply) => {

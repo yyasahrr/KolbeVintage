@@ -31,7 +31,7 @@ import { accrueChildPayable } from './settlement-core.js';
 import { assertNotRestricted } from './console.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { resolveVariantPrice } from './promotions.js';
-import { loadSeriesComposition } from './series.js';
+import { allocateSeriesPrice, loadSeriesComposition } from './series.js';
 import { applySeriesMovement, buildRecipeSnapshot } from './series-inventory.js';
 import {
   availableToRequest, expireSupplierCapacityReservations, reserveSupplierCapacity, settleSupplierCapacityReservation,
@@ -571,7 +571,8 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
             }
           }
         } else {
-          const moqSeries = Math.max(1, Math.ceil(Number(product.wholesale_moq ?? 1) / pps));
+          const moqSeries = composition.template.pricing_mode !== 'legacy_product' ? composition.template.min_order_series
+            : Math.max(1, Math.ceil(Number(product.wholesale_moq ?? 1) / pps));
           if (item.count < moqSeries) throw code(409, 'BELOW_MIN_ORDER_SERIES', `حداقل سفارش «${product.name}» ${moqSeries} سری است.`);
         }
 
@@ -624,10 +625,12 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         // ---- canonical pricing per piece (§64/§117) ----
         const pieces: PlannedLine['pieces'] = [];
         let unitSeriesPrice = 0n; let baseSeriesPrice = 0n;
-        for (const component of composition.items) {
-          const resolved = await resolveVariantPrice(client, component.variant_id, { orderType: 'wholesale', paymentMode: 'cash' });
+        const commercialComponents = allocateSeriesPrice(composition.items, composition.template.pricing_mode, composition.template.total_price_rial);
+        for (const component of commercialComponents) {
+          const resolved = await resolveVariantPrice(client, component.variant_id, { orderType: 'wholesale', paymentMode: 'cash',
+            ...(component.basePriceRial !== null ? { basePriceRial: component.basePriceRial } : {}) });
           const basePrice = rial(resolved.basePrice);
-          if (basePrice === 0n) throw badRequest(`قیمت فروش عمده برای SKU ${component.sku} معتبر نیست.`);
+          if (basePrice === 0n && component.basePriceRial === null) throw badRequest(`قیمت فروش عمده برای SKU ${component.sku} معتبر نیست.`);
           const unitDiscount = rial(resolved.discountAmount);
           const finalPrice = rial(resolved.finalPrice);
           unitSeriesPrice += finalPrice * BigInt(component.quantity_per_series);

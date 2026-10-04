@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Pencil, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
-import { Btn, Card, Drawer, Empty, Field, Input, LoadingState, Select, Segmented, Status, Switch, Textarea } from "./primitives";
+import { Btn, Card, WorkspaceModal, Empty, Field, Input, LoadingState, Select, Segmented, Status, Switch, Textarea } from "./primitives";
 import { CategoryProfilesPanel } from "./catalog-hub";
 import { filesApi, productStructureApi, specsApi, sizeGuidesApi } from "../data/api";
 import {
@@ -9,8 +9,8 @@ import {
   type SpecAttribute, type SpecTemplate, type SizeGuide, type Taxonomy, type SpecAttributeType,
 } from "../data/contracts";
 import { cn } from "../utils/cn";
-import { SeriesTemplateManager } from "../portals/series-templates";
-import { KOLBE } from "../data/platform";
+import { CanonicalSeriesLibrary } from "./product-series-editor";
+
 
 type F = (message: string) => void;
 
@@ -118,7 +118,7 @@ function AttributesSection({ flash }: { flash: F }) {
           </table>
         </div>
       </Card>
-      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش فیلد" : "فیلد جدید"} wide>
+      <WorkspaceModal open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش فیلد" : "فیلد جدید"}>
         {edit && (
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -170,7 +170,7 @@ function AttributesSection({ flash }: { flash: F }) {
             <Btn variant="accent" className="w-full" disabled={!edit.code.trim() || edit.label.trim().length < 2} onClick={() => void save()}>ذخیره فیلد</Btn>
           </div>
         )}
-      </Drawer>
+      </WorkspaceModal>
     </div>
   );
 }
@@ -280,7 +280,7 @@ function TemplatesSection({ flash }: { flash: F }) {
           </div>
         )}
       </Card>
-      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش قالب" : "قالب جدید"}>
+      <WorkspaceModal open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش قالب" : "قالب جدید"}>
         {edit && (
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -292,7 +292,7 @@ function TemplatesSection({ flash }: { flash: F }) {
             <Btn variant="accent" className="w-full" disabled={!edit.code.trim() || edit.name.trim().length < 2} onClick={() => void (async () => { try { if (edit.id) await specsApi.updateTemplate(edit.id, { name: edit.name.trim(), description: edit.description.trim(), active: edit.active }); else await specsApi.createTemplate({ code: edit.code.trim().toLowerCase(), name: edit.name.trim(), description: edit.description.trim(), active: edit.active }); setEdit(null); await load(); flash("قالب ذخیره شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره قالب"); } })()}>ذخیره</Btn>
           </div>
         )}
-      </Drawer>
+      </WorkspaceModal>
     </div>
   );
 }
@@ -463,7 +463,7 @@ function GuidesSection({ flash }: { flash: F }) {
           </div>
         )}
       </Card>
-      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش راهنما" : "راهنمای جدید"}>
+      <WorkspaceModal open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش راهنما" : "راهنمای جدید"}>
         {edit && (
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -475,7 +475,7 @@ function GuidesSection({ flash }: { flash: F }) {
             <Btn variant="accent" className="w-full" disabled={!edit.code.trim() || edit.name.trim().length < 2} onClick={() => void (async () => { try { if (edit.id) await sizeGuidesApi.update(edit.id, { name: edit.name.trim(), description: edit.description.trim(), status: edit.status }); else await sizeGuidesApi.create({ code: edit.code.trim().toLowerCase(), name: edit.name.trim(), description: edit.description.trim(), status: edit.status }); setEdit(null); await load(); flash("راهنما ذخیره شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره راهنما"); } })()}>ذخیره</Btn>
           </div>
         )}
-      </Drawer>
+      </WorkspaceModal>
     </div>
   );
 }
@@ -504,7 +504,7 @@ export function ProductStructurePanel({ flash }: { flash: F }) {
       {tab === "guides" && <GuidesSection flash={flash} />}
       {tab === "series" && (
         <Card className="p-5">
-          <SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" />
+          <CanonicalSeriesLibrary />
         </Card>
       )}
     </div>

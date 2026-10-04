@@ -112,6 +112,7 @@ test('series stocktake: overlay guard forbids fabricating series; valid counts b
     assert.equal(replay.statusCode, 200, replay.body);
     assert.equal(replay.json().duplicate, true);
 
+
     // list shows the explicit (tracked) series row with sellable count and retail_supply_allowed
     const list = await app.inject({ method: 'GET', url: `/api/v1/inventory/series?warehouseId=${world.warehouseId}&withItems=1`, headers });
     assert.equal(list.statusCode, 200, list.body);
@@ -290,6 +291,10 @@ test('retail supply: reserve → dispatch(break, ALL pieces to retail incoming) 
     assert.equal(replay.statusCode, 200, replay.body);
     assert.equal(replay.json().duplicate, true);
 
+    const changedReplay = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers,
+      payload: { seriesTemplateId: world.templateId, sourceWarehouseId: world.warehouseId, destinationWarehouseId: retailWh, seriesCount: 2, idempotencyKey: key } });
+    assert.equal(changedReplay.statusCode, 409, changedReplay.body);
+
     // reserved at series level; retail on_hand must NOT move at creation (§14)
     const series1 = await app.inject({ method: 'GET', url: `/api/v1/inventory/series?warehouseId=${world.warehouseId}`, headers });
     const s1 = (series1.json().items as Array<{ series_template_id: string; reserved: number; sellable: number }>).find((r) => r.series_template_id === world.templateId);
@@ -359,6 +364,69 @@ test('retail supply: reserve → dispatch(break, ALL pieces to retail incoming) 
     assert.deepEqual(events, ['created', 'dispatched', 'received']);
     await app.close();
   } finally { await pool.end(); }
+});
+
+test('PO acceptance: S2 M2 L2 × 3; atomic unpack, concurrent replay, ledger, owner and recipe snapshot', { skip: !enabled }, async () => {
+  const app = await buildApp(config); const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { headers } = await makeAdmin(app, pool, suffix);
+    const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers, payload: {
+      brand: 'کلبه', name: `کت کرم پذیرش ${suffix}`, category: 'کت', cashPriceRial: '9000000', wholesalePriceRial: '4000000',
+      retailEnabled: true, wholesaleEnabled: true, variants: ['S', 'M', 'L'].map((size) => ({ size, color: 'کرم' })),
+    } });
+    assert.equal(product.statusCode, 201, product.body);
+    const productId = product.json().id as string;
+    const variants = product.json().variants as { id: string; sku: string }[];
+    const template = await app.inject({ method: 'POST', url: '/api/v1/series-templates', headers, payload: {
+      productId, name: `Series A ${suffix}`, items: variants.map((v) => ({ variantId: v.id, quantityPerSeries: 2 })),
+    } });
+    assert.equal(template.statusCode, 201, template.body);
+    const templateId = template.json().id as string;
+    const source = randomUUID(); const destination = randomUUID();
+    await pool.query("INSERT INTO warehouses(id,code,name,purpose) VALUES ($1,$2,'عمده پذیرش','wholesale'),($3,$4,'خرده پذیرش','retail')",
+      [source, `accept-w-${suffix}`, destination, `accept-r-${suffix}`]);
+    const setup = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${productId}/inventory-setup`,
+      headers: { ...headers, 'idempotency-key': `accept-setup-${suffix}` }, payload: {
+        retail: { warehouseId: destination, mode: 'zero' }, wholesale: { warehouseId: source, seriesTemplateId: templateId, seriesCount: 5 },
+      } });
+    assert.equal(setup.statusCode, 201, setup.body);
+    const payload = { seriesTemplateId: templateId, sourceWarehouseId: source, destinationWarehouseId: destination,
+      seriesCount: 3, idempotencyKey: `accept-unpack-${suffix}` };
+    const submissions = await Promise.all([1, 2].map(() => app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers, payload })));
+    assert.deepEqual(submissions.map((r) => r.statusCode).sort(), [200, 201]);
+    const id = submissions[0]!.json().id as string;
+    assert.equal(submissions[1]!.json().id, id);
+    const counts = await pool.query('SELECT count(*)::int AS n FROM retail_supply_orders WHERE idempotency_key = $1', [payload.idempotencyKey]);
+    assert.equal(counts.rows[0].n, 1);
+    const changed = await app.inject({ method: 'POST', url: '/api/v1/retail-supplies', headers, payload: { ...payload, seriesCount: 4 } });
+    assert.equal(changed.statusCode, 409);
+    // An inconsistent physical piece balance must roll back ALL series and piece movements.
+    await pool.query("UPDATE stock_balances SET on_hand = 0 WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'wholesale'", [variants[1]!.id, source]);
+    const failed = await app.inject({ method: 'POST', url: `/api/v1/retail-supplies/${id}/dispatch`, headers });
+    assert.equal(failed.statusCode, 409, failed.body);
+    const untouched = await pool.query('SELECT on_hand,reserved FROM series_stock_balances WHERE series_template_id = $1', [templateId]);
+    assert.deepEqual(untouched.rows[0], { on_hand: 5, reserved: 3 });
+    const rollback = await pool.query("SELECT count(*)::int AS n FROM stock_movements WHERE reference_type = 'retail_supply' AND reference_id = $1", [id]);
+    assert.equal(rollback.rows[0].n, 0);
+    await pool.query("UPDATE stock_balances SET on_hand = 10 WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'wholesale'", [variants[1]!.id, source]);
+    // Change the current recipe after the document exists: dispatch uses its immutable snapshot.
+    await pool.query('UPDATE series_template_items SET quantity_per_series = 9 WHERE series_template_id = $1', [templateId]);
+    const dispatched = await Promise.all([1, 2].map(() => app.inject({ method: 'POST', url: `/api/v1/retail-supplies/${id}/dispatch`, headers })));
+    assert.deepEqual(dispatched.map((r) => r.statusCode).sort(), [200, 409]);
+    const received = await Promise.all([1, 2].map(() => app.inject({ method: 'POST', url: `/api/v1/retail-supplies/${id}/receive`, headers })));
+    assert.deepEqual(received.map((r) => r.statusCode).sort(), [200, 409]);
+    const retail = await pool.query("SELECT b.on_hand,b.incoming,v.size_label FROM stock_balances b JOIN product_variants v ON v.id=b.variant_id WHERE v.product_id=$1 AND b.warehouse_id=$2 AND b.inventory_domain='retail' ORDER BY v.size_label", [productId, destination]);
+    assert.deepEqual(retail.rows.map((r) => r.on_hand), [6, 6, 6]);
+    assert.equal(retail.rows.reduce((n, r) => n + r.on_hand, 0), 18);
+    assert.ok(retail.rows.every((r) => r.incoming === 0));
+    const wholesale = await pool.query('SELECT on_hand,reserved,owner_type,supplier_id FROM series_stock_balances WHERE series_template_id=$1 AND warehouse_id=$2', [templateId, source]);
+    assert.deepEqual(wholesale.rows[0], { on_hand: 2, reserved: 0, owner_type: 'kolbe', supplier_id: null });
+    const events = await pool.query('SELECT event_type FROM retail_supply_events WHERE supply_id=$1 ORDER BY created_at,id', [id]);
+    assert.deepEqual(events.rows.map((r) => r.event_type).sort(), ['created', 'dispatched', 'received']);
+    const ledger = await pool.query("SELECT sum(on_hand_delta)::int AS qty FROM stock_movements WHERE reference_id=$1 AND warehouse_id=$2 AND inventory_domain='retail'", [id, destination]);
+    assert.equal(ledger.rows[0].qty, 18);
+  } finally { await pool.end(); await app.close(); }
 });
 
 test('sale status scopes: variant stop never stops the product; color scope is one bulk op; checkout enforces variant eligibility', { skip: !enabled }, async () => {

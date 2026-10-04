@@ -11,6 +11,7 @@ import { validateSpecifications, type SpecField } from './profile.js';
 import { categoryProfileFor, validateCategoryRequirements } from './product-lifecycle.js';
 import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
 import { resolveVariantPrice } from './promotions.js';
+import { productSeriesSchema, saveProductSeries } from './series.js';
 
 const installmentPolicy = z.enum(['disabled', 'enabled', 'disabled_when_discounted', 'enabled_when_discounted']);
 const variantInput = z.object({
@@ -60,6 +61,7 @@ const productBody = z.object({
   allowInstallments: z.boolean().optional(),
   disableInstallmentsOnDiscount: z.boolean().optional(),
   saleTerms: saleTermsSchema.optional(),
+  wholesaleSeries: productSeriesSchema.optional(),
 });
 
 async function resolveTypeSpecs(db: DbPool | import('pg').PoolClient, code: string | undefined, specs: Record<string, unknown>, sizes: (string | undefined)[]) {
@@ -108,6 +110,26 @@ async function assertTypeSizes(client: DbPool, productTypeId: string, sizes: (st
   for (const size of sizes) {
     if (size !== undefined && size !== null && size !== '' && !allowed.has(size))
       throw badRequest(`سایز «${size}» در نوع محصول انتخاب‌شده تعریف نشده است.`);
+  }
+}
+
+async function normalizeCatalogMedia(db: DbPool | import('pg').PoolClient, metadata: Record<string, unknown>, actorId: string, manager: boolean) {
+  const images = metadata.images;
+  if (Array.isArray(images)) {
+    metadata.images = await Promise.all(images.map(async (image: unknown) => {
+      if (!image || typeof image !== 'object') return image;
+      const ref = image as Record<string, unknown>;
+      if (!ref.fileId) return ref;
+      const fileId = z.uuid().parse(ref.fileId);
+      const file = await one<{ owner_id: string; mime_type: string }>(db, 'SELECT owner_id,mime_type FROM files WHERE id=$1', [fileId]);
+      if (!file || !file.mime_type.startsWith('image/') || (!manager && file.owner_id !== actorId)) throw badRequest('فایل تصویر محصول معتبر یا متعلق به شما نیست.');
+      return { ...ref, url: `/api/v1/product-media/${fileId}` };
+    }));
+  }
+  if (metadata.videoFileId) {
+    const id = z.uuid().parse(metadata.videoFileId);
+    const file = await one<{ owner_id: string; mime_type: string }>(db, 'SELECT owner_id,mime_type FROM files WHERE id=$1', [id]);
+    if (!file || !file.mime_type.startsWith('video/') || (!manager && file.owner_id !== actorId)) throw badRequest('فایل ویدیوی محصول معتبر یا متعلق به شما نیست.');
   }
 }
 
@@ -168,6 +190,17 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       [query.category ?? null, query.before ?? null, query.channel, query.productTypeId ?? null,
         query.gender ?? null, query.season ?? null, query.limit, query.offset]);
 
+    const seriesRows = await pool.query(`SELECT t.id,t.product_id,t.name,t.color_label,t.active,t.pricing_mode,t.min_order_series,
+      CASE WHEN t.pricing_mode='series_total' THEN t.total_price_rial
+        WHEN t.pricing_mode='component_sum' THEN SUM(i.quantity_per_series*i.unit_price_rial)
+        ELSE SUM(i.quantity_per_series)*p.wholesale_price_rial END::text AS price_rial,
+      SUM(i.quantity_per_series)::int AS pieces,
+      jsonb_object_agg(v.size_label,i.quantity_per_series) AS composition,
+      COALESCE((SELECT SUM(s.on_hand-s.reserved-s.damaged) FROM series_stock_balances s JOIN warehouses w ON w.id=s.warehouse_id
+        WHERE s.series_template_id=t.id AND s.owner_type=p.owner_type AND s.supplier_id IS NOT DISTINCT FROM p.supplier_id AND w.active),0)::int AS available_series
+      FROM series_templates t JOIN products p ON p.id=t.product_id JOIN series_template_items i ON i.series_template_id=t.id
+      JOIN product_variants v ON v.id=i.variant_id WHERE t.product_id=ANY($1::uuid[]) AND t.active
+      GROUP BY t.id,p.id ORDER BY t.created_at,t.id`, [result.rows.map((r) => r.id)]);
     const items = [];
     for (const row of result.rows as ProductListRow[]) {
       const enrichedVariants = [];
@@ -214,6 +247,10 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         productStatus: (row as unknown as { status?: string }).status,
         retailAvailableStock: totalRetailAvailable,
         metadata: row.metadata,
+        series: seriesRows.rows.filter((t) => t.product_id === row.id).map((t) => ({
+          id: t.id, name: t.name, colorLabel: t.color_label, composition: t.composition, pieces: t.pieces,
+          minOrderSeries: t.min_order_series, pricePerSeriesRial: t.price_rial, availableSeries: t.available_series,
+        })),
         variants: enrichedVariants,
         createdAt: row.created_at,
         productTypeCode: row.product_type_code,
@@ -499,6 +536,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const seasons = [...new Set(body.seasons)];
 
     const result = await transaction(pool, async (client) => {
+      await normalizeCatalogMedia(client, body.metadata, user.id, user.permissions.includes('products:write'));
       await client.query(
         `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial,metadata,
            product_type_code,specifications,gender,seasons,vibes,installment_enabled,discount_percent,
@@ -558,6 +596,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         );
         variants.push({ id, sku, color: variant.color ?? null, size: variant.size ?? null, weightGrams: variant.weightGrams ?? null });
       }
+      if (body.wholesaleSeries) await saveProductSeries(client, productId, body.wholesaleSeries, user.id);
       await audit(client, user.id, 'product.created', 'product', productId, undefined, { name: body.name, ownerType, variants }, request.ip);
       await outbox(client, 'product.created', 'product', productId, { productId });
       await outbox(client, 'product.style_analysis_requested', 'product', productId, { productId, reason: 'product.created' });
@@ -662,6 +701,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       wholesaleMoq: z.number().int().min(0).max(1000000).nullable().optional(),
       genderCode: z.string().trim().max(40).nullable().optional(),
       seasons: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+      wholesaleSeries: productSeriesSchema.optional(),
     }).strict().parse(request.body);
     const owned = await one<{ supplier_id: string | null }>(pool, 'SELECT supplier_id FROM products WHERE id = $1', [id]);
     if (!owned) throw notFound();
@@ -691,6 +731,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       if (body.cashPriceRial !== undefined) rial(body.cashPriceRial);
       if (body.installmentPriceRial) rial(body.installmentPriceRial);
       if (body.wholesalePriceRial) rial(body.wholesalePriceRial);
+      if (body.metadata) await normalizeCatalogMedia(client, body.metadata, user.id, user.permissions.includes('products:write'));
       if (body.productTypeId) {
         const type = await one<{ active: boolean }>(client, 'SELECT active FROM product_types WHERE id = $1', [body.productTypeId]);
         if (!type || !type.active) throw badRequest('نوع محصول انتخاب‌شده فعال نیست.');
@@ -721,7 +762,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
           await client.query('INSERT INTO product_seasons(product_id, season_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, season]);
         }
       }
-      if (!updates.length && body.seasons === undefined) throw badRequest('تغییری برای ذخیره وجود ندارد.');
+      if (body.wholesaleSeries) await saveProductSeries(client, id, body.wholesaleSeries, user.id);
+      if (!updates.length && body.seasons === undefined && body.wholesaleSeries === undefined) throw badRequest('تغییری برای ذخیره وجود ندارد.');
       if (updates.length) {
         await client.query(`UPDATE products SET ${updates.join(', ')}, version = version + 1, updated_at = now() WHERE id = $1`, values);
       }

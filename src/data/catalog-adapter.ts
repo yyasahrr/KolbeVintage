@@ -21,6 +21,7 @@ type CatalogRow = {
   genderCode?: string | null; gender?: string | null; seasons?: string[];
   metadata?: Record<string, unknown>; variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number }[];
   available?: number; supplierId?: string | null; discountPercent?: number; installmentEnabled?: boolean;
+  series?: { id: string; name: string; colorLabel: string | null; pieces: number; composition: Record<string, number>; minOrderSeries: number; pricePerSeriesRial: string | null; availableSeries: number }[];
 };
 
 export function adaptCatalogProduct(row: CatalogRow): Product & { variants: NonNullable<CatalogRow["variants"]>; sizes: string[]; installmentEnabled?: boolean } {
@@ -31,34 +32,17 @@ export function adaptCatalogProduct(row: CatalogRow): Product & { variants: NonN
   const images = (Array.isArray(meta.images) ? meta.images : [])
     .map((ref) => {
       const r = ref as { fileId?: string | null; url?: string };
-      return r.fileId ? mediaSrc(`/api/v1/media/${r.fileId}`) : r.url && /^https?:\/\//.test(r.url) ? r.url : undefined;
+      return r.fileId ? mediaSrc(`/api/v1/product-media/${r.fileId}`) : r.url && /^https?:\/\//.test(r.url) ? r.url : undefined;
     }).filter((u): u is string => Boolean(u));
   const cutout = meta.cutout as Product["cutout"] | null | undefined;
   // Wholesale channel data (items 245-247): series definitions, MOQ and audience/season codes ride the server row.
   const wholesaleFrom = rialToToman(row.wholesalePriceRial);
-  const metaSeries = (Array.isArray(meta.series) ? meta.series : []) as {
-    name?: string; pieces?: number; moqSeries?: number; pricePerSeries?: number;
-    colorIds?: string[]; composition?: Record<string, number>; available?: boolean;
-  }[];
   const sizeCodes = [...new Set(variants.map((v) => v.size).filter((s): s is string => Boolean(s)))];
-  const colorIds = colors.map((c) => c.id);
-  const series: Product["series"] = metaSeries.length
-    ? metaSeries.map((entry, index) => ({
-        id: `${row.id}-series-${index}`, name: entry.name ?? `سری ${index + 1}`,
-        pieces: entry.pieces ?? Object.keys(entry.composition ?? {}).length,
-        composition: entry.composition ?? {},
-        moqSeries: entry.moqSeries ?? row.wholesaleMoq ?? 1,
-        pricePerSeries: entry.pricePerSeries ?? wholesaleFrom,
-        available: entry.available ?? true, colorIds: entry.colorIds ?? colorIds,
-      }))
-    : sizeCodes.length
-      ? [{
-          id: `${row.id}-std`, name: "سری استاندارد",
-          pieces: sizeCodes.length, composition: Object.fromEntries(sizeCodes.map((size) => [size, 1])),
-          moqSeries: row.wholesaleMoq ?? 1, pricePerSeries: wholesaleFrom,
-          available: true, colorIds,
-        }]
-      : [];
+  const series: Product["series"] = (row.series ?? []).map((entry) => ({
+    id: entry.id, name: entry.name, pieces: entry.pieces, composition: entry.composition,
+    moqSeries: entry.minOrderSeries, pricePerSeries: rialToToman(entry.pricePerSeriesRial),
+    available: entry.availableSeries > 0, colorIds: entry.colorLabel ? [entry.colorLabel] : [],
+  }));
   const isSupplierProduct = row.ownerType === "supplier" || Boolean(row.supplierId);
   return {
     id: row.id, status: "published", sku: variants[0]?.sku ?? "", brand: row.brand, name: row.name,

@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
-import { audit } from './operations.js';
+import { audit, claimIdempotency, completeIdempotency } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { loadSeriesComposition } from './series.js';
 
@@ -506,9 +506,21 @@ export function registerSeriesInventoryRoutes(app: FastifyInstance, pool: DbPool
 
     const result = await transaction(pool, async (client) => {
       if (body.idempotencyKey) {
-        const dupe = await one<{ id: string; reference: string }>(
-          client, 'SELECT id, reference FROM retail_supply_orders WHERE idempotency_key = $1', [body.idempotencyKey]);
-        if (dupe) return { ...dupe, duplicate: true as const };
+        const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex');
+        const claim = await claimIdempotency(client, user.id, 'retail_supply.create', body.idempotencyKey, hash);
+        if (claim.previous) return { ...(claim.previous as Record<string, unknown>), duplicate: true as const };
+        // Backward compatibility for documents created before canonical claims.
+        const dupe = await one<{ id: string; reference: string; series_template_id: string; source_warehouse_id: string;
+          destination_warehouse_id: string; series_count: number; note: string; created_by: string }>(
+          client, 'SELECT * FROM retail_supply_orders WHERE idempotency_key = $1', [body.idempotencyKey]);
+        if (dupe) {
+          if (dupe.created_by !== user.id || dupe.series_template_id !== body.seriesTemplateId
+            || dupe.source_warehouse_id !== body.sourceWarehouseId || dupe.destination_warehouse_id !== body.destinationWarehouseId
+            || dupe.series_count !== body.seriesCount || dupe.note !== (body.note ?? '')) throw conflict('کلید تکرار با درخواست دیگری استفاده شده است.');
+          const out = { id: dupe.id, reference: dupe.reference, duplicate: true as const };
+          await completeIdempotency(client, user.id, 'retail_supply.create', body.idempotencyKey, out);
+          return out;
+        }
       }
       await assertWarehousePurpose(client, body.sourceWarehouseId, 'wholesale');
       await assertWarehousePurpose(client, body.destinationWarehouseId, 'retail');
@@ -558,7 +570,9 @@ export function registerSeriesInventoryRoutes(app: FastifyInstance, pool: DbPool
       await supplyEvent(client, id, 'created', `سند تأمین ${reference} ثبت و ${body.seriesCount} سری رزرو شد.`, user.id);
       await audit(client, user.id, 'retail_supply.created', 'retail_supply', id, undefined,
         { reference, seriesCount: body.seriesCount, piecesTotal }, request.ip);
-      return { id, reference, status: 'reserved', seriesCount: body.seriesCount, piecesTotal };
+      const out = { id, reference, status: 'reserved', seriesCount: body.seriesCount, piecesTotal };
+      if (body.idempotencyKey) await completeIdempotency(client, user.id, 'retail_supply.create', body.idempotencyKey, out);
+      return out;
     });
     return reply.code('duplicate' in result ? 200 : 201).send(result);
   });

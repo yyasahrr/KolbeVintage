@@ -3,8 +3,8 @@ import { SupplierProfileSettings } from "./supplier-profile-settings";
 import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, type ProductType } from "../data/experience-api";
 import {
-  LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Factory, Inbox,
-  Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, Upload, CircleDollarSign,
+  LayoutDashboard, Package, Plus, ClipboardList, Boxes, Wallet, Inbox,
+  Settings, Bell, Menu, TrendingUp, AlertTriangle, Check, CircleDollarSign,
   FlaskConical, Clock, Sun, Moon, LogOut, Send, Store, PackagePlus,
 } from "lucide-react";
 import { SupplierRequestsPortal } from "../components/supplier-requests-portal";
@@ -15,7 +15,7 @@ import { useStore } from "../data/store";
 import { SUB_STATUS, isTerminal, type SubStatus } from "../data/platform";
 import { SubOrderDesk } from "../components/orders";
 import { AuthScreens } from "./studio";
-import { SeriesTemplateManager, SeriesTemplatePicker } from "./series-templates";
+import { seriesSizesFor } from "./series-templates";
 import { SupplierWallet, SupplierBankForm, useWallet } from "./supplier-wallet";
 import { TicketCenter } from "../components/support";
 import { SupplierStatsPanel } from "./supplier-stats-panel";
@@ -23,8 +23,9 @@ import { SupplierOrdersPanel } from "../components/supplier-orders-panel";
 import { SupplierChildOrdersPanel } from "../components/supplier-child-orders-panel";
 import { SupplierReviewPanel } from "../components/supplier-review-panel";
 import { useOps } from "../data/ops";
-import { apiClient, authApi, isAuthenticated, notificationsApi, productsApi, productStructureApi } from "../data/api";
-import { normalizeProductTypes, type ProductType as StructureProductType } from "../data/contracts";
+import { apiClient, authApi, isAuthenticated, notificationsApi, productsApi, catalogOpsApi, filesApi } from "../data/api";
+import { rialFromToman } from "../data/contracts";
+import { CanonicalSeriesLibrary, ProductSeriesEditor, productSeriesPayload } from "../components/product-series-editor";
 import { Landmark, Headset, Layers, ShieldAlert, FileSignature, KeyRound } from "lucide-react";
 
 /* Login or apply: the application form is defined by Kolbe admins and submissions land in the admin console. */
@@ -267,16 +268,23 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   useEffect(() => {
     if (taxonomy.categories.length && !taxonomy.categories.includes(form.category)) setForm((f) => ({ ...f, category: taxonomy.categories[0]! }));
   }, [taxonomy.categories, form.category]);
-  const [supplierTypes, setSupplierTypes] = useState<StructureProductType[]>([]);
-  useEffect(() => {
-    if (isDemoME) return;
-    let live = true;
-    productStructureApi.types().then(normalizeProductTypes)
-      .then((list) => { if (live) setSupplierTypes(list.filter((t) => t.active)); })
-      .catch(() => { if (live) setSupplierTypes([]); });
-    return () => { live = false; };
-  }, [isDemoME]);
   const [draftSeries, setDraftSeries] = useState<SeriesDef[]>([]);
+  const [productImages, setProductImages] = useState<{ fileId: string; url: string; previewUrl: string }[]>([]);
+  const [mediaBusy, setMediaBusy] = useState(false);
+  const [seriesSizes, setSeriesSizes] = useState<string[]>([]);
+  const [categoryFields, setCategoryFields] = useState<Record<string, unknown>[]>([]);
+  const [categoryError, setCategoryError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    setCategoryError("");
+    catalogOpsApi.categorySchema(form.category).then((schema) => {
+      if (!alive) return;
+      setCategoryFields(schema.specFields);
+      setSeriesSizes(schema.allowedSizes.length ? schema.allowedSizes : seriesSizesFor(form.category));
+    }).catch((e: unknown) => { if (alive) setCategoryError(e instanceof Error ? e.message : "دریافت ساختار دسته انجام نشد."); });
+    return () => { alive = false; };
+  }, [form.category]);
+
   const [draftColorIds, setDraftColorIds] = useState<string[]>(["orange", "black", "cream"]);
   const [invQ, setInvQ] = useState("");
   // Adaptive product form (Req 325-326): the supplier fills values; the schema comes from the product type.
@@ -330,13 +338,12 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
   void supLoading; void supError;
   const supplierBanner = supLoading ? <div className="mb-3 rounded-[12px] bg-[var(--kv-surface-2)] px-4 py-2 text-xs text-[var(--kv-muted)]">در حال بارگذاری اطلاعات تأمین‌کننده…</div> : supError ? <div className="mb-3 rounded-[12px] border border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{supError} <button onClick={()=>window.location.reload()} className="underline">تلاش دوباره</button></div> : isDemoME ? <div className="mb-3 rounded-[12px] border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">DEMO MODE — داده‌ها محلی و نمایشی هستند (?demo=1)</div> : null;
   const offeredDraft = draftSeries.filter((series) => series.available);
-  const canSubmitProduct = !!form.name.trim() && (!isDemoME ? !!form.productTypeId : true) && draftColorIds.length > 0 && offeredDraft.length > 0
+  const canSubmitProduct = !!form.name.trim() && (!!form.category.trim() && !categoryError) && draftColorIds.length > 0 && offeredDraft.length > 0
     && offeredDraft.every((series) => series.pieces > 0 && series.pricePerSeries > 0 && series.moqSeries > 0 && (series.colorIds?.length ?? draftColorIds.length) > 0)
-    && Number(form.stock) >= Math.min(...offeredDraft.map((series) => series.pieces * series.moqSeries))
-    && missingRequiredSpecs(selectedType, specs).length === 0;
+    && (isDemoME ? missingRequiredSpecs(selectedType, specs).length === 0 : categoryFields.every((field) => !field.required || String(specs[String(field.code)] ?? "").trim()));
   const submitProduct = async () => {
     if (restrict.noPublish) { flash("انتشار محصول برای حساب شما محدود شده است."); return; }
-    if (!canSubmitProduct) { flash("ابتدا نام، نوع محصول، موجودی کافی و دست‌کم یک سریِ قابل سفارش با قیمت و رنگ معتبر ثبت کنید."); return; }
+    if (!canSubmitProduct) { flash("ابتدا نام، دسته‌بندی، مشخصات و دست‌کم یک سریِ قابل سفارش با قیمت و رنگ معتبر ثبت کنید."); return; }
     if (isDemoME) {
       const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries)); void price;
       const moq = Math.min(...offeredDraft.map((series) => series.moqSeries)); void moq; // for stock check
@@ -348,35 +355,36 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
       try {
         await productsApi.create({
           brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim(),
-          cashPriceRial: "0", wholesalePriceRial: String(price * 10),
+          cashPriceRial: "0", wholesalePriceRial: rialFromToman(price),
           gender: form.gender, seasons: form.seasons, vibes: form.vibes,
           variants: [{ attributes: {} }],
           metadata: { supplierId: ME.id },
         });
       } catch {}
       setForm(emptySupplierForm());
-      setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
+      setProductImages([]); setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
       flash("محصول با سری‌های تعریف‌شده برای بازبینی کلبه ارسال شد. (demo)");
       return;
     }
     try {
       if (!isAuthenticated()) { flash("برای ثبت محصول وارد شوید"); return; }
-      const price = Math.min(...offeredDraft.map((series) => series.pricePerSeries));
+      const price = Math.max(1, Math.floor(Math.min(...offeredDraft.map((series) => series.pricePerSeries / Math.max(1, series.pieces)))));
+      const colors = draftColorIds.map((id) => COLORS[id]).filter(Boolean);
+      const recipes = productSeriesPayload(offeredDraft, colors);
+      const variantCells = [...new Map(recipes.flatMap((recipe) => recipe.items.map((item) => ({ size: item.size, color: recipe.color }))).map((cell) => [`${cell.color}|${cell.size}`, cell])).values()];
       // Request → backend authoritative SKU + product id + variants (server generates SKUs)
       const created = await productsApi.create({
         brand: "Nilgoon", name: form.name.trim(), category: form.category, description: form.desc.trim() || "توضیحات این محصول در حال تکمیل است.",
-        cashPriceRial: "0", wholesalePriceRial: String(price * 10),
-        variants: draftSeries.map((s)=> ({ size: Object.keys(s.composition)[0], color: draftColorIds[0], attributes: { series: s.name } })),
-        ...(form.productTypeId ? { productTypeId: form.productTypeId } : {}),
-        metadata: { colors: draftColorIds, stock: form.stock, series: draftSeries },
-        ...(typeCode ? { productTypeCode: typeCode, specifications: specs } : {}),
+        cashPriceRial: "0", wholesalePriceRial: rialFromToman(price),
+        variants: variantCells, wholesaleSeries: recipes, retailEnabled: false, wholesaleEnabled: true, installmentPolicy: "disabled", installmentEnabled: false,
+        metadata: { images: productImages.map(({ fileId, url }) => ({ fileId, url })) }, specifications: specs,
         gender: form.gender, seasons: form.seasons, vibes: form.vibes,
       });
       // Refresh supplier products cache
       const refreshed = await apiClient.get<{ items: unknown[] }>("/products").catch(()=>null);
       if (refreshed) setSupplierProducts((refreshed as any).items);
       setForm(emptySupplierForm());
-      setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
+      setProductImages([]); setDraftSeries([]); setDraftColorIds(["orange","black","cream"]); setTab("products"); setEditorSec("base");
       flash(`محصول ${created.variants?.[0]?.sku ?? created.id} برای بازبینی کلبه ارسال شد.`);
     } catch (e) {
       flash(e instanceof Error ? e.message : "خطا در ثبت محصول");
@@ -425,7 +433,6 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
     { v: "wholesale-offers", label: "پیشنهاد و ظرفیت عمده", icon: <Layers size={17} /> },
     { v: "consignment", label: "موجودی نزد کلبه", icon: <Package size={17} /> },
     { v: "supply-requests", label: "درخواست‌های تأمین", icon: <PackagePlus size={17} /> },
-    { v: "production", label: "تولید", icon: <Factory size={17} /> },
     { v: "finance", label: "کیف پول و برداشت", icon: <Wallet size={17} /> },
     { v: "bank", label: "اطلاعات مالی و بانکی", icon: <Landmark size={17} />, badge: ops.banks[ME.id]?.status === "verified" ? undefined : 1 },
     { v: "support", label: "پشتیبانی", icon: <Headset size={17} />, badge: ops.tickets.filter((t) => t.ownerId === ME.id && t.status === "answered").length || undefined },
@@ -635,7 +642,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
           {tab === "editor" && (
             <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[220px_1fr_300px]">
               <Card className="h-fit p-2.5">
-                {[["base", "اطلاعات پایه"], ["media", "رسانه"], ["variant", "ویژگی‌ها و واریانت"], ["series", "سری‌ها و قیمت"], ["stock", "موجودی و فروش"], ["review", "بازبینی"]].map(([v, l], i) => (
+                {[["base", "اطلاعات پایه"], ["media", "رسانه"], ["variant", "ویژگی‌ها و واریانت"], ["series", "سری‌ها و قیمت"], ["review", "بازبینی"]].map(([v, l], i) => (
                   <button key={v} onClick={() => setEditorSec(v)} className={cn("flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold", editorSec === v ? "bg-[var(--kv-surface-2)]" : "text-[var(--kv-muted)] hover:text-[var(--kv-ink)]")}>
                     <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold", editorSec === v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "bg-[var(--kv-surface-2)]")}>{(i + 1).toLocaleString("fa-IR")}</span>{l}
                   </button>
@@ -646,36 +653,30 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                 {editorSec === "base" && (
                   <div className="space-y-4">
                     <Field label="نام محصول"><Input placeholder="مثلاً پیراهن لینن یقه‌انگلیسی" value={form.name} onChange={(v) => setForm({ ...form, name: v })} /></Field>
-                    <Field label="دسته‌بندی" hint={taxonomy.status === "loading" ? "در حال دریافت دسته‌بندی‌های کاتالوگ…" : taxonomy.categories.length ? "از دسته‌بندی‌های کاتالوگ کلبه" : undefined}><Select options={categoryOptions} value={form.category} onChange={(v) => { setForm({ ...form, category: v }); setDraftSeries([]); }} /></Field>
+                    <Field label="دسته‌بندی" hint={taxonomy.status === "loading" ? "در حال دریافت دسته‌بندی‌های کاتالوگ…" : taxonomy.categories.length ? "از دسته‌بندی‌های کاتالوگ کلبه" : undefined}><Select options={categoryOptions} value={form.category} onChange={(v) => setForm({ ...form, category: v })} /></Field>
                     {taxonomy.status === "error" && <p role="alert" className="text-[11.5px] text-[var(--kv-danger)]">دسته‌بندی‌ها و وایب‌های کاتالوگ دریافت نشد. <button type="button" onClick={loadTaxonomy} className="font-bold underline">تلاش دوباره</button></p>}
-                    {productTypes.length > 0 ? (
+                    {isDemoME && productTypes.length > 0 && (
                       <Field label="نوع محصول" hint="سایزها و قالب مشخصات از نوع محصول می‌آیند">
                         <Select options={["انتخاب کنید", ...productTypes.map((t) => t.name)]} value={selectedType?.name ?? "انتخاب کنید"}
                           onChange={(l) => { const t = productTypes.find((x) => x.name === l); setTypeCode(t?.code ?? ""); setForm((f) => ({ ...f, productTypeId: t?.id ?? "" })); setSpecs({}); setDraftSeries([]); }} />
                       </Field>
-                    ) : (!isDemoME && supplierTypes.length > 0 && (
-                      <Field label="نوع محصول" hint="سایزهای سری‌ها از همین نوع محصول می‌آیند">
-                        <Select
-                          options={["بدون نوع", ...supplierTypes.map((t) => t.name)]}
-                          value={supplierTypes.find((t) => t.id === form.productTypeId)?.name ?? "بدون نوع"}
-                          onChange={(label) => { setForm({ ...form, productTypeId: supplierTypes.find((t) => t.name === label)?.id ?? "" }); setDraftSeries([]); }}
-                        />
-                      </Field>
-                    ))}
+                    )}
                     <div className="grid gap-3 sm:grid-cols-2" data-supplier-taxonomy>
                       <Field label="جنسیت / مخاطب"><Select options={GENDERS.map(([, l]) => l)} value={GENDERS.find(([v]) => v === form.gender)?.[1] ?? "یونیسکس"} onChange={(l) => setForm({ ...form, gender: GENDERS.find(([, x]) => x === l)?.[0] ?? "unisex" })} /></Field>
                       <fieldset><legend className="mb-1.5 text-[12.5px] font-semibold">فصل‌ها (چندانتخابی)</legend><div className="flex flex-wrap gap-1.5">{SEASONS.map(([v, l]) => (
                         <button key={v} type="button" aria-pressed={form.seasons.includes(v)} onClick={() => setForm({ ...form, seasons: form.seasons.includes(v) ? form.seasons.filter((x) => x !== v) : [...form.seasons, v] })}
                           className={cn("rounded-full border px-3 py-1.5 text-[12px] font-semibold", form.seasons.includes(v) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]" : "border-[var(--kv-line)] text-[var(--kv-muted)]")}>{l}</button>))}</div></fieldset>
-                      <fieldset className="sm:col-span-2"><legend className="mb-1.5 text-[12.5px] font-semibold">وایب‌ها</legend>
+                      {isDemoME && <fieldset className="sm:col-span-2"><legend className="mb-1.5 text-[12.5px] font-semibold">وایب‌ها</legend>
                         {taxonomy.vibes.length ? <div className="flex flex-wrap gap-1.5">{taxonomy.vibes.map((v) => (
                           <button key={v.slug} type="button" aria-pressed={form.vibes.includes(v.slug)} onClick={() => setForm({ ...form, vibes: form.vibes.includes(v.slug) ? form.vibes.filter((x) => x !== v.slug) : form.vibes.length >= 8 ? form.vibes : [...form.vibes, v.slug] })}
                             className={cn("rounded-full border px-3 py-1.5 text-[12px] font-semibold", form.vibes.includes(v.slug) ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]" : "border-[var(--kv-line)] text-[var(--kv-muted)]")}>{v.name}</button>))}</div>
                           : <p className="text-[11.5px] text-[var(--kv-muted)]">{taxonomy.status === "loading" ? "در حال دریافت…" : "هنوز وایبی در کاتالوگ تعریف نشده است."}</p>}
-                      </fieldset>
+                      </fieldset>}
                     </div>
-                    {selectedType && <AdaptiveSpecForm type={selectedType} values={specs} onChange={setSpecs} />}
-                    {selectedType && missingRequiredSpecs(selectedType, specs).length > 0 && <p className="text-[11.5px] text-[var(--kv-muted)]">فیلدهای الزامی: {missingRequiredSpecs(selectedType, specs).join("، ")}</p>}
+                    {!isDemoME && categoryError && <p role="alert" className="text-sm text-[var(--kv-danger)]">{categoryError}</p>}
+                    {!isDemoME && categoryFields.map((field) => <Field key={String(field.code)} label={`${String(field.label)}${field.required ? " (الزامی)" : ""}`}><Input value={String(specs[String(field.code)] ?? "")} onChange={(value) => setSpecs({ ...specs, [String(field.code)]: value })} /></Field>)}
+                    {isDemoME && selectedType && <AdaptiveSpecForm type={selectedType} values={specs} onChange={setSpecs} />}
+                    {isDemoME && selectedType && missingRequiredSpecs(selectedType, specs).length > 0 && <p className="text-[11.5px] text-[var(--kv-muted)]">فیلدهای الزامی: {missingRequiredSpecs(selectedType, specs).join("، ")}</p>}
                     <Field label="توضیح کوتاه" hint="در کارت محصول بازارچه عمده نمایش داده می‌شود"><Input placeholder="پیراهن لینن با دوخت تمیز…" value={form.desc} onChange={(v) => setForm({ ...form, desc: v })} /></Field>
                     <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-4 py-3 text-[12.5px] leading-6 text-[var(--kv-muted)]">
                       بعد از ارسال، محصول با وضعیت «در انتظار تأیید» برای تیم کیفیت کلبه فرستاده می‌شود و پس از تأیید، خودکار در بازارچه عمده نمایش داده می‌شود.
@@ -685,14 +686,14 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                 )}
                 {editorSec === "media" && (
                   <div>
-                    <div className="grid grid-cols-4 gap-2.5">
-                      {[IMG.shirtsColor, IMG.shirtRack, IMG.greenShirt, IMG.whiteShirts].map((im, i) => (
-                        <div key={i} className="relative overflow-hidden rounded-[12px] border border-[var(--kv-line)]"><img src={im} alt="" className="aspect-square w-full object-cover" />{i === 0 && <span className="absolute bottom-1.5 right-1.5 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}</div>
-                      ))}
-                    </div>
-                    <button onClick={() => flash("تصاویر انتخاب شد")} className="mt-3 flex w-full flex-col items-center gap-2 rounded-[14px] border border-dashed border-[var(--kv-line-strong)] py-8 text-[13px] font-semibold text-[var(--kv-muted)] hover:border-[var(--kv-accent)] hover:text-[var(--kv-accent)]">
-                      <Upload size={20} />آپلود تصاویر جدید <span className="text-xs font-normal">JPG یا PNG تا ۵ مگابایت</span>
-                    </button>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{productImages.map((image) => <div key={image.fileId}><img src={image.previewUrl} alt="تصویر محصول" className="aspect-square w-full rounded-lg object-cover" /><Btn size="sm" variant="ghost" onClick={() => setProductImages((cur) => cur.filter((i) => i.fileId !== image.fileId))}>حذف تصویر</Btn></div>)}</div>
+                    <Field label="افزودن تصاویر محصول" hint="تصاویر به‌صورت واقعی روی سرور ذخیره می‌شوند."><input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={mediaBusy} onChange={async (event) => {
+                      const files = Array.from(event.target.files ?? []); setMediaBusy(true);
+                      try { for (const file of files) { if (file.size > 5 * 1024 * 1024) throw new Error("حداکثر حجم هر تصویر ۵ مگابایت است."); const uploaded = await filesApi.upload(file); setProductImages((cur) => [...cur, { fileId: uploaded.id, url: `/api/v1/product-media/${uploaded.id}`, previewUrl: URL.createObjectURL(file) }]); } }
+                      catch (error) { flash(error instanceof Error ? error.message : "بارگذاری تصویر انجام نشد."); }
+                      finally { setMediaBusy(false); }
+                    }} /></Field>
+                    {mediaBusy && <p role="status">در حال بارگذاری تصاویر…</p>}
                   </div>
                 )}
                 {editorSec === "variant" && (
@@ -708,17 +709,16 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
                   </div>
                 )}
                 {editorSec === "series" && (
-                  <SeriesTemplatePicker ownerId={ME.id} category={form.category} value={draftSeries} onChange={setDraftSeries} colors={draftColorIds.map((id) => COLORS[id]).filter(Boolean)} onManage={() => setTab("templates")} productTypeId={form.productTypeId || undefined} />
+                  <ProductSeriesEditor colors={draftColorIds.map((id) => COLORS[id]).filter(Boolean)} sizes={seriesSizes} value={draftSeries} onChange={setDraftSeries} />
                 )}
                 {editorSec === "stock" && (
                   <div className="space-y-4">
-                    <Field label="موجودی اولیه (تکه)" hint="برای سفارش حداقلِ یک سری فعال باید کافی باشد."><Input value={form.stock} onChange={(v) => setForm({ ...form, stock: v.replace(/[^0-9]/g, "") })} placeholder="۲۴۰" /></Field>
                     {offeredDraft.length > 0 && <p className="text-[12px] text-[var(--kv-muted)]">کمترین تعداد لازم برای حداقل سفارش: {fmtNum(Math.min(...offeredDraft.map((s) => s.pieces * s.moqSeries)))} تکه</p>}
                   </div>
                 )}
                 {editorSec === "review" && (
                   <div className="space-y-3 text-[13px]">
-                    {[["نام و دسته‌بندی", !!form.name.trim()], ["دست‌کم یک رنگ", draftColorIds.length > 0], ["سری قابل سفارش با قیمت و MOQ", offeredDraft.length > 0], ["موجودی کافی", offeredDraft.length > 0 && Number(form.stock) >= Math.min(...offeredDraft.map((s) => s.pieces * s.moqSeries))]].map(([t2, ok]) => (
+                    {[["نام و دسته‌بندی", !!form.name.trim()], ["دست‌کم یک رنگ", draftColorIds.length > 0], ["سری قابل سفارش با قیمت و MOQ", offeredDraft.length > 0]].map(([t2, ok]) => (
                       <p key={t2 as string} className="flex items-center gap-2"><span className={cn("flex h-6 w-6 items-center justify-center rounded-full", ok ? "bg-[#E7F0E6] text-[#3E6B4A]" : "bg-[#F6EBD3] text-[#8A6420]")}>{ok ? <Check size={13} /> : <AlertTriangle size={13} />}</span>{t2 as string}</p>
                     ))}
                     <p className="text-[12px] text-[var(--kv-muted)]">{fmtNum(draftSeries.length)} سری تعریف شده · قیمت پایه: {offeredDraft.length ? fmtMoney(Math.min(...offeredDraft.map((s) => s.pricePerSeries))) : "—"}</p>
@@ -802,7 +802,7 @@ function SupplierWorkspace({ dark, setDark, onLogout }: { dark: boolean; setDark
 
           {tab === "finance" && <div className="animate-[fadeUp_0.35s_ease]"><SupplierWallet supplierId={ME.id} supplierName={ME.name} noWithdraw={restrict.noWithdraw} onBank={() => setTab("bank")} /></div>}
           {tab === "bank" && <div className="animate-[fadeUp_0.35s_ease]"><SupplierBankForm supplierId={ME.id} /></div>}
-          {tab === "templates" && <div className="animate-[fadeUp_0.35s_ease]"><SeriesTemplateManager ownerId={ME.id} ownerLabel={ME.name} readOnly={restrict.noPublish} /></div>}
+          {tab === "templates" && <div className="animate-[fadeUp_0.35s_ease]"><CanonicalSeriesLibrary /></div>}
           {tab === "support" && <div className="animate-[fadeUp_0.35s_ease]"><TicketCenter perspective="owner" ownerId={ME.id} ownerName={ME.name} ownerType="supplier" /></div>}
           {(restrict.noPublish || restrict.noWithdraw) && tab === "dashboard" && <div role="alert" className="mt-4 rounded-[14px] border border-[var(--kv-danger)]/30 bg-[var(--kv-danger)]/[0.06] p-4 text-[13px] leading-7"><b>محدودیت فعال روی حساب:</b> {[restrict.noPublish && "انتشار و ویرایش محصول", restrict.noWithdraw && "برداشت از کیف پول"].filter(Boolean).join("، ")} · {restrict.reason}</div>}
           {tab === "finance-legacy" && (

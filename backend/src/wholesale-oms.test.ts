@@ -128,6 +128,43 @@ async function payIntent(pool: Pool, intentId: string, amountRial: string) {
 
 /* ------------------------------------------------------------------ */
 
+test('series price is canonical: total price, component sum, exact rial allocation and historical order snapshot', { skip: !enabled }, async () => {
+  const app = await buildApp(config); const pool = createPool(config);
+  try {
+    const admin = await makeUser(pool, ['admin'], 'مدیر قیمت سری');
+    const headers = await login(app, admin.email);
+    const buyer = await makeVipBuyer(pool, 'خریدار قیمت سری');
+    const buyerHeaders = await login(app, buyer.email);
+    const world = await makeSeriesProduct(pool, `سری قیمت ${randomUUID().slice(0,8)}`, null);
+    const warehouse = await makeWholesaleWarehouse(pool, 'انبار قیمت سری');
+    await seedSeriesStock(pool, world.tplId, world.variantIds, warehouse, { ownerType: 'kolbe', supplierId: null }, 10);
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/series-templates/${world.tplId}`, headers,
+      payload: { pricingMode: 'series_total', totalPriceRial: '10000001', minOrderSeries: 1 } });
+    assert.equal(updated.statusCode, 200, updated.body);
+    const detail = await app.inject({ method: 'GET', url: `/api/v1/series-templates/${world.tplId}`, headers });
+    assert.equal(detail.json().pricePerSeriesRial, '10000001');
+    const order = await createMaster(app, buyerHeaders, [{ seriesTemplateId: world.tplId, count: 3 }]);
+    assert.equal(order.children[0]!.totalRial, '30000003');
+    const before = await pool.query('SELECT commercial_snapshot FROM child_order_lines WHERE master_order_id=$1', [order.id]);
+    assert.equal(before.rows[0].commercial_snapshot.unitSeriesPriceRial, '10000001');
+    const changed = await app.inject({ method: 'PATCH', url: `/api/v1/series-templates/${world.tplId}`, headers,
+      payload: { totalPriceRial: '20000000' } });
+    assert.equal(changed.statusCode, 200, changed.body);
+    const after = await pool.query('SELECT commercial_snapshot FROM child_order_lines WHERE master_order_id=$1', [order.id]);
+    assert.deepEqual(after.rows, before.rows);
+    const compositionChange = await app.inject({ method: 'PATCH', url: `/api/v1/series-templates/${world.tplId}`, headers,
+      payload: { items: world.variantIds.map((variantId) => ({ variantId, quantityPerSeries: 2 })) } });
+    assert.equal(compositionChange.statusCode, 409, compositionChange.body);
+    const componentTemplate = await app.inject({ method: 'POST', url: '/api/v1/series-templates', headers, payload: {
+      productId: world.productId, name: 'سری جمع اجزا', pricingMode: 'component_sum',
+      items: world.variantIds.map((variantId, index) => ({ variantId, quantityPerSeries: 2, unitPriceRial: index ? '3000000' : '2000000' })),
+    } });
+    assert.equal(componentTemplate.statusCode, 201, componentTemplate.body);
+    const sum = await app.inject({ method: 'GET', url: `/api/v1/series-templates/${componentTemplate.json().id}`, headers });
+    assert.equal(sum.json().pricePerSeriesRial, '10000000');
+  } finally { await pool.end(); await app.close(); }
+});
+
 test('VIP-2048 reference scenario: 1 master / 3 children, per-source eligibility, payment gate, batch pay (§165-§167, §57)', { skip: !enabled }, async () => {
   const app = await buildApp(config); const pool = createPool(config);
   try {

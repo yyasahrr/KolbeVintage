@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronLeft, Layers, PackageOpen, History } from "lucide-react";
-import { Btn, Card, Drawer, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Select, Textarea } from "./primitives";
+import { Btn, Card, WorkspaceModal, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Select, Textarea } from "./primitives";
 import { retailSuppliesApi, seriesInventoryApi, type SeriesStockRow } from "../data/api";
 import { formatPersianDateTimeFull } from "../data/persian-date";
 import { cn } from "../utils/cn";
@@ -274,6 +274,7 @@ export function SupplyWizard({ preset, flash, onClose, onDone }: {
   const [destWhId, setDestWhId] = useState("");
   const [count, setCount] = useState("");
   const [note, setNote] = useState("");
+  const [submissionKey] = useState(() => newKey("sup"));
   const [doneRef, setDoneRef] = useState<string | null>(null);
 
   useEffect(() => {
@@ -324,7 +325,7 @@ export function SupplyWizard({ preset, flash, onClose, onDone }: {
     try {
       const res = await retailSuppliesApi.create({
         seriesTemplateId: templateId, sourceWarehouseId: chosen.warehouse_id!, destinationWarehouseId: destWhId,
-        seriesCount: countNum, ...(note.trim() ? { note: note.trim() } : {}), idempotencyKey: newKey("sup"),
+        seriesCount: countNum, ...(note.trim() ? { note: note.trim() } : {}), idempotencyKey: submissionKey,
       });
       setDoneRef(res.reference);
       flash(`سند ${res.reference} ثبت شد و ${fa(countNum)} سری رزرو شد. ارسال و دریافت از «نقل‌وانتقالات» انجام می‌شود.`);
@@ -334,7 +335,7 @@ export function SupplyWizard({ preset, flash, onClose, onDone }: {
   };
 
   return (
-    <Modal open onClose={onClose} max="max-w-[680px]" title="تأمین خرده از عمده">
+    <WorkspaceModal open onClose={onClose} title="تأمین خرده از عمده">
       <h3 className="mb-1 flex items-center gap-1.5 text-[15px] font-extrabold"><PackageOpen size={16} />تأمین خرده از عمده</h3>
       <p className="mb-3 text-[12px] leading-6 text-[var(--kv-muted)]">
         باز کردن سری کامل از انبار مرکزی عمده و انتقال همهٔ عددهای آن به انبار خرده‌فروشی. انتخاب از سطح محصول شروع می‌شود؛ چیدن تکی تنوع‌ها از عمده ممکن نیست.
@@ -455,7 +456,7 @@ export function SupplyWizard({ preset, flash, onClose, onDone }: {
           </div>
         </div>
       )}
-    </Modal>
+    </WorkspaceModal>
   );
 }
 
@@ -466,7 +467,7 @@ function SeriesHistoryDrawer({ row, onClose }: { row: SeriesStockRow; onClose: (
       .then((res) => setItems(res.items)).catch(() => setItems([]));
   }, [row.series_template_id]);
   return (
-    <Drawer open onClose={onClose} title={`تاریخچه سری — ${row.product_name}`} wide>
+    <WorkspaceModal open onClose={onClose} title={`تاریخچه سری — ${row.product_name}`}>
       <div className="p-5">
         {items === null ? <LoadingState /> : items.length === 0 ? (
           <Empty title="حرکتی ثبت نشده" desc="رزرو، شمارش، باز کردن سری و دریافت‌ها اینجا ثبت می‌شوند." />
@@ -485,7 +486,7 @@ function SeriesHistoryDrawer({ row, onClose }: { row: SeriesStockRow; onClose: (
           </ol>
         )}
       </div>
-    </Drawer>
+    </WorkspaceModal>
   );
 }
 
@@ -584,7 +585,7 @@ function SupplyTimelineDrawer({ id, onClose }: { id: string; onClose: () => void
     retailSuppliesApi.detail(id).then(setDetail).catch((e) => setError(e instanceof Error ? e.message : "خطا"));
   }, [id]);
   return (
-    <Drawer open onClose={onClose} title={`تایم‌لاین سند ${detail?.reference ?? ""}`} wide>
+    <WorkspaceModal open onClose={onClose} title={`تایم‌لاین سند ${detail?.reference ?? ""}`}>
       <div className="space-y-4 p-5">
         {error ? <ErrorState message={error} onRetry={() => undefined} /> : detail === null ? <LoadingState /> : (<>
           <Card className="p-4 text-[12.5px] leading-7">
@@ -611,6 +612,6 @@ function SupplyTimelineDrawer({ id, onClose }: { id: string; onClose: () => void
           </ol>
         </>)}
       </div>
-    </Drawer>
+    </WorkspaceModal>
   );
 }

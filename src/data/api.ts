@@ -336,6 +336,7 @@ export const inventoryApi = {
     return authFetch<{ on_hand: number; reserved: number; incoming: number; damaged: number; available: number; variants: number; low_stock_lines: number; out_of_stock_lines: number }>(`/inventory/summary?${q.toString()}`);
   },
   movements: (variantId: string) => authFetch<{ items: unknown[] }>(`/inventory/movements?variantId=${variantId}`),
+  productMovements: (productId: string) => authFetch<{ items: Record<string, unknown>[] }>(`/inventory/movements?productId=${productId}`),
   adjust: (payload: { variantId: string; warehouseId: string; delta: number; reason: string; reference: string; inventoryDomain?: "retail" | "wholesale" }, idempotencyKey: string) =>
     authFetch<unknown>("/inventory/adjustments", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
   damaged: (payload: { variantId: string; warehouseId: string; quantity: number; reason: string }) =>
@@ -1675,10 +1676,10 @@ export const seriesTemplatesApi = {
   vipList: (productId: string) => authFetch<{ items: {
     id: string; product_id: string; name: string; active: boolean;
     pairs_per_series: number; price_per_series_rial: string | null; moq_series: number; available_series: number;
-    items: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null }[];
+    items: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null; unit_price_rial?: string | null }[];
   }[] }>(`/series-templates?productId=${productId}&withAvailability=1`),
   detail: (id: string) => authFetch<Record<string, unknown> & {
-    items: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null }[];
+    items: { variant_id: string; quantity_per_series: number; sku: string; color_label: string | null; size_label: string | null; unit_price_rial?: string | null }[];
     pairsPerSeries: number; availableSeries: number; name: string; productName: string; productId: string;
     pricePerSeriesRial: string | null; moqSeries: number; active: boolean;
   }>(`/series-templates/${id}`),

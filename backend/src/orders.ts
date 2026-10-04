@@ -16,7 +16,7 @@ import { postSupplierEarnings } from './wallet.js';
 import { recordRedemption, resolveCouponDiscount, resolveFestivalDiscount, type DiscountContext } from './coupons.js';
 import { quoteShipping } from './shipping.js';
 import { resolveVariantPrice, type ResolvedVariantPrice } from './promotions.js';
-import { loadSeriesComposition } from './series.js';
+import { allocateSeriesPrice, loadSeriesComposition } from './series.js';
 import { applySeriesMovement, buildRecipeSnapshot } from './series-inventory.js';
 import { earnCashbackOnPaid, quoteRedemption, redeemCashback, restoreRedeemedCashback, reverseCashbackForOrder, scheduleCashbackRelease } from './cashback.js';
 
@@ -291,11 +291,13 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     const key = request.headers['idempotency-key'];
     if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');
 
+    const seriesUnitPrices = new Map<object, string>();
     // K: expand series recipes (relational source of truth) into variant lines.
     let seriesSnapshot: Array<Record<string, unknown>> | null = null;
     if (body.series?.length) {
       if (body.orderType !== 'wholesale') throw badRequest('سفارش بر مبنای سری فقط برای معاملات عمده مجاز است.');
       const merged = new Map<string, number>(body.items.map((item) => [item.variantId, item.quantity]));
+      const pricedSeriesItems: typeof body.items = [];
       seriesSnapshot = [];
       for (const entry of body.series) {
         const composition = await loadSeriesComposition(pool, entry.seriesTemplateId);
@@ -310,11 +312,16 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
             variantId: item.variant_id, sku: item.sku, quantityPerSeries: item.quantity_per_series,
           })),
         });
-        for (const item of composition.items) {
+        for (const item of allocateSeriesPrice(composition.items, composition.template.pricing_mode, composition.template.total_price_rial)) {
+          if (item.basePriceRial !== null) {
+            const line = { variantId: item.variant_id, quantity: item.quantity_per_series * entry.count };
+            pricedSeriesItems.push(line); seriesUnitPrices.set(line, item.basePriceRial);
+            continue;
+          }
           merged.set(item.variant_id, (merged.get(item.variant_id) ?? 0) + item.quantity_per_series * entry.count);
         }
       }
-      body.items = [...merged.entries()].map(([variantId, quantity]) => ({ variantId, quantity }));
+      body.items = [...merged.entries()].map(([variantId, quantity]) => ({ variantId, quantity })).concat(pricedSeriesItems);
     }
     if (body.items.length === 0) throw badRequest('سفارش باید حداقل یک قلم یا یک سری داشته باشد.');
 
@@ -337,7 +344,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
       const row = priced.rows.find((candidate) => candidate.id === item.variantId);
       if (!row?.supplier_id) continue;
       // Req 25 (Agent 2): a variant-level override replaces the product cash price for retail.
-      const unit = rial((body.orderType === 'wholesale' ? row.wholesale_price_rial : row.price_override_rial ?? row.cash_price_rial) ?? '0');
+      const unit = rial(seriesUnitPrices.get(item) ?? (body.orderType === 'wholesale' ? row.wholesale_price_rial : row.price_override_rial ?? row.cash_price_rial) ?? '0');
       incomingBySupplier.set(row.supplier_id, (incomingBySupplier.get(row.supplier_id) ?? 0n) + unit * BigInt(item.quantity));
     }
     for (const [supplierId, incoming] of incomingBySupplier) {
@@ -441,10 +448,11 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         const resolvedPrice = await resolveVariantPrice(client, item.variantId, {
           orderType: body.orderType,
           paymentMode: body.paymentMode,
+          ...(seriesUnitPrices.has(item) ? { basePriceRial: seriesUnitPrices.get(item)! } : {}),
         });
 
         const basePrice = rial(resolvedPrice.basePrice);
-        if (basePrice === 0n) throw badRequest(`قیمت فروش برای SKU ${variant.sku} معتبر نیست.`);
+        if (basePrice === 0n && !seriesUnitPrices.has(item)) throw badRequest(`قیمت فروش برای SKU ${variant.sku} معتبر نیست.`);
         const unitDiscount = rial(resolvedPrice.discountAmount);
         const finalUnitPrice = rial(resolvedPrice.finalPrice);
 

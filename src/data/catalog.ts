@@ -2,6 +2,8 @@
 
 export type Colorway = { id: string; name: string; hex: string };
 export type SeriesDef = {
+  pricingMode?: "series_total" | "component_sum";
+  componentPrices?: Record<string, number>;
   id: string;
   name: string;
   pieces: number;

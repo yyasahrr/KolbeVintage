@@ -246,9 +246,17 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     if (receivedNow) step(`موجودی اولیه ${receivedNow} واریانت «${definition.name}» از طریق WMS ثبت شد.`);
   }
 
+  let wholesaleWarehouse = await pool.query("SELECT id FROM warehouses WHERE code='SEED-WHOLESALE'");
+  if (!wholesaleWarehouse.rows[0]) {
+    const created = await call(app, 'POST', '/api/v1/warehouses', { token: adminToken, payload: { code: 'SEED-WHOLESALE', name: 'انبار مرکزی عمده نمونه' } });
+    if (created.status !== 201) throw new Error(`wholesale warehouse: ${JSON.stringify(created)}`);
+    const purpose = await call(app, 'PATCH', `/api/v1/warehouses/${created.body.id}/purpose`, { token: adminToken, payload: { purpose: 'wholesale' } });
+    if (purpose.status !== 200) throw new Error(`wholesale purpose: ${JSON.stringify(purpose)}`);
+    wholesaleWarehouse = { rows: [{ id: created.body.id }] } as typeof wholesaleWarehouse;
+  }
   for (const entry of [
-    { account: supplier, name: 'پیراهن لینن نیلگون', brand: 'نیلگون', image: demoProducts[3].images[0], color: 'شیری', price: '24500000' },
-    { account: secondSupplier, name: 'بلیزر فراسو', brand: 'فراسو', image: demoProducts[6].images[0], color: 'شنی', price: '58400000' },
+    { account: supplier, mode: 'order_driven', name: 'پیراهن لینن نیلگون', brand: 'نیلگون', image: demoProducts[3].images[0], color: 'شیری', price: '24500000' },
+    { account: secondSupplier, mode: 'stock_at_kolbe', name: 'بلیزر فراسو', brand: 'فراسو', image: demoProducts[6].images[0], color: 'شنی', price: '58400000' },
   ]) {
     let row = await pool.query('SELECT id FROM products WHERE supplier_id=$1 AND name=$2', [entry.account.id, entry.name]);
     if (!row.rows[0]) {
@@ -258,7 +266,7 @@ async function seed(app: FastifyInstance, pool: DbPool) {
         cashPriceRial: entry.price, wholesalePriceRial: String(Math.floor(Number(entry.price) * 0.76)),
         variants: ['M', 'L', 'XL'].map((size) => ({ size, color: entry.color, attributes: {} })),
         gender: entry.name.includes('بلیزر') ? 'men' : 'women',
-        seasons: ['spring', 'autumn'], vibes: ['classic'],
+        seasons: ['spring', 'autumn'], vibes: [],
         wholesaleEnabled: true, retailEnabled: false, wholesaleMoq: 3,
         metadata: { images: [{ url: entry.image }], fabric: 'لینن و پنبه', source: 'seed:local' },
       } });
@@ -271,15 +279,50 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     });
     if (published.status !== 200) throw new Error(`supplier publish ${entry.name}: ${published.status} ${JSON.stringify(published.body)}`);
     const variants = await pool.query('SELECT id,sku FROM product_variants WHERE product_id=$1 AND active', [row.rows[0].id]);
-    for (const variant of variants.rows) {
-      const balance = await pool.query('SELECT on_hand FROM stock_balances WHERE variant_id=$1 AND warehouse_id=$2', [variant.id, mainWarehouse.id]);
-      if (Number(balance.rows[0]?.on_hand ?? 0) > 0) continue;
-      const receipt = await call(app, 'POST', '/api/v1/inventory/receipts', { token: adminToken,
-        key: `seed-receipt-${variant.sku}`, payload: { warehouseId: mainWarehouse.id, variantId: variant.id, quantity: 12, reference: `SEED-${variant.sku}` } });
-      if (receipt.status !== 201) throw new Error(`supplier stock ${variant.sku}: ${receipt.status} ${JSON.stringify(receipt.body)}`);
-      const received = await call(app, 'POST', `/api/v1/inventory/receipts/${receipt.body.id}/receive`, { token: adminToken });
-      if (received.status !== 200) throw new Error(`supplier receive ${variant.sku}: ${received.status} ${JSON.stringify(received.body)}`);
+    let template = await pool.query("SELECT id FROM series_templates WHERE product_id=$1 AND name='سری نمونه کارگاه'", [row.rows[0].id]);
+    const seriesPrice = String(BigInt(entry.price) * 76n / 100n * 6n);
+    if (!template.rows[0]) {
+      const created = await call(app, 'POST', '/api/v1/series-templates', { token: entry.account.token, payload: {
+        productId: row.rows[0].id, name: 'سری نمونه کارگاه', pricingMode: 'series_total', totalPriceRial: seriesPrice, minOrderSeries: 1,
+        items: variants.rows.map((v) => ({ variantId: v.id, quantityPerSeries: 2 })),
+      } });
+      if (created.status !== 201) throw new Error(`supplier series: ${JSON.stringify(created)}`);
+      template = { rows: [{ id: created.body.id }] } as typeof template;
     }
+    const offer = await call(app, 'POST', '/api/v1/supplier/offers', { token: entry.account.token, payload: {
+      productId: row.rows[0].id, seriesTemplateId: template.rows[0].id, colorLabel: entry.color,
+      fulfillmentMode: entry.mode, wholesalePriceRial: seriesPrice, minOrderSeries: 1, maxOrderSeries: 20, safetyBuffer: 0, leadTimeDays: 3,
+    } });
+    if (offer.status !== 201 && offer.status !== 200) throw new Error(`supplier offer: ${JSON.stringify(offer)}`);
+    if (entry.mode === 'order_driven') {
+      const capacity = await call(app, 'POST', `/api/v1/supplier/offers/${offer.body.id}/capacity`, { token: entry.account.token, payload: { declaredCapacity: 20 } });
+      if (capacity.status !== 200) throw new Error(`supplier capacity: ${JSON.stringify(capacity)}`);
+      // Availability is a claim, never a receipt or a physical stock balance.
+    } else {
+      const key = `seed-consignment-${template.rows[0].id}`;
+      let inbound = await pool.query('SELECT id,status FROM supplier_series_inbounds WHERE idempotency_key=$1', [key]);
+      if (!inbound.rows[0]) {
+        const created = await call(app, 'POST', '/api/v1/supplier/inbounds', { token: entry.account.token, payload: {
+          productId: row.rows[0].id, seriesTemplateId: template.rows[0].id, expectedSeries: 12, idempotencyKey: key,
+        } });
+        if (created.status !== 201) throw new Error(`seed inbound: ${JSON.stringify(created)}`);
+        inbound = { rows: [{ id: created.body.id, status: 'requested' }] } as typeof inbound;
+      }
+      const id = inbound.rows[0].id;
+      const stages = [
+        { before: 'requested', after: 'approved', token: adminToken, url: `/api/v1/admin/supplier-inbounds/${id}/review`, payload: { decision: 'approve', warehouseId: wholesaleWarehouse.rows[0].id } },
+        { before: 'approved', after: 'dispatched', token: entry.account.token, url: `/api/v1/supplier/inbounds/${id}/dispatch`, payload: {} },
+        { before: 'dispatched', after: 'received', token: adminToken, url: `/api/v1/admin/supplier-inbounds/${id}/receive`, payload: { receivedSeries: 12 } },
+        { before: 'received', after: 'qc_completed', token: adminToken, url: `/api/v1/admin/supplier-inbounds/${id}/qc`, payload: { passedSeries: 12, rejectedSeries: 0 } },
+      ];
+      let current = inbound.rows[0].status;
+      for (const stage of stages) if (current === stage.before) {
+        const result = await call(app, 'POST', stage.url, { token: stage.token, payload: stage.payload });
+        if (result.status !== 200) throw new Error(`seed consignment ${stage.before}: ${JSON.stringify(result)}`);
+        current = stage.after;
+      }
+    }
+    step(`سری و پیشنهاد واقعی ${entry.brand}: ${entry.mode === 'order_driven' ? 'ظرفیت اعلامی بدون موجودی فیزیکی' : 'موجودی امانی پس از دریافت و کنترل کیفیت در کلبه'}.`);
   }
 
   /* ------------------------------- membership ----------------------------- */

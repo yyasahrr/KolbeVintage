@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BadgePercent, PartyPopper, RefreshCw, Trash2 } from "lucide-react";
-import { Btn, Checkbox, Drawer, Field, Input, LoadingState, Segmented, Select } from "./primitives";
+import { Btn, Checkbox, WorkspaceModal, Field, Input, LoadingState, Segmented, Select } from "./primitives";
 import { productsApi, promotionRulesApi } from "../data/api";
 import { cn } from "../utils/cn";
 
@@ -210,7 +210,7 @@ export function DiscountManager({ productId, productName, productImage, sku, onC
   };
 
   return (
-    <Drawer open onClose={onClose} title="تخفیف و جشنواره" wide>
+    <WorkspaceModal open onClose={onClose} title="تخفیف و جشنواره">
       {loading ? <LoadingState /> : (
         <div className="space-y-4 pb-6">
           {/* product header */}
@@ -386,6 +386,6 @@ export function DiscountManager({ productId, productName, productImage, sku, onC
           </div>
         </div>
       )}
-    </Drawer>
+    </WorkspaceModal>
   );
 }

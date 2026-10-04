@@ -416,7 +416,7 @@ export function buildProductCreatePayload(draft: ProductStudioDraft): ProductCre
 
   const offered = (draft.series ?? []).filter((series) => series.available && series.pricePerSeries > 0);
   const wholesaleRial = draft.wholesaleOn && offered.length
-    ? rialFromToman(Math.min(...offered.map((series) => series.pricePerSeries)))
+      ? rialFromToman(Math.min(...offered.map((series) => series.pricePerSeries)))
     : undefined;
   const cashRial = draft.retailOn ? rialFromToman(draft.cashToman) : "0";
   const installmentRial = draft.retailOn
