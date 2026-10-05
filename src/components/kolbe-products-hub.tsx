@@ -14,14 +14,14 @@
  *  Reused canonical surfaces: ProductStudio (create/edit), Product360 (read),
  *  DiscountManager/ProductPricingWorkspace (pricing), InitialInventoryWorkspace (WMS).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgePercent, Boxes, PackagePlus, PartyPopper, Pencil, Plus, RefreshCw, ScanEye, Warehouse,
 } from "lucide-react";
 import {
   Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, SafeImg, SearchBox, Segmented, WorkspaceModal,
 } from "./primitives";
-import { DiscountManager } from "./discount-manager";
+import { ProductPricingWorkspace } from "./discount-manager";
 import { Product360 } from "./product-360";
 import { InitialInventoryWorkspace } from "./initial-inventory-workspace";
 import { ProductStudio } from "../portals/admin-product";
@@ -68,15 +68,30 @@ const StockCell = ({ pending, value, unit }: { pending: boolean; value: number; 
 type Screen =
   | { k: "list" }
   | { k: "studio" }
-  | { k: "pricing"; row: AdminProductRow }
+  /** §1/§16 (browser-UAT delta): the canonical pricing workspace is a FULL PAGE here — never a
+   *  modal. `from` decides where «بازگشت» lands: the list, or the same draft in the Studio. */
+  | { k: "pricing"; row: AdminProductRow; from: "list" | "studio"; anchor?: "discount" | "festival" }
   /** §12/§16: canonical initial receipt (interrupted or fresh «ذخیره و ادامه»). */
   | { k: "inventory"; row: AdminProductRow }
   /** §24: ongoing WMS operations for a product whose initial inventory is already done. */
   | { k: "wms"; row: AdminProductRow }
   | { k: "view360"; row: AdminProductRow };
 
-export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
+/** The canonical pricing route lives in the hash so a refresh/reopen keeps the workspace. */
+const PRICING_HASH = "#/admin/products/pricing/";
+const rowFromDetail = (detail: Record<string, unknown>, id: string, fallbackName = ""): AdminProductRow => ({
+  id, name: String(detail.name ?? fallbackName),
+  retail_enabled: detail.retail_enabled !== false, wholesale_enabled: detail.wholesale_enabled !== false,
+  owner_type: String(detail.owner_type ?? "kolbe"), sku: null, category: String(detail.category ?? ""),
+} as AdminProductRow);
+
+export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo, initialPricingProductId }: {
   flash: F; initialView?: ProductCenterView; onOpenWms?: () => void;
+  /** §2/§17: the canonical Promotion Center is a different tab — the pricing workspace links to it
+   *  WITH the product context so the two surfaces stay one authority, never two views. */
+  onOpenPromo?: (focus: { productId: string; productName: string; anchor?: "discount" | "festival" }) => void;
+  /** §16: `#/admin/products/pricing/<id>` deep-link (refresh-safe). */
+  initialPricingProductId?: string | null;
 }) {
   const [view, setView] = useState<ProductCenterView>(initialView ?? "all");
   useEffect(() => { if (initialView) setView(initialView); }, [initialView]);
@@ -111,6 +126,33 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
 
   const openStudio = () => { setResumeProductId(null); setScreen({ k: "studio" }); };
   const resumeDraft = (id: string) => { setResumeProductId(id); setScreen({ k: "studio" }); };
+  /** §16: the hub keeps its view/search/filters/scroll and returns to exactly this state. */
+  const listScroll = useRef(0);
+  const [pendingPricingId, setPendingPricingId] = useState<string | null>(initialPricingProductId ?? null);
+
+  const openPricing = (row: AdminProductRow, opts?: { from?: "list" | "studio"; anchor?: "discount" | "festival" }) => {
+    if (!opts?.from || opts.from === "list") listScroll.current = window.scrollY;
+    const next = { k: "pricing" as const, row, from: opts?.from ?? ("list" as const), ...(opts?.anchor ? { anchor: opts.anchor } : {}) };
+    setScreen(next);
+    if (typeof window !== "undefined") window.location.hash = `${PRICING_HASH}${row.id}`;
+  };
+  const closePricing = (row: AdminProductRow, from: "list" | "studio") => {
+    if (typeof window !== "undefined" && window.location.hash.startsWith(PRICING_HASH)) window.location.hash = "#/admin";
+    if (from === "studio") { resumeDraft(row.id); return; }
+    setScreen({ k: "list" });
+    load();
+    window.requestAnimationFrame(() => window.scrollTo({ top: listScroll.current, behavior: "auto" }));
+  };
+
+  /* §16: a bookmarked/reloaded pricing URL reopens the SAME product in the workspace. */
+  useEffect(() => {
+    if (!pendingPricingId) return;
+    const id = pendingPricingId;
+    setPendingPricingId(null);
+    productsApi.adminDetail(id)
+      .then((detail) => setScreen({ k: "pricing", row: rowFromDetail(detail, id), from: "list" }))
+      .catch(() => flash("محصول موردنظر برای قیمت‌گذاری یافت نشد."));
+  }, [pendingPricingId, flash]);
 
   if (screen.k === "studio") return (
     <div className="space-y-3">
@@ -138,6 +180,16 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
         /** §2/§5: an explicit publish reloads the hub list so the row, the status badge and the
             «منتشرشده» / «پیش‌نویس‌ها» filters all reflect the server in the same click. */
         onPublished={(productId) => { void productsApi.adminDetail(productId); load(); }}
+        /** §3/§17: Draft-first handoff — the Studio persists/reuses ONE draft and this hub opens
+            the canonical full-page pricing workspace for exactly that product. */
+        onOpenPricing={(target, productId) => {
+          productsApi.adminDetail(productId)
+            .then((detail) => openPricing(rowFromDetail(detail, productId), {
+              from: "studio",
+              ...(target === "discount" || target === "festival" ? { anchor: target } : {}),
+            }))
+            .catch(() => flash("محصول ذخیره شد؛ برای قیمت‌گذاری آن را از فهرست «پیش‌نویس‌ها» باز کنید."));
+        }}
       />
     </div>
   );
@@ -161,20 +213,28 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
     />
   );
 
+  /* §1/§16/§18 (browser-UAT delta): the pricing action opens ONE canonical FULL-PAGE workspace
+     (no WorkspaceModal, no modal-over-page flow). Browser Back / «بازگشت به محصول» return to the
+     hub with the previous view, search, filters and scroll position — or to the same draft in the
+     Studio when the workspace was reached during product creation (§3). */
   if (screen.k === "pricing") return (
-    <WorkspaceModal open onClose={() => setScreen({ k: "list" })} title={`مدیریت قیمت‌گذاری — ${screen.row.name}`}>
-      <DiscountManager
-        productId={screen.row.id} productName={screen.row.name} sku={screen.row.sku ?? undefined}
-        onClose={() => setScreen({ k: "list" })} flash={flash}
-      />
-    </WorkspaceModal>
+    <ProductPricingWorkspace
+      productId={screen.row.id}
+      productName={screen.row.name}
+      sku={screen.row.sku ?? undefined}
+      anchor={screen.anchor}
+      backLabel={screen.from === "studio" ? "بازگشت به پیش‌نویس در حال تکمیل" : "بازگشت به محصولات کلبه"}
+      onClose={() => closePricing(screen.row, screen.from)}
+      onOpenPromotionCenter={(anchor) => onOpenPromo?.({ productId: screen.row.id, productName: screen.row.name, ...(anchor ? { anchor } : {}) })}
+      flash={flash}
+    />
   );
 
   if (screen.k === "view360") return (
     <Product360
       product={screen.row}
       onClose={() => setScreen({ k: "list" })}
-      onPricing={() => setScreen({ k: "pricing", row: screen.row })}
+      onPricing={() => openPricing(screen.row, { from: "list" })}
     />
   );
 
@@ -270,7 +330,7 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
                           )}
                           <Btn size="sm" variant="ghost" onClick={() => resumeDraft(p.id)}><Pencil size={13} />ویرایش</Btn>
                           <Btn size="sm" variant="ghost" onClick={() => setScreen({ k: "view360", row: p })}><ScanEye size={13} />۳۶۰°</Btn>
-                          <Btn size="sm" variant="ghost" onClick={() => setScreen({ k: "pricing", row: p })}><BadgePercent size={13} />قیمت‌گذاری</Btn>
+                          <Btn size="sm" variant="ghost" onClick={() => openPricing(p, { from: "list" })}><BadgePercent size={13} />قیمت‌گذاری</Btn>
                           {/* §24: an interrupted draft continues the canonical initial receipt;
                               a completed product opens real WMS operations. */}
                           <Btn size="sm" variant="ghost"
@@ -394,7 +454,7 @@ function ManageInventoryPanel({ product, onClose, onOpenWms }: {
             <table className="kv-table min-w-[760px] w-full text-xs">
               <thead><tr>
                 <th>کد کالا</th><th>رنگ / سایز</th><th>انبار</th><th>دامنه</th>
-                <th>موجودی</th><th>رزرو</th><th>آسیب‌دیده</th><th>قابل فروش</th>
+                <th>موجودی</th><th>رزرو</th><th>آسیب‌دیده</th><th>قابل تخصیص</th>
               </tr></thead>
               <tbody>
                 {rows.map((row) => (

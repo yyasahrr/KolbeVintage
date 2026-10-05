@@ -220,12 +220,24 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     return value || undefined;
   };
 
-  const [tab, setTab] = useState("tower"); // landing = نمای کلی (برج کنترل)
+  /* §16: a refresh/bookmark of the pricing route reopens the SAME product in the workspace. */
+  const [initialPricingProductId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return /^#\/admin\/products\/pricing\/([0-9a-f-]{36})/i.exec(window.location.hash)?.[1] ?? null;
+  });
+  const [tab, setTab] = useState(initialPricingProductId ? "products" : "tower"); // landing = نمای کلی (برج کنترل)
+  /* §2: a discount/festival deep link from the per-product pricing page carries that product into
+     the canonical Promotion Center so the two surfaces are one authority, never two views. */
+  const [promoFocus, setPromoFocus] = useState<{ productId: string; productName: string; anchor?: "discount" | "festival" } | null>(null);
   // deep-link sub-tab inside a hub (legacy redirects like users → crm:customers)
   const [hubSub, setHubSub] = useState<string | null>(null);
   const go = useCallback((next: string) => {
     const target = TAB_REDIRECT[next] ?? next;
     const [hub, sub] = target.split(":");
+    // leaving the pricing workspace clears its deep-link so a later refresh is not surprising
+    if (typeof window !== "undefined" && /^#\/admin\/products\/pricing\//.test(window.location.hash) && hub !== "products") {
+      window.location.hash = "#/admin";
+    }
     setTab(hub!); setHubSub(sub ?? null);
   }, []);
   const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
@@ -289,7 +301,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     rproducts: ["محصولات کلبه", "تعریف، تکمیل و مدیریت محصولات کلبه"],
     products: ["محصولات کلبه", "تعریف، تکمیل و مدیریت محصولات کلبه — پیش‌نویس، انتشار، قیمت‌گذاری و ورود اولیه کالا"],
     shipping: ["حمل‌ونقل", "روش‌های ارسال خرده و عمده"],
-    wms: ["انبار و موجودی (WMS)", "موجودی قابل فروش، رزرو، ورودی و آسیب‌دیده — انتقال و رسید"],
+    wms: ["انبار و موجودی (WMS)", "موجودی فیزیکی، قابل تخصیص، رزرو، ورودی و آسیب‌دیده — انتقال و رسید"],
     crm: ["مدیریت ارتباط با مشتری", "بخش‌بندی، پروفایل ۳۶۰ و کمپین"],
     cms: ["مدیریت محتوا", "صفحات، بنرها و مجله"],
     seo: ["مرکز SEO", "متادیتا، ساختار سایت، ریدایرکت و ممیزی فنی"],
@@ -471,7 +483,12 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {/* §3: «محصولات کلبه» is the canonical Product management entry; Product Studio
               remains the canonical create/edit workspace INSIDE it. */}
           {tab === "products" && moduleBoundary("محصولات کلبه",
-            <KolbeProductsHub flash={flash} initialView={hubSub === "drafts" ? "drafts" : undefined} onOpenWms={() => go("wms")} />)}
+            /* §1/§16 (browser-UAT delta): the canonical full-page pricing workspace lives inside
+               the hub and is deep-linkable as `#/admin/products/pricing/<productId>`. */
+            <KolbeProductsHub flash={flash} initialView={hubSub === "drafts" ? "drafts" : undefined}
+              onOpenWms={() => go("wms")}
+              onOpenPromo={(focus) => { setPromoFocus(focus); go("promo"); }}
+              initialPricingProductId={initialPricingProductId} />)}
           {tab === "wms" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
           {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
           {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
@@ -528,7 +545,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             { v: "sms", label: "پنل پیامک", node: <SmsCenter flash={flash} /> },
           ]} />)}
           {tab === "promo" && moduleBoundary("کوپن و جشنواره", <HubTabs tabs={[
-            { v: "promo", label: "کوپن و جشنواره", node: <PromoPanel /> },
+            { v: "promo", label: "کوپن و جشنواره", node: <PromoPanel focus={promoFocus} /> },
             { v: "safety", label: "ایمنی تخفیف و کوپن شخصی", node: <PromoSafetyPanel flash={flash} /> },
             { v: "server-rules", label: "پروموشن‌های سرور", node: <AdminServerOrders request={request} only="server-promotions" /> },
           ]} />)}

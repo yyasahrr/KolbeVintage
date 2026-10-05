@@ -19,13 +19,14 @@ type Festival = {
 };
 
 /** Coupons and festivals — every visible term is Persian; API values stay English. */
-export function PromoPanel() {
+export type PromoFocus = { productId: string; productName: string; anchor?: "discount" | "festival" };
+export function PromoPanel({ focus }: { focus?: PromoFocus | null } = {}) {
   const [coupons, setCoupons] = useState<Coupon[] | null>(null);
   const [festivals, setFestivals] = useState<Festival[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"coupons" | "festivals">("coupons");
+  const [tab, setTab] = useState<"coupons" | "festivals">(focus?.anchor === "festival" ? "festivals" : "coupons");
   // Percent and fixed amounts are kept in SEPARATE fields: switching the type must never carry a
   // rial amount into the percent box (the old single `value` produced «۱۰۰۰۰۰ درصد» coupons).
   const [newCoupon, setNewCoupon] = useState({
@@ -95,6 +96,13 @@ export function PromoPanel() {
         <Btn variant="soft" size="sm" icon={<RefreshCw size={14} />} onClick={() => void load()}>به‌روزرسانی</Btn>
       </div>
 
+      {/* §2: the pricing workspace deep-links here FOR a specific product — say so explicitly so
+          the operator never wonders which product the discount/festival being edited belongs to. */}
+      {focus && (
+        <p role="status" className="rounded-[12px] border border-[var(--kv-accent)]/40 bg-[var(--kv-accent)]/[0.06] px-4 py-2 text-[12.5px] font-semibold">
+          {focus.anchor === "festival" ? "جشنواره‌های اعمال‌شده بر" : "تخفیف‌های"} محصول «{focus.productName}» از همین‌جا مدیریت می‌شود.
+        </p>
+      )}
       {error && <ErrorState message={error} onRetry={load} />}
       {notice && <p role="status" className="rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-2 text-[12.5px] font-semibold">{notice}</p>}
 
