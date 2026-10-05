@@ -9,6 +9,7 @@ import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } fro
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { validateSpecifications, type SpecField } from './profile.js';
 import { categoryProfileFor, validateCategoryRequirements } from './product-lifecycle.js';
+import { publicationBlocked, publicationReadiness } from './publication.js';
 import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
 import { resolveVariantPrice } from './promotions.js';
 import { productSeriesSchema, saveProductSeries } from './series.js';
@@ -822,6 +823,14 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       await assertSupplierMay(pool, user.id, 'product_publish', { resource: 'product', resourceId: id, ip: request.ip });
       const owned = await one<{ supplier_id: string | null }>(pool, 'SELECT supplier_id FROM products WHERE id = $1', [id]);
       if (!owned || (owned.supplier_id && owned.supplier_id !== user.id)) throw forbidden();
+    }
+    /* §2/§4/§20: EXPLICIT publication runs the canonical catalog validator. It is a pure
+       CATALOG decision — stock quantity and `inventory_setup` are never part of it (§3/§19),
+       so a WMS receipt can never be the thing that publishes, and a sold-out product can
+       legitimately stay published. Failures answer 422 with the exact missing items. */
+    if (status === 'published') {
+      const readiness = await publicationReadiness(pool, id);
+      if (!readiness.publishable) throw publicationBlocked(readiness);
     }
     return transaction(pool, async (client) => {
       const before = await one<{ status: string }>(client, 'SELECT status FROM products WHERE id = $1 FOR UPDATE', [id]);

@@ -412,7 +412,10 @@ test('§34/§19: a published product that sells out stays «منتشرشده» �
     const retailWh = await makeWarehouse(pool, 'retail', 'انبار اتمام');
     const created = await app.inject({ method: 'POST', url: '/api/v1/products', headers,
       payload: { saveIntent: 'continue', name: `اتمام ${randomUUID().slice(0, 6)}`, brand: 'کلبه', category: 'هودی',
-        cashPriceRial: '90000000', variants: [{ color: 'مشکی', size: 'M' }] } });
+        cashPriceRial: '90000000', variants: [{ color: 'مشکی', size: 'M' }],
+        /* §4: publication requires the catalog minimum — an image is one of them, exactly as
+           the Product Studio enforces it (buildProductCreatePayload rejects an imageless product). */
+        metadata: { images: [{ fileId: null, url: 'https://cdn.kolbe.test/sellout.png' }] } } });
     const productId = created.json().id as string;
     const variantId = (created.json().variants as { id: string }[])[0]!.id;
 
