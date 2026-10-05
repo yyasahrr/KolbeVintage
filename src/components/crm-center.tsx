@@ -3,7 +3,7 @@ import { Filter, Plus, RefreshCw, Send, Sparkles, Tags } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
 import { crmIntelApi } from "../data/api";
-import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, Segmented, Select, Status, Textarea } from "./primitives";
+import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, Segmented, Select, Status, Textarea, WorkspaceModal } from "./primitives";
 
 const day = (value: unknown) => (value ? formatPersianDate(String(value)) : "—");
 const stamp = (value: unknown) => (value ? formatPersianDateTime(String(value)) : "—");
@@ -20,6 +20,21 @@ const TABS: { v: Tab; label: string }[] = [
 ];
 
 type Condition = { field: string; op: string; value: string };
+
+const FIELD_FA: Record<string,string> = {
+  order_count:"تعداد خرید", total_spent:"مجموع خرید", average_order:"میانگین مبلغ سفارش", max_order:"بیشترین مبلغ سفارش",
+  days_since_last_order:"روز از آخرین خرید", register_days:"روز از ثبت‌نام", cancelled_orders:"سفارش لغوشده",
+  returns_count:"تعداد مرجوعی", failed_payments:"پرداخت ناموفق", coupons_used:"تعداد کوپن استفاده‌شده",
+  coupons_percent:"درصد خرید با کوپن", membership_status:"وضعیت عضویت", membership_days_left:"روز تا پایان عضویت",
+  plan_code:"پلن عضویت", plan_tier:"سطح پلن", actor_type:"نوع مخاطب", city:"شهر", vip_level:"سطح VIP",
+  category_interest:"علاقه‌مندی دسته‌بندی", color_interest:"علاقه‌مندی رنگ", size_interest:"علاقه‌مندی سایز",
+};
+const OP_FA: Record<string,string> = {
+  "=":"برابر است با", "!=":"برابر نیست با", ">":"بیشتر از", ">=":"بیشتر یا مساوی",
+  "<":"کمتر از", "<=":"کمتر یا مساوی", in:"یکی از", not_in:"هیچ‌کدام از", contains:"شامل می‌شود",
+};
+const KIND_FA: Record<string,string> = { manual:"دستی", behavioral:"رفتاری", dynamic:"پویا" };
+const MATCH_FA: Record<string,string> = { all:"همه شرط‌ها", any:"حداقل یک شرط" };
 
 /** CRM center (items 20-24 and 95-100): labels, server-side rule engine, dynamic
  *  segments, behavioural analytics, timeline and targeted SMS — all server-owned. */
@@ -40,6 +55,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
   const [cap, setCap] = useState({ maxPerWindow: 2, windowDays: 7 });
   type CampaignPreview = Awaited<ReturnType<typeof crmIntelApi.createCampaign>>;
   const [preview, setPreview] = useState<CampaignPreview | null>(null);
+  const [membersOpen, setMembersOpen] = useState<{ title: string; items: Record<string, unknown>[] } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -69,8 +85,8 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
     <div className="space-y-2">
       {conditions.map((condition, index) => (
         <div key={index} className="grid gap-2 sm:grid-cols-[1fr_120px_1fr_auto]">
-          <Select options={fields} value={condition.field} onChange={(v) => setConditions(conditions.map((c, i) => (i === index ? { ...c, field: v } : c)))} />
-          <Select options={operators} value={condition.op} onChange={(v) => setConditions(conditions.map((c, i) => (i === index ? { ...c, op: v } : c)))} />
+          <Select options={fields} labels={FIELD_FA} value={condition.field} onChange={(v) => setConditions(conditions.map((c, i) => (i === index ? { ...c, field: v } : c)))} />
+          <Select options={operators} labels={OP_FA} value={condition.op} onChange={(v) => setConditions(conditions.map((c, i) => (i === index ? { ...c, op: v } : c)))} />
           <Input value={condition.value} onChange={(v) => setConditions(conditions.map((c, i) => (i === index ? { ...c, value: v } : c)))} placeholder="مقدار" />
           <Btn variant="ghost" size="sm" onClick={() => setConditions(conditions.filter((_, i) => i !== index))}>حذف</Btn>
         </div>
@@ -100,7 +116,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
                 <div key={String(label.code)} className="flex items-center justify-between gap-3 rounded-[11px] border border-[var(--kv-line)] px-3 py-2 text-[12.5px]">
                   <span className="flex flex-col">
                     <b>{text(label.title)}</b>
-                    <span className="text-[11px] text-[var(--kv-muted)]">{text(label.code)} · {text(label.kind)}</span>
+                    <span className="text-[11px] text-[var(--kv-muted)]">{KIND_FA[String(label.kind)] ?? "برچسب CRM"}</span>
                   </span>
                   <span className="flex items-center gap-2">
                     {label.is_system ? <Status value="سیستمی" /> : <Status value="سفارشی" />}
@@ -179,15 +195,15 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
             <div className="grid gap-3 md:grid-cols-2">
               {segments.map((segment) => (
                 <div key={String(segment.id)} className="rounded-[13px] border border-[var(--kv-line)] p-3.5">
-                  <p className="text-[13px] font-bold">{text(segment.title)} <span className="text-[11px] text-[var(--kv-muted)]">({text(segment.code)})</span></p>
+                  <p className="text-[13px] font-bold">{text(segment.title)}</p>
                   <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">
-                    {text(segment.kind)} · اعضا {fmtNum(Number(segment.member_count ?? 0))} · آخرین به‌روزرسانی {stamp(segment.last_refreshed_at)}
+                    {KIND_FA[String(segment.kind)] ?? "پویا"} · اعضا {fmtNum(Number(segment.member_count ?? 0))} · آخرین به‌روزرسانی {stamp(segment.last_refreshed_at)}
                   </p>
                   <div className="mt-2 flex gap-2">
                     <Btn variant="soft" size="sm" icon={<RefreshCw size={13} />}
                       onClick={() => void run("به‌روزرسانی سگمنت", () => crmIntelApi.refreshSegment(String(segment.id)))}>به‌روزرسانی</Btn>
                     <Btn variant="ghost" size="sm" onClick={() => void crmIntelApi.segmentMembers(String(segment.id)).then((r) => {
-                      flash(`اعضای سگمنت: ${fmtNum(r.items.length)} نفر`);
+                      setMembersOpen({ title: String(segment.title ?? "اعضای گروه"), items: r.items });
                     }).catch((e) => flash(e instanceof Error ? e.message : "خطا"))}>مشاهده اعضا</Btn>
                   </div>
                 </div>
@@ -216,11 +232,14 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
             <div className="space-y-3">
               <Field label="عنوان"><Input value={campaign.title} onChange={(v) => setCampaign({ ...campaign, title: v })} /></Field>
               <Field label="متن پیام"><Textarea rows={3} value={campaign.message} onChange={(v) => setCampaign({ ...campaign, message: v })} /></Field>
-              <Field label="سگمنت مقصد">
-                <Select options={["", ...segments.map((s) => String(s.id))]} value={campaign.segmentId}
+              <Field label="گروه مقصد">
+                <Select
+                  options={["", ...segments.map((s) => String(s.id))]}
+                  labels={Object.fromEntries([["","انتخاب گروه مشتریان"], ...segments.map((s) => [String(s.id), `${text(s.title, "گروه مشتریان")} — ${fmtNum(Number(s.member_count ?? 0))} نفر`])])}
+                  value={campaign.segmentId}
                   onChange={(v) => setCampaign({ ...campaign, segmentId: v, labelCode: "" })} />
               </Field>
-              <p className="text-[11.5px] text-[var(--kv-muted)]">برای انتخاب سگمنت، شناسه آن را از تب سگمنت‌ها بردارید یا از برچسب استفاده کنید.</p>
+              <p className="text-[11.5px] text-[var(--kv-muted)]">شناسه فنی گروه‌ها پنهان است؛ گروه را با نام و تعداد اعضا انتخاب کنید.</p>
               <Field label="یا برچسب مقصد">
                 <Select options={["", ...labels.map((l) => String(l.code))]} value={campaign.labelCode}
                   onChange={(v) => setCampaign({ ...campaign, labelCode: v, segmentId: "" })} />
@@ -304,6 +323,28 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
         </Card>
       )}
 
+      <WorkspaceModal open={!!membersOpen} onClose={() => setMembersOpen(null)} title={membersOpen ? `اعضای گروه: ${membersOpen.title}` : "اعضای گروه"}>
+        <Card className="p-4">
+          {!membersOpen?.items.length ? <Empty title="عضوی در این گروه نیست" desc="پس از به‌روزرسانی گروه دوباره بررسی کنید." /> : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] text-right text-[12.5px]">
+                <thead><tr className="text-[11px] text-[var(--kv-muted)]">{["مخاطب","موبایل","رفتار","ارزش","آخرین خرید","دلیل عضویت"].map((h)=><th key={h} className="pb-2">{h}</th>)}</tr></thead>
+                <tbody className="divide-y divide-[var(--kv-line)]">
+                  {membersOpen.items.map((row,index)=><tr key={String(row.user_id ?? index)}>
+                    <td className="py-2.5 font-bold">{text(row.display_name ?? row.name,"بدون نام")}</td>
+                    <td className="py-2.5 tabular-nums">{text(row.phone,"ثبت نشده")}</td>
+                    <td className="py-2.5">{text(row.behavior_label ?? row.behavior,"—")}</td>
+                    <td className="py-2.5">{text(row.total_spent_rial ?? row.total_spent,"—")}</td>
+                    <td className="py-2.5">{day(row.last_order_at)}</td>
+                    <td className="py-2.5 text-[11.5px] text-[var(--kv-muted)]">{text(row.match_reason ?? row.reason,"عضویت بر اساس قواعد گروه")}</td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      </WorkspaceModal>
+
       <Modal open={ruleDraft.open} onClose={() => setRuleDraft({ ...ruleDraft, open: false })} title="قاعده برچسب‌گذاری">
         <div className="space-y-3">
           <Field label="کد قاعده"><Input value={ruleDraft.code} onChange={(v) => setRuleDraft({ ...ruleDraft, code: v })} placeholder="loyal-30d" /></Field>
@@ -311,7 +352,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
           <Field label="برچسب هدف"><Select options={labels.map((l) => String(l.code))} value={ruleDraft.labelCode} onChange={(v) => setRuleDraft({ ...ruleDraft, labelCode: v })} /></Field>
           <Field label="شرط‌ها (روی داده واقعی سرور)"><ConditionEditor conditions={ruleDraft.conditions} setConditions={(c) => setRuleDraft({ ...ruleDraft, conditions: c })} /></Field>
           <div className="flex items-center gap-3">
-            <Select options={["all", "any"]} value={ruleDraft.matchMode} onChange={(v) => setRuleDraft({ ...ruleDraft, matchMode: v })} />
+            <Select options={["all", "any"]} labels={MATCH_FA} value={ruleDraft.matchMode} onChange={(v) => setRuleDraft({ ...ruleDraft, matchMode: v })} />
             <label className="flex items-center gap-2 text-[12.5px] font-semibold">
               <input type="checkbox" checked={ruleDraft.requiresApproval} onChange={(e) => setRuleDraft({ ...ruleDraft, requiresApproval: e.target.checked })} className="h-4 w-4 accent-[#C1613B]" />
               نیازمند تأیید دستی
@@ -348,7 +389,7 @@ function LabelForm({ onDone }: { onDone: (message: string) => void }) {
     <div className="space-y-3">
       <Field label="کد (انگلیسی)"><Input value={draft.code} onChange={(v) => setDraft({ ...draft, code: v })} placeholder="loyal_30d" /></Field>
       <Field label="عنوان"><Input value={draft.title} onChange={(v) => setDraft({ ...draft, title: v })} placeholder="وفادار ۳۰ روزه" /></Field>
-      <Field label="نوع"><Select options={["manual", "behavioral"]} value={draft.kind} onChange={(v) => setDraft({ ...draft, kind: v })} /></Field>
+      <Field label="نوع"><Select options={["manual", "behavioral"]} labels={KIND_FA} value={draft.kind} onChange={(v) => setDraft({ ...draft, kind: v })} /></Field>
       <Btn variant="accent" className="w-full" disabled={!/^[a-z0-9_]{3,40}$/.test(draft.code) || draft.title.trim().length < 2}
         onClick={() => void (async () => {
           try { await crmIntelApi.createLabel(draft); onDone("برچسب ساخته شد"); setDraft({ code: "", title: "", kind: "manual", color: "#C1613B" }); }
