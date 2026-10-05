@@ -43,12 +43,18 @@ export async function categoryProfileFor(db: DbPool | DbClient, category: string
 
 /**
  * §8/§11: category-driven validation at product definition time.
- * - allowed_sizes (when configured) bound the variant matrix,
+ * - allowed_sizes (when configured) bound the variant matrix — ALWAYS enforced
+ *   (structural: a size outside the category profile must never be stored),
  * - required spec attributes of the category template must be present.
+ *
+ * §8 (final PO decision): Save Draft ≠ Publish. A Draft may be incomplete, so
+ * publication-grade requirements (required spec attributes) are skipped when
+ * `enforceRequiredSpecs` is false. Supplied data is still validated structurally.
  * Products saved before a profile existed are untouched (no retro-breakage).
  */
 export async function validateCategoryRequirements(
   db: DbPool | DbClient, category: string, specifications: Record<string, unknown>, sizes: (string | null | undefined)[],
+  options: { enforceRequiredSpecs?: boolean } = {},
 ): Promise<void> {
   const profile = await categoryProfileFor(db, category);
   if (!profile) return;
@@ -57,7 +63,7 @@ export async function validateCategoryRequirements(
     const bad = sizes.find((size) => size && !allowed.includes(size));
     if (bad) throw badRequest(`سایز «${bad}» در دسته‌بندی «${category}» مجاز نیست.`);
   }
-  if (profile.spec_template_id) {
+  if (profile.spec_template_id && options.enforceRequiredSpecs !== false) {
     const required = await db.query<{ code: string; label: string }>(
       `SELECT a.code, a.label FROM spec_template_attributes ta
        JOIN spec_attributes a ON a.id = ta.attribute_id
@@ -149,7 +155,16 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
     return { category, configured: true, specFields: fields, sizeGuide, allowedSizes: profile.allowed_sizes ?? [] };
   });
 
-  /* ---------- §16: «نیازمند راه‌اندازی» read model ---------- */
+  /* ---------- §10/§14: «نیازمند راه‌اندازی» — DEPRECATED compatibility read model ----------
+   *
+   * Product Owner decision: an unfinished product is simply «پیش‌نویس». There is NO
+   * second user-facing lifecycle called «نیازمند راه‌اندازی» and no primary Needs
+   * Setup queue. This endpoint is retained ONLY for backward compatibility (older
+   * bookmarks, integration scripts and existing tests) and is a thin projection of
+   * the canonical DRAFT state + the internal `inventory_setup` invariant.
+   *
+   * It must never be rendered as a competing Product lifecycle in the admin UX.
+   */
 
   app.get('/api/v1/admin/products/needs-setup', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'products:write');
@@ -173,26 +188,26 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
     return { items: rows.rows, total: Number(total?.n ?? 0) };
   });
 
-  /* ---------- §44: admin «همه کالاها / آرشیو» read model (server-backed pagination/search) ---------- */
+  /* ---------- §3/§5/§19: «محصولات کلبه» read model (server-backed pagination/search) ----------
+   *
+   * ONE product lifecycle is exposed to the admin UI: the CATALOG publication state
+   * (پیش‌نویس / منتشرشده / آرشیوشده). `inventory_setup` stays an internal technical
+   * invariant only — it never becomes a second user-facing unfinished state.
+   *
+   * `view` drives the five primary filters of «محصولات کلبه»:
+   *   all          — everything (minus archived, as before)
+   *   drafts       — پیش‌نویس‌ها: unfinished creation journey (includes products
+   *                  interrupted before the initial WMS receipt)
+   *   published    — منتشرشده
+   *   out_of_stock — منتشرشده AND configured AND zero sellable stock in every
+   *                  enabled channel (§19: a sold-out PUBLISHED product is
+   *                  «ناموجود», never a draft and never «نیازمند راه‌اندازی»)
+   *   archived     — آرشیوشده
+   *
+   * Legacy `status`/`owner`/`setup` params keep working for older callers/bookmarks.
+   */
 
-  app.get('/api/v1/admin/products', async (request) => {
-    const user = await principal(request, pool, config); requirePermission(user, 'products:write');
-    const query = z.object({
-      q: z.string().trim().max(120).optional(),
-      status: z.enum(['all', 'active', 'archived']).default('active'),
-      owner: z.enum(['all', 'kolbe', 'supplier']).default('all'),
-      setup: z.enum(['all', 'pending', 'configured']).default('all'),
-      limit: z.coerce.number().int().min(1).max(100).default(30),
-      offset: z.coerce.number().int().min(0).default(0),
-    }).parse(request.query ?? {});
-    const where = `($1::text IS NULL OR p.name ILIKE '%' || $1 || '%' OR p.brand ILIKE '%' || $1 || '%' OR p.category ILIKE '%' || $1 || '%')
-         AND ($2 = 'all' OR ($2 = 'archived' AND p.status = 'archived') OR ($2 = 'active' AND p.status <> 'archived'))
-         AND ($3 = 'all' OR p.owner_type = $3)
-         AND ($4 = 'all' OR p.inventory_setup = $4)`;
-    const params = [query.q ?? null, query.status, query.owner, query.setup];
-    const rows = await pool.query(
-      `SELECT p.id, p.name, p.brand, p.category, p.status, p.owner_type, p.supplier_id, u.display_name AS supplier_name,
-              p.retail_enabled, p.wholesale_enabled, p.inventory_setup, p.created_at,
+  const STOCK_PROJECTION = `
               (SELECT count(*)::int FROM product_variants v WHERE v.product_id = p.id AND v.active) AS variant_count,
               -- §16/§44: numbers are only meaningful once the profile is configured; UI shows «—» for pending.
               (SELECT COALESCE(sum(b.on_hand - b.reserved - b.damaged), 0)::int FROM stock_balances b
@@ -201,13 +216,60 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
               (SELECT COALESCE(sum(s.on_hand - s.reserved), 0)::int FROM series_stock_balances s
                  JOIN series_templates t ON t.id = s.series_template_id
                WHERE t.product_id = p.id AND s.owner_type = 'kolbe') AS wholesale_series_available,
-              (SELECT count(*)::int FROM supplier_offers o WHERE o.product_id = p.id AND o.status = 'active') AS active_offers
+              (SELECT count(*)::int FROM supplier_offers o WHERE o.product_id = p.id AND o.status = 'active') AS active_offers`;
+
+  app.get('/api/v1/admin/products', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'products:write');
+    const query = z.object({
+      q: z.string().trim().max(120).optional(),
+      /** §5: canonical «محصولات کلبه» views. */
+      view: z.enum(['all', 'drafts', 'published', 'out_of_stock', 'archived']).optional(),
+      /** Legacy status filter — kept for backward compatibility (§25). */
+      status: z.enum(['all', 'active', 'archived']).default('active'),
+      owner: z.enum(['all', 'kolbe', 'supplier']).default('all'),
+      setup: z.enum(['all', 'pending', 'configured']).default('all'),
+      limit: z.coerce.number().int().min(1).max(100).default(30),
+      offset: z.coerce.number().int().min(0).default(0),
+    }).parse(request.query ?? {});
+    const view = query.view
+      ?? (query.status === 'archived' ? 'archived' : 'all');
+    // §19: «ناموجود» is a COMMERCIAL state of a PUBLISHED product — never a lifecycle state.
+    const outOfStock = `(
+        p.status = 'published' AND p.inventory_setup = 'configured'
+        AND (NOT p.retail_enabled OR COALESCE((
+              SELECT sum(b.on_hand - b.reserved - b.damaged) FROM stock_balances b
+                JOIN product_variants v ON v.id = b.variant_id
+               WHERE v.product_id = p.id AND b.inventory_domain = 'retail'), 0) <= 0)
+        AND (NOT p.wholesale_enabled OR COALESCE((
+              SELECT sum(s.on_hand - s.reserved) FROM series_stock_balances s
+                JOIN series_templates t ON t.id = s.series_template_id
+               WHERE t.product_id = p.id AND s.owner_type = 'kolbe'), 0) <= 0)
+      )`;
+    const viewClause = view === 'all' ? `p.status <> 'archived'`
+      : view === 'drafts' ? `p.status = 'draft'`
+        : view === 'published' ? `p.status = 'published'`
+          : view === 'out_of_stock' ? outOfStock
+            : `p.status = 'archived'`;
+    const where = `($1::text IS NULL OR p.name ILIKE '%' || $1 || '%' OR p.brand ILIKE '%' || $1 || '%' OR p.category ILIKE '%' || $1 || '%')
+         AND ($2 = 'all' OR ($2 = 'archived' AND p.status = 'archived') OR ($2 = 'active' AND p.status <> 'archived'))
+         AND ($3 = 'all' OR p.owner_type = $3)
+         AND ($4 = 'all' OR p.inventory_setup = $4)
+         AND ${viewClause}`;
+    const params = [query.q ?? null, query.status, query.owner, query.setup];
+    const rows = await pool.query(
+      `SELECT p.id, p.name, p.brand, p.category, p.status, p.owner_type, p.supplier_id, u.display_name AS supplier_name,
+              p.retail_enabled, p.wholesale_enabled, p.inventory_setup, p.created_at, p.updated_at,
+              p.cash_price_rial, p.installment_price_rial, p.wholesale_price_rial,
+              -- §5: a product row must be recognisable without opening it — cover image + first SKU.
+              (p.metadata -> 'images' -> 0 ->> 'fileId') AS cover_file_id,
+              (SELECT v.sku FROM product_variants v WHERE v.product_id = p.id AND v.active ORDER BY v.sku LIMIT 1) AS sku,
+              ${STOCK_PROJECTION}
        FROM products p LEFT JOIN users u ON u.id = p.supplier_id
        WHERE ${where}
        ORDER BY p.created_at DESC, p.id DESC LIMIT $5 OFFSET $6`, [...params, query.limit, query.offset]);
     const total = await one<{ n: string }>(pool,
       `SELECT count(*)::text AS n FROM products p WHERE ${where}`, params);
-    return { items: rows.rows, total: Number(total?.n ?? 0) };
+    return { items: rows.rows, total: Number(total?.n ?? 0), view };
   });
 
   /* ---------- §17-§20: inventory setup — the ONLY bridge from definition to stock ---------- */
