@@ -11,7 +11,7 @@ it and does **not** touch Prompts 3–8.
 | --- | --- |
 | Session branch (all work committed here) | `arena/01a10ace-kolbevintage` |
 | Baseline (Prompt-1 close) | `c0825bf` — `c0825bf87eeedefb9b9d8755544905704f0a42e6` |
-| HEAD after Prompt 2 | `707fa25` — see §12 for the commit table |
+| HEAD after Prompt 2 | `9e33a82` (pushed; local == remote) — see §12 for the commit table |
 | Merge-base with `origin/main` | `3cd9dace97e00e3131af018fb5b696f8c18d67fc` (`main` untouched) |
 | Working tree | clean (no `dist/`, `node_modules/`, `.scratch/` or browser artifacts committed) |
 
@@ -237,7 +237,11 @@ engine, a `series_total` Series, a `component_sum` Series, and both-channel prod
 
 `PROMPT 2 IMPLEMENTATION COMPLETE — LOCAL BROWSER UAT REQUIRED`
 
-## 12. Commit table (baseline `c0825bf` → HEAD `707fa25`, 26 files, +1631/−245)
+All Prompt-2 code, tests, gates and this report are pushed to `origin/arena/01a10ace-kolbevintage`
+(local HEAD == remote HEAD == `9e33a82`); the working tree is clean and `origin/main` stays at
+`3cd9dac`.
+
+## 12. Commit table (baseline `c0825bf` → HEAD `9e33a82`; 27 files incl. this report, +1631/−245 in code)
 
 | Commit | Subject |
 | --- | --- |
@@ -246,3 +250,4 @@ engine, a `series_total` Series, a `component_sum` Series, and both-channel prod
 | `b23ed3b` | test(gates): align pricing gate needles with the §55 Persian terminology |
 | `e35f5d4` | feat(storefront): render the canonical server price on cards, PDP, cart and admin surfaces |
 | `707fa25` | feat(pricing): price history in Product 360, price-change feedback in the Studio, §55 term gate |
+| `9e33a82` | docs(pricing): Prompt-2 final report (canonical model, resolver contract, gates, open items) |
