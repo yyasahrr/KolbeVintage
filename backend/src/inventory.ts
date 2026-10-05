@@ -584,9 +584,20 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       const r = await one<{
         id: string; warehouse_id: string; variant_id: string; quantity: number; status: string;
         inventory_domain: InventoryDomain; reference: string; supplier_request_id: string | null;
+        received_quantity: number | null; missing_quantity: number | null;
       }>(client,
         'SELECT * FROM stock_receipts WHERE id = $1 FOR UPDATE', [id]);
       if (!r) throw notFound();
+      if (r.status === 'received') {
+        // §48: confirming a receipt is idempotent — the same request replays the recorded
+        // outcome (no second balance change); a contradicting quantity is a deterministic 409.
+        if (body.receivedQuantity != null && body.receivedQuantity !== r.received_quantity) {
+          throw conflict('این رسید قبلاً با مقدار دیگری دریافت شده است.');
+        }
+        return { id, status: 'received', inventoryDomain: r.inventory_domain ?? 'retail',
+          receivedQuantity: r.received_quantity ?? r.quantity, missingQuantity: r.missing_quantity ?? 0,
+          duplicate: true };
+      }
       if (r.status !== 'pending') throw conflict('این رسید قبلاً تعیین تکلیف شده است.');
       // D1 fix: the receipt's own inventory domain is authoritative — never hard-code retail.
       const domain: InventoryDomain = r.inventory_domain ?? 'retail';
@@ -1382,16 +1393,45 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
         quantity: number | null;
         status: string;
         ownership_conversion_id: string | null;
+        received_qty: number | null;
+        damaged_qty: number | null;
       }>(
         client,
         `SELECT id, transfer_number, variant_id, source_domain, destination_domain,
-                to_warehouse_id, destination_warehouse_id, quantity, status, ownership_conversion_id
+                to_warehouse_id, destination_warehouse_id, quantity, status, ownership_conversion_id,
+                received_qty, damaged_qty
          FROM stock_transfers WHERE id = $1 FOR UPDATE`,
         [id],
       );
       if (!tr) throw notFound();
-      if (tr.status === 'completed') {
-        return { id: tr.id, transferNumber: tr.transfer_number, status: 'completed' };
+      if (tr.status === 'completed' || tr.status === 'completed_with_discrepancy') {
+        // §27/§48: destination receipt is idempotent. A retry replays the recorded outcome,
+        // including a recorded discrepancy, and never credits the destination twice. A retry
+        // that contradicts what was recorded is a deterministic 409.
+        if (tr.variant_id && tr.quantity) {
+          if (receipt.receivedQty != null && tr.received_qty != null && receipt.receivedQty !== tr.received_qty) {
+            throw conflict('این انتقال قبلاً با مقدار دریافتی دیگری ثبت شده است.');
+          }
+          if (receipt.damagedQty != null && tr.damaged_qty != null && receipt.damagedQty !== tr.damaged_qty) {
+            throw conflict('این انتقال قبلاً با مقدار آسیب‌دیده دیگری ثبت شده است.');
+          }
+          return {
+            id: tr.id, transferNumber: tr.transfer_number, status: tr.status,
+            receivedQty: tr.received_qty ?? tr.quantity, damagedQty: tr.damaged_qty ?? 0, duplicate: true,
+          };
+        }
+        if (receipt.lines?.length) {
+          const stored = await client.query<{ variant_id: string; quantity: number; received_qty: number | null; damaged_qty: number | null }>(
+            'SELECT variant_id, quantity, received_qty, damaged_qty FROM stock_transfer_lines WHERE transfer_id = $1', [id]);
+          for (const line of receipt.lines) {
+            const row = stored.rows.find((r) => r.variant_id === line.variantId);
+            if (!row) continue;
+            if (line.receivedQty !== (row.received_qty ?? row.quantity) || line.damagedQty !== (row.damaged_qty ?? 0)) {
+              throw conflict('این انتقال قبلاً با مقدار دریافتی دیگری ثبت شده است.');
+            }
+          }
+        }
+        return { id: tr.id, transferNumber: tr.transfer_number, status: tr.status, duplicate: true };
       }
       if (tr.status !== 'in_transit' && tr.status !== 'approved') {
         throw conflict(`انتقال در وضعیت ${tr.status} قابل تکمیل و دریافت در مقصد نیست.`);
