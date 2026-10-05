@@ -191,14 +191,17 @@ export function registerCrmRelationshipRoutes(app: FastifyInstance, pool: DbPool
         FROM crm_contacts c LEFT JOIN users u ON u.id=c.user_id LEFT JOIN users owner ON owner.id=c.owner_user_id
        WHERE c.id=$1`, [id]);
     if (!contact) throw notFound();
-    const [tasks, interactions] = await Promise.all([
+    const [tasks, interactions, notes] = await Promise.all([
       pool.query(`SELECT t.*,a.display_name AS assignee_name,cb.display_name AS created_by_name
                     FROM crm_tasks t LEFT JOIN users a ON a.id=t.assigned_to LEFT JOIN users cb ON cb.id=t.created_by
                    WHERE t.contact_id=$1 ORDER BY (t.status='open') DESC,t.due_at ASC NULLS LAST,t.created_at DESC LIMIT 100`, [id]),
       pool.query(`SELECT i.*,u.display_name AS created_by_name FROM crm_interactions i LEFT JOIN users u ON u.id=i.created_by
                    WHERE i.contact_id=$1 ORDER BY i.occurred_at DESC LIMIT 100`, [id]),
+      pool.query(`SELECT n.id,n.body,n.visibility,n.created_at,u.display_name AS author_name
+                    FROM crm_notes n LEFT JOIN users u ON u.id=n.author_id
+                   WHERE n.contact_id=$1 AND n.deleted_at IS NULL ORDER BY n.created_at DESC LIMIT 100`,[id]),
     ]);
-    return { contact, tasks: tasks.rows, interactions: interactions.rows };
+    return { contact, tasks: tasks.rows, interactions: interactions.rows, notes: notes.rows };
   });
 
   app.patch('/api/v1/admin/crm/contacts/:id/relationship', async (request) => {
