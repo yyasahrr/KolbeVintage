@@ -112,6 +112,9 @@ type OwnershipConversionRow = {
 
 type ServerPromotionRule = {
   id: string;
+  promotion_id: string | null;
+  promotion_kind: string | null;
+  promotion_name: string | null;
   name: string | null;
   channel: string;
   target_type: "variant" | "color" | "size" | "product" | "category";
@@ -125,7 +128,18 @@ type ServerPromotionRule = {
   discount_value: string;
   priority: number;
   active: boolean;
+  suspended_by_promotion_id: string | null;
+  suspended_by_name: string | null;
+  effectively_suspended: boolean;
 };
+type ServerPromotion = {
+  id: string; code: string | null; name: string; description: string; kind: string; channel: string;
+  exclusive_policy: string; starts_at: string | null; ends_at: string | null; active: boolean; priority: number;
+};
+const promotionKindLabel = (kind: string) => kind === "festival" ? "Festival" : kind === "campaign" ? "کمپین" : "تخفیف استاندارد";
+const pricingChannelLabel = (channel: string) => channel === "retail" ? "خرده" : channel === "wholesale" ? "عمده" : "همه کانال‌ها";
+const exclusivityPolicyLabel = (policy: string) => policy === "override_all" ? "بازنویسی کامل"
+  : policy === "festival_exclusive" ? "انحصاری با Festival" : "رقابت بر اساس اولویت";
 
 const labels: Record<OrderStatus, string> = {
   pending_payment: "در انتظار پرداخت", paid: "پرداخت‌شده", processing: "در حال پردازش", preparing: "در حال آماده‌سازی",
@@ -213,10 +227,17 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
     note: "تملک رسمی کالا توسط کلبه جهت عرضه در خرده‌فروشی",
   });
 
-  // 4. Server Promotions state
+  // 4. Canonical promotion definitions and rules (shared with Product Pricing / Resolver).
   const [promoRules, setPromoRules] = useState<ServerPromotionRule[]>([]);
+  const [promotions, setPromotions] = useState<ServerPromotion[]>([]);
+  const [newPromotion, setNewPromotion] = useState({
+    name: "", code: "", description: "", kind: "festival" as "festival" | "standard" | "campaign",
+    channel: "all" as "retail" | "wholesale" | "all", startsAt: "", endsAt: "", priority: 0,
+  });
   const [newRule, setNewRule] = useState({
     name: "",
+    promotionId: "",
+    channel: "retail" as "retail" | "wholesale" | "all",
     targetType: "variant" as "variant" | "color" | "size" | "product",
     productId: "",
     colorId: "black",
@@ -225,6 +246,7 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
     discountType: "percent" as "percent" | "fixed_rial",
     discountValue: "15",
     priority: 10,
+    moveFromFestival: false,
   });
 
   const buildQuery = useCallback((offset: number) => {
@@ -301,7 +323,8 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
   const loadServerPromotions = useCallback(async () => {
     setError(null);
     try {
-      const res = await request<{ rules: ServerPromotionRule[] }>("/promotions");
+      const res = await request<{ promotions: ServerPromotion[]; rules: ServerPromotionRule[] }>("/promotions");
+      setPromotions(res.promotions ?? []);
       setPromoRules(res.rules ?? []);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "دریافت قوانین تخفیف سرور ناموفق بود.");
@@ -498,6 +521,39 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
     finally { setSaving(false); }
   };
 
+  const createServerPromotion = async () => {
+    if (saving) return;
+    if (newPromotion.name.trim().length < 2) { setError("نام پروموشن را وارد کنید."); return; }
+    setSaving(true); setError(null);
+    try {
+      await request("/promotions", {
+        method: "POST",
+        body: JSON.stringify({
+          ...(newPromotion.code.trim() ? { code: newPromotion.code.trim().toUpperCase() } : {}),
+          name: newPromotion.name.trim(), description: newPromotion.description,
+          kind: newPromotion.kind, channel: newPromotion.channel,
+          exclusivePolicy: newPromotion.kind === "festival" ? "festival_exclusive" : "stackable_by_priority",
+          startsAt: newPromotion.startsAt ? new Date(newPromotion.startsAt).toISOString() : null,
+          endsAt: newPromotion.endsAt ? new Date(newPromotion.endsAt).toISOString() : null,
+          active: true, priority: Number(newPromotion.priority),
+        }),
+      });
+      setNewPromotion((prev) => ({ ...prev, name: "", code: "", description: "" }));
+      await loadServerPromotions();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "ساخت پروموشن سرور ناموفق بود."); }
+    finally { setSaving(false); }
+  };
+
+  const toggleServerPromotion = async (promotion: ServerPromotion) => {
+    if (saving) return;
+    setSaving(true); setError(null);
+    try {
+      await request(`/promotions/${promotion.id}`, { method: "PATCH", body: JSON.stringify({ active: !promotion.active }) });
+      await loadServerPromotions();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "تغییر وضعیت پروموشن ناموفق بود."); }
+    finally { setSaving(false); }
+  };
+
   const createServerPromoRule = async () => {
     if (saving) return;
     setSaving(true); setError(null);
@@ -506,7 +562,9 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
         method: "POST",
         headers: { "idempotency-key": makeIdemKey("promo-rule") },
         body: JSON.stringify({
+          ...(newRule.promotionId ? { promotionId: newRule.promotionId } : {}),
           name: newRule.name || undefined,
+          channel: newRule.channel,
           targetType: newRule.targetType,
           productId: newRule.productId || undefined,
           colorId: newRule.targetType === "color" ? newRule.colorId : undefined,
@@ -515,12 +573,29 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
           discountType: newRule.discountType,
           discountValue: newRule.discountValue,
           priority: Number(newRule.priority),
+          ...(newRule.moveFromFestival ? { moveFromFestival: true } : {}),
         }),
       });
-      setNewRule((prev) => ({ ...prev, name: "" }));
+      setNewRule((prev) => ({ ...prev, name: "", moveFromFestival: false }));
       await loadServerPromotions();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "ثبت قانون تخفیف سرور ناموفق بود."); }
     finally { setSaving(false); }
+  };
+
+  const activateServerPromoRule = async (rule: ServerPromotionRule) => {
+    if (saving) return;
+    setSaving(true); setError(null);
+    try {
+      if (rule.effectively_suspended) await request(`/promotions/rules/${rule.id}/reactivate`, { method: "POST" });
+      else await request(`/promotions/rules/${rule.id}`, { method: "PATCH", body: JSON.stringify({ active: true }) });
+      await loadServerPromotions();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "فعال‌سازی مجدد قانون ناموفق بود."); }
+    finally { setSaving(false); }
+  };
+
+  const reactivateServerPromoRule = async (id: string) => {
+    const rule = promoRules.find((candidate) => candidate.id === id);
+    if (rule) await activateServerPromoRule(rule);
   };
 
   const deactivateServerPromoRule = async (id: string) => {
@@ -545,7 +620,7 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
           <h2 className="text-lg font-bold">{
             only === "inbound-qc" ? "دریافت انبار کلبه و کنترل کیفیت (QC)"
             : only === "inventory-transfers" ? "دامنه‌های موجودی و حواله انتقال"
-            : only === "server-promotions" ? "قوانین تخفیف سمت سرور"
+            : only === "server-promotions" ? "مرکز تخفیف و Festival"
             : "سفارش‌های ثبت‌شده در سرور"}</h2>
           <p className="text-xs text-[var(--kv-muted)]">{
             only ? "داده‌ها مستقیم از پایگاه‌داده خوانده و ثبت می‌شوند."
@@ -1178,156 +1253,134 @@ export function AdminServerOrders({ request, hideOrders = false, only }: { reque
         </div>
       )}
 
-      {/* ================= SECTION 4: SERVER PROMOTION ENGINE ================= */}
+      {/* ================= SECTION 4: CANONICAL DISCOUNT / FESTIVAL CENTER ================= */}
       {section === "server-promotions" && (
-        <div className="grid gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
-          <div className="rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 space-y-3 text-xs">
-            <h3 className="text-sm font-bold">تعریف قانون تخفیف در سرور (Promotion Rule)</h3>
-            <label className="block">
-              عنوان قانون
-              <input
-                value={newRule.name}
-                onChange={(e) => setNewRule({ ...newRule, name: e.target.value })}
-                placeholder="مثلاً: تخفیف ۲۵٪ مشکی سایز XL"
-                className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-              />
-            </label>
-            <label className="block">
-              سطح هدف‌گذاری (Target Type)
-              <select
-                value={newRule.targetType}
-                onChange={(e) => setNewRule({ ...newRule, targetType: e.target.value as "variant" | "color" | "size" | "product" })}
-                className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-              >
-                <option value="variant">variant (واریانت دقیق)</option>
-                <option value="color">color (همه سایزهای یک رنگ در محصول)</option>
-                <option value="size">size (همه رنگ‌های یک سایز در محصول)</option>
-                <option value="product">product (کل واریانت‌های محصول)</option>
-              </select>
-            </label>
-            {newRule.targetType === "variant" ? (
-              <label className="block">
-                شناسه واریانت (variantId)
-                <input
-                  value={newRule.variantId}
-                  onChange={(e) => setNewRule({ ...newRule, variantId: e.target.value })}
-                  dir="ltr"
-                  placeholder="UUID واریانت"
-                  className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-                />
-              </label>
-            ) : (
-              <label className="block">
-                شناسه محصول (productId)
-                <input
-                  value={newRule.productId}
-                  onChange={(e) => setNewRule({ ...newRule, productId: e.target.value })}
-                  dir="ltr"
-                  placeholder="UUID محصول"
-                  className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-                />
-              </label>
-            )}
-            {newRule.targetType === "color" && (
-              <label className="block">
-                رنگ هدف (colorId)
-                <input
-                  value={newRule.colorId}
-                  onChange={(e) => setNewRule({ ...newRule, colorId: e.target.value })}
-                  dir="ltr"
-                  placeholder="black / olive / مشکی"
-                  className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-                />
-              </label>
-            )}
-            {newRule.targetType === "size" && (
-              <label className="block">
-                سایز هدف (sizeCode)
-                <input
-                  value={newRule.sizeCode}
-                  onChange={(e) => setNewRule({ ...newRule, sizeCode: e.target.value })}
-                  dir="ltr"
-                  placeholder="XL / L / M"
-                  className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-                />
-              </label>
-            )}
-            <div className="grid grid-cols-2 gap-2">
-              <label>
-                نوع تخفیف
-                <select
-                  value={newRule.discountType}
-                  onChange={(e) => setNewRule({ ...newRule, discountType: e.target.value as "percent" | "fixed_rial" })}
-                  className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-                >
-                  <option value="percent">درصدی (percent)</option>
-                  <option value="fixed_rial">مبلغ ثابت ریال (fixed_rial)</option>
-                </select>
-              </label>
-              <label>
-                مقدار تخفیف
-                <input
-                  value={newRule.discountValue}
-                  onChange={(e) => setNewRule({ ...newRule, discountValue: e.target.value })}
-                  className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"
-                />
-              </label>
+        <div className="space-y-4">
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="space-y-3 rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 text-xs">
+              <div>
+                <h3 className="text-sm font-bold">تعریف پروموشن مرکزی</h3>
+                <p className="mt-1 text-[11px] leading-5 text-[var(--kv-muted)]">همین رکوردها در Product Pricing و Pricing Resolver مصرف می‌شوند؛ فعال‌سازی یا پایان Festival تخفیف‌های معلق را خودکار برنمی‌گرداند.</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="block">نام
+                  <input value={newPromotion.name} onChange={(e) => setNewPromotion({ ...newPromotion, name: e.target.value })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" placeholder="مثلاً جشنواره پاییزه" />
+                </label>
+                <label className="block">کد اختیاری
+                  <input value={newPromotion.code} onChange={(e) => setNewPromotion({ ...newPromotion, code: e.target.value.toUpperCase() })} dir="ltr" className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" placeholder="FALL26" />
+                </label>
+                <label className="block">نوع
+                  <select value={newPromotion.kind} onChange={(e) => setNewPromotion({ ...newPromotion, kind: e.target.value as typeof newPromotion.kind })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2">
+                    <option value="festival">جشنواره · exclusive</option><option value="standard">تخفیف استاندارد</option><option value="campaign">کمپین</option>
+                  </select>
+                </label>
+                <label className="block">کانال قیمت
+                  <select value={newPromotion.channel} onChange={(e) => setNewPromotion({ ...newPromotion, channel: e.target.value as typeof newPromotion.channel })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2">
+                    <option value="all">همه کانال‌ها</option><option value="retail">خرده</option><option value="wholesale">عمده</option>
+                  </select>
+                </label>
+                <label className="block">شروع (اختیاری)
+                  <input type="datetime-local" value={newPromotion.startsAt} onChange={(e) => setNewPromotion({ ...newPromotion, startsAt: e.target.value })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+                </label>
+                <label className="block">پایان (اختیاری)
+                  <input type="datetime-local" value={newPromotion.endsAt} onChange={(e) => setNewPromotion({ ...newPromotion, endsAt: e.target.value })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+                </label>
+                <label className="block">اولویت
+                  <input type="number" min={-1000} max={1000} value={newPromotion.priority} onChange={(e) => setNewPromotion({ ...newPromotion, priority: Number(e.target.value) })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+                </label>
+                <label className="block sm:col-span-2">توضیح
+                  <textarea value={newPromotion.description} onChange={(e) => setNewPromotion({ ...newPromotion, description: e.target.value })} rows={2} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+                </label>
+              </div>
+              <button type="button" disabled={saving || !newPromotion.name.trim()} onClick={() => void createServerPromotion()} className="min-h-10 w-full rounded-lg bg-[var(--kv-action)] font-bold text-[var(--kv-bg)]">ثبت پروموشن مرکزی</button>
             </div>
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => void createServerPromoRule()}
-              className="min-h-10 w-full rounded-lg bg-[var(--kv-action)] font-bold text-[var(--kv-bg)]"
-            >
-              ثبت قانون در سرور
-            </button>
+            <div className="rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4">
+              <h3 className="mb-3 text-sm font-bold">پروموشن‌های مرکزی ({promotions.length})</h3>
+              {!promotions.length && <p className="text-xs text-[var(--kv-muted)]">هنوز رکوردی ثبت نشده است.</p>}
+              <div className="grid gap-2 sm:grid-cols-2">
+                {promotions.map((promotion) => <article key={promotion.id} className="min-w-0 rounded-lg border border-[var(--kv-line)] p-3 text-xs">
+                  <div className="flex items-start justify-between gap-2"><div className="min-w-0"><b className="block break-words">{promotion.name}</b><span className="text-[10.5px] text-[var(--kv-muted)]">{promotionKindLabel(promotion.kind)} · {pricingChannelLabel(promotion.channel)} · {exclusivityPolicyLabel(promotion.exclusive_policy)}</span></div>
+                    <span className={promotion.active ? "rounded-full bg-emerald-100 px-2 py-0.5 font-bold text-emerald-800" : "rounded-full bg-gray-100 px-2 py-0.5 font-bold text-gray-600"}>{promotion.active ? "فعال" : "خاموش"}</span>
+                  </div>
+                  <p className="mt-2 text-[10.5px] text-[var(--kv-muted)]">{promotion.starts_at ? date(promotion.starts_at) : "بدون شروع زمان‌بندی‌شده"} · {promotion.ends_at ? date(promotion.ends_at) : "بدون پایان"}</p>
+                  <button type="button" disabled={saving} onClick={() => void toggleServerPromotion(promotion)} className="mt-2 font-bold text-[var(--kv-accent)] underline">{promotion.active ? "خاموش‌کردن تعریف" : "روشن‌کردن تعریف"}</button>
+                </article>)}
+              </div>
+            </div>
           </div>
 
-          <div className="rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4">
-            <h3 className="mb-3 text-sm font-bold">قوانین تخفیف ثبت‌شده در پایگاه‌داده</h3>
-            <div className="kv-scroll kv-scroll-x">
-              <table className="w-full text-right text-xs">
-                <thead>
-                  <tr className="border-b border-[var(--kv-line)] text-[var(--kv-muted)]">
-                    <th className="py-2">عنوان</th>
-                    <th className="py-2">سطح (target_type)</th>
-                    <th className="py-2">هدف</th>
-                    <th className="py-2">مقدار</th>
-                    <th className="py-2">اولویت</th>
-                    <th className="py-2">وضعیت</th>
-                    <th className="py-2"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--kv-line)]">
-                  {promoRules.map((r) => (
-                    <tr key={r.id}>
-                      <td className="py-2 font-bold">{r.name ?? "—"}</td>
-                      <td className="py-2 font-mono" dir="ltr">{r.target_type}</td>
-                      <td className="py-2">
-                        {r.product_name ?? r.variant_sku ?? ""}
-                        {r.color_id ? ` · رنگ: ${r.color_id}` : ""}
-                        {r.size_code ? ` · سایز: ${r.size_code}` : ""}
-                      </td>
-                      <td className="py-2 font-bold">
-                        {r.discount_type === "percent" ? `${r.discount_value}٪` : money(r.discount_value)}
-                      </td>
+          <div className="grid gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
+            <div className="space-y-3 rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 text-xs">
+              <h3 className="text-sm font-bold">ثبت قانون در موتور قیمت‌گذاری</h3>
+              <label className="block">عنوان قانون
+                <input value={newRule.name} onChange={(e) => setNewRule({ ...newRule, name: e.target.value })} placeholder="مثلاً Black/M · ۱۵٪" className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+              </label>
+              <label className="block">تعریف مرکزی
+                <select value={newRule.promotionId} onChange={(e) => {
+                  const promotionId = e.target.value;
+                  const selectedPromotion = promotions.find((promotion) => promotion.id === promotionId);
+                  setNewRule((current) => ({ ...current, promotionId,
+                    ...(selectedPromotion && selectedPromotion.channel !== "all" ? { channel: selectedPromotion.channel as typeof current.channel } : {}),
+                  }));
+                }} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2">
+                  <option value="">قانون تخفیف مستقل</option>{promotions.map((promotion) => <option key={promotion.id} value={promotion.id}>{promotion.name} · {promotionKindLabel(promotion.kind)} · {promotion.active ? "فعال" : "خاموش"}</option>)}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label>کانال
+                  <select value={newRule.channel} onChange={(e) => setNewRule({ ...newRule, channel: e.target.value as typeof newRule.channel })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"><option value="retail">خرده</option><option value="wholesale">عمده</option><option value="all">همه</option></select>
+                </label>
+                <label>سطح هدف
+                  <select value={newRule.targetType} onChange={(e) => setNewRule({ ...newRule, targetType: e.target.value as typeof newRule.targetType })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2">
+                    <option value="variant">واریانت دقیق</option><option value="color">رنگ</option><option value="size">سایز</option><option value="product">کل محصول</option>
+                  </select>
+                </label>
+              </div>
+              {newRule.targetType === "variant" ? <label className="block">شناسه واریانت
+                <input value={newRule.variantId} onChange={(e) => setNewRule({ ...newRule, variantId: e.target.value })} dir="ltr" placeholder="UUID واریانت" className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+              </label> : <label className="block">شناسه محصول
+                <input value={newRule.productId} onChange={(e) => setNewRule({ ...newRule, productId: e.target.value })} dir="ltr" placeholder="UUID محصول" className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+              </label>}
+              {newRule.targetType === "color" && <label className="block">رنگ
+                <input value={newRule.colorId} onChange={(e) => setNewRule({ ...newRule, colorId: e.target.value })} dir="ltr" className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+              </label>}
+              {newRule.targetType === "size" && <label className="block">سایز
+                <input value={newRule.sizeCode} onChange={(e) => setNewRule({ ...newRule, sizeCode: e.target.value })} dir="ltr" className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+              </label>}
+              <div className="grid grid-cols-2 gap-2">
+                <label>نوع تخفیف
+                  <select value={newRule.discountType} onChange={(e) => setNewRule({ ...newRule, discountType: e.target.value as typeof newRule.discountType })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2"><option value="percent">درصدی</option><option value="fixed_rial">مبلغ ثابت (ریال)</option></select>
+                </label>
+                <label>مقدار تخفیف
+                  <input value={newRule.discountValue} onChange={(e) => setNewRule({ ...newRule, discountValue: e.target.value })} className="mt-1 w-full rounded border border-[var(--kv-line)] bg-[var(--kv-bg)] p-2" />
+                </label>
+              </div>
+              {newRule.promotionId && <label className="flex items-center gap-2 rounded-lg bg-amber-50 p-2 text-[11px] text-amber-900"><input type="checkbox" checked={newRule.moveFromFestival} onChange={(e) => setNewRule({ ...newRule, moveFromFestival: e.target.checked })} />تأیید انتقال محصول از Festival دیگر (در صورت نیاز)</label>}
+              <button type="button" disabled={saving} onClick={() => void createServerPromoRule()} className="min-h-10 w-full rounded-lg bg-[var(--kv-action)] font-bold text-[var(--kv-bg)]">ثبت قانون در سرور</button>
+            </div>
+
+            <div className="rounded-xl border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4">
+              <h3 className="mb-3 text-sm font-bold">قوانین و تاریخچه وضعیت در پایگاه‌داده</h3>
+              <div className="kv-scroll kv-scroll-x">
+                <table className="min-w-[980px] text-right text-xs">
+                  <thead><tr className="border-b border-[var(--kv-line)] text-[var(--kv-muted)]"><th className="py-2">قانون / Festival</th><th className="py-2">کانال</th><th className="py-2">هدف</th><th className="py-2">مقدار</th><th className="py-2">اولویت</th><th className="py-2">وضعیت</th><th className="py-2">اقدام</th></tr></thead>
+                  <tbody className="divide-y divide-[var(--kv-line)]">
+                    {promoRules.map((r) => <tr key={r.id}>
+                      <td className="py-2"><b>{r.name ?? "—"}</b>{r.promotion_name && <span className="block text-[10px] text-amber-700">{r.promotion_name} · {r.promotion_kind}</span>}</td>
+                      <td className="py-2">{pricingChannelLabel(r.channel)}</td>
+                      <td className="py-2">{r.product_name ?? r.variant_sku ?? ""}{r.color_id ? ` · ${r.color_id}` : ""}{r.size_code ? ` · ${r.size_code}` : ""}</td>
+                      <td className="py-2 font-bold">{r.discount_type === "percent" ? `${r.discount_value}٪` : money(r.discount_value)}</td>
                       <td className="py-2 tabular-nums">{r.priority}</td>
-                      <td className="py-2">{r.active ? "فعال" : "غیرفعال"}</td>
-                      <td className="py-2">
-                        {r.active && (
-                          <button
-                            type="button"
-                            onClick={() => void deactivateServerPromoRule(r.id)}
-                            className="text-red-600 underline"
-                          >
-                            غیرفعال‌سازی
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      <td className="py-2">{r.effectively_suspended ? <span className="text-gray-500">معلق · {r.suspended_by_name ?? "Festival"}</span> : r.active ? "فعال" : "خاموش"}</td>
+                      <td className="py-2">{r.effectively_suspended
+                        ? <button type="button" disabled={saving} onClick={() => void reactivateServerPromoRule(r.id)} className="text-[var(--kv-accent)] underline">فعال‌سازی صریح</button>
+                        : r.active ? <button type="button" disabled={saving} onClick={() => void deactivateServerPromoRule(r.id)} className="text-red-600 underline">خاموش‌کردن</button>
+                          : <button type="button" disabled={saving} onClick={() => void activateServerPromoRule(r)} className="text-[var(--kv-accent)] underline">فعال‌سازی</button>}</td>
+                    </tr>)}
+                    {!promoRules.length && <tr><td colSpan={7} className="py-8 text-center text-[var(--kv-muted)]">هنوز قانونی ثبت نشده است.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>

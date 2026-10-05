@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useState } from "react";
-import { authBlobUrl, catalogOpsApi, productsApi, seriesTemplatesApi, sizeGuidesApi, specsApi } from "../data/api";
-import { fmtToman, normalizeSizeGuide, readProductSpecs } from "../data/contracts";
-import type { ProductSpecs, SizeGuide } from "../data/contracts";
+import { authBlobUrl, catalogOpsApi, productsApi, promotionRulesApi, seriesTemplatesApi, sizeGuidesApi, specsApi } from "../data/api";
+import { fmtToman, INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, normalizeSizeGuide, readProductSpecs } from "../data/contracts";
+import type { InstallmentPolicy, ProductSpecs, SizeGuide } from "../data/contracts";
 import { Btn, Card, Empty, ErrorState, LoadingState, Segmented, WorkspaceModal } from "./primitives";
 import { ProductInventoryDrawer } from "./product-inventory";
 
 type Detail = Awaited<ReturnType<typeof productsApi.adminDetail>>;
 type Series = Awaited<ReturnType<typeof seriesTemplatesApi.detail>>;
+type PricingSummary = Awaited<ReturnType<typeof promotionRulesApi.productSummary>>;
+type PricingRule = {
+  id: string; name: string | null; channel: string; target_type: string; color_id: string | null; size_code: string | null;
+  variant_id: string | null; variant_sku: string | null; discount_type: "percent" | "fixed_rial"; discount_value: string;
+  active: boolean; promotion_id: string | null; promotion_name: string | null; effectively_suspended: boolean;
+  suspended_by_name: string | null;
+};
+type PricingLine = {
+  variantId: string; sku: string; color: string | null; size: string | null;
+  basePrice: string; discountAmount: string; finalPrice: string;
+  source: "none" | "promotion_rule" | "festival";
+  matchedRule: { id: string; name: string | null; promotionId: string | null } | null;
+};
 type Product360Tab = "overview" | "variants" | "specs" | "size-guide" | "media" | "pricing" | "wholesale" | "inventory" | "seo" | "history";
 type Product360Data = {
   detail: Detail;
@@ -17,6 +30,7 @@ type Product360Data = {
   specLabels: Record<string, string>;
   images: string[];
   videoUrl: string;
+  pricing: { summary: PricingSummary | null; rules: PricingRule[]; preview: PricingLine[]; error: string | null };
 };
 const fa = (n: unknown) => String(n ?? "—").replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
 const noWarehouses: [] = [];
@@ -39,22 +53,41 @@ export function Product360({ product, onClose, onPricing }: {
   const load = useCallback(async () => {
     setError(null); setData(null);
     try {
-      const [detailResult, listResult, guideResult, specsResult] = await Promise.allSettled([
+      const [detailResult, listResult, guideResult, specsResult, summaryResult, rulesResult] = await Promise.allSettled([
         productsApi.adminDetail(product.id),
         seriesTemplatesApi.list(product.id),
         sizeGuidesApi.productGuide(product.id),
         specsApi.productSpecs(product.id),
+        promotionRulesApi.productSummary(product.id),
+        promotionRulesApi.rulesByProduct(product.id),
       ]);
       if (detailResult.status === "rejected") throw detailResult.reason;
       const detail = detailResult.value;
       const list = listResult.status === "fulfilled" ? listResult.value : { items: [] as Record<string, unknown>[] };
       const guideLink = guideResult.status === "fulfilled" ? guideResult.value as { mode?: string; guide?: unknown } : null;
       const specs = specsResult.status === "fulfilled" ? readProductSpecs(specsResult.value) : null;
+      const pricingSummary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
+      const pricingRules = rulesResult.status === "fulfilled" ? rulesResult.value.items as unknown as PricingRule[] : [];
       const [schemaResult, series] = await Promise.all([
         catalogOpsApi.categorySchema(String(detail.category)).catch(() => null),
         Promise.all((list.items ?? []).map((template) => seriesTemplatesApi.detail(String(template.id)).catch(() => null))),
       ]);
       const schema = schemaResult as { specFields?: Record<string, unknown>[] } | null;
+      const activeVariants = (detail.variants ?? []).filter((variant) => variant.active !== false).slice(0, 100);
+      let pricingPreview: PricingLine[] = [];
+      let pricingError = summaryResult.status === "rejected" || rulesResult.status === "rejected"
+        ? "خلاصهٔ تخفیف از مرکز مرکزی در دسترس نیست." : null;
+      if (detail.retail_enabled !== false && activeVariants.length) {
+        try {
+          const resolved = await promotionRulesApi.resolvePrices({
+            orderType: "retail", paymentMode: "cash",
+            items: activeVariants.map((variant) => ({ variantId: variant.id, quantity: 1 })),
+          });
+          pricingPreview = resolved.lines as unknown as PricingLine[];
+        } catch (priceError) {
+          pricingError ??= priceError instanceof Error ? priceError.message : "پیش‌نمایش Pricing Resolver در دسترس نیست.";
+        }
+      }
       const metadata = (detail.metadata ?? {}) as Record<string, unknown> & {
         images?: { fileId?: string; url?: string }[]; videoFileId?: string | null;
       };
@@ -69,6 +102,7 @@ export function Product360({ product, onClose, onPricing }: {
         detail, series: series.filter((item): item is Series => item !== null), specs,
         sizeGuide: normalizeSizeGuide(guideLink?.guide), sizeGuideMode: guideLink?.mode ?? null,
         images: images.filter(Boolean), videoUrl, specLabels,
+        pricing: { summary: pricingSummary, rules: pricingRules, preview: pricingPreview, error: pricingError },
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "خواندن اطلاعات محصول انجام نشد.");
@@ -77,11 +111,28 @@ export function Product360({ product, onClose, onPricing }: {
   useEffect(() => { void load(); }, [load]);
   const detail = data?.detail;
   const variants = (detail?.variants ?? []) as { id: string; sku: string; color?: string; size?: string; active?: boolean }[];
-  const metadata = (detail?.metadata ?? {}) as Record<string, unknown> & { seo?: { title?: string; slug?: string }; compareAtRial?: string | number | null };
+  const metadata = (detail?.metadata ?? {}) as Record<string, unknown> & { seo?: { title?: string; slug?: string } };
   const seo = metadata.seo ?? {};
   const variantSkus = new Map(variants.map((variant) => [variant.id, variant.sku]));
   const legacySpecs = Object.entries((detail?.specifications ?? {}) as Record<string, unknown>);
   const structuredSpecs = data?.specs?.values ?? [];
+  const pricingSummary = data?.pricing.summary ?? null;
+  const standaloneRules = data?.pricing.rules.filter((rule) => rule.promotion_id === null) ?? [];
+  const variantDiscountRules = standaloneRules.filter((rule) => rule.target_type === "variant");
+  const assignedFestival = pricingSummary?.assignedFestival ?? null;
+  const installmentPolicy = INSTALLMENT_POLICIES.includes(detail?.installment_policy as InstallmentPolicy)
+    ? detail!.installment_policy as InstallmentPolicy : "disabled";
+  const standaloneStatus = pricingSummary?.activeStandaloneRules
+    ? "فعال"
+    : pricingSummary?.suspendedStandaloneRules
+      ? "معلق با Festival — برای بازگشت نیازمند فعال‌سازی صریح"
+      : pricingSummary?.configuredStandaloneRules ? "خاموش" : "تنظیم نشده";
+  const festivalStatus = !assignedFestival ? "تعریف نشده"
+    : assignedFestival.effective ? "فعال اکنون"
+      : assignedFestival.active && assignedFestival.promotionActive ? "فعال اما خارج از پنجرهٔ زمانی"
+        : "خاموش یا پایان‌یافته";
+  const discountLabel = (rule: PricingRule) => rule.discount_type === "percent"
+    ? `${fa(rule.discount_value)}٪` : fmtToman(rule.discount_value);
 
   return <WorkspaceModal open onClose={onClose} title={`نمای جامع محصول — ${product.name}`} subtitle="تعریف کاتالوگ، قیمت و موجودی واقعی؛ مالکیت کالا مستقل از محل نگهداری آن است.">
     <div className="space-y-5" dir="rtl">
@@ -89,7 +140,7 @@ export function Product360({ product, onClose, onPricing }: {
         <Segmented value={tab} onChange={(value) => setTab(value as Product360Tab)} options={[
           { v: "overview", label: "نمای کلی" }, { v: "variants", label: "واریانت‌ها" },
           { v: "specs", label: "مشخصات فنی" }, { v: "size-guide", label: "راهنمای سایز" },
-          { v: "media", label: "رسانه" }, { v: "pricing", label: "قیمت‌گذاری خرده" },
+          { v: "media", label: "رسانه" }, { v: "pricing", label: "قیمت‌گذاری" },
           { v: "wholesale", label: "عمده و سری‌ها" }, { v: "inventory", label: "موجودی" },
           { v: "seo", label: "SEO" }, { v: "history", label: "تاریخچه" },
         ]} />
@@ -137,15 +188,57 @@ export function Product360({ product, onClose, onPricing }: {
           {data.videoUrl && <video src={data.videoUrl} controls className="max-h-[420px] w-full rounded-xl bg-black" aria-label={`ویدیوی ${product.name}`} />}
         </div> : <Empty title="رسانه‌ای ثبت نشده" desc="تصاویر و ویدیو را در استودیوی محصول بارگذاری کنید." />)}
 
-        {tab === "pricing" && <Card className="space-y-3 p-4 text-sm">
-          {detail!.retail_enabled !== false ? <>
-            <h3 className="font-bold">قیمت خرده‌فروشی</h3>
-            <p>قیمت نقدی: <strong>{fmtToman(detail!.cash_price_rial)}</strong></p>
-            <p>قیمت اقساطی: <strong>{fmtToman(detail!.installment_price_rial)}</strong></p>
-            {metadata.compareAtRial ? <p>قیمت مرجع: <strong>{fmtToman(metadata.compareAtRial)}</strong></p> : null}
-            <Btn onClick={onPricing}>مدیریت تخفیف و جشنواره</Btn>
-          </> : <Empty title="فروش خرده فعال نیست" desc="تنظیم کانال فروش در استودیوی محصول انجام می‌شود." />}
-        </Card>}
+        {tab === "pricing" && <div className="space-y-3 text-sm">
+          <Card className="space-y-4 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><h3 className="font-bold">خلاصهٔ قیمت‌گذاری محصول</h3><p className="mt-1 text-xs leading-5 text-[var(--kv-muted)]">قیمت پایه از کاتالوگ، تخفیف‌ها از Promotion Center و مبلغ نهایی از Pricing Resolver خوانده می‌شوند.</p></div>
+              {(detail!.retail_enabled !== false || detail!.wholesale_enabled !== false) && <Btn variant="accent" aria-label="مدیریت قیمت‌گذاری" onClick={onPricing}>مدیریت قیمت‌گذاری</Btn>}
+            </div>
+            {detail!.retail_enabled === false && detail!.wholesale_enabled === false ? <Empty title="کانال فروشی فعال نیست" desc="کانال‌های فروش را در تعریف محصول تنظیم کنید." /> : <div className="grid gap-3 sm:grid-cols-2">
+              {detail!.retail_enabled !== false && <div className="space-y-2 rounded-xl border border-[var(--kv-line)] p-3">
+                <h4 className="font-bold">فروش خرده</h4>
+                <p className="flex flex-wrap justify-between gap-2"><span>قیمت پایهٔ نقدی</span><strong>{fmtToman(detail!.cash_price_rial)}</strong></p>
+                <p className="flex flex-wrap justify-between gap-2"><span>قیمت چهارقسطه</span><strong>{installmentPolicy === "disabled" ? "خاموش" : detail!.installment_price_rial ? fmtToman(detail!.installment_price_rial) : "برابر قیمت نقدی"}</strong></p>
+                <p className="flex flex-wrap justify-between gap-2 text-xs text-[var(--kv-muted)]"><span>سیاست اقساط</span><strong>{INSTALLMENT_POLICY_LABEL[installmentPolicy]}</strong></p>
+              </div>}
+              {detail!.wholesale_enabled !== false && <div className="space-y-2 rounded-xl border border-[var(--kv-line)] p-3">
+                <h4 className="font-bold">فروش عمده</h4>
+                <p className="flex flex-wrap justify-between gap-2"><span>قیمت پایهٔ هر قطعه</span><strong>{fmtToman(detail!.wholesale_price_rial)}</strong></p>
+                <p className="text-xs leading-5 text-[var(--kv-muted)]">قیمت سری و ترکیب آن از رکورد Series خوانده می‌شود.</p>
+              </div>}
+            </div>}
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-xl bg-[var(--kv-surface-2)] p-3"><span className="text-xs text-[var(--kv-muted)]">Discount مستقل</span><p className="mt-1 font-bold">{standaloneStatus}</p>
+                <p className="mt-1 text-[11px] text-[var(--kv-muted)]">{fa(pricingSummary?.activeStandaloneRules ?? 0)} فعال · {fa(pricingSummary?.suspendedStandaloneRules ?? 0)} معلق · {fa(pricingSummary?.configuredStandaloneRules ?? 0)} ذخیره‌شده</p>
+              </div>
+              <div className="rounded-xl bg-[var(--kv-surface-2)] p-3"><span className="text-xs text-[var(--kv-muted)]">Festival</span>
+                <p className="mt-1 font-bold">{festivalStatus}{assignedFestival ? ` · ${assignedFestival.name}` : ""}</p>
+                {assignedFestival?.endsAt && <p className="mt-1 text-[11px] text-[var(--kv-muted)]">پایان: {new Date(assignedFestival.endsAt).toLocaleDateString("fa-IR")}</p>}
+              </div>
+            </div>
+            {data!.pricing.error && <p role="status" className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{data!.pricing.error}</p>}
+          </Card>
+
+          <Card className="space-y-3 p-4">
+            <div><h4 className="font-bold">تخفیف‌های مستقیم واریانت</h4><p className="mt-1 text-xs leading-5 text-[var(--kv-muted)]">مقادیر پیکربندی‌شده از قوانین canonical؛ وضعیت تعلیق از مرکز تخفیف خوانده می‌شود.</p></div>
+            {variantDiscountRules.length ? <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{variantDiscountRules.map((rule) => <li key={rule.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--kv-line)] p-3">
+              <span className="min-w-0 break-words"><b dir="ltr" className="font-mono text-xs">{rule.variant_sku ?? "واریانت"}</b><span className="ms-2 text-[10px] text-[var(--kv-muted)]">{rule.channel === "retail" ? "خرده" : rule.channel === "wholesale" ? "عمده" : "همه"}</span></span>
+              <strong className="whitespace-nowrap">{discountLabel(rule)}</strong>
+              <span className="w-full text-[10px] text-[var(--kv-muted)]">{rule.effectively_suspended ? `معلق با ${rule.suspended_by_name ?? "Festival"}` : rule.active ? "فعال" : "خاموش"}</span>
+            </li>)}</ul> : <Empty title="تخفیف مستقیم واریانت ثبت نشده" desc="قواعد سطح محصول، رنگ و سایز در شمارندهٔ Discount آمده‌اند؛ مبلغ نهایی از Resolver محاسبه می‌شود." />}
+          </Card>
+
+          <Card className="space-y-3 p-4">
+            <div><h4 className="font-bold">نتیجهٔ Pricing Resolver · خرده / نقدی</h4><p className="mt-1 text-xs leading-5 text-[var(--kv-muted)]">پیش‌نمایش سرور برای واریانت‌های فعال؛ این بخش هیچ قیمت محلی محاسبه یا ذخیره نمی‌کند.</p></div>
+            {detail!.retail_enabled === false ? <Empty title="فروش خرده فعال نیست" desc="پیش‌نمایش Resolver خرده برای این محصول ارائه نمی‌شود." />
+              : data!.pricing.preview.length ? <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{data!.pricing.preview.map((line) => <li key={line.variantId} className="min-w-0 space-y-2 rounded-lg border border-[var(--kv-line)] p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2"><b dir="ltr" className="break-all font-mono text-xs">{line.sku}</b><span className="text-[10px] text-[var(--kv-muted)]">{line.color ?? "—"} / {line.size ?? "—"}</span></div>
+                <div className="grid grid-cols-3 gap-1 text-[10px]"><div><span className="block text-[var(--kv-muted)]">پایه</span><b className="block break-words">{fmtToman(line.basePrice)}</b></div><div><span className="block text-[var(--kv-muted)]">تخفیف</span><b className="block break-words">{fmtToman(line.discountAmount)}</b></div><div><span className="block text-[var(--kv-muted)]">نهایی</span><b className="block break-words text-emerald-800">{fmtToman(line.finalPrice)}</b></div></div>
+                <p className="text-[10px] text-[var(--kv-muted)]">منبع: {line.source === "festival" ? "Festival" : line.source === "promotion_rule" ? "قانون تخفیف" : "بدون تخفیف"}{line.matchedRule?.name ? ` · ${line.matchedRule.name}` : ""}</p>
+              </li>)}</ul> : <Empty title={data!.pricing.error ? "پیش‌نمایش در دسترس نیست" : "واریانت فعالی برای محاسبه نیست"} desc={data!.pricing.error ?? "پس از تعریف واریانت، نتیجهٔ canonical اینجا نمایش داده می‌شود."} />}
+          </Card>
+          <p className="px-1 text-xs leading-6 text-[var(--kv-muted)]">فضای کامل تنظیم قیمت، اقساط، قوانین Discount و Festival از Product Studio و Product 360 مشترک است.</p>
+        </div>}
 
         {tab === "wholesale" && <div className="space-y-4">
           {detail!.wholesale_enabled === false ? <Empty title="فروش عمده فعال نیست" desc="تنظیم کانال فروش در استودیوی محصول انجام می‌شود." /> : <>

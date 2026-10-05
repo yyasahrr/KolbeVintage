@@ -154,6 +154,7 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
   app.get('/api/v1/admin/products/needs-setup', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'products:write');
     const query = z.object({
+      productId: z.uuid().optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
       offset: z.coerce.number().int().min(0).default(0),
     }).parse(request.query ?? {});
@@ -163,9 +164,12 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
               (SELECT count(*)::int FROM product_variants v WHERE v.product_id = p.id AND v.active) AS variant_count
        FROM products p
        WHERE p.inventory_setup = 'pending' AND p.owner_type = 'kolbe' AND p.status <> 'archived'
-       ORDER BY p.created_at DESC LIMIT $1 OFFSET $2`, [query.limit, query.offset]);
+         AND ($1::uuid IS NULL OR p.id = $1)
+       ORDER BY p.created_at DESC LIMIT $2 OFFSET $3`, [query.productId ?? null, query.limit, query.offset]);
     const total = await one<{ n: string }>(pool,
-      `SELECT count(*)::text AS n FROM products WHERE inventory_setup = 'pending' AND owner_type = 'kolbe' AND status <> 'archived'`);
+      `SELECT count(*)::text AS n FROM products
+       WHERE inventory_setup = 'pending' AND owner_type = 'kolbe' AND status <> 'archived'
+         AND ($1::uuid IS NULL OR id = $1)`, [query.productId ?? null]);
     return { items: rows.rows, total: Number(total?.n ?? 0) };
   });
 

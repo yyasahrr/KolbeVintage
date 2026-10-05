@@ -138,13 +138,13 @@ export function CutoutImg({ src, alt, className }: { src: string; alt: string; c
 type DraftImage = { fileId: string | null; url: string; previewUrl?: string };
 type Draft = {
   name: string; brand: string; category: string; sku: string; desc: string; fabric: string; care: string;
-  retail: string; installment: string; compare: string; seoTitle: string; slug: string; retailOn: boolean; wholesaleOn: boolean;
+  retail: string; installment: string; seoTitle: string; slug: string; retailOn: boolean; wholesaleOn: boolean;
   colors: Colorway[]; sizes: string[]; images: DraftImage[]; video: string; videoFileId: string | null; series: SeriesDef[]; cutout: Cutout;
   typeCode: string; specs: Record<string, unknown>; gender: "men" | "women" | "unisex" | "kids"; seasons: string[]; vibes: string[];
   productTypeId: string; genderCode: string;
   installmentPolicy: InstallmentPolicy; wholesaleMoq: string; variantWeights: Record<string, string>;
 };
-const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", compare: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [], productTypeId: "", genderCode: "", installmentPolicy: "enabled", wholesaleMoq: "", variantWeights: {} });
+const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [], productTypeId: "", genderCode: "", installmentPolicy: "enabled", wholesaleMoq: "", variantWeights: {} });
 
 type MatrixVariant = {
   id: string; sku: string; active: boolean; weight_grams: number | null;
@@ -211,7 +211,7 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
   );
 }
 
-export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: () => void }) {
+export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: (productId: string) => void }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct, reload } = useStore();
   const [mediaBusy, setMediaBusy] = useState(false);
@@ -445,7 +445,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         sku: String(meta.editorialSku ?? ""), desc: String(detail.description ?? ""),
         fabric: String(meta.fabric ?? ""), care: String(meta.care ?? ""),
         retail: toToman(detail.cash_price_rial), installment: toToman(detail.installment_price_rial),
-        compare: toToman(meta.compareAtRial), seoTitle: String(seo.title ?? ""), slug: String(seo.slug ?? ""),
+        seoTitle: String(seo.title ?? ""), slug: String(seo.slug ?? ""),
         retailOn: detail.retail_enabled !== false, wholesaleOn: detail.wholesale_enabled !== false,
         colors: colorNames.map((name) => knownColors.find((c) => c.name === name) ?? { id: `c-${name}`, name, hex: "#8A6A4F" }),
         sizes: [...new Set(variants.map((v) => v.size).filter((s): s is string => Boolean(s)))],
@@ -512,27 +512,25 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const saveEdit = async () => {
     if (!editing) return;
     try {
-      const metadata = {
-        ...editing.metadata,
+      const metadata = { ...editing.metadata };
+      // Legacy reference prices are neither pricing truth nor catalog metadata.
+      delete metadata.compareAtRial;
+      Object.assign(metadata, {
         images: d.images.map((image) => ({ fileId: image.fileId, url: image.url })),
         videoFileId: d.videoFileId ?? null,
         fabric: d.fabric.trim(), care: d.care.trim(),
         seo: { title: d.seoTitle.trim() || d.name.trim(), slug: d.slug.trim() },
-        compareAtRial: d.compare ? rialFromToman(d.compare) : null,
         editorialSku: d.sku.trim() || null,
         cutout: d.cutout && d.cutout.status !== "none" ? d.cutout : null,
-      };
+      });
       await productsApi.update(editing.id, {
         name: d.name.trim(), brand: d.brand.trim(), category: d.category.trim(), description: d.desc,
-        cashPriceRial: d.retailOn ? rialFromToman(d.retail) : "0",
-        installmentPriceRial: d.retailOn && (d.installment || d.retail) ? rialFromToman(d.installment || d.retail) : null,
         metadata,
         gender: d.gender, seasons: d.seasons, vibes: d.vibes,
         ...(d.genderCode ? { genderCode: d.genderCode } : {}),
         productTypeId: d.productTypeId || null,
         retailEnabled: d.retailOn, wholesaleEnabled: d.wholesaleOn,
         wholesaleSeries: productSeriesPayload(d.series, d.colors),
-        installmentPolicy: d.installmentPolicy,
         wholesaleMoq: d.wholesaleMoq ? Number(d.wholesaleMoq) : null,
         specifications: d.specs,
       });
@@ -681,7 +679,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       const payload = buildProductCreatePayload({
         name: d.name, brand: d.brand, category: d.category, description: d.desc,
         editorialSku: d.sku, retailOn: d.retailOn, wholesaleOn: d.wholesaleOn,
-        cashToman: d.retail, installmentToman: d.installment, compareToman: d.compare,
+        cashToman: d.retail, installmentToman: d.installment,
         colors: d.colors.map((color) => ({ name: color.name })), sizes: d.sizes,
         images: d.images, videoFileId: d.videoFileId,
         fabric: d.fabric, care: d.care, seoTitle: d.seoTitle, slug: d.slug,
@@ -1072,12 +1070,25 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
             {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images.map((image) => image.previewUrl ?? image.url)} flash={flash} />}
             {sec === "price" && <>
               <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
-                چهار مفهوم قیمتی جدا از هم‌اند: <b>قیمت پایه خرده</b> (مبنای فروش تک‌عدد)، <b>قیمت چهارقسطه</b> (مخصوص پرداخت اقساطی)،
-                <b> قیمت عمده</b> (در بخش «سری‌های عمده» تعیین می‌شود) و <b>تخفیف</b> که فقط از موتور پروموشن/جشنواره اعمال می‌شود، نه از این فرم.
+                قیمت پایه، اقساط و تخفیف‌های محصول از فضای قیمت‌گذاری اختصاصی و موتور Pricing Resolver خوانده می‌شوند؛ این فرم تعریف، موجودی یا تخفیف سمت کلاینت نمی‌نویسد.
               </p>
-              {d.retailOn && <div className="grid gap-3 sm:grid-cols-2"><Field label="قیمت پایه خرده — نقدی (تومان)" hint="مبنای اصلی قیمت تک‌عدد در kolbe.ir"><Input value={d.retail} onChange={(v) => setD({ ...d, retail: v.replace(/\D/g, "") })} /></Field><Field label="قیمت مخصوص چهارقسطه (تومان)" hint="هر قسط از این مبلغ محاسبه می‌شود؛ خالی یعنی برابر قیمت نقدی"><Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} /></Field></div>}
-              {d.retailOn && Number(d.installment || d.retail) > 0 && <p className="text-[12px] text-[var(--kv-muted)]">هر قسط: {fmtMoney(Math.ceil(Number(d.installment || d.retail) / 4))}</p>}
-              <Field label="سیاست قسط" hint="سرور در تسویه‌حساب همین سیاست را اعمال می‌کند"><Select options={([...INSTALLMENT_POLICIES]).map((p) => INSTALLMENT_POLICY_LABEL[p])} value={INSTALLMENT_POLICY_LABEL[d.installmentPolicy]} onChange={(label) => { const found = ([...INSTALLMENT_POLICIES]).find((p) => INSTALLMENT_POLICY_LABEL[p] === label); if (found) setD({ ...d, installmentPolicy: found }); }} /></Field>
+              {editing ? (
+                <Card className="space-y-3 p-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div><p className="text-xs text-[var(--kv-muted)]">قیمت پایه خرده · نقدی</p><p className="mt-1 font-bold">{d.retail ? `${fmtNum(Number(d.retail))} تومان` : "—"}</p></div>
+                    <div><p className="text-xs text-[var(--kv-muted)]">قیمت چهارقسطه</p><p className="mt-1 font-bold">{d.installment ? `${fmtNum(Number(d.installment))} تومان` : "برابر نقدی"}</p></div>
+                    <div className="sm:col-span-2"><p className="text-xs text-[var(--kv-muted)]">سیاست قسط</p><p className="mt-1 font-bold">{INSTALLMENT_POLICY_LABEL[d.installmentPolicy]}</p></div>
+                  </div>
+                  <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">ویرایش‌های کاتالوگ این فرم نمی‌توانند قیمت جدیدتری را بازنویسی کنند.</p>
+                  <Btn variant="accent" icon={<BadgePercent size={14} />} onClick={() => setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>مدیریت قیمت، اقساط و تخفیف‌ها</Btn>
+                </Card>
+              ) : (
+                <>
+                  {d.retailOn && <div className="grid gap-3 sm:grid-cols-2"><Field label="قیمت پایه خرده — نقدی (تومان)" hint="مبنای اصلی قیمت تک‌عدد در kolbe.ir"><Input value={d.retail} onChange={(v) => setD({ ...d, retail: v.replace(/\D/g, "") })} /></Field><Field label="قیمت مخصوص چهارقسطه (تومان)" hint="هر قسط از این مبلغ محاسبه می‌شود؛ خالی یعنی برابر قیمت نقدی"><Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} /></Field></div>}
+                  {d.retailOn && Number(d.installment || d.retail) > 0 && <p className="text-[12px] text-[var(--kv-muted)]">هر قسط: {fmtMoney(Math.ceil(Number(d.installment || d.retail) / 4))}</p>}
+                  <Field label="سیاست قسط" hint="سرور در تسویه‌حساب همین سیاست را اعمال می‌کند"><Select options={([...INSTALLMENT_POLICIES]).map((p) => INSTALLMENT_POLICY_LABEL[p])} value={INSTALLMENT_POLICY_LABEL[d.installmentPolicy]} onChange={(label) => { const found = ([...INSTALLMENT_POLICIES]).find((p) => INSTALLMENT_POLICY_LABEL[p] === label); if (found) setD({ ...d, installmentPolicy: found }); }} /></Field>
+                </>
+              )}
             </>}
             {sec === "series" && <>
               {d.wholesaleOn && <Field label="حداقل سفارش عمده (عدد)" hint="سرور در ثبت سفارش عمده همین کف را برای مجموع واریانت‌های این محصول اعمال می‌کند"><Input value={d.wholesaleMoq} onChange={(v) => setD({ ...d, wholesaleMoq: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۲" /></Field>}
@@ -1263,17 +1274,19 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       </WorkspaceModal>
       <WorkspaceModal open={!!inventoryFor} onClose={() => setInventoryFor(null)} title={inventoryFor ? `موجودی · ${inventoryFor.name}` : ""}>
         <ProductInventoryDrawer product={inventoryFor} warehouses={warehouses ?? []} onClose={() => setInventoryFor(null)} onFlash={flash} />
-        {discountFor && (
-          <DiscountManager
-            productId={discountFor.id}
-            productName={discountFor.name}
-            productImage={discountFor.images?.[0]}
-            sku={discountFor.sku}
-            onClose={() => setDiscountFor(null)}
-            flash={flash}
-          />
-        )}
       </WorkspaceModal>
+      {discountFor && <DiscountManager
+        productId={discountFor.id}
+        productName={discountFor.name}
+        productImage={discountFor.images?.[0]}
+        sku={discountFor.sku}
+        onClose={() => {
+          const productId = discountFor.id;
+          setDiscountFor(null);
+          if (editing?.id === productId) void openEdit({ id: productId } as Product);
+        }}
+        flash={flash}
+      />}
       {/* §44 (corrective): post-create summary — catalog facts + honest inventory state. */}
       <Modal open={!!createdSummary} onClose={() => setCreatedSummary(null)} title="محصول با موفقیت تعریف شد">
         {createdSummary && (
@@ -1316,7 +1329,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                 setD(fresh); setOpenSnapshot(JSON.stringify(fresh));
                 setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true);
               }}>تعریف محصول بعدی</Btn>
-              {onGoToSetup && <Btn variant="accent" size="sm" onClick={() => { setCreatedSummary(null); onGoToSetup(); }}>رفتن به راه‌اندازی موجودی</Btn>}
+              {onGoToSetup && <Btn variant="accent" size="sm" onClick={() => { const productId = createdSummary.product.id; setCreatedSummary(null); onGoToSetup(productId); }}>رفتن به راه‌اندازی موجودی</Btn>}
             </div>
           </div>
         )}

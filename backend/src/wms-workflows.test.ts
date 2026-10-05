@@ -612,6 +612,139 @@ test('Festival XOR standalone discounts (A5/A6) + product delete guard (P)', { s
   }
 });
 
+test('product pricing mode preserves variant rates across Discount → Festival → off → explicit Discount ON', { skip: !testDbUrl }, async () => {
+  const app = await buildApp(baseConfig);
+  const pool = createPool(baseConfig);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const { adminHeaders, adminId } = await createActors(app, pool, suffix);
+    const productResponse = await app.inject({ method: 'POST', url: '/api/v1/products', headers: adminHeaders, payload: {
+      brand: 'Kolbe', name: `حفظ قواعد قیمت ${suffix}`, category: 'پیراهن', cashPriceRial: '1000000',
+      installmentPriceRial: '1000000', variants: [
+        { color: 'Black', size: 'M' }, { color: 'Black', size: 'L' }, { color: 'Cream', size: 'XL' },
+      ],
+    } });
+    assert.equal(productResponse.statusCode, 201, productResponse.body);
+    const productId = productResponse.json().id as string;
+    const variants = productResponse.json().variants as Array<{ id: string; sku: string; color: string; size: string }>;
+    const bySize = new Map(variants.map((variant) => [variant.size, variant]));
+    const expected = new Map([["M", 15], ["L", 20], ["XL", 10]]);
+
+    for (const variant of variants) {
+      const response = await app.inject({ method: 'POST', url: '/api/v1/promotions/rules', headers: adminHeaders, payload: {
+        channel: 'retail', targetType: 'variant', productId, variantId: variant.id,
+        discountType: 'percent', discountValue: expected.get(variant.size), name: `${variant.color}/${variant.size}`,
+      } });
+      assert.equal(response.statusCode, 201, response.body);
+    }
+    const normalOn = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'standalone', enabled: true } });
+    assert.equal(normalOn.statusCode, 200, normalOn.body);
+
+    // An intentionally stackable definition still resolves as an exclusive Festival.
+    const festival = await app.inject({ method: 'POST', url: '/api/v1/promotions', headers: adminHeaders, payload: {
+      name: `Festival تست انحصاری ${suffix}`, kind: 'festival', channel: 'retail',
+      exclusivePolicy: 'stackable_by_priority', active: true,
+    } });
+    assert.equal(festival.statusCode, 201, festival.body);
+    const festivalId = festival.json().id as string;
+    const festivalOn = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'festival', promotionId: festivalId, channel: 'retail', discountType: 'percent', discountValue: 25 } });
+    assert.equal(festivalOn.statusCode, 200, festivalOn.body);
+
+    const duringFestival = await app.inject({ method: 'GET', url: `/api/v1/promotions/rules?productId=${productId}`, headers: adminHeaders });
+    const savedDuringFestival = (duringFestival.json().items as Array<Record<string, unknown>>).filter((rule) => rule.promotion_id === null);
+    assert.equal(savedDuringFestival.length, 3);
+    for (const rule of savedDuringFestival) {
+      const variant = variants.find((item) => item.id === rule.variant_id)!;
+      assert.equal(Number(rule.discount_value), expected.get(variant.size), `${variant.color}/${variant.size} exact saved rate`);
+      assert.equal(rule.effectively_suspended, true);
+      assert.equal(rule.suspended_by_promotion_id, festivalId);
+    }
+    const blockedMode = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'standalone', enabled: true } });
+    assert.equal(blockedMode.statusCode, 409, 'Discount ON during Festival requires explicit Festival exit');
+    const blockedRule = await app.inject({ method: 'POST', url: '/api/v1/promotions/rules', headers: adminHeaders, payload: {
+      channel: 'retail', targetType: 'product', productId, discountType: 'percent', discountValue: 12, active: true,
+    } });
+    assert.equal(blockedRule.statusCode, 409, 'server rejects active standalone rules while Festival is assigned');
+    const invalidGlobalFestivalRule = await app.inject({ method: 'POST', url: '/api/v1/promotions/rules', headers: adminHeaders, payload: {
+      promotionId: festivalId, channel: 'retail', targetType: 'category', category: 'پیراهن',
+      discountType: 'percent', discountValue: 12, active: true,
+    } });
+    assert.equal(invalidGlobalFestivalRule.statusCode, 400, 'an active Festival rule cannot bypass product exclusivity through a category target');
+    const invalidRate = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'festival', promotionId: festivalId, channel: 'retail', discountType: 'percent', discountValue: 96 } });
+    assert.equal(invalidRate.statusCode, 400, 'Festival percent is validated server-side');
+    const invalidPromotion = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'festival', promotionId: randomUUID(), channel: 'retail', discountType: 'percent', discountValue: 20 } });
+    assert.equal(invalidPromotion.statusCode, 404);
+    const wrongChannel = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'festival', promotionId: festivalId, channel: 'wholesale', discountType: 'percent', discountValue: 20 } });
+    assert.equal(wrongChannel.statusCode, 400);
+    const unsupportedMode = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'automatic' } });
+    assert.equal(unsupportedMode.statusCode, 400);
+    const standardPromotion = await app.inject({ method: 'POST', url: '/api/v1/promotions', headers: adminHeaders, payload: {
+      name: `پروموشن عادی ${suffix}`, kind: 'standard', channel: 'retail', active: true,
+    } });
+    assert.equal(standardPromotion.statusCode, 201, standardPromotion.body);
+    const wrongKind = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'festival', promotionId: standardPromotion.json().id, channel: 'retail', discountType: 'percent', discountValue: 20 } });
+    assert.equal(wrongKind.statusCode, 400);
+
+    for (const variant of variants) {
+      const resolved = await app.inject({ method: 'GET', url: `/api/v1/pricing/variants/${variant.id}?orderType=retail`, headers: adminHeaders });
+      assert.equal(resolved.statusCode, 200, resolved.body);
+      assert.equal(resolved.json().finalPrice, '750000');
+      assert.equal(resolved.json().source, 'festival', 'Festival beats even a stackable policy');
+    }
+
+    // Festival OFF only deactivates that assignment; it never reactivates the saved discounts.
+    const festivalOff = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'festival', promotionId: null } });
+    assert.equal(festivalOff.statusCode, 200, festivalOff.body);
+    const afterOff = await app.inject({ method: 'GET', url: `/api/v1/promotions/product-summary?productId=${productId}`, headers: adminHeaders });
+    assert.equal(afterOff.json().activeFestival, null);
+    assert.equal(afterOff.json().activeStandaloneRules, 0);
+    assert.equal(afterOff.json().suspendedStandaloneRules, 3);
+    for (const variant of variants) {
+      const resolved = await app.inject({ method: 'GET', url: `/api/v1/pricing/variants/${variant.id}?orderType=retail`, headers: adminHeaders });
+      assert.equal(resolved.json().finalPrice, '1000000', 'saved discounts remain dormant after Festival OFF');
+    }
+
+    // Explicit Discount ON restores the exact saved values; Product Pricing and global Center
+    // read the same canonical rules after reload.
+    const explicitOn = await app.inject({ method: 'POST', url: `/api/v1/promotions/products/${productId}/mode`,
+      headers: adminHeaders, payload: { mode: 'standalone', enabled: true } });
+    assert.equal(explicitOn.statusCode, 200, explicitOn.body);
+    const center = await app.inject({ method: 'GET', url: '/api/v1/promotions', headers: adminHeaders });
+    assert.equal(center.statusCode, 200, center.body);
+    const canonicalRules = (center.json().rules as Array<Record<string, unknown>>).filter((rule) => rule.product_id === productId && rule.promotion_id === null);
+    assert.equal(canonicalRules.length, 3);
+    for (const [size, discount] of expected) {
+      const variant = bySize.get(size)!;
+      const rule = canonicalRules.find((row) => row.variant_id === variant.id)!;
+      assert.equal(Number(rule.discount_value), discount);
+      assert.equal(rule.active, true);
+      assert.equal(rule.effectively_suspended, false);
+      const resolved = await app.inject({ method: 'GET', url: `/api/v1/pricing/variants/${variant.id}?orderType=retail`, headers: adminHeaders });
+      assert.equal(resolved.json().finalPrice, String(1_000_000 - 1_000_000 * discount / 100));
+      assert.equal(resolved.json().source, 'promotion_rule');
+    }
+    const audits = await pool.query<{ action: string }>(
+      `SELECT action FROM audit_logs WHERE actor_id = $1 AND resource_type = 'product' AND resource_id = $2 ORDER BY created_at`,
+      [adminId, productId]);
+    const actions = audits.rows.map((row) => row.action);
+    assert.ok(actions.includes('product.festival.activated'));
+    assert.ok(actions.includes('product.festival.deactivated'));
+    assert.ok(actions.includes('product.standalone_discount.reactivated'));
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});
+
 test('§17.4: transfer receipt with discrepancy — 20 sent, 18 healthy, 2 damaged', { skip: !testDbUrl }, async () => {
   const app = await buildApp(baseConfig);
   const pool = createPool(baseConfig);

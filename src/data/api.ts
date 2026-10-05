@@ -1629,6 +1629,14 @@ export const promotionRulesApi = {
   /** DEC-PRICING-001 (Option A): explicit reactivation of a festival-suspended rule. */
   reactivateRule: (id: string) =>
     authFetch<Record<string, unknown>>(`/promotions/rules/${id}/reactivate`, { method: "POST" }),
+  /** Canonical, transactional product-level Festival/standalone mode switch. */
+  setProductMode: (productId: string, payload:
+    | { mode: "standalone"; enabled: boolean; confirmFestivalExit?: boolean }
+    | { mode: "festival"; promotionId: string | null; channel?: "retail" | "wholesale" | "all"; discountType?: "percent" | "fixed_rial"; discountValue?: number | string; moveFromFestival?: boolean }) =>
+    authFetch<Record<string, unknown>>(`/promotions/products/${productId}/mode`, { method: "POST", body: JSON.stringify(payload) }),
+  /** Canonical batch preview from the same resolver used by checkout. */
+  resolvePrices: (payload: { orderType: "retail" | "wholesale"; paymentMode: "cash" | "four_installments"; items: { variantId: string; quantity: number }[] }) =>
+    authFetch<{ lines: Record<string, unknown>[]; subtotalRial: string; discountRial: string; totalRial: string }>("/pricing/resolve", { method: "POST", body: JSON.stringify(payload) }),
   /** §17.10: bulk festival assignment from «همه کالاها» — one call, per-item results. */
   festivalBulk: (payload: { promotionId: string; productIds: string[]; discountType: "percent" | "fixed_rial"; discountValue: number | string; moveFromFestival?: boolean }) =>
     authFetch<{
@@ -1636,14 +1644,16 @@ export const promotionRulesApi = {
       summary: { total: number; added: number; moved: number; alreadyInFestival: number; needsConfirmation: number; errors: number };
       results: { productId: string; productName: string | null; status: string; message: string }[];
     }>("/promotions/festival-bulk", { method: "POST", body: JSON.stringify(payload) }),
-  resolveVariantPrice: (variantId: string, channel: "retail" | "wholesale" = "retail", paymentMode: "cash" | "four_installments" = "cash") =>
-    publicApi.get<Record<string, unknown>>(`/pricing/variants/${variantId}?channel=${channel}&paymentMode=${paymentMode}`),
+  resolveVariantPrice: (variantId: string, orderType: "retail" | "wholesale" = "retail", paymentMode: "cash" | "four_installments" = "cash") =>
+    authFetch<Record<string, unknown>>(`/pricing/variants/${variantId}?orderType=${orderType}&paymentMode=${paymentMode}`),
   /** A1/A4/A5: per-product promotion snapshot for the «تخفیف و جشنواره» column. */
   productSummary: (productId: string) => authFetch<{
     productId: string;
     activeFestival: { promotionId: string; name: string; endsAt: string | null } | null;
+    assignedFestival: { ruleId: string; promotionId: string; name: string; channel: string; active: boolean; promotionActive: boolean; startsAt: string | null; endsAt: string | null; effective: boolean } | null;
     activeStandaloneRules: number;
     suspendedStandaloneRules: number;
+    configuredStandaloneRules: number;
   }>(`/promotions/product-summary?productId=${productId}`),
   rulesByProduct: (productId: string) => authFetch<{ items: Record<string, unknown>[] }>(`/promotions/rules?productId=${productId}`),
   createPromotion: (payload: Record<string, unknown>) =>

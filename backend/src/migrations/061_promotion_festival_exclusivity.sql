@@ -1,9 +1,9 @@
 -- 061: Festival XOR standalone discount (section A5/A6).
--- When a product enters an active festival, its standalone promotion rules are
--- SUSPENDED (not deleted) by stamping the suspending festival promotion id.
--- The suspension is only effective while that festival promotion is active and in
--- its time window, so leaving/ending the festival automatically restores rules that
--- are still valid by their own starts_at/ends_at.
+-- When a product enters a Festival, its standalone promotion rules are SUSPENDED
+-- (not deleted) by stamping the canonical Festival promotion id. DEC-PRICING-001
+-- (Product Owner decision, 2026-10-04 / Option A): this marker persists after
+-- Festival deactivation or expiry. Only an explicit Admin reactivation clears it.
+-- The resolver additionally treats every Festival as exclusive from standalone rules.
 
 ALTER TABLE promotion_rules
   ADD COLUMN IF NOT EXISTS suspended_by_promotion_id uuid REFERENCES promotions(id);

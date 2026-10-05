@@ -281,9 +281,7 @@ export type ProductMetadata = {
   seo: { title: string; slug: string };
   cutout: { status: string; src?: string; source?: string; note?: string } | null;
   channels: { retail: boolean; wholesale: boolean; styleBuilder: boolean };
-  series: { name: string; pieces: number; moqSeries: number; pricePerSeries: number; colorIds: string[] }[];
-  /** NOTE: stock is intentionally NOT part of metadata — availability comes from the WMS ledger. */
-  compareAtRial: string | null;
+  /** Stock and all pricing/promotion state are stored in their owning WMS/catalog domains, never here. */
   editorialSku: string | null;
 };
 
@@ -330,7 +328,6 @@ export type ProductStudioDraft = {
   wholesaleOn: boolean;
   cashToman?: string;
   installmentToman?: string;
-  compareToman?: string;
   colors: { name: string }[];
   sizes: string[];
   images: ProductMediaRef[];
@@ -439,11 +436,6 @@ export function buildProductCreatePayload(draft: ProductStudioDraft): ProductCre
     seo: { title: draft.seoTitle?.trim() || name, slug: draft.slug?.trim() || "" },
     cutout: draft.cutout && draft.cutout.status !== "none" ? draft.cutout : null,
     channels: { retail: draft.retailOn, wholesale: draft.wholesaleOn, styleBuilder: draft.cutout?.status === "ready" },
-    series: offered.map((series) => ({
-      name: series.name, pieces: series.pieces, moqSeries: series.moqSeries,
-      pricePerSeries: series.pricePerSeries, colorIds: series.colorIds ?? [],
-    })),
-    compareAtRial: draft.compareToman ? rialFromToman(draft.compareToman) : null,
     editorialSku: draft.editorialSku?.trim() || null,
   };
 

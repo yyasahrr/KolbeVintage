@@ -282,13 +282,13 @@ export async function resolveVariantPrice(
     };
   }
 
-  // Check if any active festival has exclusive override policy
-  const hasExclusiveFestival = matching.some(
-    (r) => r.promo_exclusive_policy === 'override_all' || r.promo_exclusive_policy === 'festival_exclusive',
-  );
-  const poolOfRules = hasExclusiveFestival
-    ? matching.filter((r) => r.promo_exclusive_policy === 'override_all' || r.promo_exclusive_policy === 'festival_exclusive')
-    : matching;
+  // A Festival is always exclusive from standalone/product discounts, regardless of a
+  // misconfigured definition policy. Other campaigns retain their configured policy.
+  const isExclusiveRule = (rule: CandidateRuleRow) => rule.promo_kind === 'festival'
+    || rule.promo_exclusive_policy === 'override_all'
+    || rule.promo_exclusive_policy === 'festival_exclusive';
+  const hasExclusiveFestival = matching.some(isExclusiveRule);
+  const poolOfRules = hasExclusiveFestival ? matching.filter(isExclusiveRule) : matching;
 
   poolOfRules.sort((a, b) => {
     const prioA = a.priority + (a.promo_priority ?? 0);
@@ -379,6 +379,18 @@ const updatePromotionRuleSchema = z.object({
   endsAt: z.iso.datetime().nullable().optional(),
 });
 
+const productPromotionModeSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('standalone'), enabled: z.boolean(), confirmFestivalExit: z.boolean().default(false) }).strict(),
+  z.object({
+    mode: z.literal('festival'),
+    promotionId: z.uuid().nullable(),
+    channel: z.enum(['retail', 'wholesale', 'all']).optional(),
+    discountType: z.enum(['percent', 'fixed_rial']).optional(),
+    discountValue: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]).optional(),
+    moveFromFestival: z.boolean().default(false),
+  }).strict(),
+]);
+
 export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.get('/api/v1/promotions', async (request) => {
     const user = await principal(request, pool, config);
@@ -393,10 +405,15 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
       `SELECT r.id, r.promotion_id, r.name, r.channel, r.target_type, r.product_id, p.name AS product_name,
               r.color_id, r.size_code, r.variant_id, v.sku AS variant_sku, r.category,
               r.discount_type, r.discount_value::text AS discount_value,
-              r.starts_at, r.ends_at, r.active, r.priority, r.created_at
+              r.starts_at, r.ends_at, r.active, r.priority, r.created_at,
+              r.suspended_by_promotion_id, sp.name AS suspended_by_name,
+              (r.suspended_by_promotion_id IS NOT NULL) AS effectively_suspended,
+              pr.kind AS promotion_kind, pr.name AS promotion_name
        FROM promotion_rules r
        LEFT JOIN products p ON p.id = r.product_id
        LEFT JOIN product_variants v ON v.id = r.variant_id
+       LEFT JOIN promotions pr ON pr.id = r.promotion_id
+       LEFT JOIN promotions sp ON sp.id = r.suspended_by_promotion_id
        ORDER BY r.priority DESC, r.created_at DESC LIMIT 200`,
     );
     return { promotions: promotions.rows, rules: rules.rows };
@@ -436,40 +453,233 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
     return { items: rows.rows };
   });
 
-  // Per-product promotion snapshot for the «تخفیف و جشنواره» column (A1/A4/A5).
+  // Product-level state for Studio and Product 360. `activeFestival` is effective now;
+  // `assignedFestival` also exposes scheduled/expired assignments so an admin can see why
+  // the saved standalone rules remain dormant after a Festival exits.
   app.get('/api/v1/promotions/product-summary', async (request) => {
     const user = await principal(request, pool, config);
     if (!user.permissions.includes('promotions:read') && !user.permissions.includes('products:write')) {
       requirePermission(user, 'promotions:read');
     }
     const query = z.object({ productId: z.uuid() }).parse(request.query);
-    const festival = await one<{ promotion_id: string; name: string; ends_at: Date | null }>(pool,
-      `SELECT r.promotion_id, pr.name, pr.ends_at
+    const assignment = await one<{
+      id: string; promotion_id: string; name: string; channel: string; rule_active: boolean;
+      promotion_active: boolean; starts_at: Date | null; ends_at: Date | null; effective: boolean;
+    }>(pool,
+      `SELECT r.id, r.promotion_id, pr.name, r.channel, r.active AS rule_active, pr.active AS promotion_active,
+              pr.starts_at, pr.ends_at,
+              (r.active AND pr.active
+                AND (pr.starts_at IS NULL OR pr.starts_at <= now())
+                AND (pr.ends_at IS NULL OR pr.ends_at > now())) AS effective
        FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
-       WHERE r.product_id = $1 AND r.active = true
-         AND pr.kind = 'festival' AND pr.active = true
-         AND (pr.starts_at IS NULL OR pr.starts_at <= now())
-         AND (pr.ends_at IS NULL OR pr.ends_at > now())
+       WHERE r.product_id = $1 AND pr.kind = 'festival'
+       ORDER BY (r.active AND pr.active
+          AND (pr.starts_at IS NULL OR pr.starts_at <= now())
+          AND (pr.ends_at IS NULL OR pr.ends_at > now())) DESC,
+          r.active DESC, r.updated_at DESC, r.created_at DESC
        LIMIT 1`,
       [query.productId]);
-    const counts = await one<{ active_standalone: string; suspended_standalone: string }>(pool,
+    const counts = await one<{
+      active_standalone: string; suspended_standalone: string; configured_standalone: string;
+    }>(pool,
       `SELECT
          count(*) FILTER (WHERE r.promotion_id IS NULL AND r.active = true
            AND r.suspended_by_promotion_id IS NULL)::text AS active_standalone,
-         count(*) FILTER (WHERE r.promotion_id IS NULL AND r.active = true
-           AND r.suspended_by_promotion_id IS NOT NULL)::text AS suspended_standalone
+         count(*) FILTER (WHERE r.promotion_id IS NULL
+           AND r.suspended_by_promotion_id IS NOT NULL)::text AS suspended_standalone,
+         count(*) FILTER (WHERE r.promotion_id IS NULL)::text AS configured_standalone
        FROM promotion_rules r WHERE r.product_id = $1`,
       [query.productId]);
+    const assignedFestival = assignment ? {
+      ruleId: assignment.id,
+      promotionId: assignment.promotion_id,
+      name: assignment.name,
+      channel: assignment.channel,
+      active: assignment.rule_active,
+      promotionActive: assignment.promotion_active,
+      startsAt: assignment.starts_at,
+      endsAt: assignment.ends_at,
+      effective: assignment.effective,
+    } : null;
     return {
       productId: query.productId,
-      activeFestival: festival ? { promotionId: festival.promotion_id, name: festival.name, endsAt: festival.ends_at } : null,
+      activeFestival: assignedFestival?.effective ? {
+        promotionId: assignedFestival.promotionId,
+        name: assignedFestival.name,
+        endsAt: assignedFestival.endsAt,
+      } : null,
+      assignedFestival,
       activeStandaloneRules: Number(counts?.active_standalone ?? '0'),
       suspendedStandaloneRules: Number(counts?.suspended_standalone ?? '0'),
+      configuredStandaloneRules: Number(counts?.configured_standalone ?? '0'),
     };
   });
 
-  // Festival lifecycle control (A6 exit path): deactivating/ending a festival lifts the
-  // suspension of still-valid standalone rules automatically (see resolver predicate).
+  // Product-level mode controls operate on the canonical promotion_rules rows. All writes
+  // lock the product so concurrent Studio/Center assignments cannot bypass Festival XOR.
+  app.post('/api/v1/promotions/products/:productId/mode', async (request) => {
+    const user = await principal(request, pool, config);
+    if (!user.permissions.includes('promotions:write')) requirePermission(user, 'products:write');
+    const { productId } = z.object({ productId: z.uuid() }).parse(request.params);
+    const body = productPromotionModeSchema.parse(request.body);
+
+    return transaction(pool, async (client) => {
+      const product = await one<{ id: string; name: string }>(
+        client, 'SELECT id, name FROM products WHERE id = $1 FOR UPDATE', [productId]);
+      if (!product) throw notFound();
+
+      if (body.mode === 'standalone') {
+        const savedRules = await client.query<{
+          id: string; active: boolean; suspended_by_promotion_id: string | null;
+        }>(
+          `SELECT id, active, suspended_by_promotion_id FROM promotion_rules
+           WHERE product_id = $1 AND promotion_id IS NULL FOR UPDATE`, [productId]);
+        if (body.enabled && savedRules.rows.length === 0) {
+          throw badRequest('ابتدا دست‌کم یک قانون تخفیف محصول یا واریانت ثبت کنید.');
+        }
+
+        let blockingFestival: { promotion_id: string; name: string; starts_at: Date | null; ends_at: Date | null } | null = null;
+        if (body.enabled) {
+          blockingFestival = await one(client,
+            `SELECT pr.id AS promotion_id, pr.name, pr.starts_at, pr.ends_at
+             FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
+             WHERE r.product_id = $1 AND r.active = true AND pr.kind = 'festival' AND pr.active = true
+               AND (pr.ends_at IS NULL OR pr.ends_at > now())
+             ORDER BY pr.starts_at NULLS FIRST LIMIT 1 FOR UPDATE OF r, pr`, [productId]);
+          if (blockingFestival && !body.confirmFestivalExit) {
+            throw conflict(`محصول به جشنواره «${blockingFestival.name}» متصل است. برای فعال‌کردن تخفیف مستقل، خروج صریح از جشنواره را تأیید کنید.`);
+          }
+          // Explicit Discount ON is also the only product-level reactivation action: it ends
+          // active/scheduled assignments and restores every saved standalone rule unchanged.
+          await client.query(
+            `UPDATE promotion_rules r SET active = false, updated_at = now()
+             FROM promotions pr
+             WHERE r.product_id = $1 AND r.promotion_id = pr.id AND pr.kind = 'festival'
+               AND r.active = true`, [productId]);
+          const restored = await client.query<{ id: string }>(
+            `UPDATE promotion_rules SET active = true, suspended_by_promotion_id = NULL, updated_at = now()
+             WHERE product_id = $1 AND promotion_id IS NULL
+               AND (active = false OR suspended_by_promotion_id IS NOT NULL)
+             RETURNING id`, [productId]);
+          await audit(client, user.id, 'product.standalone_discount.reactivated', 'product', productId,
+            { standaloneRules: savedRules.rows, exitedFestivalId: blockingFestival?.promotion_id ?? null },
+            { enabled: true, reactivatedRuleIds: restored.rows.map((row) => row.id) }, request.ip);
+          return { productId, mode: 'standalone', enabled: true, reactivatedRules: restored.rowCount ?? 0 };
+        }
+
+        const disabled = await client.query<{ id: string }>(
+          `UPDATE promotion_rules SET active = false, updated_at = now()
+           WHERE product_id = $1 AND promotion_id IS NULL AND active = true
+           RETURNING id`, [productId]);
+        await audit(client, user.id, 'product.standalone_discount.deactivated', 'product', productId,
+          { standaloneRules: savedRules.rows }, { enabled: false, deactivatedRuleIds: disabled.rows.map((row) => row.id) }, request.ip);
+        return { productId, mode: 'standalone', enabled: false, deactivatedRules: disabled.rowCount ?? 0 };
+      }
+
+      if (body.promotionId === null) {
+        const deactivated = await client.query<{ id: string; promotion_id: string }>(
+          `UPDATE promotion_rules r SET active = false, updated_at = now()
+           FROM promotions pr
+           WHERE r.product_id = $1 AND r.promotion_id = pr.id AND pr.kind = 'festival'
+             AND r.active = true
+           RETURNING r.id, r.promotion_id`, [productId]);
+        await audit(client, user.id, 'product.festival.deactivated', 'product', productId,
+          { festivalRuleIds: deactivated.rows.map((row) => row.id) },
+          { enabled: false, deactivatedRuleIds: deactivated.rows.map((row) => row.id), standaloneReactivated: false }, request.ip);
+        return { productId, mode: 'festival', enabled: false, deactivatedRules: deactivated.rowCount ?? 0,
+          standaloneReactivated: false };
+      }
+
+      const promotion = await one<{
+        id: string; name: string; kind: string; channel: 'retail' | 'wholesale' | 'all';
+        active: boolean; starts_at: Date | null; ends_at: Date | null;
+      }>(client,
+        'SELECT id, name, kind, channel, active, starts_at, ends_at FROM promotions WHERE id = $1 FOR UPDATE',
+        [body.promotionId]);
+      if (!promotion) throw notFound();
+      if (promotion.kind !== 'festival') throw badRequest('شناسه انتخاب‌شده از نوع Festival نیست.');
+      if (!promotion.active) throw badRequest(`جشنواره «${promotion.name}» غیرفعال است.`);
+      if (promotion.ends_at && promotion.ends_at.getTime() <= Date.now()) throw badRequest(`جشنواره «${promotion.name}» به پایان رسیده است.`);
+      const channel = body.channel ?? promotion.channel;
+      if (promotion.channel !== 'all' && channel !== 'all' && channel !== promotion.channel) {
+        throw badRequest('کانال قانون با کانال تعریف‌شده برای جشنواره هم‌خوانی ندارد.');
+      }
+      if (!body.discountType || body.discountValue === undefined) {
+        throw badRequest('نوع و مقدار تخفیف جشنواره را وارد کنید.');
+      }
+      const discountValue = rial(body.discountValue);
+      if (discountValue <= 0n) throw badRequest('مقدار تخفیف باید بزرگ‌تر از صفر باشد.');
+      if (body.discountType === 'percent' && (discountValue < 1n || discountValue > 95n)) {
+        throw badRequest('درصد تخفیف باید بین ۱ تا ۹۵ باشد.');
+      }
+
+      const currentFestival = await one<{
+        promotion_id: string; promo_name: string; effective: boolean;
+      }>(client,
+        `SELECT r.promotion_id, pr.name AS promo_name,
+                (pr.active AND (pr.starts_at IS NULL OR pr.starts_at <= now())
+                  AND (pr.ends_at IS NULL OR pr.ends_at > now())) AS effective
+         FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
+         WHERE r.product_id = $1 AND r.active = true AND pr.kind = 'festival'
+           AND r.promotion_id <> $2 AND pr.active = true AND (pr.ends_at IS NULL OR pr.ends_at > now())
+         ORDER BY pr.starts_at NULLS FIRST LIMIT 1 FOR UPDATE OF r, pr`, [productId, promotion.id]);
+      if (currentFestival && !body.moveFromFestival) {
+        throw conflict(`محصول به جشنواره «${currentFestival.promo_name}» متصل است. برای انتقال، تأیید صریح را فعال کنید.`);
+      }
+      const priorRules = await client.query<{
+        id: string; promotion_id: string | null; active: boolean; suspended_by_promotion_id: string | null;
+      }>(
+        `SELECT id, promotion_id, active, suspended_by_promotion_id FROM promotion_rules
+         WHERE product_id = $1 AND (promotion_id IS NULL OR promotion_id IN
+           (SELECT id FROM promotions WHERE kind = 'festival')) FOR UPDATE`, [productId]);
+
+      await client.query(
+        `UPDATE promotion_rules r SET active = false, updated_at = now()
+         FROM promotions pr
+         WHERE r.product_id = $1 AND r.promotion_id = pr.id AND pr.kind = 'festival'
+           AND r.promotion_id <> $2 AND r.active = true`, [productId, promotion.id]);
+
+      const existingRule = await one<{ id: string }>(client,
+        `SELECT id FROM promotion_rules
+         WHERE product_id = $1 AND promotion_id = $2 AND target_type = 'product'
+         ORDER BY active DESC, updated_at DESC, created_at DESC LIMIT 1 FOR UPDATE`, [productId, promotion.id]);
+      let festivalRuleId: string;
+      if (existingRule) {
+        festivalRuleId = existingRule.id;
+        await client.query(
+          `UPDATE promotion_rules SET name = $2, channel = $3, discount_type = $4, discount_value = $5,
+             starts_at = NULL, ends_at = NULL, active = true, updated_at = now()
+           WHERE id = $1`,
+          [festivalRuleId, `جشنواره ${promotion.name}`, channel, body.discountType, discountValue.toString()]);
+      } else {
+        festivalRuleId = randomUUID();
+        await client.query(
+          `INSERT INTO promotion_rules(
+            id, promotion_id, name, channel, target_type, product_id, discount_type, discount_value,
+            active, priority, created_by
+          ) VALUES ($1,$2,$3,$4,'product',$5,$6,$7,true,0,$8)`,
+          [festivalRuleId, promotion.id, `جشنواره ${promotion.name}`, channel, productId,
+            body.discountType, discountValue.toString(), user.id]);
+      }
+      const suspended = await client.query<{ id: string }>(
+        `UPDATE promotion_rules SET suspended_by_promotion_id = $2, updated_at = now()
+         WHERE product_id = $1 AND promotion_id IS NULL
+           AND suspended_by_promotion_id IS DISTINCT FROM $2
+         RETURNING id`, [productId, promotion.id]);
+      const modeResult = {
+        productId, mode: 'festival', enabled: true, promotionId: promotion.id,
+        promotionName: promotion.name, ruleId: festivalRuleId, channel,
+        movedFromPromotionId: currentFestival?.promotion_id ?? null,
+        suspendedRuleCount: suspended.rowCount ?? 0,
+      };
+      await audit(client, user.id, 'product.festival.activated', 'product', productId,
+        { promotionRules: priorRules.rows, currentFestivalId: currentFestival?.promotion_id ?? null }, modeResult, request.ip);
+      return modeResult;
+    });
+  });
+
+  // DEC-PRICING-001 / Option A: deactivating or ending a Festival never clears saved
+  // standalone suspension. Explicit product-level reactivation is required.
   app.patch('/api/v1/promotions/:id', async (request) => {
     const user = await principal(request, pool, config);
     if (!user.permissions.includes('promotions:write')) requirePermission(user, 'products:write');
@@ -583,54 +793,70 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
         if (!p) throw notFound();
       }
 
-      let promoKind: string | null = null;
+      let promo: { id: string; kind: string; name: string; active: boolean; channel: string; starts_at: Date | null; ends_at: Date | null } | null = null;
       if (body.promotionId) {
-        const promo = await one<{ id: string; kind: string }>(client, 'SELECT id, kind FROM promotions WHERE id = $1', [body.promotionId]);
+        promo = await one(client,
+          'SELECT id, kind, name, active, channel, starts_at, ends_at FROM promotions WHERE id = $1 FOR UPDATE',
+          [body.promotionId]);
         if (!promo) throw notFound();
-        promoKind = promo.kind;
       }
 
-      // A5/A6: Festival XOR standalone discount — server-side guarantee, per product.
+      if (promo?.kind === 'festival' && body.active && !resolvedProductId) {
+        throw badRequest('قانون Festival فعال باید به محصول یا واریانت مشخص متصل باشد؛ برای چند محصول از Festival-bulk استفاده کنید.');
+      }
+
+      // A5/A6: serialize product promotion changes and reject any active/scheduled
+      // Festival + active standalone overlap, not only the currently-effective window.
       if (resolvedProductId) {
-        const activeFestivalOfProduct = await one<{ promotion_id: string; promo_name: string }>(
+        const lockedProduct = await one<{ id: string }>(
+          client, 'SELECT id FROM products WHERE id = $1 FOR UPDATE', [resolvedProductId]);
+        if (!lockedProduct) throw notFound();
+
+        if (promo?.kind === 'festival' && body.active) {
+          if (!promo.active) throw badRequest(`جشنواره «${promo.name}» غیرفعال است.`);
+          if (promo.ends_at && promo.ends_at.getTime() <= Date.now()) throw badRequest(`جشنواره «${promo.name}» به پایان رسیده است.`);
+          if (promo.channel !== 'all' && body.channel !== 'all' && body.channel !== promo.channel) {
+            throw badRequest('کانال قانون با کانال تعریف‌شده برای جشنواره هم‌خوانی ندارد.');
+          }
+        }
+
+        const otherFestival = body.active ? await one<{ promotion_id: string; promo_name: string }>(
           client,
           `SELECT r.promotion_id, pr.name AS promo_name
-           FROM promotion_rules r
-           JOIN promotions pr ON pr.id = r.promotion_id
-           WHERE r.product_id = $1 AND r.active = true
-             AND pr.kind = 'festival' AND pr.active = true
-             AND (pr.starts_at IS NULL OR pr.starts_at <= now())
-             AND (pr.ends_at IS NULL OR pr.ends_at > now())
-             ${promoKind === 'festival' ? 'AND pr.id <> $2' : ''}
-           LIMIT 1`,
-          promoKind === 'festival' ? [resolvedProductId, body.promotionId] : [resolvedProductId],
-        );
+           FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
+           WHERE r.product_id = $1 AND r.active = true AND pr.kind = 'festival'
+             AND pr.active = true AND (pr.ends_at IS NULL OR pr.ends_at > now())
+             ${promo?.kind === 'festival' ? 'AND pr.id <> $2' : ''}
+           ORDER BY pr.starts_at NULLS FIRST LIMIT 1 FOR UPDATE OF r, pr`,
+          promo?.kind === 'festival' ? [resolvedProductId, promo.id] : [resolvedProductId],
+        ) : null;
 
-        if (promoKind === 'festival') {
-          // Max one active festival per product; A→B transfer only with explicit confirmation.
-          if (activeFestivalOfProduct) {
+        if (promo?.kind === 'festival' && body.active) {
+          // Max one active/scheduled Festival per product; A→B transfer needs confirmation.
+          if (otherFestival) {
             if (body.moveFromFestival !== true) {
               throw conflict(
-                `این محصول هم‌اکنون در جشنواره فعال «${activeFestivalOfProduct.promo_name}» است. برای انتقال به جشنواره جدید باید تأیید صریح (moveFromFestival) ارسال شود.`,
+                `این محصول هم‌اکنون به جشنواره «${otherFestival.promo_name}» متصل است. برای انتقال به جشنواره جدید باید تأیید صریح (moveFromFestival) ارسال شود.`,
               );
             }
             await client.query(
-              `UPDATE promotion_rules SET active = false, updated_at = now()
-               WHERE product_id = $1 AND active = true AND promotion_id = $2`,
-              [resolvedProductId, activeFestivalOfProduct.promotion_id],
+              `UPDATE promotion_rules r SET active = false, updated_at = now()
+               FROM promotions pr
+               WHERE r.product_id = $1 AND r.promotion_id = pr.id AND pr.kind = 'festival'
+                 AND r.active = true AND r.promotion_id <> $2`,
+              [resolvedProductId, promo.id],
             );
           }
-          // Entering a festival SUSPENDS (not deletes) standalone rules of the product.
+          // Preserve all saved rules and exact values; mark them dormant through the Festival.
           await client.query(
             `UPDATE promotion_rules SET suspended_by_promotion_id = $2, updated_at = now()
-             WHERE product_id = $1 AND promotion_id IS NULL AND active = true
-               AND suspended_by_promotion_id IS NULL`,
+             WHERE product_id = $1 AND promotion_id IS NULL
+               AND suspended_by_promotion_id IS DISTINCT FROM $2`,
             [resolvedProductId, body.promotionId],
           );
-        } else if (activeFestivalOfProduct) {
-          // Standalone discount while product is inside an active festival → blocked.
+        } else if (!body.promotionId && body.active && otherFestival) {
           throw conflict(
-            `این محصول در جشنواره فعال «${activeFestivalOfProduct.promo_name}» است؛ تا پایان جشنواره امکان ثبت تخفیف مستقل وجود ندارد.`,
+            `این محصول به جشنواره «${otherFestival.promo_name}» متصل است؛ تخفیف مستقل فعال نمی‌شود. ابتدا جشنواره را خاموش کنید.`,
           );
         }
       }
@@ -700,11 +926,12 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
       moveFromFestival: z.boolean().default(false),
     }).strict().parse(request.body);
 
-    const promo = await one<{ id: string; name: string; kind: string; active: boolean }>(
-      pool, 'SELECT id, name, kind, active FROM promotions WHERE id = $1', [body.promotionId]);
+    const promo = await one<{ id: string; name: string; kind: string; active: boolean; ends_at: Date | null }>(
+      pool, 'SELECT id, name, kind, active, ends_at FROM promotions WHERE id = $1', [body.promotionId]);
     if (!promo) throw notFound();
     if (promo.kind !== 'festival') throw badRequest('شناسه انتخاب‌شده جشنواره نیست.');
     if (!promo.active) throw badRequest(`جشنواره «${promo.name}» غیرفعال است.`);
+    if (promo.ends_at && promo.ends_at.getTime() <= Date.now()) throw badRequest(`جشنواره «${promo.name}» به پایان رسیده است.`);
     const discountValue = rial(body.discountValue);
     if (body.discountType === 'percent' && (discountValue < 1n || discountValue > 95n)) {
       throw badRequest('درصد تخفیف باید بین ۱ تا ۹۵ باشد.');
@@ -722,26 +949,28 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
              FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
              WHERE r.product_id = $1 AND r.active = true
                AND pr.kind = 'festival' AND pr.active = true
-               AND (pr.starts_at IS NULL OR pr.starts_at <= now())
                AND (pr.ends_at IS NULL OR pr.ends_at > now())
-             LIMIT 1`, [productId]);
+             ORDER BY pr.starts_at NULLS FIRST LIMIT 1 FOR UPDATE OF r, pr`, [productId]);
           if (existing && existing.promotion_id === body.promotionId) {
             return { productId, productName: product.name, status: 'already_in_festival', message: `همین حالا در «${promo.name}» است.` };
           }
-          if (existing) {
-            if (!body.moveFromFestival) {
-              return { productId, productName: product.name, status: 'needs_confirmation', message: `در جشنواره فعال «${existing.promo_name}» است؛ انتقال نیاز به تأیید دارد.` };
-            }
-            await client.query(
-              `UPDATE promotion_rules SET active = false, updated_at = now()
-               WHERE product_id = $1 AND active = true AND promotion_id = $2`,
-              [productId, existing.promotion_id]);
+          if (existing && !body.moveFromFestival) {
+            return { productId, productName: product.name, status: 'needs_confirmation', message: `در جشنواره فعال «${existing.promo_name}» است؛ انتقال نیاز به تأیید دارد.` };
           }
-          // §18: entering a festival SUSPENDS standalone rules (never deletes them).
+          // One active/scheduled Festival assignment per product. Inactive/expired historical
+          // Festival rows are also turned off when a new Festival is explicitly assigned.
+          await client.query(
+            `UPDATE promotion_rules r SET active = false, updated_at = now()
+             FROM promotions pr
+             WHERE r.product_id = $1 AND r.promotion_id = pr.id AND pr.kind = 'festival'
+               AND r.active = true AND r.promotion_id <> $2`,
+            [productId, body.promotionId]);
+          // §18 / DEC-PRICING-001: preserve rule values and stamp all configured standalone
+          // rules; only the explicit admin reactivation path removes this suspension.
           await client.query(
             `UPDATE promotion_rules SET suspended_by_promotion_id = $2, updated_at = now()
-             WHERE product_id = $1 AND promotion_id IS NULL AND active = true
-               AND suspended_by_promotion_id IS NULL`,
+             WHERE product_id = $1 AND promotion_id IS NULL
+               AND suspended_by_promotion_id IS DISTINCT FROM $2`,
             [productId, body.promotionId]);
           const id = randomUUID();
           await client.query(
@@ -776,8 +1005,15 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = updatePromotionRuleSchema.parse(request.body);
     return transaction(pool, async (client) => {
+      const scope = await one<{ product_id: string | null }>(client,
+        'SELECT product_id FROM promotion_rules WHERE id = $1', [id]);
+      if (!scope) throw notFound();
+      if (scope.product_id) await one(client, 'SELECT id FROM products WHERE id = $1 FOR UPDATE', [scope.product_id]);
       const existing = await one<{
         id: string;
+        product_id: string | null;
+        promotion_id: string | null;
+        suspended_by_promotion_id: string | null;
         discount_type: DiscountType;
         discount_value: string;
         active: boolean;
@@ -785,8 +1021,19 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
         name: string | null;
         starts_at: Date | null;
         ends_at: Date | null;
-      }>(client, 'SELECT id, discount_type, discount_value::text, active, priority, name, starts_at, ends_at FROM promotion_rules WHERE id = $1 FOR UPDATE', [id]);
+      }>(client, `SELECT id, product_id, promotion_id, suspended_by_promotion_id,
+          discount_type, discount_value::text, active, priority, name, starts_at, ends_at
+         FROM promotion_rules WHERE id = $1 FOR UPDATE`, [id]);
       if (!existing) throw notFound();
+      if (existing.product_id && existing.promotion_id === null && body.active === true) {
+        const activeFestival = await one<{ promo_name: string }>(client,
+          `SELECT pr.name AS promo_name
+           FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
+           WHERE r.product_id = $1 AND r.active = true AND pr.kind = 'festival' AND pr.active = true
+             AND (pr.ends_at IS NULL OR pr.ends_at > now())
+           ORDER BY pr.starts_at NULLS FIRST LIMIT 1 FOR UPDATE OF r, pr`, [existing.product_id]);
+        if (activeFestival) throw conflict(`محصول به جشنواره «${activeFestival.promo_name}» متصل است؛ قانون مستقل فعال نمی‌شود.`);
+      }
       const nextValue = body.discountValue !== undefined ? rial(body.discountValue) : rial(existing.discount_value);
       if (existing.discount_type === 'percent' && (nextValue < 1n || nextValue > 95n)) {
         throw badRequest('درصد تخفیف باید بین ۱ تا ۹۵ باشد.');
@@ -816,6 +1063,12 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
     if (!user.permissions.includes('promotions:write')) requirePermission(user, 'products:write');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     return transaction(pool, async (client) => {
+      const scope = await one<{ product_id: string | null }>(client,
+        'SELECT product_id FROM promotion_rules WHERE id = $1', [id]);
+      if (!scope) throw notFound();
+      if (scope.product_id) {
+        await one(client, 'SELECT id FROM products WHERE id = $1 FOR UPDATE', [scope.product_id]);
+      }
       const existing = await one<{ id: string; product_id: string | null; suspended_by_promotion_id: string | null; active: boolean }>(
         client, 'SELECT id, product_id, suspended_by_promotion_id, active FROM promotion_rules WHERE id = $1 FOR UPDATE', [id]);
       if (!existing) throw notFound();
@@ -825,17 +1078,17 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
           `SELECT pr.name AS promo_name
            FROM promotion_rules r JOIN promotions pr ON pr.id = r.promotion_id
            WHERE r.product_id = $1 AND r.active = true AND pr.kind = 'festival' AND pr.active = true
-             AND (pr.starts_at IS NULL OR pr.starts_at <= now())
              AND (pr.ends_at IS NULL OR pr.ends_at > now())
-           LIMIT 1`, [existing.product_id]);
+           ORDER BY pr.starts_at NULLS FIRST LIMIT 1 FOR UPDATE OF r, pr`, [existing.product_id]);
         if (activeFestival) {
-          throw conflict(`این محصول هنوز در جشنواره فعال «${activeFestival.promo_name}» است؛ ابتدا محصول را از جشنواره خارج کنید.`);
+          throw conflict(`این محصول هنوز به جشنواره «${activeFestival.promo_name}» متصل است؛ ابتدا محصول را از جشنواره خارج کنید.`);
         }
       }
-      await client.query('UPDATE promotion_rules SET suspended_by_promotion_id = NULL, updated_at = now() WHERE id = $1', [id]);
+      await client.query('UPDATE promotion_rules SET active = true, suspended_by_promotion_id = NULL, updated_at = now() WHERE id = $1', [id]);
       await audit(client, user.id, 'promotion_rule.reactivated', 'promotion_rule', id,
-        { suspendedByPromotionId: existing.suspended_by_promotion_id }, { suspendedByPromotionId: null }, request.ip);
-      return { id, reactivated: true, active: existing.active };
+        { active: existing.active, suspendedByPromotionId: existing.suspended_by_promotion_id },
+        { active: true, suspendedByPromotionId: null }, request.ip);
+      return { id, reactivated: true, active: true };
     });
   });
 

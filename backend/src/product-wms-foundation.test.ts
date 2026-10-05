@@ -135,6 +135,10 @@ test('admin product: always kolbe-owned (spoof ignored), no stock on save, needs
     const needs = await app.inject({ method: 'GET', url: '/api/v1/admin/products/needs-setup', headers });
     assert.equal(needs.statusCode, 200);
     assert.ok((needs.json().items as { id: string }[]).some((p) => p.id === productId));
+    const directNeeds = await app.inject({ method: 'GET', url: `/api/v1/admin/products/needs-setup?productId=${productId}&limit=1`, headers });
+    assert.equal(directNeeds.statusCode, 200, directNeeds.body);
+    assert.deepEqual((directNeeds.json().items as { id: string }[]).map((item) => item.id), [productId],
+      'post-create WMS handoff addresses the same needs-setup row by productId');
 
     // §19 zero mode: configure with zero stock → state flips, balances exist with 0.
     const setup = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${productId}/inventory-setup`,
@@ -150,6 +154,8 @@ test('admin product: always kolbe-owned (spoof ignored), no stock on save, needs
     assert.equal(zeroBalances.rows[0].total, 0);  // … with REAL zero (0, not '—')
     const needs2 = await app.inject({ method: 'GET', url: '/api/v1/admin/products/needs-setup', headers });
     assert.ok(!(needs2.json().items as { id: string }[]).some((p) => p.id === productId));
+    const directNeeds2 = await app.inject({ method: 'GET', url: `/api/v1/admin/products/needs-setup?productId=${productId}`, headers });
+    assert.deepEqual(directNeeds2.json().items, [], 'direct WMS selection must no longer return a configured product');
 
     // configured products cannot be re-setup (changes go through normal WMS ops).
     const again = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${productId}/inventory-setup`,
@@ -265,7 +271,7 @@ test('opening stock: equal/per-variant/wholesale series through audited receipts
     await pool.query(`INSERT INTO series_templates(id, product_id, name, color_label) VALUES ($1,$2,'سری سبز','سبز')`, [tplId, p2.id]);
     await pool.query(
       `INSERT INTO series_template_items(id, series_template_id, variant_id, quantity_per_series) VALUES ($1,$2,$3,2),($4,$2,$5,2)`,
-      [randomUUID(), tplId, p2.variants[0], randomUUID(), tplId === tplId ? p2.variants[1] : p2.variants[1]]);
+      [randomUUID(), tplId, p2.variants[0], randomUUID(), p2.variants[1]]);
     const pv = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${p2.id}/inventory-setup`,
       headers: { ...headers, 'idempotency-key': `op2-${p2.id}` },
       payload: {

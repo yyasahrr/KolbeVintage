@@ -138,10 +138,10 @@ export function Select({ options, value, onChange, className, labels }: { option
   );
 }
 
-export function Switch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+export function Switch({ on, onToggle, label }: { on: boolean; onToggle: () => void; label?: string }) {
   return (
     <button
-      onClick={onToggle} role="switch" aria-checked={on}
+      onClick={onToggle} role="switch" aria-checked={on} aria-label={label}
       className={cn("relative h-6 w-11 rounded-full transition-colors", on ? "bg-[var(--kv-success)]" : "bg-[var(--kv-surface-3)]")}
     >
       <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all", on ? "right-[22px]" : "right-0.5")} />

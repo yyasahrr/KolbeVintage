@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { CalendarDays, Percent, RefreshCw, Sparkles, Tag } from "lucide-react";
+import { Percent, RefreshCw, Sparkles, Tag } from "lucide-react";
 import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Select } from "./primitives";
 import { PersianDatePicker } from "./persian-date-picker";
-import { promoApi } from "../data/api";
+import { promoApi, promotionRulesApi } from "../data/api";
 import { fmtMoney } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime, todayIso, addDaysIso } from "../data/persian-date";
 import { COUPON_SOURCE_LABEL, COUPON_TYPE_LABEL, PROMO_AUDIENCE_LABEL, PROMO_SCOPE_LABEL, labelOf } from "../data/contracts";
@@ -14,8 +14,8 @@ type Coupon = {
   usage_limit_total: number | null; ends_at: string; source: string; daily_start_time?: string | null;
 };
 type Festival = {
-  id: string; code: string; name: string; starts_at: string; ends_at: string;
-  discount_percent: number | null; discount_fixed_rial?: string | null; theme_palette_code: string | null; active: boolean;
+  id: string; code: string | null; name: string; starts_at: string | null; ends_at: string | null;
+  kind: string; channel: string; exclusive_policy: string; active: boolean;
 };
 
 /** Coupons and festivals — every visible term is Persian; API values stay English. */
@@ -35,17 +35,12 @@ export function PromoPanel() {
   });
   const percentInvalid = newCoupon.type === "percent" && (!newCoupon.percentValue || Number(newCoupon.percentValue) < 1 || Number(newCoupon.percentValue) > 100);
   const fixedInvalid = newCoupon.type === "fixed" && (!newCoupon.fixedValue || Number(newCoupon.fixedValue) <= 0);
-  const [newFestival, setNewFestival] = useState({
-    code: "", name: "", startsAt: todayIso(), endsAt: addDaysIso(todayIso(), 7),
-    discountPercent: "15", themePaletteCode: "", audience: "customer" as "customer" | "vip" | "wholesale",
-  });
-
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [c, f] = await Promise.all([promoApi.coupons(), promoApi.festivals()]);
+      const [c, p] = await Promise.all([promoApi.coupons(), promotionRulesApi.list()]);
       setCoupons(c.items as Coupon[]);
-      setFestivals(f.items as Festival[]);
+      setFestivals((p.promotions ?? []).filter((promotion) => promotion.kind === "festival") as unknown as Festival[]);
     } catch (e) { setError(e instanceof Error ? e.message : "خطا در بارگذاری کدهای تخفیف و جشنواره‌ها"); }
   }, []);
   useEffect(() => { void load(); }, [load]);
@@ -72,29 +67,22 @@ export function PromoPanel() {
     finally { setBusy(false); }
   };
 
-  const createFestival = async () => {
+  const toggleFestival = async (festival: Festival) => {
     try {
       setBusy(true); setError(null);
-      await promoApi.createFestival({
-        code: newFestival.code.trim(),
-        name: newFestival.name.trim(),
-        startsAt: newFestival.startsAt,
-        endsAt: newFestival.endsAt,
-        discountPercent: Number(newFestival.discountPercent) || undefined,
-        audience: [newFestival.audience],
-        scope: { productIds: [], categories: [] },
-        themePaletteCode: newFestival.themePaletteCode || null,
-        active: true,
-      });
-      setNotice("جشنواره ساخته شد.");
-      setNewFestival({ ...newFestival, code: "", name: "" });
+      await promotionRulesApi.updatePromotion(festival.id, { active: !festival.active });
+      setNotice(festival.active ? "تعریف مرکزی خاموش شد؛ قوانین معلق دوباره فعال نمی‌شوند." : "تعریف مرکزی روشن شد؛ وضعیت قوانین معلق تغییری نکرد.");
       await load();
-    } catch (e) { setError(e instanceof Error ? e.message : "خطا در ساخت جشنواره"); }
+    } catch (e) { setError(e instanceof Error ? e.message : "تغییر وضعیت جشنواره مرکزی ناموفق بود."); }
     finally { setBusy(false); }
   };
 
   if (error && !coupons) return <ErrorState message={error} onRetry={load} />;
-  if (!coupons || !festivals) return <LoadingState label="در حال بارگذاری کدهای تخفیف و جشنواره‌ها…" />;
+  if (!coupons || !festivals) return <LoadingState label="در حال بارگذاری کدهای تخفیف و Festivalهای مرکزی…" />;
+
+  const channelLabel = (channel: string) => channel === "retail" ? "خرده" : channel === "wholesale" ? "عمده" : "همه کانال‌ها";
+  const exclusivityLabel = (policy: string) => policy === "override_all" ? "بازنویسی کامل"
+    : policy === "festival_exclusive" ? "انحصاری با Festival" : "رقابت بر اساس اولویت";
 
   return (
     <div className="space-y-6 animate-[fadeUp_0.35s_ease]">
@@ -193,54 +181,31 @@ export function PromoPanel() {
       ) : (
         <>
           <Card className="p-4">
-            <p className="text-[13px] font-bold">ایجاد جشنواره</p>
-            <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">
-              جشنواره فعال (بازه زمانی + مخاطب) بر پالت رنگ سایت اولویت دارد: جشنواره → زمان‌بندی‌شده → دستی.
+            <p className="text-[13px] font-bold">جشنواره‌های قیمت‌گذاری مرکزی</p>
+            <p className="mt-1 text-[11.5px] leading-6 text-[var(--kv-muted)]">
+              این فهرست دقیقاً از رکوردهای canonical موتور قیمت‌گذاری خوانده می‌شود و همان گزینه‌ها در Product Studio، Product 360 و Resolver در دسترس‌اند. ساخت تعریف و قوانین محصول از «پروموشن‌های سرور» انجام می‌شود.
             </p>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <Field label="کد جشنواره" hint="حروف انگلیسی کوچک، عدد، - و _"><Input value={newFestival.code} onChange={(v) => setNewFestival({ ...newFestival, code: v.toLowerCase() })} placeholder="yald-1404" /></Field>
-              <Field label="نام جشنواره"><Input value={newFestival.name} onChange={(v) => setNewFestival({ ...newFestival, name: v })} placeholder="جشنواره یلدا" /></Field>
-              <PersianDatePicker label="شروع جشنواره" value={newFestival.startsAt} withTime onChange={(iso) => setNewFestival({ ...newFestival, startsAt: iso ?? newFestival.startsAt })} />
-              <PersianDatePicker label="پایان جشنواره" value={newFestival.endsAt} withTime onChange={(iso) => setNewFestival({ ...newFestival, endsAt: iso ?? newFestival.endsAt })} />
-              <Field label="درصد تخفیف"><Input value={newFestival.discountPercent} onChange={(v) => setNewFestival({ ...newFestival, discountPercent: v.replace(/\D/g, "") })} /></Field>
-              <Field label="کد پالت تم (اختیاری)" hint="برای اعمال رنگ جشنواره روی سایت"><Input value={newFestival.themePaletteCode} onChange={(v) => setNewFestival({ ...newFestival, themePaletteCode: v })} placeholder="kolbe-default" /></Field>
-              <Field label="مخاطب">
-                <Select
-                  options={["مشتری عادی", "ویژه", "عمده"]}
-                  value={labelOf(PROMO_AUDIENCE_LABEL, newFestival.audience)}
-                  onChange={(label) => {
-                    const entry = Object.entries(PROMO_AUDIENCE_LABEL).find(([, value]) => value === label);
-                    if (entry) setNewFestival({ ...newFestival, audience: entry[0] as typeof newFestival.audience });
-                  }}
-                />
-              </Field>
-              <div className="flex items-end"><Btn variant="accent" disabled={busy || newFestival.code.trim().length < 3 || newFestival.name.trim().length < 2} onClick={() => void createFestival()} icon={<CalendarDays size={15} />}>ایجاد جشنواره</Btn></div>
-            </div>
           </Card>
-
           <Card className="overflow-hidden">
-            <div className="px-4 py-3"><p className="text-[13px] font-bold">فهرست جشنواره‌ها ({fa(festivals.length)})</p></div>
+            <div className="px-4 py-3"><p className="text-[13px] font-bold">فهرست Festivalهای مرکزی ({fa(festivals.length)})</p></div>
             <div className="overflow-x-auto">
-              <table className="kv-table min-w-[900px] text-xs">
-                <thead>
-                  <tr><th>کد</th><th>نام</th><th>شروع</th><th>پایان</th><th>درصد تخفیف</th><th>پالت رنگ</th><th>وضعیت</th></tr>
-                </thead>
+              <table className="kv-table min-w-[780px] text-xs">
+                <thead><tr><th>کد</th><th>نام</th><th>کانال</th><th>شروع</th><th>پایان</th><th>سیاست انحصار</th><th>وضعیت</th><th>اقدام</th></tr></thead>
                 <tbody>
-                  {festivals.map((festival) => (
-                    <tr key={festival.id}>
-                      <td className="font-mono" dir="ltr">{festival.code}</td>
-                      <td className="font-bold">{festival.name}</td>
-                      <td className="tabular-nums">{formatPersianDateTime(festival.starts_at)}</td>
-                      <td className="tabular-nums">{formatPersianDateTime(festival.ends_at)}</td>
-                      <td className="tabular-nums">{festival.discount_percent === null ? "—" : `${fa(festival.discount_percent)}٪`}</td>
-                      <td className="font-mono" dir="ltr">{festival.theme_palette_code ?? "—"}</td>
-                      <td>{festival.active ? "فعال" : "غیرفعال"}</td>
-                    </tr>
-                  ))}
+                  {festivals.map((festival) => <tr key={festival.id}>
+                    <td className="font-mono" dir="ltr">{festival.code ?? "—"}</td>
+                    <td className="font-bold">{festival.name}</td>
+                    <td>{channelLabel(festival.channel)}</td>
+                    <td className="tabular-nums">{festival.starts_at ? formatPersianDateTime(festival.starts_at) : "—"}</td>
+                    <td className="tabular-nums">{festival.ends_at ? formatPersianDateTime(festival.ends_at) : "بدون پایان"}</td>
+                    <td>{exclusivityLabel(festival.exclusive_policy)}</td>
+                    <td>{festival.active ? "فعال" : "خاموش"}</td>
+                    <td><button type="button" disabled={busy} onClick={() => void toggleFestival(festival)} className="font-bold text-[var(--kv-accent)] underline">{festival.active ? "خاموش‌کردن" : "روشن‌کردن"}</button></td>
+                  </tr>)}
                 </tbody>
               </table>
             </div>
-            {festivals.length === 0 && <Empty title="جشنواره‌ای ثبت نشده است" desc="نخستین جشنواره را با بازه تاریخ جلالی بسازید تا روی سایت اعمال شود." />}
+            {festivals.length === 0 && <Empty title="Festival مرکزی ثبت نشده است" desc="ابتدا از تب «پروموشن‌های سرور» یک تعریف Festival بسازید." />}
           </Card>
         </>
       )}

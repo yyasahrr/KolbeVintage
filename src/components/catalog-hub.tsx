@@ -14,7 +14,7 @@ import { BadgePercent, PackagePlus, PartyPopper, RefreshCw } from "lucide-react"
 import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, WorkspaceModal } from "./primitives";
 import { MarketplaceReviewPanel } from "./marketplace-review-panel";
 import { DiscountManager } from "./discount-manager";
-import { promoApi, promotionRulesApi } from "../data/api";
+import { promotionRulesApi } from "../data/api";
 import { ProductStudio } from "../portals/admin-product";
 import { Product360 } from "./product-360";
 import {
@@ -48,6 +48,8 @@ const Pill = ({ map, value }: { map: Record<string, { label: string; cls: string
 
 export function CatalogHub({ flash }: { flash: F }) {
   const [sub, setSub] = useState<"define" | "needs-setup" | "review" | "all" | "archive">("define");
+  const [setupProductId, setSetupProductId] = useState<string | null>(null);
+  const consumeSetupTarget = useCallback(() => setSetupProductId(null), []);
   return (
     <div className="space-y-4">
       <Segmented
@@ -69,10 +71,10 @@ export function CatalogHub({ flash }: { flash: F }) {
               ادمین همیشه «کلبه» است (سمت سرور تضمین می‌شود).
             </p>
           </Card>
-          <ProductStudio flash={flash} onGoToSetup={() => setSub("needs-setup")} />
+          <ProductStudio flash={flash} onGoToSetup={(productId) => { setSetupProductId(productId); setSub("needs-setup"); }} />
         </div>
       )}
-      {sub === "needs-setup" && <NeedsSetupPanel flash={flash} />}
+      {sub === "needs-setup" && <NeedsSetupPanel flash={flash} initialProductId={setupProductId} onInitialProductOpened={consumeSetupTarget} />}
       {sub === "review" && <MarketplaceReviewPanel flash={flash} />}
       {sub === "all" && <AllProductsPanel mode="active" flash={flash} />}
       {sub === "archive" && <AllProductsPanel mode="archived" flash={flash} />}
@@ -82,7 +84,9 @@ export function CatalogHub({ flash }: { flash: F }) {
 
 /* ------------------------------ §16: needs-setup list ------------------------------ */
 
-function NeedsSetupPanel({ flash }: { flash: F }) {
+function NeedsSetupPanel({ flash, initialProductId, onInitialProductOpened }: {
+  flash: F; initialProductId: string | null; onInitialProductOpened: () => void;
+}) {
   const [rows, setRows] = useState<NeedsSetupRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [setupFor, setSetupFor] = useState<NeedsSetupRow | null>(null);
@@ -91,6 +95,20 @@ function NeedsSetupPanel({ flash }: { flash: F }) {
     catalogOpsApi.needsSetup({ limit: 100 }).then((r) => setRows(r.items)).catch((e) => setError(e instanceof Error ? e.message : "خطا"));
   }, []);
   useEffect(load, [load]);
+  useEffect(() => {
+    if (!initialProductId) return;
+    let alive = true;
+    catalogOpsApi.needsSetup({ productId: initialProductId, limit: 1 })
+      .then((r) => {
+        if (!alive) return;
+        const pending = r.items[0];
+        if (pending) setSetupFor(pending);
+        else setError("این محصول دیگر در وضعیت «نیازمند راه‌اندازی» نیست؛ فهرست را تازه کنید.");
+      })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : "دریافت محصول برای راه‌اندازی ناموفق بود."); })
+      .finally(() => { if (alive) onInitialProductOpened(); });
+    return () => { alive = false; };
+  }, [initialProductId, onInitialProductOpened]);
   if (error) return <ErrorState message={error} onRetry={load} />;
   if (!rows) return <LoadingState label="در حال دریافت فهرست..." />;
   return (
@@ -435,7 +453,7 @@ function BulkFestivalModal({ productIds, onClose, onDone }: {
   onClose: () => void;
   onDone: (result: Awaited<ReturnType<typeof promotionRulesApi.festivalBulk>>) => void;
 }) {
-  const [festivals, setFestivals] = useState<{ id: string; name: string; active: boolean; kind?: string }[] | null>(null);
+  const [festivals, setFestivals] = useState<{ id: string; name: string; active: boolean; kind?: string; ends_at?: string | null }[] | null>(null);
   const [pick, setPick] = useState("");
   const [dType, setDType] = useState<"percent" | "fixed_rial">("percent");
   const [dValue, setDValue] = useState("");
@@ -443,9 +461,10 @@ function BulkFestivalModal({ productIds, onClose, onDone }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    promoApi.festivals()
+    promotionRulesApi.list()
       .then((r) => {
-        const list = ((r.items ?? []) as { id: string; name: string; active: boolean; kind?: string }[]).filter((f) => f.active !== false);
+        const list = (r.promotions ?? []).filter((f) => f.kind === "festival" && f.active !== false
+          && (!f.ends_at || new Date(String(f.ends_at)).getTime() > Date.now())) as { id: string; name: string; active: boolean; kind?: string; ends_at?: string | null }[];
         setFestivals(list);
         if (list.length === 1) setPick(list[0]!.id);
       })
