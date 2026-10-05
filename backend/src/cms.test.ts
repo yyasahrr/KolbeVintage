@@ -56,6 +56,9 @@ test('CMS page builder, palettes and support widget are fully manageable', { ski
     const reordered = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/sections/reorder`,
       headers, payload: { sectionIds: [slider.json().id, hero.json().id, banner.json().id] } });
     assert.equal(reordered.statusCode, 200, reordered.body);
+    await pool.query('UPDATE cms_pages SET path=$2 WHERE id=$1',[pageId,`/cms-${suffix}`]);
+    const publish=await app.inject({method:'POST',url:`/api/v1/admin/cms/pages/${pageId}/publish`,headers});
+    assert.equal(publish.statusCode,200,publish.body);
     const publicPage = await app.inject({ method: 'GET', url: `/api/v1/site/pages/home-${suffix}` });
     assert.equal(publicPage.statusCode, 200, publicPage.body);
     // Hidden sections never reach the storefront.

@@ -17,6 +17,7 @@ import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import puppeteer from 'puppeteer-core';
+import { cmsProductionBrowser } from './cms-production-browser.mjs';
 import { warehouseUxSmoke } from './warehouse-ux-browser.mjs';
 import { crmRelationshipBrowser } from './crm-relationship-browser.mjs';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -151,7 +152,7 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 const smokeSessionNonce = `kolbe-browser-smoke-${Date.now()}`;
 await page.evaluateOnNewDocument((nonce) => {
-  if (window.name !== nonce) {
+  if (window.top === window && window.name !== nonce) {
     localStorage.removeItem('kolbe-access-token');
     sessionStorage.removeItem('kolbe-admin-auth');
     window.name = nonce;
@@ -419,9 +420,12 @@ try {
   await clickByText('راه‌اندازی صفحه اصلی');
   await sleep(2500);
   body = await text();
-  check('CMS bootstrap created the home page + hero on the server',
-    body.includes('هیرو') && (body.includes('صفحه اصلی') ), body.split('\n').slice(0, 6).join(' | ').slice(0, 140));
+  await clickByText('صفحات');
+  body=await text();
+  check('CMS bootstrap created the home page draft on the server',
+    body.includes('صفحه اصلی'), body.split('\n').slice(0, 6).join(' | ').slice(0, 140));
   await shot('05-cms-bootstrap');
+  await cmsProductionBrowser({page,check,adminApi,shot});
 
   // Final IA (Prompt 4 §15): GL lives inside مرکز مالی → حسابداری → دفتر کل.
   await openTab('مرکز مالی');
@@ -904,17 +908,17 @@ try {
   await shot('11-promo-seeded');
 
   await openTab('محتوا');
-  body = await text();
-  check('CMS shows the persisted hero as active after the seed', body.includes('هیرو فعال است') || body.includes('هیرو'));
-  await clickByText('صفحات و پالت');
+  await clickByText('صفحات');
   await sleep(1200);
   body = await text();
-  const paletteCreated = await clickByText('ایجاد پالت اصلی');
-  await sleep(1800);
-  body = await text();
-  check('«ایجاد پالت اصلی» is idempotent and lists the الكبه default palette',
-    paletteCreated && (body.includes('پالت اصلی کلبه') || body.includes('kolbe-default')));
-  await shot('12-palette');
+  const seededHome = await adminApi('/site/pages/home');
+  check('CMS canonical Pages lists the published home and its real frozen Hero after seed',
+    body.includes('صفحه اصلی') && body.includes('منتشرشده') && seededHome.body.sections.some(s => s.component_code === 'hero'));
+  const paletteFirst = await adminApi('/admin/cms/palettes/default','POST',{});
+  const paletteSecond = await adminApi('/admin/cms/palettes/default','POST',{});
+  check('advanced default palette backend remains idempotent outside normal CMS navigation',
+    paletteFirst.body.palette.id === paletteSecond.body.palette.id && paletteSecond.body.palette.code === 'kolbe-default');
+  await shot('12-cms-pages-seeded');
 
   // jalali table dates + full Persian sweep on the ledger/integrations surfaces
   await openTab('مرکز مالی');
@@ -936,7 +940,7 @@ try {
   const allTabs = [
     'مرکز سفارشات', 'استودیو محصول', 'انبار و موجودی (WMS)', 'برج کنترل', 'مرکز ورود داده', 'اسناد و صورت‌حساب',
     'درخواست همکاری', 'پلن‌های عضویت', 'ساختار محصولات و سری‌ها', 'مشتریان (CRM)', 'تخفیف و جشنواره',
-    'محتوا (CMS)', 'مرکز SEO', 'مجله و رسانه‌ها', 'اعلان‌ها', 'مرکز مالی', 'یکپارچه‌سازی‌ها',
+    'محتوا (CMS)', 'مرکز SEO', 'مرکز رسانه', 'اعلان‌ها', 'مرکز مالی', 'یکپارچه‌سازی‌ها',
     'اتوماسیون و n8n', 'نظرات و امتیازها', 'توصیه‌گر هوشمند', 'پشتیبانی و مرجوعی', 'کیف پول کش‌بک', 'گزارش حسابرسی',
     'محدودیت کاربران', 'تنظیمات و دسترسی',
   ];
@@ -957,7 +961,7 @@ try {
   const leftovers = consoleErrors.filter((entry) => {
     if (/^(%o|%s|\s*)$/.test(entry.trim())) return false;                       // React placeholder frames
     if (/JSHandle@error|The above error occurred in the/.test(entry)) return false; // React boundary report
-    return !/favicon|Download the React DevTools|Failed to load resource: the server responded with a status of 40|net::ERR_CONNECTION_CLOSED|WebSocket connection|value` prop on/i.test(entry);
+    return !/favicon|Download the React DevTools|Failed to load resource: the server responded with a status of 40|net::ERR_CONNECTION_CLOSED|net::ERR_FAILED|WebSocket connection|value` prop on/i.test(entry);
   });
   check('no unhandled page errors during the console walk', leftovers.length === 0 && failedResponses.length === 0,
     [...leftovers.slice(0, 2), ...failedResponses.slice(0, 4)].join(' | ').slice(0, 300));

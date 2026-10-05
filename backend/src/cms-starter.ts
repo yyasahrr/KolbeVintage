@@ -18,16 +18,16 @@ const STARTER_SQL: string[] = [
    'none', 100, false)
 ON CONFLICT (id) DO NOTHING`,
   `INSERT INTO cms_pages(id, code, title, path, page_type, status, description, seo, active) VALUES
-  ('8a770000-0000-4000-8000-000000000001', 'about', 'درباره کلبه وینتیج', '/about', 'about', 'published',
+  ('8a770000-0000-4000-8000-000000000001', 'about', 'درباره کلبه وینتیج', '/about', 'about', 'draft',
    'داستان شکل‌گیری کلبه وینتیج، فلسفه طراحی، اصالت پارچه و شبکه تأمین‌کنندگان منتخب',
    '{"title":"درباره ما | کلبه وینتیج","description":"آشنایی با داستان برند کلبه وینتیج، ارزش‌ها و استاندارد کیفیت پوشاک"}'::jsonb, true),
-  ('8a770000-0000-4000-8000-000000000002', 'vibe-old-money', 'لندینگ استایل Old Money', '/vibe/old-money', 'vibe', 'published',
+  ('8a770000-0000-4000-8000-000000000002', 'vibe-old-money', 'لندینگ استایل Old Money', '/vibe/old-money', 'vibe', 'draft',
    'راهنمای کامل و محصولات منتخب استایل Old Money در کلبه وینتیج',
    '{"title":"استایل Old Money | کلبه وینتیج","description":"پالت رنگ کرم و سرمه‌ای، کت‌های پشمی و پیراهن‌های کلاسیک"}'::jsonb, true),
-  ('8a770000-0000-4000-8000-000000000003', 'vibe-dark-academia', 'لندینگ استایل Dark Academia', '/vibe/dark-academia', 'vibe', 'published',
+  ('8a770000-0000-4000-8000-000000000003', 'vibe-dark-academia', 'لندینگ استایل Dark Academia', '/vibe/dark-academia', 'vibe', 'draft',
    'گزیده پوشاک پاییزی و زمستانی با زیبایی‌شناسی Dark Academia',
    '{"title":"استایل Dark Academia | کلبه وینتیج","description":"ترنچ‌کت، بلیزر پشمی و شلوارهای پیلی‌دار با تناژ گرم و تیره"}'::jsonb, true),
-  ('8a770000-0000-4000-8000-000000000004', 'vip-lead', 'ثبت‌نام زودهنگام کالکشن اختصاصی', '/landing/vip-club', 'lead_generation', 'published',
+  ('8a770000-0000-4000-8000-000000000004', 'vip-lead', 'ثبت‌نام زودهنگام کالکشن اختصاصی', '/landing/vip-club', 'lead_generation', 'draft',
    'صفحه جذب سرنخ متصل به CRM برای دسترسی زودهنگام به کالکشن‌های محدود',
    '{"title":"باشگاه مشتریان ویژه | کلبه وینتیج"}'::jsonb, true)
 ON CONFLICT (code) DO NOTHING`,

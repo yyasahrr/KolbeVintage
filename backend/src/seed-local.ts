@@ -503,6 +503,8 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     if (updated.status !== 200) throw new Error(`home hero image: ${updated.status} ${JSON.stringify(updated.body)}`);
     step('تصویر هیرو صفحهٔ اصلی ثبت شد.');
   }
+  const home=await pool.query("SELECT id FROM cms_pages WHERE code='home'");
+  if(home.rows[0]) {const publication=await call(app,'POST',`/api/v1/admin/cms/pages/${home.rows[0].id}/publish`,{token:adminToken,payload:{changeSummary:'Demo fixture publication'}});if(publication.status!==200)throw new Error(`CMS demo publication: ${JSON.stringify(publication.body)}`);}
   const categories = await pool.query('SELECT id,slug,image_url,cover_url FROM cms_categories');
   let categoryImagesAdded = 0;
   for (const category of categories.rows) {

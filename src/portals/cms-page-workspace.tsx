@@ -1,0 +1,76 @@
+import { useEffect, useRef, useState } from 'react';
+import { studioApi, type RegistryComponent, type SitePage } from '../data/experience-api';
+import { Btn, Empty, ErrorState, Field, Input, LoadingState, Segmented, Select, WorkspaceModal } from '../components/primitives';
+import { PreviewFrame } from '../components/cms-preview-frame';
+import { PersianDatePicker } from '../components/persian-date-picker';
+import { formatPersianDateTime } from '../data/persian-date';
+import { clientValidate, FieldInput, fieldsOf, loadPickers, type PickerData } from './admin-section-editor';
+import { cmsError, cmsWorkspaceApi, PAGE_STATUS, type DraftPage, type DraftSection, type Readiness } from './cms-api';
+import { cn } from '../utils/cn';
+
+export function PageWorkspace({pageId,flash,onClose}:{pageId:string;flash:(m:string)=>void;onClose:()=>void}) {
+  const [draft,setDraft]=useState<DraftPage|null>(null),[registry,setRegistry]=useState<RegistryComponent[]>([]),[pickers,setPickers]=useState<PickerData|null>(null);
+  const [error,setError]=useState(''),[saveError,setSaveError]=useState(''),[saving,setSaving]=useState(false),[change,setChange]=useState(0),[saved,setSaved]=useState(0);
+  const [selected,setSelected]=useState(''),[panel,setPanel]=useState<'sections'|'preview'|'properties'>('sections'),[device,setDevice]=useState<'desktop'|'tablet'|'mobile'>('desktop');
+  const [preview,setPreview]=useState<SitePage|null>(null),[add,setAdd]=useState(''),[health,setHealth]=useState<Readiness|null>(null),[publishOpen,setPublishOpen]=useState(false),[busy,setBusy]=useState(false);
+  const [versions,setVersions]=useState<Awaited<ReturnType<typeof studioApi.versions>>['items']|null>(null),[start,setStart]=useState<string|null>(null),[end,setEnd]=useState<string|null>(null),[summary,setSummary]=useState('');
+  const current=useRef<DraftPage|null>(null),generation=useRef(0),persisted=useRef(0),inflight=useRef<Promise<boolean>|null>(null),mounted=useRef(true);
+  const load=async()=>{setError('');try{const [d,r,p]=await Promise.all([cmsWorkspaceApi.draft(pageId),studioApi.registry(),loadPickers()]);current.current=d;setDraft(d);setRegistry(r.items);setPickers(p);generation.current=0;persisted.current=0;setChange(0);setSaved(0);setSaveError('');setSelected(d.sections[0]?.id??'');setPreview(await studioApi.preview(pageId));}catch(e){setError(cmsError(e));}};
+  useEffect(()=>{mounted.current=true;void load();return()=>{mounted.current=false;};},[pageId]);
+  const edit=(next:DraftPage)=>{current.current=next;setDraft(next);generation.current++;setChange(generation.current);setSaveError('');setHealth(null);};
+  const save=async():Promise<boolean>=>{
+    if(inflight.current)return inflight.current;
+    if(!current.current||generation.current===persisted.current)return true;
+    const d=current.current,g= generation.current;
+    setSaving(true);setSaveError('');
+    const promise=(async()=>{try{
+      const result=await cmsWorkspaceApi.save(d);
+      if(!mounted.current)return false;
+      persisted.current=g;setSaved(g);
+      const next=generation.current===g?{...result,permissions:current.current?.permissions}:{...current.current!,draft_revision:result.draft_revision};current.current=next;setDraft(next);
+      try{setPreview(await studioApi.preview(pageId));}catch(e){setError(`پیش‌نمایش: ${cmsError(e)}`);}
+      return true;
+    }catch(e){if(mounted.current)setSaveError(cmsError(e));return false;}finally{inflight.current=null;if(mounted.current)setSaving(false);}})();inflight.current=promise;return promise;
+  };
+  useEffect(()=>{if(change===saved||saving||saveError)return;const t=window.setTimeout(()=>void save(),750);return()=>window.clearTimeout(t);},[change,saved,saving,saveError]);
+  useEffect(()=>{const before=(e:BeforeUnloadEvent)=>{if(generation.current!==persisted.current){e.preventDefault();e.returnValue='';}};window.addEventListener('beforeunload',before);return()=>window.removeEventListener('beforeunload',before);},[]);
+  const close=()=>{if(generation.current!==persisted.current||inflight.current){setSaveError('تغییرات هنوز ذخیره نشده‌اند؛ ذخیره را دوباره انجام دهید یا نسخهٔ سرور را بارگذاری کنید.');return;}onClose();};
+  const run=async(fn:()=>Promise<void>)=>{setBusy(true);try{await fn();}catch(e){setSaveError(cmsError(e));}finally{setBusy(false);}};
+  const updateSection=(id:string,next:Partial<DraftSection>)=>{if(current.current?.permissions?.includes('cms:edit'))edit({...current.current,sections:current.current.sections.map(s=>s.id===id?{...s,...next}:s)});};
+  const move=(id:string,delta:number)=>{if(!current.current?.permissions?.includes('cms:edit'))return;const list=[...current.current.sections];const i=list.findIndex(s=>s.id===id),j=i+delta;if(j<0||j>=list.length)return;[list[i],list[j]]=[list[j]!,list[i]!];edit({...current.current,sections:list.map((s,position)=>({...s,position:position+1}))});};
+  const canEdit=draft?.permissions?.includes('cms:edit')===true,canPublish=draft?.permissions?.includes('cms:publish')===true;
+  const section=draft?.sections.find(s=>s.id===selected),component=registry.find(c=>c.code===section?.component_code);
+  const fields=fieldsOf(component),validation=section?clientValidate(fields,section.payload):{};
+  const openPublish=()=>void run(async()=>{if(!await save()||generation.current!==persisted.current)return;const h=await cmsWorkspaceApi.readiness(pageId);setHealth(h);setPublishOpen(true);});
+  return <WorkspaceModal open onClose={close} title={draft?`ویرایش «${draft.title}»`:'ویرایش صفحه'} subtitle="پیش‌نویس در سرور ذخیره می‌شود؛ سایت عمومی فقط نسخهٔ منتشرشده را نمایش می‌دهد.">
+    {!draft?(error?<ErrorState message={error} onRetry={()=>void load()}/>:<LoadingState/>):<div className="min-w-0 space-y-4">
+      <div className="flex flex-wrap items-center gap-2"><span className="text-xs">{PAGE_STATUS[draft.status]} · <span role="status">{saving?'در حال ذخیره…':saveError?'ذخیره انجام نشد':change!==saved?'تغییرات ذخیره‌نشده':'ذخیره شد'}</span></span><Btn size="sm" variant="soft" disabled={!canEdit||saving||busy} onClick={()=>void save()}>ذخیره پیش‌نویس</Btn><Btn size="sm" variant="soft" disabled={saving||busy} onClick={()=>void run(async()=>{if(await save()&&generation.current===persisted.current){setPreview(await studioApi.preview(pageId));setPanel('preview');}})}>پیش‌نمایش</Btn><Btn size="sm" variant="soft" disabled={busy||saving||change!==saved} onClick={()=>void run(async()=>setVersions((await studioApi.versions(pageId)).items))}>تاریخچه</Btn><Btn size="sm" variant="accent" disabled={!canPublish||busy||saving||!!saveError||change!==saved} onClick={openPublish}>بررسی و انتشار</Btn></div>
+      {!!pickers?.errors.length&&<ErrorState message="برخی فهرست‌های انتخاب بارگذاری نشدند" onRetry={()=>void loadPickers().then(setPickers)}/>}
+      {saveError&&<div role="alert" className="space-y-2 rounded-lg border border-[var(--kv-danger)] p-3 text-sm"><p>{saveError}</p><div className="flex flex-wrap gap-2"><Btn size="sm" disabled={saving} onClick={()=>void save()}>تلاش دوباره</Btn><Btn size="sm" disabled={saving} variant="soft" onClick={()=>void load()}>بارگذاری نسخهٔ سرور و کنارگذاشتن تغییرات ذخیره‌نشده</Btn></div></div>}
+      {!canEdit&&<p className="text-sm">دسترسی شما فقط برای مشاهدهٔ پیش‌نویس است.</p>}
+      <div className="xl:hidden"><Segmented options={[{v:'sections' as const,label:'بخش‌ها'},{v:'preview' as const,label:'پیش‌نمایش'},{v:'properties' as const,label:'ویژگی‌ها'}]} value={panel} onChange={setPanel}/></div>
+      <div className="grid min-w-0 gap-4 md:grid-cols-[200px_minmax(0,1fr)] xl:grid-cols-[210px_minmax(0,1fr)_320px]">
+        <aside className={cn('min-w-0 space-y-3',panel!=='sections'&&'hidden md:block',panel==='properties'&&'md:hidden xl:block')}>
+          <Field label="عنوان صفحه"><Input value={draft.title} onChange={title=>{if(canEdit)edit({...draft,title});}}/></Field><Field label="مسیر"><Input value={draft.path} onChange={path=>{if(canEdit)edit({...draft,path});}}/></Field>
+          <h3 className="text-sm font-bold">بخش‌های صفحه</h3>
+          {draft.sections.map((s,i)=><div key={s.id} draggable onDragStart={e=>e.dataTransfer.setData('text/plain',s.id)} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const from=draft.sections.findIndex(x=>x.id===e.dataTransfer.getData('text/plain'));if(from>=0)move(draft.sections[from]!.id,i-from);}} className={cn('rounded-lg border border-[var(--kv-line)] p-2',selected===s.id&&'bg-[var(--kv-surface-2)]')}>
+            <button className="w-full break-words text-right text-sm font-bold" onClick={()=>{setSelected(s.id);setPanel('properties');}}>{s.title||registry.find(c=>c.code===s.component_code)?.title||'بخش'}</button><div className="mt-2 flex flex-wrap gap-1"><Btn size="sm" variant="ghost" disabled={i===0} onClick={()=>move(s.id,-1)}>بالا</Btn><Btn size="sm" variant="ghost" disabled={i===draft.sections.length-1} onClick={()=>move(s.id,1)}>پایین</Btn><Btn size="sm" variant="ghost" onClick={()=>updateSection(s.id,{visible:!s.visible})}>{s.visible?'پنهان':'نمایش'}</Btn><Btn size="sm" variant="ghost" disabled={!canEdit} onClick={()=>edit({...draft,sections:draft.sections.filter(x=>x.id!==s.id)})}>حذف</Btn></div>
+          </div>)}
+          <Field label="افزودن بخش"><Select options={['انتخاب نوع بخش',...registry.filter(c=>c.active!==false).map(c=>c.title.replace(/\s*\([^)]*\)/g,''))]} value={registry.find(c=>c.code===add)?.title.replace(/\s*\([^)]*\)/g,'')??'انتخاب نوع بخش'} onChange={label=>setAdd(registry.find(c=>c.title.replace(/\s*\([^)]*\)/g,'')===label)?.code??'')}/></Field>
+          <Btn size="sm" disabled={!canEdit||!add} onClick={()=>{const c=registry.find(c=>c.code===add)!;const payload:Record<string,unknown>={};for(const f of fieldsOf(c))if(f.default!==undefined&&f.default!=='')payload[f.key]=f.default;if(fieldsOf(c).some(f=>f.key==='title'))payload.title=c.title.replace(/\s*\([^)]*\)/g,'');const id=crypto.randomUUID();edit({...draft,sections:[...draft.sections,{id,component_code:c.code,title:c.title.replace(/\s*\([^)]*\)/g,''),payload,visible:true,position:draft.sections.length+1,variant:c.variants?.[0]??'default',section_theme:'inherit',style_overrides:{},responsive_config:{}}]});setSelected(id);setPanel('properties');setAdd('');}}>+ افزودن بخش</Btn>
+        </aside>
+        <section className={cn('min-w-0 space-y-3',panel!=='preview'&&'hidden md:block',panel==='properties'&&'md:hidden xl:block')}><Segmented options={[{v:'desktop' as const,label:'دسکتاپ'},{v:'tablet' as const,label:'تبلت'},{v:'mobile' as const,label:'موبایل'}]} value={device} onChange={setDevice}/>{error&&<ErrorState message={error} onRetry={()=>void run(async()=>{setPreview(await studioApi.preview(pageId));setError('');})}/>}<p className="text-xs text-[var(--kv-muted)]">پیش‌نمایش آخرین پیش‌نویس ذخیره‌شده</p>{preview&&<PreviewFrame page={preview} device={device}/>}</section>
+        <section className={cn('min-w-0 space-y-3','md:col-span-2 xl:col-span-1',panel!=='properties'&&'hidden xl:block')}>
+          {!section?<Empty title="بخشی انتخاب کنید" desc="ویژگی‌های بخش انتخاب‌شده اینجا نمایش داده می‌شود."/>:<><h3 className="text-sm font-bold">ویژگی‌های بخش</h3><Field label="عنوان داخلی"><Input value={section.title} onChange={title=>updateSection(section.id,{title})}/></Field>
+          {fields.filter(f=>!f.showIf||Object.entries(f.showIf).every(([k,v])=>String(section.payload[k]??fields.find(x=>x.key===k)?.default??'')===v)).map(f=><div key={f.key}><FieldInput field={f} value={section.payload[f.key]} onChange={v=>{const p={...section.payload};if(v===undefined||v==='')delete p[f.key];else p[f.key]=v;updateSection(section.id,{payload:p});}} pickers={pickers} flash={flash}/>{validation[f.key]&&<p role="alert" className="text-xs text-[var(--kv-danger)]">{validation[f.key]}</p>}</div>)}
+          {(component?.presetDefinitions?.length??0)>0&&<Field label="چیدمان آماده"><Select options={['انتخاب کنید',...component!.presetDefinitions.map((_,i)=>`چیدمان ${i+1}`)]} value="انتخاب کنید" onChange={label=>{const i=Number(label.replace('چیدمان ',''))-1,p=component!.presetDefinitions[i];if(p)updateSection(section.id,{variant:p.variant,payload:{...section.payload,...p.payload},style_overrides:p.style_overrides,responsive_config:p.responsive_config});}}/></Field>}
+          {component?.variants?.length&&<Field label="سبک نمایش"><Select options={component.variants.map((_,i)=>`سبک ${i+1}`)} value={`سبک ${Math.max(0,component.variants.indexOf(section.variant))+1}`} onChange={label=>updateSection(section.id,{variant:component.variants[Number(label.replace('سبک ',''))-1]!})}/></Field>}</>}
+        </section>
+      </div>
+    </div>}
+    <WorkspaceModal open={publishOpen} onClose={()=>{if(!busy)setPublishOpen(false);}} title="بررسی پیش از انتشار"><div className="mx-auto max-w-2xl space-y-4">
+      <h3 className="font-bold">{health?.errors.length?'دارای خطا':health?.warnings.length?'نیازمند بررسی':'آماده انتشار'}</h3>{health?.errors.map((e,i)=><p key={i} role="alert" className="text-sm text-[var(--kv-danger)]">{e}</p>)}{health?.warnings.map((e,i)=><p key={i} className="text-sm">{e}</p>)}<h4 className="font-bold">تفاوت با نسخهٔ منتشرشده</h4><ul className="list-inside list-disc space-y-2 text-sm">{health?.diff.map((d,i)=><li key={i}>{d}</li>)}</ul>{health?.diff.length===0&&<p className="text-sm">محتوا تغییری نکرده است.</p>}<PersianDatePicker label="شروع انتشار (اختیاری)" withTime value={start} onChange={setStart}/><PersianDatePicker label="پایان انتشار (اختیاری)" withTime value={end} onChange={setEnd}/><Field label="خلاصه تغییرات"><Input value={summary} onChange={setSummary}/></Field>{saveError&&<p role="alert" className="text-sm text-[var(--kv-danger)]">{saveError}</p>}<Btn variant="accent" disabled={!canPublish||busy||!health?.ready||!!saveError||change!==saved} onClick={()=>void run(async()=>{const r=await studioApi.publish(pageId,{scheduledStartAt:start,scheduledEndAt:end,changeSummary:summary,expectedRevision:health!.revision});flash(r.status==='scheduled'?'انتشار زمان‌بندی شد':'صفحه منتشر شد');setPublishOpen(false);await load();})}>{busy?'در حال انتشار…':start?'تأیید زمان‌بندی':'تأیید انتشار فوری'}</Btn>
+    </div></WorkspaceModal>
+    <WorkspaceModal open={versions!==null} onClose={()=>{if(!busy)setVersions(null);}} title="تاریخچه نسخه‌ها"><div className="space-y-3">{!versions?.length&&<Empty title="هنوز نسخه‌ای منتشر نشده" desc="هر انتشار یک نسخهٔ مستقل ثبت می‌کند."/>}{versions?.map(v=><article key={v.id} className="space-y-2 border-b border-[var(--kv-line)] py-3"><b>نسخه {v.version.toLocaleString('fa-IR')}</b><p className="text-xs">{formatPersianDateTime(v.created_at)} · {v.changed_by_name??'—'} · {v.change_summary??'بدون خلاصه'}</p><div className="flex gap-2"><Btn size="sm" disabled={busy} onClick={()=>void run(async()=>{setPreview(await cmsWorkspaceApi.versionPreview(pageId,v.version));setPanel('preview');setVersions(null);})}>پیش‌نمایش نسخه</Btn><Btn size="sm" variant="soft" disabled={!canEdit||busy} onClick={()=>void run(async()=>{await studioApi.restore(pageId,v.version);flash('نسخه به پیش‌نویس بازگردانده شد؛ انتشار جداگانه لازم است');setVersions(null);await load();})}>بازگردانی به پیش‌نویس</Btn></div></article>)}</div></WorkspaceModal>
+  </WorkspaceModal>;
+}

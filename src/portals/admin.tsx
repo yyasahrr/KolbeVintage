@@ -256,7 +256,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { g: "محتوا و رشد" },
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
     { v: "seo", label: "مرکز SEO", icon: <Globe2 size={17} /> },
-    { v: "media", label: "مجله و رسانه‌ها", icon: <FileVideo2 size={17} /> },
+    { v: "media", label: "مرکز رسانه", icon: <FileVideo2 size={17} /> },
     { v: "recs", label: "توصیه‌گر هوشمند", icon: <Sparkles size={17} /> },
     { g: "سیستم" },
     { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
@@ -498,7 +498,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             { v: "server-rules", label: "پروموشن‌های سرور", node: <AdminServerOrders request={request} only="server-promotions" /> },
           ]} />)}
           {tab === "seo" && moduleBoundary("مرکز SEO", <SEOCenter flash={flash} request={request} />)}
-          {tab === "media" && moduleBoundary("مجله و رسانه‌ها", <ContentMediaCenter flash={flash} request={request} />)}
+          {tab === "media" && moduleBoundary("مرکز رسانه", <ContentMediaCenter flash={flash} request={request} />)}
 
           {/* ---------- Support ---------- */}
           {tab === "audit" && <AuditLogPanel />}

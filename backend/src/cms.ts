@@ -87,7 +87,7 @@ const DEFAULT_HERO = {
 const BASE_SECTIONS: { componentCode: string; title: string; payload: Record<string, unknown>; position: number }[] = [
   { componentCode: 'hero', title: 'هیرو صفحه اصلی', payload: DEFAULT_HERO, position: 0 },
   { componentCode: 'product_slider', title: 'محصولات منتخب', payload: { heading: 'منتخب کلبه', limit: 8 }, position: 1 },
-  { componentCode: 'cta', title: 'دعوت به خرید عمده', payload: { text: 'تأمین عمده پوشاک با شرایط ویژه', ctaLabel: 'درخواست همکاری', ctaTarget: 'wholesale' }, position: 2 },
+  { componentCode: 'cta', title: 'دعوت به خرید عمده', payload: { title: 'تأمین عمده پوشاک با شرایط ویژه', cta: 'درخواست همکاری', target: 'vip' }, position: 2 },
   // Component library on a fresh DB (Req 213): every block is bound to live commerce data, never copies.
   { componentCode: 'category_card', title: 'دسته‌بندی‌ها', payload: { title: 'دسته‌بندی‌های کلبه', template: 'editorial', columns: 3 }, position: 3 },
   { componentCode: 'product_grid', title: 'تازه‌رسیده‌ها', payload: { title: 'تازه‌رسیده‌ها', subtitle: 'جدیدترین مدل‌های موجود در انبار', collectionCode: 'new-arrivals', limit: 8 }, position: 4 },
@@ -168,8 +168,8 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
       if (!pageId) {
         pageId = randomUUID();
         await client.query(
-          `INSERT INTO cms_pages(id,code,title,path,description,seo,active)
-           VALUES ($1,'home','صفحه اصلی','/','صفحه اصلی فروشگاه کلبه وینتیج',$2,true)`,
+          `INSERT INTO cms_pages(id,code,title,path,description,seo,active,status)
+           VALUES ($1,'home','صفحه اصلی','/','صفحه اصلی فروشگاه کلبه وینتیج',$2,true,'draft')`,
           [pageId, JSON.stringify({ title: 'کلبه وینتیج', description: 'پوشاک انتخابی کلبه وینتیج' })]);
         await audit(client, user.id, 'cms.page_created', 'cms_page', pageId, undefined, { code: 'home', source: 'bootstrap' }, request.ip);
         pageCreated = true;
@@ -253,10 +253,12 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
 
   app.get('/api/v1/admin/cms/pages', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'cms:read');
-    const rows = await pool.query(
-      `SELECT p.*, (SELECT count(*)::int FROM cms_sections s WHERE s.page_id = p.id) AS section_count
-       FROM cms_pages p ORDER BY p.code`);
-    return { items: rows.rows };
+    const q=z.object({search:z.string().max(160).default(''),limit:z.coerce.number().int().min(1).max(250).default(100),offset:z.coerce.number().int().min(0).max(100000).default(0)}).parse(request.query);
+    const rows=await pool.query(`SELECT p.*, (SELECT count(*)::int FROM cms_sections s WHERE s.page_id=p.id) AS section_count,
+      p.draft_revision IS DISTINCT FROM (SELECT v.draft_revision FROM cms_page_versions v WHERE v.page_id=p.id ORDER BY v.version DESC LIMIT 1) AS unpublished_changes
+      FROM cms_pages p WHERE title ILIKE $1 OR path ILIKE $1 ORDER BY updated_at DESC,id LIMIT $2 OFFSET $3`,[`%${q.search}%`,q.limit,q.offset]);
+    const total=await one<{n:number}>(pool,'SELECT count(*)::int AS n FROM cms_pages WHERE title ILIKE $1 OR path ILIKE $1',[`%${q.search}%`]);
+    return {items:rows.rows,total:total!.n};
   });
 
   app.post('/api/v1/admin/cms/pages', async (request, reply) => {
@@ -264,7 +266,7 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
     const body = pageBody.parse(request.body);
     const id = randomUUID();
     await transaction(pool, async (client) => {
-      await client.query(`INSERT INTO cms_pages(id,code,title,path,description,seo,active) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6)`,
+      await client.query(`INSERT INTO cms_pages(id,code,title,path,description,seo,active,status) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6,'draft')`,
         [id, body.code, body.title, body.path, body.description, body.active]);
       // Req 235: SEO lives in the SEO Domain, never in cms_pages.
       const seo = legacySeoToWrite(body.seo);

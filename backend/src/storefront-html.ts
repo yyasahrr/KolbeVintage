@@ -70,7 +70,7 @@ export function registerStorefrontHtmlRoutes(app: FastifyInstance, pool: DbPool,
   app.get('/journal/:slug', async (request, reply) => {
     const { slug } = request.params as { slug: string };
     const post = await one<{ id: string; title: string; excerpt: string; body: string; seo_title: string; seo_description: string }>(pool,
-      `SELECT id,title,excerpt,body,seo_title,seo_description FROM editorial_posts
+      `SELECT id,title,excerpt,body,seo_title,seo_description FROM editorial_live
         WHERE slug=$1 AND status='published' AND (published_at IS NULL OR published_at<=now())`, [slug]);
     if (!post) return reply.code(404).send();
     const center = await one<{ seo_title: string; meta_description: string; canonical_url: string; is_indexable: boolean }>(pool,

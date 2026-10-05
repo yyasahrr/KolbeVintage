@@ -14,27 +14,30 @@ import { cn } from "../utils/cn";
    tokens and responsive settings. The server re-validates everything on save. */
 
 type F = (m: string) => void;
-type PickerData = {
+export type PickerData = {
+  errors: string[];
   collections: { code: string; title: string }[]; campaigns: { id: string; name: string }[]; categories: { name: string; slug: string }[];
   vibes: { slug: string; name: string }[]; providers: { code: string; title: string }[]; products: { id: string; name: string }[];
   images: { id: string; title: string; url: string }[]; videos: { id: string; title: string; url: string }[]; pages: { code: string; title: string }[];
 };
 let pickerCache: Promise<PickerData> | null = null;
-function loadPickers(): Promise<PickerData> {
+export function loadPickers(): Promise<PickerData> {
   if (!pickerCache) {
-    const safe = <T,>(p: Promise<T>, fallback: T) => p.catch(() => fallback);
+    const errors: string[]=[];
+    const safe = <T,>(p: Promise<T>, fallback: T) => p.catch((e:unknown) => { errors.push(e instanceof Error?e.message:'بارگذاری یکی از فهرست‌های انتخاب انجام نشد'); return fallback; });
     pickerCache = Promise.all([
       safe(studioApi.collections(), { items: [] }), safe(studioApi.festivals(), { items: [] }), safe(siteApi.categories(), { items: [] }), safe(siteApi.vibes(), { items: [] }),
       safe(siteApi.installmentProviders(), { items: [] }), safe(publicApi.get<{ items: { id: string; name: string }[] }>("/products?limit=100"), { items: [] }),
-      safe(studioApi.assets({ type: "image" }), { items: [], uploaders: [] }), safe(studioApi.assets({ type: "video" }), { items: [], uploaders: [] }), safe(studioApi.pages(), { items: [] }),
+      safe(studioApi.assets({ type: "image" }), { items: [], uploaders: [] }), safe(studioApi.assets({ type: "video" }), { items: [], uploaders: [] }), safe(studioApi.pages(), { items: [], total:0 }),
     ]).then(([c, f, cat, v, prov, prod, img, vid, pages]) => ({
-      collections: c.items.map((x) => ({ code: x.code, title: x.title })), campaigns: f.items.map((x) => ({ id: x.id, name: x.name })),
+      errors, collections: c.items.map((x) => ({ code: x.code, title: x.title })), campaigns: f.items.map((x) => ({ id: x.id, name: x.name })),
       categories: cat.items.map((x) => ({ name: x.name, slug: x.slug })), vibes: v.items.map((x) => ({ slug: x.slug, name: x.name })),
       providers: prov.items.map((x) => ({ code: x.code, title: x.title })), products: prod.items.map((x) => ({ id: x.id, name: x.name })),
       images: img.items.map((x) => ({ id: x.id, title: x.title, url: x.url })), videos: vid.items.map((x) => ({ id: x.id, title: x.title, url: x.url })),
       pages: pages.items.map((x) => ({ code: x.code, title: x.title })),
     }));
     pickerCache.catch(() => { pickerCache = null; });
+    void pickerCache.then(p=>{if(p.errors.length)pickerCache=null;});
   }
   return pickerCache;
 }
@@ -50,6 +53,14 @@ const VALUE_LABEL: Record<string, string> = {
   onPrimary: "روی رنگ اصلی", none: "هیچ", line: "خط نازک", strong: "پررنگ", sm: "کوچک", md: "متوسط", lg: "بزرگ", xl: "خیلی بزرگ", narrow: "باریک", content: "محتوا",
   wide: "عریض", full: "تمام‌عرض", auto: "خودکار", screen: "تمام صفحه", body: "متن (وزیرمتن)", display: "نمایشی", start: "راست", center: "وسط", end: "چپ", fade: "محو",
   rise: "بالا آمدن", zoom: "زوم", cover: "پرکردن", contain: "کامل",
+  default:'پیش‌فرض', light:'روشن', dark:'تیره', campaign:'کمپین', static:'ثابت', marquee:'روان', ticker:'خبرخوان', slider:'اسلایدی', rotating:'چرخشی',
+  split:'دو ستونه', fullviewport:'تمام صفحه', minimal:'ساده', mosaic:'موزاییکی', editorial:'روایی', cinematic:'سینمایی', video:'ویدیویی', carousel:'چرخشی',
+  image:'تصویری', glass:'شفاف', overlay:'روی تصویر', horizontal:'افقی', vertical:'عمودی', compact:'فشرده', luxury:'لوکس', premium:'ویژه',
+  sale:'تخفیف‌دار', new:'تازه‌رسیده', wholesale:'عمده', popular:'محبوب', trending:'پرطرفدار', for_you:'برای شما', similar:'مشابه',
+  products:'محصولات', categories:'دسته‌ها', vibes:'وایب‌ها', collection:'کالکشن', product:'محصول', manual:'دستی', recommendations:'پیشنهادها', reviews:'دیدگاه‌ها',
+  solid:'توپر', outline:'خطی', ghost:'بدون زمینه', link:'پیوند', terra:'آجری', navy:'سرمه‌ای', stone:'سنگی', beige:'بژ',
+  slow:'آهسته', normal:'معمولی', fast:'سریع', rtl:'راست به چپ', ltr:'چپ به راست', banner:'بنر', floating:'شناور', grid:'شبکه', masonry:'چیدمان آزاد',
+  snapppay:'اسنپ‌پی', digipay:'دیجی‌پی', generic:'عمومی', fade_up:'ورود از پایین', typewriter:'نوشتاری', serif:'نمایشی', sans:'ساده',
 };
 const vl = (v: string) => VALUE_LABEL[v] ?? v;
 
@@ -212,19 +223,19 @@ export function SchemaSectionEditor({ section, component, styleSpec, simpleStyle
   );
 }
 
-function FieldInput({ field: f, value, onChange, pickers, flash }: { field: FieldDef; value: unknown; onChange: (v: unknown) => void; pickers: PickerData | null; flash: F }) {
+export function FieldInput({ field: f, value, onChange, pickers, flash }: { field: FieldDef; value: unknown; onChange: (v: unknown) => void; pickers: PickerData | null; flash: F }) {
   const label = `${f.label}${f.required ? " *" : ""}`;
   const str = value === undefined || value === null ? "" : String(value);
   const none = "— انتخاب نشده —";
   const pick = (opts: { v: string; l: string }[]) => (
-    <Select options={[none, ...opts.map((o) => o.l)]} value={opts.find((o) => o.v === str)?.l ?? (str ? str : none)} onChange={(l) => onChange(opts.find((o) => o.l === l)?.v)} />
+    <Select options={[none, ...opts.map((o) => o.l)]} value={opts.find((o) => o.v === str)?.l ?? (str ? "مرجع در دسترس نیست" : none)} onChange={(l) => onChange(opts.find((o) => o.l === l)?.v)} />
   );
   switch (f.type) {
     case "boolean": return <Field label={label}><Switch on={value === undefined ? Boolean(f.default) : Boolean(value)} onToggle={() => onChange(!(value === undefined ? Boolean(f.default) : Boolean(value)))} /></Field>;
     case "number": return <Field label={label}><Input value={str} onChange={(v) => onChange(v === "" ? undefined : Number(v.replace(/[^\d.-]/g, "")))} placeholder={f.default !== undefined ? String(f.default) : ""} /></Field>;
     case "textarea": return <Field label={label}><Textarea rows={3} value={str} onChange={onChange} /></Field>;
     case "lines": return <Field label={label}><Textarea rows={4} value={str} onChange={onChange} placeholder="هر مورد در یک خط؛ بخش‌ها با | جدا شوند" /></Field>;
-    case "select": return <Field label={label}><Select options={f.options ?? []} value={str || String(f.default ?? f.options?.[0] ?? "")} onChange={onChange} /></Field>;
+    case "select": { const opts=(f.options??[]).map((v,i)=>({value:v,label:VALUE_LABEL[v]??(/^[\u0600-\u06ff\s\d]+$/.test(v)?v:`گزینه ${i+1}`)})); return <Field label={label}><Select options={opts.map(o=>o.label)} value={opts.find(o=>o.value===(str||String(f.default??f.options?.[0]??'')))?.label??'انتخاب کنید'} onChange={v=>onChange(opts.find(o=>o.label===v)?.value)}/></Field>; }
     case "color": return (
       <Field label={label}><div className="flex items-center gap-2">
         <Select options={["inherit", "background", "surface", "primary", "accent", "textPrimary", "textSecondary", "onPrimary", "سفارشی (hex)"]} value={str.startsWith("#") ? "سفارشی (hex)" : str || "inherit"} onChange={(v) => onChange(v === "سفارشی (hex)" ? "#1B2A4A" : v)} />
@@ -232,7 +243,7 @@ function FieldInput({ field: f, value, onChange, pickers, flash }: { field: Fiel
       </div></Field>
     );
     case "datetime": return <PersianDatePicker label={label} withTime value={str || null} onChange={(v) => onChange(v ?? undefined)} />;
-    case "collection": return <Field label={label}>{pick((pickers?.collections ?? []).map((c) => ({ v: c.code, l: `${c.title} (${c.code})` })))}</Field>;
+    case "collection": return <Field label={label}>{pick((pickers?.collections ?? []).map((c) => ({ v: c.code, l: c.title })))}</Field>;
     case "campaign": return <Field label={label}>{pick((pickers?.campaigns ?? []).map((c) => ({ v: c.id, l: c.name })))}</Field>;
     case "category": return <Field label={label}>{pick((pickers?.categories ?? []).map((c) => ({ v: f.key.toLowerCase().includes("slug") ? c.slug : c.name, l: c.name })))}</Field>;
     case "vibe": return <Field label={label}>{pick((pickers?.vibes ?? []).map((c) => ({ v: c.slug, l: c.name })))}</Field>;
@@ -245,7 +256,7 @@ function FieldInput({ field: f, value, onChange, pickers, flash }: { field: Fiel
 }
 
 const STATIC_TARGETS = [{ v: "shop", l: "فروشگاه" }, { v: "home", l: "خانه" }, { v: "vip", l: "باشگاه VIP" }, { v: "about", l: "درباره ما" }, { v: "tryon", l: "اتاق پرو" }, { v: "journal", l: "ژورنال" }, { v: "account", l: "حساب کاربری" }];
-function TargetInput({ label, value, onChange, pickers }: { label: string; value: string; onChange: (v: unknown) => void; pickers: PickerData | null }) {
+export function TargetInput({ label, value, onChange, pickers }: { label: string; value: string; onChange: (v: unknown) => void; pickers: PickerData | null }) {
   const kind = value.startsWith("https://") ? "url" : value.includes(":") ? value.split(":")[0]! : value ? "static" : "static";
   const kinds = [{ v: "static", l: "صفحه ثابت" }, { v: "page", l: "صفحه CMS" }, { v: "vibe", l: "وایب" }, { v: "collection", l: "کالکشن" }, { v: "category", l: "دسته" }, { v: "product", l: "محصول" }, { v: "url", l: "لینک https" }];
   const sub: Record<string, { v: string; l: string }[]> = {
@@ -264,7 +275,7 @@ function TargetInput({ label, value, onChange, pickers }: { label: string; value
   );
 }
 
-function MediaInput({ label, kind, value, onChange, pickers, flash }: { label: string; kind: "media" | "video"; value: string; onChange: (v: unknown) => void; pickers: PickerData | null; flash: F }) {
+export function MediaInput({ label, kind, value, onChange, pickers, flash }: { label: string; kind: "media" | "video"; value: string; onChange: (v: unknown) => void; pickers: PickerData | null; flash: F }) {
   const [busy, setBusy] = useState(false);
   const library = kind === "video" ? pickers?.videos ?? [] : pickers?.images ?? [];
   const upload = async (file: File) => {

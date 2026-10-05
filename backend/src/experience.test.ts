@@ -717,10 +717,12 @@ test('CMS starter content is created only by the admin bootstrap and is idempote
     assert.equal(first.statusCode, 200, first.body);
     const pages = (await pool.query(`SELECT code, status, active FROM cms_pages WHERE code IN ('about','vibe-old-money','vibe-dark-academia','vip-lead') ORDER BY code`)).rows;
     assert.deepEqual(pages.map((r) => r.code), ['about', 'vibe-dark-academia', 'vibe-old-money', 'vip-lead']);
-    assert.ok(pages.every((r) => r.status === 'published' && r.active));
+    assert.ok(pages.every((r) => r.status === 'draft' && r.active));
     const seo = await app.inject({ method: 'GET', url: '/api/v1/seo/page/about' });
-    assert.equal(seo.statusCode, 200, seo.body);
-    assert.ok(String(seo.json().title ?? seo.json().head?.title).includes('درباره ما'), seo.body);
+    assert.equal(seo.statusCode, 404, 'unpublished starter metadata is not public');
+    const draftSeo = await app.inject({ method: 'GET', url: '/api/v1/admin/seo/page/about', headers });
+    assert.equal(draftSeo.statusCode, 200, draftSeo.body);
+    assert.ok(String(draftSeo.json().resolved.title).includes('درباره ما'), draftSeo.body);
     const stats = await pool.query(`SELECT 1 FROM cms_sections s JOIN cms_pages p ON p.id = s.page_id JOIN cms_components c ON c.id = s.component_id
       WHERE p.code = 'about' AND c.code = 'stats_strip'`);
     assert.equal(stats.rowCount, 0, 'no fabricated customer/rating metrics in CMS content');

@@ -362,6 +362,7 @@ try {
   check('CMS bootstrap is idempotent (second call creates nothing new)',
     bootstrapAgain.pageId === bootstrap.pageId && bootstrapAgain.sectionsCreated === 0 && bootstrapAgain.pageCreated === false);
 
+  await apiClient.post(`/admin/cms/pages/${bootstrap.pageId}/publish`,{});
   // Public storefront route (same URL the retail app calls through cmsApi.sitePage).
   const sitePage = await fetch(`${base}/api/v1/site/pages/home`);
   const sitePageBody = await sitePage.json() as { sections?: { component_code: string; payload: Record<string, unknown> }[]; hero?: unknown };

@@ -1,3 +1,4 @@
+import { checkDraft, readDraft, liveSnapshot } from './cms-workspace.js';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
@@ -9,7 +10,7 @@ import { audit, outbox } from './operations.js';
 import { badRequest, conflict, notFound, patchBody } from './errors.js';
 import { getFile, putFile } from './storage.js';
 import { isResizable, renderVariant, snapWidth } from './images.js';
-import { legacySeoToWrite, renameSeoKey, resolveSeo, resolveSeoFor, loadEntry, loadSubject, upsertSeoEntry } from './seo.js';
+import { legacySeoToWrite, renameSeoKey, resolveSeo, loadEntry, loadSubject, loadEffectiveSeoEntry, upsertSeoEntry } from './seo.js';
 import { ensureContact } from './crm.js';
 import { CARD_BLOCKS, NAV_TARGET, SIMPLE_STYLE_KEYS, STYLE_SPEC, cardStylesSchema, designQualityGate, responsiveConfigSchema, validateSectionPayload, validateStyleOverrides, type FieldSchema } from './cms-schema.js';
 import { recommend } from './recommendations.js';
@@ -223,7 +224,7 @@ async function assertAnnouncementBinding(db: DbPool | PoolClient, type: string, 
 const HERO_CODES = new Set(['hero', 'image_hero', 'video_hero']);
 
 /** Resolves Commerce Data Bindings server-side (Req 185-191, 212, 238-240). CMS never stores copies. */
-async function enrichSections(db: DbPool | PoolClient, sections: SectionRow[]) {
+export async function enrichSections(db: DbPool | PoolClient, sections: SectionRow[]) {
   const out = [];
   const isUuid = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f-]{36}$/.test(v);
   const isSlug = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9-]{2,60}$/.test(v);
@@ -372,32 +373,26 @@ async function snapshotPage(client: PoolClient, pageId: string, actorId: string,
   return { version, sectionCount: sections.length };
 }
 
-/** Public read model: last published snapshot (fallback: live sections for legacy pages never published). */
+/** Public content is exclusively an immutable, eligible publication. */
 export async function loadPublicPage(pool: DbPool, code: string, origin = 'https://kolbe.ir') {
-  const page = await one<Record<string, unknown> & { id: string; status: string; active: boolean; scheduled_start_at: string | null; scheduled_end_at: string | null }>(pool,
-    'SELECT * FROM cms_pages WHERE code = $1', [code]);
-  if (!page || !pageIsLive(page)) return null;
-  const snapshot = await one<{ sections_snapshot: SectionRow[]; version: number }>(pool,
-    `SELECT sections_snapshot, version FROM cms_page_versions WHERE page_id = $1 AND status IN ('published','scheduled')
-     ORDER BY version DESC LIMIT 1`, [page.id]);
-  const sections = snapshot ? snapshot.sections_snapshot.filter((s) => s.visible) : await workingSections(pool, page.id, true);
-  // Req 235: head tags come from the SEO Domain, not from the CMS row.
-  const seo = await resolveSeoFor(pool, 'page', code, origin);
-  return { ...page, seo, publishedVersion: snapshot?.version ?? null, sections: await enrichSections(pool, sections) };
+  const page = await one<Record<string, unknown> & { id: string; status: string }>(pool,'SELECT * FROM cms_pages WHERE code=$1',[code]);
+  if (!page || page.status==='archived' || page.status==='draft') return null;
+  const snapshot=await liveSnapshot(pool,page.id);
+  if (!snapshot || !snapshot.active || (snapshot.ends_at && new Date(snapshot.ends_at)<=new Date())) return null;
+  const subject=await loadSubject(pool,'page',code);
+  const seo=subject?resolveSeo({...subject,name:snapshot.title,path:snapshot.path,description:String(snapshot.description??''),active:true,image:String(snapshot.sections_snapshot.find(s=>s.visible)?.payload.image??'')||null},await loadEffectiveSeoEntry(pool,'page',code),origin):null;
+  return {...page,title:snapshot.title,path:snapshot.path,description:snapshot.description,seo,publishedVersion:snapshot.version,
+    sections:await enrichSections(pool,snapshot.sections_snapshot.filter(s=>s.visible) as SectionRow[])};
 }
-
-/** Resolve every published CMS URL through the page and SEO identities. */
-export async function resolvePublicCmsPath(pool: DbPool, path: string, origin: string) {
-  const page = await one<{ code: string; active: boolean; status: string; scheduled_start_at: string | null; scheduled_end_at: string | null }>(pool,
-    `SELECT p.code, p.active, p.status, p.scheduled_start_at, p.scheduled_end_at
-       FROM cms_pages p
-       LEFT JOIN seo_entries e ON e.entity_type = 'page' AND e.entity_key = p.code
-       LEFT JOIN seo_pages s ON s.entity_type = 'cms' AND s.entity_key = p.code
-      WHERE p.path = $1 OR e.canonical_path IN ($1,$2) OR s.slug = $1
-         OR s.canonical_url = $2
-      ORDER BY (p.path = $1) DESC, p.updated_at DESC LIMIT 1`,
-    [path, `${origin.replace(/\/$/, '')}${path}`]);
-  return page && pageIsLive(page) ? page.code : null;
+export async function resolvePublicCmsPath(pool: DbPool,path:string,origin:string) {
+  const rows=await pool.query<{code:string;alias:boolean}>(`SELECT DISTINCT p.code,
+    (e.canonical_path IN ($1,$2) OR s.slug=$1 OR s.canonical_url=$2) IS TRUE AS alias
+    FROM cms_pages p JOIN cms_page_versions v ON v.page_id=p.id
+    LEFT JOIN seo_entries e ON e.entity_type='page' AND e.entity_key=p.code
+    LEFT JOIN seo_pages s ON s.entity_type='cms' AND s.entity_key=p.code
+    WHERE v.path=$1 OR e.canonical_path IN ($1,$2) OR s.slug=$1 OR s.canonical_url=$2 LIMIT 100`,[path,`${origin.replace(/\/$/,'')}${path}`]);
+  for(const row of rows.rows) {const page=await loadPublicPage(pool,row.code,origin);if(page && (page.path===path||row.alias))return row.code;}
+  return null;
 }
 
 /* ============================ Routes ============================ */
@@ -738,13 +733,22 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = z.object({
       scheduledStartAt: z.iso.datetime().nullable().optional(), scheduledEndAt: z.iso.datetime().nullable().optional(),
-      changeSummary: safeString(300).optional(),
+      changeSummary: safeString(300).optional(), expectedRevision: z.number().int().positive().optional(),
     }).strict().parse(request.body ?? {});
     if (body.scheduledStartAt && body.scheduledEndAt && new Date(body.scheduledEndAt) <= new Date(body.scheduledStartAt)) throw badRequest('پایان زمان‌بندی باید بعد از شروع باشد.');
     const scheduled = Boolean(body.scheduledStartAt && new Date(body.scheduledStartAt) > new Date());
     const status = scheduled ? 'scheduled' : 'published';
     return transaction(pool, async (client) => {
+      const locked=await one<{draft_revision:number}>(client,'SELECT draft_revision FROM cms_pages WHERE id=$1 FOR UPDATE',[id]);
+      if(!locked)throw notFound();
+      if(body.expectedRevision!==undefined && body.expectedRevision!==locked.draft_revision)throw conflict('نسخه پیش‌نویس تغییر کرده؛ دوباره بررسی کنید.');
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('cms-publication-paths'))");
+      const health=await checkDraft(client,await readDraft(client,id));
+      if(health.errors.length)throw badRequest(health.errors.join('؛ '));
+      if(body.scheduledEndAt && new Date(body.scheduledEndAt)<=new Date())throw badRequest('پایان انتشار باید در آینده باشد.');
       const snapshot = await snapshotPage(client, id, user.id, status, body.changeSummary);
+      await client.query(`UPDATE cms_page_versions v SET path=p.path,description=p.description,active=p.active,draft_revision=p.draft_revision,
+        starts_at=$3,ends_at=$4 FROM cms_pages p WHERE v.page_id=p.id AND p.id=$1 AND v.version=$2`,[id,snapshot.version,body.scheduledStartAt??null,body.scheduledEndAt??null]);
       await client.query(`UPDATE cms_pages SET status = $2, scheduled_start_at = $3, scheduled_end_at = $4, published_at = now(), published_by = $5, updated_at = now() WHERE id = $1`,
         [id, status, body.scheduledStartAt ?? null, body.scheduledEndAt ?? null, user.id]);
       await audit(client, user.id, scheduled ? 'cms.page_scheduled' : 'cms.page_published', 'cms_page', id, undefined, { ...snapshot, ...body }, request.ip);
@@ -781,7 +785,8 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     const user = await actor(request, 'cms:edit');
     const { id, version } = z.object({ id: z.uuid(), version: z.coerce.number().int().min(1) }).parse(request.params);
     return transaction(pool, async (client) => {
-      const snap = await one<{ sections_snapshot: SectionRow[] }>(client, 'SELECT sections_snapshot FROM cms_page_versions WHERE page_id = $1 AND version = $2', [id, version]);
+      await client.query('SELECT id FROM cms_pages WHERE id=$1 FOR UPDATE',[id]);
+      const snap = await one<{ title: string; path: string; description: string; sections_snapshot: SectionRow[] }>(client, 'SELECT title,path,description,sections_snapshot FROM cms_page_versions WHERE page_id = $1 AND version = $2', [id, version]);
       if (!snap) throw notFound();
       await client.query('DELETE FROM cms_sections WHERE page_id = $1', [id]);
       for (const section of snap.sections_snapshot) {
@@ -793,6 +798,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
             section.variant ?? 'default', section.preset ?? null, section.section_theme ?? 'inherit', JSON.stringify(section.data_binding ?? {}),
             JSON.stringify(section.style_overrides ?? {}), JSON.stringify(section.responsive_config ?? {})]);
       }
+      await client.query('UPDATE cms_pages SET title=$2,path=COALESCE($3,path),description=$4 WHERE id=$1',[id,snap.title,snap.path,snap.description]);
       await audit(client, user.id, 'cms.version_restored', 'cms_page', id, undefined, { version }, request.ip);
       return { id, restoredVersion: version, sections: snap.sections_snapshot.length };
     });
@@ -1200,9 +1206,13 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       WHERE s.payload::text LIKE '%' || $1 || '%'`, [needle]);
     const products = await db.query(`SELECT id, name FROM products WHERE metadata::text LIKE '%' || $1 || '%' LIMIT 50`, [needle]);
     const categories = await db.query(`SELECT id, name FROM cms_categories WHERE image_url = $1 OR cover_url = $1`, [asset.url]);
+    const history=await db.query(`SELECT DISTINCT p.id,p.title FROM cms_page_versions v JOIN cms_pages p ON p.id=v.page_id WHERE v.sections_snapshot::text LIKE '%'||$1||'%'`,[needle]);
+    const journal=await db.query(`SELECT id,title FROM editorial_posts WHERE cover_url=$1 OR published_snapshot::text LIKE '%'||$2||'%'`,[asset.url,needle]);
     const explicit = await db.query('SELECT entity_type, entity_id, entity_label FROM cms_asset_usages WHERE asset_id = $1', [id]);
     return [
       ...sections.rows.map((r: Record<string, string>) => ({ type: 'cms_section', id: r.id, label: `${r.page_title} › ${r.title}` })),
+      ...history.rows.map((r: Record<string,string>)=>({type:'cms_version',id:r.id,label:r.title})),
+      ...journal.rows.map((r: Record<string,string>)=>({type:'editorial',id:r.id,label:r.title})),
       ...products.rows.map((r: Record<string, string>) => ({ type: 'product', id: r.id, label: r.name })),
       ...categories.rows.map((r: Record<string, string>) => ({ type: 'category', id: r.id, label: r.name })),
       ...explicit.rows.map((r: Record<string, string>) => ({ type: r.entity_type, id: r.entity_id, label: r.entity_label })),
