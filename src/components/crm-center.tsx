@@ -35,6 +35,8 @@ const OP_FA: Record<string,string> = {
 };
 const KIND_FA: Record<string,string> = { manual:"دستی", behavioral:"رفتاری", dynamic:"پویا" };
 const MATCH_FA: Record<string,string> = { all:"همه شرط‌ها", any:"حداقل یک شرط" };
+const RULE_STATUS_FA: Record<string,string> = { draft:"پیش‌نویس", test:"آزمایشی", active:"فعال", paused:"متوقف" };
+const internalCode=(prefix:string)=>`${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
 
 /** CRM center (items 20-24 and 95-100): labels, server-side rule engine, dynamic
  *  segments, behavioural analytics, timeline and targeted SMS — all server-owned. */
@@ -138,7 +140,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
           <Card className="p-5">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-[13px] font-extrabold"><Sparkles size={16} />موتور قواعد سمت سرور</div>
-              <Btn variant="soft" size="sm" icon={<Plus size={14} />} onClick={() => setRuleDraft({ ...ruleDraft, open: true })}>قاعده جدید</Btn>
+              <Btn variant="soft" size="sm" icon={<Plus size={14} />} onClick={() => setRuleDraft({ ...ruleDraft, open: true, code: internalCode("rule") })}>قاعده جدید</Btn>
             </div>
             <div className="space-y-3">
               {rules.map((rule) => (
@@ -147,7 +149,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
                     <div>
                       <p className="text-[13px] font-bold">{text(rule.title)} → <span className="text-[var(--kv-accent)]">{text(rule.label_title ?? rule.label_code)}</span></p>
                       <p className="mt-0.5 text-[11.5px] text-[var(--kv-muted)]">
-                        {text(rule.status)} · {listOf(rule.conditions).length || (Array.isArray(rule.conditions) ? rule.conditions.length : 0)} شرط ·
+                        {RULE_STATUS_FA[String(rule.status)] ?? "نامشخص"} · {listOf(rule.conditions).length || (Array.isArray(rule.conditions) ? rule.conditions.length : 0)} شرط ·
                         آخرین اجرا {stamp(rule.last_run_at)} · تطابق {fmtNum(Number(rule.last_match_count ?? 0))}
                       </p>
                     </div>
@@ -190,7 +192,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
           <Card className="p-5">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-[13px] font-extrabold"><Filter size={16} />سگمنت‌های پویا (خودبه‌روز)</div>
-              <Btn variant="soft" size="sm" icon={<Plus size={14} />} onClick={() => setSegmentDraft({ ...segmentDraft, open: true })}>سگمنت جدید</Btn>
+              <Btn variant="soft" size="sm" icon={<Plus size={14} />} onClick={() => setSegmentDraft({ ...segmentDraft, open: true, code: internalCode("segment") })}>سگمنت جدید</Btn>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               {segments.map((segment) => (
@@ -241,8 +243,9 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
               </Field>
               <p className="text-[11.5px] text-[var(--kv-muted)]">شناسه فنی گروه‌ها پنهان است؛ گروه را با نام و تعداد اعضا انتخاب کنید.</p>
               <Field label="یا برچسب مقصد">
-                <Select options={["", ...labels.map((l) => String(l.code))]} value={campaign.labelCode}
-                  onChange={(v) => setCampaign({ ...campaign, labelCode: v, segmentId: "" })} />
+                <Select options={["", ...labels.map((l) => String(l.code))]}
+                  labels={Object.fromEntries([["","انتخاب برچسب"], ...labels.map((l) => [String(l.code), text(l.title,"برچسب")])])}
+                  value={campaign.labelCode} onChange={(v) => setCampaign({ ...campaign, labelCode: v, segmentId: "" })} />
               </Field>
               <div className="flex flex-wrap items-center gap-2">
                 <Btn variant="soft" size="sm" onClick={() => void run("پیش‌نمایش", async () => {
@@ -346,9 +349,10 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
 
       <Modal open={ruleDraft.open} onClose={() => setRuleDraft({ ...ruleDraft, open: false })} title="قاعده برچسب‌گذاری">
         <div className="space-y-3">
-          <Field label="کد قاعده"><Input value={ruleDraft.code} onChange={(v) => setRuleDraft({ ...ruleDraft, code: v })} placeholder="loyal-30d" /></Field>
-          <Field label="عنوان"><Input value={ruleDraft.title} onChange={(v) => setRuleDraft({ ...ruleDraft, title: v })} /></Field>
-          <Field label="برچسب هدف"><Select options={labels.map((l) => String(l.code))} value={ruleDraft.labelCode} onChange={(v) => setRuleDraft({ ...ruleDraft, labelCode: v })} /></Field>
+                    <Field label="عنوان"><Input value={ruleDraft.title} onChange={(v) => setRuleDraft({ ...ruleDraft, title: v })} /></Field>
+          <Field label="برچسب هدف"><Select options={labels.map((l) => String(l.code))}
+            labels={Object.fromEntries(labels.map((l) => [String(l.code), text(l.title,"برچسب")]))}
+            value={ruleDraft.labelCode} onChange={(v) => setRuleDraft({ ...ruleDraft, labelCode: v })} /></Field>
           <Field label="شرط‌ها (روی داده واقعی سرور)"><ConditionEditor conditions={ruleDraft.conditions} setConditions={(c) => setRuleDraft({ ...ruleDraft, conditions: c })} /></Field>
           <div className="flex items-center gap-3">
             <Select options={["all", "any"]} labels={MATCH_FA} value={ruleDraft.matchMode} onChange={(v) => setRuleDraft({ ...ruleDraft, matchMode: v })} />
@@ -357,7 +361,7 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
               نیازمند تأیید دستی
             </label>
           </div>
-          <Btn variant="accent" className="w-full" disabled={!ruleDraft.code || !ruleDraft.title || !ruleDraft.conditions.length}
+          <Btn variant="accent" className="w-full" disabled={!ruleDraft.title || !ruleDraft.labelCode || !ruleDraft.conditions.length}
             onClick={() => void run("ساخت قاعده", async () => {
               await crmIntelApi.createRule({ ...ruleDraft, conditions: toPayload(ruleDraft.conditions) });
               setRuleDraft({ ...ruleDraft, open: false });
@@ -367,11 +371,10 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
 
       <Modal open={segmentDraft.open} onClose={() => setSegmentDraft({ ...segmentDraft, open: false })} title="سگمنت پویا">
         <div className="space-y-3">
-          <Field label="کد"><Input value={segmentDraft.code} onChange={(v) => setSegmentDraft({ ...segmentDraft, code: v })} /></Field>
           <Field label="عنوان"><Input value={segmentDraft.title} onChange={(v) => setSegmentDraft({ ...segmentDraft, title: v })} /></Field>
           <Field label="شرط‌ها"><ConditionEditor conditions={segmentDraft.conditions} setConditions={(c) => setSegmentDraft({ ...segmentDraft, conditions: c })} /></Field>
           <Field label="بازه به‌روزرسانی (دقیقه)"><Input value={String(segmentDraft.refreshIntervalMinutes)} onChange={(v) => setSegmentDraft({ ...segmentDraft, refreshIntervalMinutes: Number(v.replace(/\D/g, "")) || 60 })} /></Field>
-          <Btn variant="accent" className="w-full" disabled={!segmentDraft.code || !segmentDraft.title || !segmentDraft.conditions.length}
+          <Btn variant="accent" className="w-full" disabled={!segmentDraft.title || !segmentDraft.conditions.length}
             onClick={() => void run("ساخت سگمنت", async () => {
               await crmIntelApi.createSegment({ code: segmentDraft.code, title: segmentDraft.title, kind: "dynamic", refreshIntervalMinutes: segmentDraft.refreshIntervalMinutes, definition: { matchMode: segmentDraft.matchMode, conditions: toPayload(segmentDraft.conditions) } });
               setSegmentDraft({ ...segmentDraft, open: false });
@@ -383,15 +386,14 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
 }
 
 function LabelForm({ onDone }: { onDone: (message: string) => void }) {
-  const [draft, setDraft] = useState({ code: "", title: "", kind: "manual", color: "#C1613B" });
+  const [draft, setDraft] = useState({ title: "", kind: "manual", color: "#C1613B" });
   return (
     <div className="space-y-3">
-      <Field label="کد (انگلیسی)"><Input value={draft.code} onChange={(v) => setDraft({ ...draft, code: v })} placeholder="loyal_30d" /></Field>
       <Field label="عنوان"><Input value={draft.title} onChange={(v) => setDraft({ ...draft, title: v })} placeholder="وفادار ۳۰ روزه" /></Field>
       <Field label="نوع"><Select options={["manual", "behavioral"]} labels={KIND_FA} value={draft.kind} onChange={(v) => setDraft({ ...draft, kind: v })} /></Field>
-      <Btn variant="accent" className="w-full" disabled={!/^[a-z0-9_]{3,40}$/.test(draft.code) || draft.title.trim().length < 2}
+      <Btn variant="accent" className="w-full" disabled={draft.title.trim().length < 2}
         onClick={() => void (async () => {
-          try { await crmIntelApi.createLabel(draft); onDone("برچسب ساخته شد"); setDraft({ code: "", title: "", kind: "manual", color: "#C1613B" }); }
+          try { await crmIntelApi.createLabel({ ...draft, code: internalCode("label") }); onDone("برچسب ساخته شد"); setDraft({ title: "", kind: "manual", color: "#C1613B" }); }
           catch (e) { onDone(e instanceof Error ? e.message : "خطا در ساخت برچسب"); }
         })()}>ثبت برچسب</Btn>
     </div>
