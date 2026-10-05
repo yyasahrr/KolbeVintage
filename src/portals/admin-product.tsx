@@ -18,7 +18,7 @@ import { seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
 import { catalogOpsApi } from "../data/api";
-import { Btn, Card, WorkspaceModal, Empty, Field, Input, Modal, Segmented, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
+import { Btn, Card, WorkspaceModal, Empty, Field, Input, LoadingState, Modal, Segmented, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
 import { cn } from "../utils/cn";
 import { CanonicalSeriesLibrary, ProductSeriesEditor, productSeriesPayload } from "../components/product-series-editor";
 
@@ -218,13 +218,19 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
  *  `onDraftSaved` — [ذخیره پیش‌نویس]: the draft is persisted; the caller returns to
  *    the «محصولات کلبه → پیش‌نویس‌ها» list.
  *  `resumeProductId` — reopening a draft loads the SAME canonical studio form (§9).
+ *  `embedded` — the caller already owns the canonical product list («محصولات کلبه»), so the
+ *    studio mounts straight into the form and NEVER renders its own product list: there is
+ *    no intermediate surface and no second product-creation authority.
+ *  `onExit` — [انصراف] / «بازگشت به فهرست» / «خروج بدون ذخیره» hand control back to the caller.
  */
-export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resumeProductId, onResumeHandled }: {
+export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resumeProductId, onResumeHandled, embedded, onExit }: {
   flash: F;
   onContinueToInventory?: (productId: string) => void;
   onDraftSaved?: (productId: string) => void;
   resumeProductId?: string | null;
   onResumeHandled?: () => void;
+  embedded?: boolean;
+  onExit?: () => void;
 }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct, reload } = useStore();
@@ -550,6 +556,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
       flash(`«${d.name}» ذخیره شد`);
       setOpen(false); setEditing(null); setD(blank());
       await reload();
+      onExit?.();
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره تغییرات"); }
   };
   useEffect(() => {
@@ -657,10 +664,35 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   /** §39: one idempotency key per create session — a retried save reuses the same identity. */
   const [createIdemKey, setCreateIdemKey] = useState(() => `create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
 
+  /** §3/§6: open the canonical studio form for a NEW product — the only create entry point. */
+  const openCreate = () => {
+    const fresh = blank();
+    automaticSizes.current = fresh.sizes;
+    setD(fresh);
+    setOpenSnapshot(JSON.stringify(fresh));
+    setEditing(null);
+    setEditVariants([]);
+    setCellOff({});
+    setSec("base");
+    setOpen(true);
+  };
+
+  /** §3 (Prompt-1 correction): when the caller owns the canonical product list, the studio
+   *  mounts directly into the NEW PRODUCT form — «افزودن محصول» never lands on an
+   *  intermediate/parallel product list that would need a second click. */
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (!embedded || resumeProductId || open || autoOpened.current) return;
+    autoOpened.current = true;
+    openCreate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, resumeProductId]);
+
   /** §6: [انصراف] / «بازگشت به فهرست» — always asks first when edits are unsaved (§37). */
   const closeStudio = () => {
     if (JSON.stringify(d) !== openSnapshot) { setConfirmLeave(true); return; }
     setOpen(false); setEditing(null); setD(blank());
+    onExit?.();
   };
 
   /** §9/§13: reopening a Draft loads the SAME canonical studio with all data restored. */
@@ -781,11 +813,19 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   ].filter(([key]) => (d.retailOn || !["price", "cutout"].includes(key!)) && (d.wholesaleOn || key !== "series"));
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
-      {!open && (<>
+      {/* §3: in embedded mode the caller owns the canonical product list, so the studio renders
+          ONLY the form — its own list would be a second, parallel product-creation authority. */}
+      {!open && embedded && resumeProductId && (
+        <div className="space-y-3">
+          <Btn variant="ghost" size="sm" onClick={onExit} icon={<X size={14} />}>بازگشت به فهرست محصولات</Btn>
+          <LoadingState label="در حال بارگذاری محصول…" />
+        </div>
+      )}
+      {!open && !embedded && (<>
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <div className="min-w-[200px] flex-1"><SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول یا SKU…" /></div>
         <Btn variant="soft" size="sm" onClick={() => setManage(true)}>قالب‌های سری کلبه</Btn>
-        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { const fresh = blank(); automaticSizes.current = fresh.sizes; setD(fresh); setOpenSnapshot(JSON.stringify(fresh)); setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true); }}>تعریف محصول جدید</Btn>
+        <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={openCreate}>تعریف محصول جدید</Btn>
       </div>
       <Card className="overflow-hidden">
         {/* kv-scroll-x: سایه لبه = نشانه دیداری ستون‌های بریده (ممیزی §2 — ستون ویرایش در ۱۴۴۰) */}
@@ -1365,7 +1405,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
           <p className="text-[13px] leading-7">تغییرات ذخیره‌نشده‌ای در این {editing ? "ویرایش" : "تعریف"} دارید. اگر خارج شوید، این تغییرات از بین می‌روند.</p>
           <div className="flex flex-wrap justify-end gap-2">
             <Btn variant="soft" size="sm" onClick={() => setConfirmLeave(false)}>ادامه ویرایش</Btn>
-            <Btn variant="outline" size="sm" onClick={() => { setConfirmLeave(false); setOpen(false); setEditing(null); setD(blank()); }}>خروج بدون ذخیره</Btn>
+            <Btn variant="outline" size="sm" onClick={() => { setConfirmLeave(false); setOpen(false); setEditing(null); setD(blank()); onExit?.(); }}>خروج بدون ذخیره</Btn>
           </div>
         </div>
       </Modal>

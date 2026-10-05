@@ -114,9 +114,12 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
 
   if (screen.k === "studio") return (
     <div className="space-y-3">
-      <Btn variant="ghost" size="sm" onClick={() => { setScreen({ k: "list" }); setResumeProductId(null); load(); }}>بازگشت به فهرست محصولات</Btn>
+      {/* §3: [افزودن محصول] opens the canonical Product Studio form directly — the hub owns the
+          list, so the studio is embedded and never shows a second product-management list. */}
       <ProductStudio
         flash={flash}
+        embedded
+        onExit={() => { setScreen({ k: "list" }); setResumeProductId(null); load(); }}
         resumeProductId={resumeProductId}
         onResumeHandled={() => setResumeProductId(null)}
         /** §11: Save & Continue hands the canonical productId straight to the WMS workspace. */
