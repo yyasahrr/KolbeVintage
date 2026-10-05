@@ -203,8 +203,14 @@ export const productsApi = {
     const raw = await publicApi.get<{ items: CatalogItem[] }>(`/products?${query.toString()}`);
     return { items: raw.items };
   },
-  create: (payload: unknown) => apiClient.post<{ id: string; status: string; variants: { id: string; sku: string }[] }>("/products", payload),
-  update: (id: string, payload: unknown) => apiClient.patch<{ id: string; updated: string[] }>(`/products/${id}`, payload),
+  /** §39: `idempotencyKey` makes a retried [ذخیره پیش‌نویس] / [ذخیره و ادامه] replay-safe —
+   *  the server returns the SAME canonical product instead of a duplicate identity. */
+  create: (payload: unknown, idempotencyKey?: string) =>
+    apiClient.post<{ id: string; status: string; ownerType?: string; retailEnabled?: boolean; wholesaleEnabled?: boolean; variants: { id: string; sku: string }[] }>(
+      "/products", payload, idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined),
+  update: (id: string, payload: unknown, idempotencyKey?: string) =>
+    apiClient.patch<{ id: string; updated: string[] }>(`/products/${id}`, payload,
+      idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined),
   /** §27-§30: scoped sale status (product | color | variant) — one transactional call, per-item results. */
   saleStatusScoped: (payload: {
     scope: "product" | "color" | "variant"; enabled: boolean;
@@ -1703,10 +1709,22 @@ export type NeedsSetupRow = {
   id: string; name: string; brand: string | null; category: string; status: string;
   retail_enabled: boolean; wholesale_enabled: boolean; inventory_setup: string; created_at: string; variant_count: number;
 };
+/** §5/§19: one row of «محصولات کلبه» — catalog identity, commercial summary and the two
+ *  independent WMS domains. `inventory_setup` is an internal technical invariant only. */
 export type AdminProductRow = NeedsSetupRow & {
   owner_type: string; supplier_id: string | null; supplier_name: string | null;
   retail_available: number; wholesale_series_available: number; active_offers: number;
+  updated_at?: string;
+  cash_price_rial?: string | null;
+  installment_price_rial?: string | null;
+  wholesale_price_rial?: string | null;
+  /** Cover image file id (metadata.images[0].fileId) — resolved through /product-media/:id. */
+  cover_file_id?: string | null;
+  /** First active variant SKU — enough to recognise a product without opening it. */
+  sku?: string | null;
 };
+/** §5: the five canonical «محصولات کلبه» views. */
+export type ProductCenterView = "all" | "drafts" | "published" | "out_of_stock" | "archived";
 
 /** §14-§20: کالاها — definition→setup lifecycle + the §44 admin product read model. */
 export const catalogOpsApi = {

@@ -35,7 +35,7 @@ import { ModuleBoundary, moduleBoundary } from "../components/boundary";
 import { NotificationsPanel } from "../components/notifications-panel";
 import { useDialogFocus } from "../components/focus-trap";
 import { ProductStructurePanel } from "../components/product-structure-panel";
-import { CatalogHub } from "../components/catalog-hub";
+import { KolbeProductsHub } from "../components/kolbe-products-hub";
 import { ImportCenterPanel } from "../components/import-center-panel";
 import { Supplier360Workspace } from "../components/supplier-360";
 import { InvoiceDocumentsPanel } from "../components/invoice-docs";
@@ -146,8 +146,11 @@ const TAB_REDIRECT: Record<string, string> = {
   // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
   wproducts: "wms:wholesale-review",
   mreview: "wms:wholesale-review",
-  // ---- Product Studio owns product definition; preserve old product bookmarks ----
-  rproducts: "wms:goods",
+  // ---- «محصولات کلبه» owns Kolbe product management; old product bookmarks land there ----
+  rproducts: "products",
+  // §3/§25: the navigation-level «استودیو محصول» entry was replaced by «محصولات کلبه»;
+  // Product Studio stays the canonical create/edit workspace INSIDE it.
+  "wms:goods": "products",
 };
 
 /** Small canonical-hub shell: one business capability, sub-tabs inside (§1).
@@ -238,7 +241,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "server-orders", label: "مرکز سفارشات", icon: <ClipboardList size={17} /> },
     { v: "promo", label: "تخفیف و جشنواره", icon: <TicketPercent size={17} /> },
     { g: "محصول و انبار" },
-    { v: "wms:goods", label: "استودیو محصول", icon: <Store size={17} /> },
+    { v: "products", label: "محصولات کلبه", icon: <Store size={17} /> },
     { v: "structure", label: "ساختار محصولات و سری‌ها", icon: <Layers size={17} /> },
     { v: "wms", label: "انبار و موجودی (WMS)", icon: <Boxes size={17} /> },
     { g: "مشتریان و پشتیبانی" },
@@ -283,7 +286,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     rorders: ["سفارش‌های خرده", "آماده‌سازی، ارسال، مرجوعی"],
     "manual-sales": ["فروش دستی و خارج از سایت", "ثبت فروش اینستاگرام/حضوری/تلفنی با پرداخت کارت‌به‌کارت و کسر موجودی واقعی"],
     users: ["فهرست کاربران", "جست‌وجو و فیلتر سمت سرور روی نقش، وضعیت، شهر و سوابق خرید"],
-    rproducts: ["تعریف محصول", "کاتالوگ کامل، واریانت‌ها، سئو و کانال‌های فروش"],
+    rproducts: ["محصولات کلبه", "تعریف، تکمیل و مدیریت محصولات کلبه"],
+    products: ["محصولات کلبه", "تعریف، تکمیل و مدیریت محصولات کلبه — پیش‌نویس، انتشار، قیمت‌گذاری و ورود اولیه کالا"],
     shipping: ["حمل‌ونقل", "روش‌های ارسال خرده و عمده"],
     wms: ["انبار و موجودی (WMS)", "موجودی قابل فروش، رزرو، ورودی و آسیب‌دیده — انتقال و رسید"],
     crm: ["مدیریت ارتباط با مشتری", "بخش‌بندی، پروفایل ۳۶۰ و کمپین"],
@@ -313,7 +317,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   };
   // Composite keys (hub:sub) get their own header so e.g. «استودیو محصول» is not titled as WMS.
   const compositeTitles: Record<string, [string, string]> = {
-    "wms:goods": ["استودیو محصول", "تعریف و ویرایش محصولات کلبه — کاتالوگ، واریانت، قیمت و کانال فروش (بدون دستکاری موجودی)"],
+    "products:drafts": ["پیش‌نویس‌های محصولات کلبه", "محصولاتی که سفر ایجادشان کامل نشده است — ادامهٔ تکمیل از همین‌جا"],
   };
   const [t, d] = (hubSub ? compositeTitles[`${tab}:${hubSub}`] : undefined) ?? titles[tab] ?? titles.tower;
 
@@ -464,8 +468,11 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             { v: "series", label: "قالب‌های سری کلبه", node: <SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /> },
           ]} />)}
           {tab === "imports" && moduleBoundary("مرکز ورود داده", <ImportCenterPanel flash={flash} />)}
-          {tab === "wms" && hubSub === "goods" && moduleBoundary("استودیو محصول", <CatalogHub flash={flash} />)}
-          {tab === "wms" && hubSub !== "goods" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
+          {/* §3: «محصولات کلبه» is the canonical Product management entry; Product Studio
+              remains the canonical create/edit workspace INSIDE it. */}
+          {tab === "products" && moduleBoundary("محصولات کلبه",
+            <KolbeProductsHub flash={flash} initialView={hubSub === "drafts" ? "drafts" : undefined} onOpenWms={() => go("wms")} />)}
+          {tab === "wms" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
           {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
           {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
             // §109: legacy CrmPanel removed (contacts/notes/360 live in بازاریابی→CrmCenter; old

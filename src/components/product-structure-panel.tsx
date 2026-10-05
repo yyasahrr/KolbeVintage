@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Pencil, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { Btn, Card, WorkspaceModal, Empty, Field, Input, LoadingState, Select, Segmented, Status, Switch, Textarea } from "./primitives";
-import { CategoryProfilesPanel } from "./catalog-hub";
+import { CategoryProfilesPanel } from "./category-profiles-panel";
 import { filesApi, productStructureApi, specsApi, sizeGuidesApi } from "../data/api";
 import {
   SPEC_TYPES, SPEC_TYPE_LABEL, SIZE_GUIDE_STATUS_LABEL, isSpecAttributeType,
