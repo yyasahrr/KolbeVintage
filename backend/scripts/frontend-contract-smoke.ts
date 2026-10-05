@@ -275,9 +275,23 @@ try {
   }
   {
     const editor = await readFile(new URL('../../src/components/dynamic-table-editor.tsx', import.meta.url), 'utf8');
+    const tableOps = await readFile(new URL('../../src/components/table-ops.ts', import.meta.url), 'utf8');
     check('§10 the table editors support add/rename/delete/reorder and the canonical empty state',
-      ['افزودن ستون', 'افزودن سطر', 'هنوز اطلاعاتی ثبت نشده است.', 'renameColumn', 'deleteColumn', 'moveColumn', 'deleteRow', 'moveRow']
-        .every((needle) => editor.includes(needle)), 'dynamic table editor');
+      ['افزودن ستون', 'افزودن سطر', 'هنوز اطلاعاتی ثبت نشده است.', 'tableRenameColumn', 'tableDeleteColumn', 'tableMoveColumn', 'tableDeleteRow', 'tableMoveRow']
+        .every((needle) => editor.includes(needle))
+      && ['tableAddColumn', 'tableRenameColumn', 'tableDeleteColumn', 'tableMoveColumn', 'tableAddRow', 'tableDeleteRow', 'tableMoveRow', 'tableSetCell']
+        .every((needle) => tableOps.includes(`export function ${needle}`)),
+      'dynamic table editor + pure operations');
+    /* §4 (browser-UAT delta): a column delete must be ONE atomic onChange — the old editor fired
+       onChange twice (columns, then rows from a stale snapshot) and the deleted column came back. */
+    check('§4 every table mutation commits exactly once (delete-column regression)',
+      editor.includes('const commit = (next: DataTable) => onChange(next);')
+      && editor.split('onChange(next)').length - 1 === 1
+      && editor.split('\n').every((line) => line.split('commit(').length - 1 <= 1)
+      && editor.split('commit(table').length - 1 >= 10
+      && tableOps.includes('export function tableDeleteColumn')
+      && tableOps.includes('rows: table.rows.map((row) => ({ ...row, values: cellsFor(columns, row.values) }))'),
+      'single commit per user action');
   }
 
   // =========================== admin reconciliation ===========================

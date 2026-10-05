@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { Btn, Empty, Input } from "./primitives";
+import {
+  normalizeTable, tableAddColumn, tableAddRow, tableDeleteColumn, tableDeleteRow,
+  tableMoveColumn, tableMoveRow, tableRenameColumn, tableSetCell, type DataTable,
+} from "./table-ops";
 import { cn } from "../utils/cn";
 
 /** §10/§22: the ONE simple table interaction used by «مشخصات فنی» and «راهنمای سایز».
@@ -8,43 +12,16 @@ import { cn } from "../utils/cn";
  *  Arbitrary Admin-defined 2D tables — no template, no schema, no binding. The datasets stay
  *  semantically separate (each own table is persisted on its own endpoint); they are only
  *  edited with the same, simple interaction.
+ *
+ *  §4 (browser-UAT delta): every mutation goes through the pure operations in `table-ops.ts` and
+ *  is applied with exactly ONE `onChange` call. The previous editor called `onChange` twice for
+ *  a column delete (columns first, then rows), so the second call reintroduced the deleted column
+ *  from the stale render snapshot — the header stayed visible and the delete looked broken.
+ *  Single-commit + pure operations remove that whole defect class, and they are unit-tested
+ *  without a browser in `backend/scripts/dynamic-table-smoke.ts`.
  */
-export type TableColumn = { id: string; label: string };
-export type TableRow = { id: string; values: Record<string, string> };
-export type DataTable = { columns: TableColumn[]; rows: TableRow[] };
-
-export const emptyTable = (): DataTable => ({ columns: [], rows: [] });
-
-const uid = (prefix: string) => `${prefix}${Math.random().toString(36).slice(2, 9)}`;
-
-/** Normalises whatever the server returned so the editor never crashes on legacy shapes. */
-export function normalizeTable(value: unknown): DataTable {
-  const raw = (value ?? {}) as { columns?: unknown; rows?: unknown };
-  const columns = Array.isArray(raw.columns)
-    ? raw.columns.map((column): TableColumn => {
-      const c = (column ?? {}) as { id?: unknown; label?: unknown };
-      return { id: String(c.id ?? uid("c")), label: String(c.label ?? "") };
-    }).filter((column) => Boolean(column.id))
-    : [];
-  const known = new Set(columns.map((column) => column.id));
-  const rows = Array.isArray(raw.rows)
-    ? raw.rows.map((row): TableRow => {
-      const r = (row ?? {}) as { id?: unknown; values?: unknown };
-      const values: Record<string, string> = {};
-      const source = (r.values ?? {}) as Record<string, unknown>;
-      for (const column of columns) {
-        const cell = source[column.id];
-        values[column.id] = cell === undefined || cell === null ? "" : String(cell);
-      }
-      // keep any cell whose column vanished — dropping data silently is worse
-      for (const [key, cell] of Object.entries(source)) {
-        if (!known.has(key) && cell !== undefined && cell !== null) values[key] = String(cell);
-      }
-      return { id: String(r.id ?? uid("r")), values };
-    })
-    : [];
-  return { columns, rows };
-}
+export { emptyTable, normalizeTable, cellsFor } from "./table-ops";
+export type { DataTable, TableColumn, TableRow } from "./table-ops";
 
 export function DynamicTableEditor({
   title, hint, table, onChange, busy, onSave, saved,
@@ -60,39 +37,8 @@ export function DynamicTableEditor({
 }) {
   const columns = table.columns;
   const rows = table.rows;
-
-  const setColumns = (next: TableColumn[]) => onChange({ columns: next, rows });
-  const setRows = (next: TableRow[]) => onChange({ columns, rows: next });
-
-  const addColumn = () => setColumns([...columns, { id: uid("c"), label: `ستون ${columns.length + 1}` }]);
-  const renameColumn = (id: string, label: string) => setColumns(columns.map((c) => (c.id === id ? { ...c, label } : c)));
-  const deleteColumn = (id: string) => {
-    setColumns(columns.filter((c) => c.id !== id));
-    setRows(rows.map((row) => {
-      const values = { ...row.values };
-      delete values[id];
-      return { ...row, values };
-    }));
-  };
-  const moveColumn = (index: number, delta: number) => {
-    const target = index + delta;
-    if (target < 0 || target >= columns.length) return;
-    const next = [...columns];
-    [next[index], next[target]] = [next[target], next[index]];
-    setColumns(next);
-  };
-
-  const addRow = () => setRows([...rows, { id: uid("r"), values: Object.fromEntries(columns.map((c) => [c.id, ""])) }]);
-  const deleteRow = (id: string) => setRows(rows.filter((row) => row.id !== id));
-  const moveRow = (index: number, delta: number) => {
-    const target = index + delta;
-    if (target < 0 || target >= rows.length) return;
-    const next = [...rows];
-    [next[index], next[target]] = [next[target], next[index]];
-    setRows(next);
-  };
-  const setCell = (rowId: string, columnId: string, value: string) =>
-    setRows(rows.map((row) => (row.id === rowId ? { ...row, values: { ...row.values, [columnId]: value } } : row)));
+  /* ONE commit per user action — see the file header. */
+  const commit = (next: DataTable) => onChange(next);
 
   return (
     <section className="space-y-2.5" aria-label={title}>
@@ -102,8 +48,8 @@ export function DynamicTableEditor({
           {hint && <p className="mt-0.5 text-[11px] leading-5 text-[var(--kv-muted)]">{hint}</p>}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={addColumn}>+ افزودن ستون</Btn>
-          <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={addRow} disabled={columns.length === 0}>+ افزودن سطر</Btn>
+          <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => commit(tableAddColumn(table))}>+ افزودن ستون</Btn>
+          <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => commit(tableAddRow(table))} disabled={columns.length === 0}>+ افزودن سطر</Btn>
           {onSave && (
             <Btn size="sm" variant="accent" disabled={busy} onClick={onSave}>{busy ? "در حال ذخیره…" : "ذخیره"}</Btn>
           )}
@@ -126,14 +72,14 @@ export function DynamicTableEditor({
                     <div className="space-y-1.5">
                       <Input
                         value={column.label}
-                        onChange={(label) => renameColumn(column.id, label)}
+                        onChange={(label) => commit(tableRenameColumn(table, column.id, label))}
                         ariaLabel={`نام ستون ${index + 1}`}
                         placeholder={`ستون ${index + 1}`}
                       />
                       <div className="flex items-center justify-end gap-1">
-                        <IconAction label="انتقال ستون به راست" onClick={() => moveColumn(index, 1)} disabled={index === columns.length - 1}><ArrowLeft size={12} /></IconAction>
-                        <IconAction label="انتقال ستون به چپ" onClick={() => moveColumn(index, -1)} disabled={index === 0}><ArrowRight size={12} /></IconAction>
-                        <IconAction label={`حذف ستون ${column.label || index + 1}`} danger onClick={() => deleteColumn(column.id)}><Trash2 size={12} /></IconAction>
+                        <IconAction label="انتقال ستون به راست" onClick={() => commit(tableMoveColumn(table, index, 1))} disabled={index === columns.length - 1}><ArrowLeft size={12} /></IconAction>
+                        <IconAction label="انتقال ستون به چپ" onClick={() => commit(tableMoveColumn(table, index, -1))} disabled={index === 0}><ArrowRight size={12} /></IconAction>
+                        <IconAction label={`حذف ستون ${column.label || index + 1}`} danger onClick={() => commit(tableDeleteColumn(table, column.id))}><Trash2 size={12} /></IconAction>
                       </div>
                     </div>
                   </th>
@@ -155,7 +101,7 @@ export function DynamicTableEditor({
                     <td key={column.id}>
                       <input
                         value={row.values[column.id] ?? ""}
-                        onChange={(event) => setCell(row.id, column.id, event.target.value)}
+                        onChange={(event) => commit(tableSetCell(table, row.id, column.id, event.target.value))}
                         aria-label={`${column.label || "سلول"} — سطر ${index + 1}`}
                         className="h-9 w-full rounded-[8px] border border-transparent bg-transparent px-2 text-[12px] hover:border-[var(--kv-line)] focus:border-[var(--kv-accent)] focus:outline-none"
                       />
@@ -163,9 +109,9 @@ export function DynamicTableEditor({
                   ))}
                   <td>
                     <div className="flex items-center justify-center gap-1">
-                      <IconAction label="انتقال سطر به پایین" onClick={() => moveRow(index, 1)} disabled={index === rows.length - 1}><ArrowDown size={12} /></IconAction>
-                      <IconAction label="انتقال سطر به بالا" onClick={() => moveRow(index, -1)} disabled={index === 0}><ArrowUp size={12} /></IconAction>
-                      <IconAction label={`حذف سطر ${index + 1}`} danger onClick={() => deleteRow(row.id)}><Trash2 size={12} /></IconAction>
+                      <IconAction label="انتقال سطر به پایین" onClick={() => commit(tableMoveRow(table, index, 1))} disabled={index === rows.length - 1}><ArrowDown size={12} /></IconAction>
+                      <IconAction label="انتقال سطر به بالا" onClick={() => commit(tableMoveRow(table, index, -1))} disabled={index === 0}><ArrowUp size={12} /></IconAction>
+                      <IconAction label={`حذف سطر ${index + 1}`} danger onClick={() => commit(tableDeleteRow(table, row.id))}><Trash2 size={12} /></IconAction>
                     </div>
                   </td>
                 </tr>
@@ -204,7 +150,9 @@ function IconAction({ label, onClick, disabled, danger, children }: {
 /** Persistence for one dynamic table of an EXISTING product.
  *  The table value itself is owned by the caller (the Product Studio draft), so this hook only
  *  owns transport state: load once per product, persist on demand, and never lose the operator's
- *  edits — a failed save keeps the value and surfaces the reason (§14: no silent API failures). */
+ *  edits — a failed save keeps the value and surfaces the reason (§14: no silent API failures).
+ *  After a successful save the server answer is re-normalised and pushed back, so a deleted
+ *  column cannot reappear from a stale client snapshot. */
 export function useProductTable(productId: string | null, io: {
   load: () => Promise<unknown>;
   save: (table: DataTable) => Promise<unknown>;
@@ -239,7 +187,8 @@ export function useProductTable(productId: string | null, io: {
     if (!productId) return false;
     setSaving(true); setSaved(false);
     try {
-      await latest.current.save(table);
+      const clean = normalizeTable(table);
+      await latest.current.save(clean);
       const fresh = await latest.current.load();
       latest.current.onLoaded?.(normalizeTable(fresh));
       setSaved(true);

@@ -13,7 +13,7 @@ import {
 } from "../data/contracts";
 import { DynamicTableEditor, emptyTable, normalizeTable, useProductTable, type DataTable } from "../components/dynamic-table-editor";
 import { ProductInventoryDrawer } from "../components/product-inventory";
-import { DiscountManager } from "../components/discount-manager";
+import { ProductPricingWorkspace } from "../components/discount-manager";
 import { seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
@@ -230,14 +230,14 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-[11.5px] text-[var(--kv-muted)]"><span dir="ltr">{variant.sku}</span> · موجودی {variant.on_hand.toLocaleString("fa-IR")} · قابل فروش {variant.available.toLocaleString("fa-IR")}</p>
+          <p className="text-[11.5px] text-[var(--kv-muted)]"><span dir="ltr">{variant.sku}</span> · موجودی {variant.on_hand.toLocaleString("fa-IR")} · قابل تخصیص {variant.available.toLocaleString("fa-IR")}</p>
           {/* Req 29: retail/wholesale inventory domains are separate (Agent 1 foundation). */}
           <div className="flex flex-wrap gap-1.5 text-[11px]">
-            <span className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 font-semibold">موجودی خرده: {variant.retail_on_hand.toLocaleString("fa-IR")} (قابل فروش {variant.retail_available.toLocaleString("fa-IR")})</span>
-            <span className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 font-semibold">موجودی عمده: {variant.wholesale_on_hand.toLocaleString("fa-IR")} (قابل فروش {variant.wholesale_available.toLocaleString("fa-IR")})</span>
+            <span className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 font-semibold">موجودی خرده: {variant.retail_on_hand.toLocaleString("fa-IR")} (قابل تخصیص {variant.retail_available.toLocaleString("fa-IR")})</span>
+            <span className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 font-semibold">موجودی عمده: {variant.wholesale_on_hand.toLocaleString("fa-IR")} (قابل تخصیص {variant.wholesale_available.toLocaleString("fa-IR")})</span>
           </div>
           <div className="flex items-center justify-between rounded-[10px] border border-[var(--kv-line)] px-3 py-2">
-            <span className="text-[12px] font-bold">وضعیت فروش این واریانت</span>
+            <span className="text-[12px] font-bold">عرضهٔ این تنوع در کاتالوگ</span>
             <Switch on={variant.active} onToggle={onToggleActive} />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -276,7 +276,7 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
  *    no intermediate surface and no second product-creation authority.
  *  `onExit` — [انصراف] / «بازگشت به فهرست» / «خروج بدون ذخیره» hand control back to the caller.
  */
-export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resumeProductId, onResumeHandled, embedded, onExit, onPublished }: {
+export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resumeProductId, onResumeHandled, embedded, onExit, onPublished, onOpenPricing }: {
   flash: F;
   onContinueToInventory?: (productId: string) => void;
   onDraftSaved?: (productId: string) => void;
@@ -286,6 +286,9 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   onExit?: () => void;
   /** §5: after a successful publication the caller reloads its own canonical list. */
   onPublished?: (productId: string) => void;
+  /** §3/§17 (browser-UAT delta): the canonical FULL-PAGE pricing workspace lives in the caller.
+   *  `pricing` opens the whole workspace, `discount`/`festival` deep-link to its section. */
+  onOpenPricing?: (target: "pricing" | "discount" | "festival", productId: string) => void;
 }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct, reload } = useStore();
@@ -303,7 +306,10 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   // Inventory step: warehouse + per (color,size) initial quantity. Persisted through WMS receipts.
   const [warehouses, setWarehouses] = useState<Warehouse[] | null>(null);
   const [inventoryFor, setInventoryFor] = useState<Product | null>(null);
-  const [discountFor, setDiscountFor] = useState<Product | null>(null);
+  /** §1/§18 (browser-UAT delta): even in the Studio's own (legacy) list the pricing surface is
+   *  the canonical FULL-PAGE workspace — the modal-over-page flow was rejected by the Product
+   *  Owner. The embedded hub mount routes through `onOpenPricing` instead. */
+  const [pricingFor, setPricingFor] = useState<{ productId: string; name: string; image?: string; sku?: string } | null>(null);
   const [types, setTypes] = useState<ProductType[]>([]);
   /** §8: when the category has a configured profile, CATEGORY is the schema source of truth
    *  and the legacy product-type picker disappears (legacy data stays via the server adapter). */
@@ -807,6 +813,12 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   ].filter(Boolean) as string[];
   /** §39: one idempotency key per create session — a retried save reuses the same identity. */
   const [createIdemKey, setCreateIdemKey] = useState(() => `create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+  /** §3 (browser-UAT delta): the canonical productId obtained by the Draft-first handoff.
+   *  Keeping it in state guarantees a second click on «مدیریت قیمت‌گذاری» reuses the SAME draft
+   *  instead of creating a duplicate product. */
+  const [createdDraftId, setCreatedDraftId] = useState<string | null>(null);
+  const [handoffMissing, setHandoffMissing] = useState<{ target: "pricing" | "discount" | "festival"; fields: string[] } | null>(null);
+  const [handoffBusy, setHandoffBusy] = useState(false);
 
   /** §3/§6: open the canonical studio form for a NEW product — the only create entry point. */
   const openCreate = () => {
@@ -868,9 +880,12 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   /** §6/§11: ONE canonical create path, two canonical actions.
    *  `draft`    → [ذخیره پیش‌نویس] — lenient validation, no stock, product stays پیش‌نویس.
    *  `continue` → [ذخیره و ادامه]   — full catalog validation, then the WMS handoff. */
-  const save = async (intent: "draft" | "continue" = "continue") => {
-    if (intent === "continue" && issues.length) { flash(`برای ادامه تکمیل کنید: ${issues.join("، ")}`); return; }
-    if (intent === "draft" && draftBlockers.length) { flash(`برای ذخیره پیش‌نویس لازم است: ${draftBlockers.join("، ")}`); return; }
+  /** §3 (§21): persist/reuse exactly ONE canonical Draft and hand its id back.
+   *  `handoff: true` never clears the form and never navigates to the list — the caller decides
+   *  the destination, so returning from a pricing/promotion workspace resumes the SAME draft. */
+  const createProduct = async (intent: "draft" | "continue", options?: { handoff?: boolean }): Promise<string | null> => {
+    if (intent === "continue" && issues.length) { flash(`برای ادامه تکمیل کنید: ${issues.join("، ")}`); return null; }
+    if (intent === "draft" && draftBlockers.length) { flash(`برای ذخیره پیش‌نویس لازم است: ${draftBlockers.join("، ")}`); return null; }
     if (isDemo) {
       const offered = d.series.filter((s) => s.available);
       const p: Product = {
@@ -886,7 +901,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
       };
       addProduct(p); setOpen(false); setD(blank());
       flash(`«${p.name}» منتشر شد (demo)${d.cutout.status === "ready" ? " و به استایل‌بیلدر اضافه شد" : ""}`);
-      return;
+      return p.id;
     }
     try {
       // ONE canonical product-create contract: prices in rial, real colors×sizes variants (server SKUs),
@@ -918,7 +933,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
       const enabledVariants = payload.variants.filter((variant) =>
         !cellOff[variantKey((variant as { color?: string | null }).color ?? null, (variant as { size?: string | null }).size ?? null)]);
       // §8: a Draft may legitimately have no variant yet; Save & Continue needs at least one.
-      if (intent === "continue" && !enabledVariants.length) { flash("دست‌کم یک خانه فعال در ماتریس رنگ×سایز لازم است."); return; }
+      if (intent === "continue" && !enabledVariants.length) { flash("دست‌کم یک خانه فعال در ماتریس رنگ×سایز لازم است."); return null; }
       // Adaptive form data (Req 325-326): the server validates specs against the type template.
       // §10: category-driven specs ALWAYS travel with the create payload (the server validates
       // required attributes of the category profile against exactly this object).
@@ -930,24 +945,66 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
       // §4/§15: Product Definition = catalog ONLY. No receipt, no movement, no balance
       // mutation here — the product stays «پیش‌نویس» and opening stock is registered only
       // through the audited WMS document in «ورود اولیه کالا».
+      setCreateIdemKey(`create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+      // §3: remember the ONE canonical identity of this creation session so a later handoff
+      // (pricing / discount / festival) can never create a second product.
+      setCreatedDraftId(res.id);
+      if (options?.handoff) {
+        // §21: the draft is persisted and the form stays exactly as the operator left it; the
+        // caller navigates to the canonical workspace and resumes THIS draft on return.
+        flash(`پیش‌نویس «${d.name}» ذخیره شد — در حال رفتن به قیمت‌گذاری همین محصول…`);
+        await reload();
+        return res.id;
+      }
       setOpen(false); setD(blank());
       await reload();
       if (intent === "draft") {
         // §7: the draft keeps its canonical Product/Variant/Series ids, creates ZERO stock
         // and appears under «محصولات کلبه → پیش‌نویس‌ها».
         flash(`پیش‌نویس «${d.name}» ذخیره شد — ${skus.length.toLocaleString("fa-IR")} واریانت؛ بدون هیچ موجودی فیزیکی`);
-        setCreateIdemKey(`create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
         onDraftSaved?.(res.id);
-        return;
+        return res.id;
       }
       // §11: continuous handoff — no success page, no «نیازمند راه‌اندازی» queue.
       flash(`«${d.name}» ذخیره شد — ${skus.length.toLocaleString("fa-IR")} واریانت؛ ورود اولیه کالا آماده است`);
-      setCreateIdemKey(`create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
       // §40: the product is already persisted — if the handoff fails it simply stays a draft.
       onContinueToInventory?.(res.id);
+      return res.id;
     } catch (e) {
       flash(e instanceof Error ? e.message : (intent === "draft" ? "خطا در ذخیره پیش‌نویس" : "خطا در ذخیره و ادامه"));
+      return null;
     }
+  };
+
+  /** §6 (main) / §18: the two canonical create actions keep their behaviour. */
+  const save = (intent: "draft" | "continue" = "continue") => { void createProduct(intent); };
+
+  /** §3/§21 (browser-UAT delta): Draft-first handoff to the canonical pricing workspace.
+   *  1. validate only the MINIMUM draft requirements, 2. persist/reuse ONE canonical draft,
+   *  3. preserve every entered value, 4. obtain the canonical productId, 5. navigate. */
+  /** Opens the canonical workspace: the hub owns the route when it passes `onOpenPricing`, the
+   *  legacy standalone mount renders the same full page right here (never a modal, §1/§18). */
+  const openPricingFor = (target: "pricing" | "discount" | "festival", id: string) => {
+    if (onOpenPricing) { onOpenPricing(target, id); return; }
+    setPricingFor({ productId: id, name: d.name || "محصول", image: d.images[0]?.url, sku: d.sku || undefined });
+  };
+  const handoff = async (target: "pricing" | "discount" | "festival") => {
+    if (handoffBusy) return;
+    const existingId = editing?.id ?? createdDraftId;
+    if (existingId) { openPricingFor(target, existingId); return; }
+    if (isDemo) { flash("در حالت نمایشی، قیمت‌گذاری روی محصول ذخیره‌شدهٔ سرور اجرا می‌شود."); return; }
+    if (draftBlockers.length) { setHandoffMissing({ target, fields: draftBlockers }); return; }
+    setHandoffMissing(null);
+    setHandoffBusy(true);
+    try {
+      const id = await createProduct("draft", { handoff: true });
+      if (id) openPricingFor(target, id);
+    } finally { setHandoffBusy(false); }
+  };
+  const handoffLabel = (target: "pricing" | "discount" | "festival") => {
+    const id = editing?.id ?? createdDraftId;
+    const noun = target === "pricing" ? "قیمت‌گذاری" : target === "discount" ? "مدیریت تخفیف" : "مدیریت جشنواره";
+    return id ? noun : `ذخیره پیش‌نویس و رفتن به ${noun}`;
   };
 
   // One unified studio for create AND edit (Req 39). §4 (corrective): NO operational stock
@@ -961,6 +1018,20 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
     // §9-§10: one merged step, two independent tables.
     ["specs", "مشخصات و راهنمای سایز"], ["seo", "سئو و کانال‌ها"], ["review", "بازبینی و انتشار"],
   ];
+  /* §1: the canonical pricing workspace is a full page. When the caller provides
+     `onOpenPricing` (the hub) the Studio hands over; otherwise the legacy standalone mount
+     renders the very same workspace here — never a modal. */
+  if (pricingFor && !onOpenPricing) return (
+    <ProductPricingWorkspace
+      productId={pricingFor.productId}
+      productName={pricingFor.name}
+      productImage={pricingFor.image}
+      sku={pricingFor.sku}
+      backLabel="بازگشت به فهرست محصولات"
+      onClose={() => setPricingFor(null)}
+      flash={flash}
+    />
+  );
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       {/* §3: in embedded mode the caller owns the canonical product list, so the studio renders
@@ -997,7 +1068,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                   <td>
                     {isDemo
                       ? <span className="text-[11.5px] text-[var(--kv-muted)]">—</span>
-                      : <button onClick={() => setDiscountFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline">
+                      : <button onClick={() => setPricingFor({ productId: p.id, name: p.name, image: p.images?.[0], sku: p.sku })} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline">
                           <BadgePercent size={13} />تخفیف / جشنواره
                         </button>}
                   </td>
@@ -1351,7 +1422,10 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                         <div><p className="text-[11px] text-[var(--kv-muted)]">خرید چهارقسطه</p><p className="mt-1 text-[13px] font-bold">{installmentEnabled ? (d.installment && Number(d.installment) > 0 ? `${fmtNum(Number(d.installment))} تومان` : "فعال — برابر قیمت نقدی") : "غیرفعال"}</p></div>
                         <div className="sm:col-span-2"><p className="text-[11px] text-[var(--kv-muted)]">سیاست اعمال تخفیف روی خرید چهارقسطه</p><p className="mt-1 text-[13px] font-bold">{INSTALLMENT_POLICY_LABEL[d.installmentPolicy]}</p></div>
                       </div>
-                      <Btn variant="accent" icon={<BadgePercent size={14} />} onClick={() => setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>مدیریت قیمت، اقساط و تخفیف‌ها</Btn>
+                      {/* §17: the Studio holds only the essential creation fields; the deeper
+                          management lives in the canonical full-page pricing workspace. */}
+                      <Btn variant="accent" icon={<BadgePercent size={14} />} disabled={handoffBusy}
+                        onClick={() => void handoff("pricing")}>{handoffLabel("pricing")}</Btn>
                     </>
                   ) : (
                     <>
@@ -1398,8 +1472,24 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                 </Card>
               )}
 
-              {/* §7: discount + festival are READ-ONLY here. The Promotion Center is the only
-                  authority — no local ON/OFF toggle can exist in the Studio (§16). */}
+              {handoffMissing && (
+                <p role="alert" className="rounded-[10px] border border-amber-300 bg-amber-50 px-3 py-2 text-[11.5px] leading-6 text-amber-950">
+                  برای رفتن به «{handoffMissing.target === "pricing" ? "قیمت‌گذاری" : handoffMissing.target === "discount" ? "مدیریت تخفیف" : "مدیریت جشنواره"}» ابتدا این موارد را وارد کنید:
+                  {" "}<b>{handoffMissing.fields.join("، ")}</b>.
+                  {" "}اطلاعات فعلی شما حفظ می‌شود و پس از تکمیل، یک پیش‌نویس ساخته و همان باز می‌شود.
+                </p>
+              )}
+              {/* §7: discount + festival are READ-ONLY here. The Promotion Center + the canonical
+                  pricing workspace are the only authorities — no local ON/OFF toggle can exist
+                  in the Studio (§16). */}
+              {!editing && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 px-3 py-2">
+                  <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
+                    برای مدیریت کامل قیمت‌گذاری و تخفیف‌ها، همین محصول به‌صورت یک پیش‌نویس ذخیره می‌شود و بعد در صفحهٔ قیمت‌گذاری ادامه می‌دهید؛ با «بازگشت» همان پیش‌نویس دوباره باز می‌شود.
+                  </p>
+                  <Btn size="sm" variant="accent" icon={<BadgePercent size={14} />} disabled={handoffBusy} onClick={() => void handoff("pricing")}>{handoffLabel("pricing")}</Btn>
+                </div>
+              )}
               <div className="grid gap-3 lg:grid-cols-2">
                 <Card className="space-y-2 p-4">
                   <div className="flex items-center justify-between gap-2">
@@ -1414,8 +1504,8 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                       ? `${promoSummary.activeStandaloneRules.toLocaleString("fa-IR")} قانون تخفیف فعال از مجموع ${promoSummary.configuredStandaloneRules.toLocaleString("fa-IR")} قانون تعریف‌شده، به‌علاوهٔ ${promoSummary.suspendedStandaloneRules.toLocaleString("fa-IR")} قانون که سرور به‌دلیل تداخل متوقف کرده است.`
                       : editing ? "در حال دریافت وضعیت تخفیف…" : "پس از ذخیرهٔ محصول، وضعیت تخفیف اینجا نمایش داده می‌شود."}
                   </p>
-                  <Btn variant="soft" icon={<BadgePercent size={14} />} disabled={!editing}
-                    onClick={() => editing && setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>
+                  <Btn variant="soft" icon={<BadgePercent size={14} />} disabled={handoffBusy}
+                    onClick={() => void handoff("discount")}>
                     مدیریت تخفیف
                   </Btn>
                 </Card>
@@ -1434,8 +1524,8 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                         : "این محصول عضو هیچ جشنواره‌ای نیست."
                       : editing ? "در حال دریافت وضعیت جشنواره…" : "پس از ذخیرهٔ محصول، وضعیت جشنواره اینجا نمایش داده می‌شود."}
                   </p>
-                  <Btn variant="soft" icon={<Sparkles size={14} />} disabled={!editing}
-                    onClick={() => editing && setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>
+                  <Btn variant="soft" icon={<Sparkles size={14} />} disabled={handoffBusy}
+                    onClick={() => void handoff("festival")}>
                     مدیریت جشنواره
                   </Btn>
                 </Card>
@@ -1692,18 +1782,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
       <WorkspaceModal open={!!inventoryFor} onClose={() => setInventoryFor(null)} title={inventoryFor ? `موجودی · ${inventoryFor.name}` : ""}>
         <ProductInventoryDrawer product={inventoryFor} warehouses={warehouses ?? []} onClose={() => setInventoryFor(null)} onFlash={flash} />
       </WorkspaceModal>
-      {discountFor && <DiscountManager
-        productId={discountFor.id}
-        productName={discountFor.name}
-        productImage={discountFor.images?.[0]}
-        sku={discountFor.sku}
-        onClose={() => {
-          const productId = discountFor.id;
-          setDiscountFor(null);
-          if (editing?.id === productId) void openEdit({ id: productId } as Product);
-        }}
-        flash={flash}
-      />}
+
       {/* §6 (final PO decision): the post-create «محصول با موفقیت تعریف شد» success page was
           REMOVED — the creation journey is continuous. [ذخیره پیش‌نویس] returns to
           «پیش‌نویس‌ها» and [ذخیره و ادامه] goes straight into «ورود اولیه کالا». */}
