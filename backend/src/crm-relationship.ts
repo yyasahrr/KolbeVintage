@@ -5,7 +5,7 @@ import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit } from './operations.js';
-import { badRequest, conflict, notFound } from './errors.js';
+import { conflict, notFound } from './errors.js';
 import { recordTimeline } from './crm-intelligence.js';
 
 const stage = z.enum(['lead','prospect','active','loyal','at_risk','dormant','churned','partner']);
