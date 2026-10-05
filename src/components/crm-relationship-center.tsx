@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Clock3, Plus, RefreshCw, Search, UserRoundCheck } from "lucide-react";
+import { Check, Clock3, Plus, RefreshCw, UserRoundCheck } from "lucide-react";
 import { crmApi } from "../data/api";
 import { formatPersianDateTime } from "../data/persian-date";
 import { Btn, Card, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status, WorkspaceModal } from "./primitives";
