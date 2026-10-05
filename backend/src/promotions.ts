@@ -7,17 +7,37 @@ import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { addRial, asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, requestHash } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { allocateSeriesPrice, loadSeriesComposition } from './series.js';
 
 export type TargetType = 'variant' | 'color' | 'size' | 'product' | 'category';
 export type DiscountType = 'percent' | 'fixed_rial';
 
+export type PriceChannel = 'retail' | 'wholesale';
+export type PaymentMode = 'cash' | 'four_installments';
+
+/** THE canonical resolved price. Every surface (admin preview, storefront, cart, checkout, order
+ *  snapshot) renders these numbers — nobody recomputes a final price in the browser or in SQL. */
 export type ResolvedVariantPrice = {
   variantId: string;
   productId: string;
   sku: string;
   size: string | null;
   color: string | null;
+  channel: PriceChannel;
+  paymentMode: PaymentMode;
+  /** Canonical base for the requested channel + payment mode. */
   basePrice: string;
+  /** Retail cash base (variant override ?? product cash price) — context for every channel. */
+  cashBasePriceRial: string;
+  /** Explicit «قیمت پایه چهارقسطه» — null when the operator never defined one (never derived from cash). */
+  installmentBasePriceRial: string | null;
+  installmentEnabled: boolean;
+  /** «اعمال تخفیف روی خرید چهارقسطه» — whether ordinary discounts may reduce the four-installment base. */
+  installmentDiscountAllowed: boolean;
+  /** The product's canonical «سیاست اعمال تخفیف روی خرید چهارقسطه» (raw policy value, for the UI). */
+  installmentPolicy: string;
+  /** True when a discount exists but the installment policy forbids discounting that purchase. */
+  installmentDiscountBlocked: boolean;
   matchedRule: {
     id: string;
     promotionId: string | null;
@@ -33,6 +53,8 @@ export type ResolvedVariantPrice = {
   discountValue: string | null;
   discountAmount: string;
   finalPrice: string;
+  /** §9: crossed-out price derived from the canonical base of the resolved discount (never a manual value). */
+  compareAtPriceRial: string | null;
   startsAt: string | null;
   endsAt: string | null;
   source: 'promotion_rule' | 'festival' | 'none';
@@ -100,8 +122,12 @@ type VariantPricingContextRow = {
   cash_price_rial: string;
   installment_price_rial: string | null;
   wholesale_price_rial: string | null;
-  /** Req 25 (Agent 2): variant-level retail price override — replaces the cash base price before promotions apply. */
+  /** Req 25 (Agent 2): variant-level retail price override — replaces the retail cash base before promotions apply. */
   price_override_rial: string | null;
+  installment_enabled: boolean;
+  installment_policy: string;
+  allow_installments: boolean;
+  disable_installments_on_discount: boolean;
 };
 
 type CandidateRuleRow = {
@@ -137,84 +163,86 @@ export function computeDiscountAmount(basePrice: bigint, discountType: DiscountT
   return discountValue > basePrice ? basePrice : discountValue;
 }
 
-export async function resolveVariantPrice(
-  db: DbClient,
-  variantId: string,
-  options: {
-    orderType?: 'retail' | 'wholesale';
-    paymentMode?: 'cash' | 'four_installments';
-    now?: Date;
-      basePriceRial?: string;
-  } = {},
-): Promise<ResolvedVariantPrice> {
-  const orderType = options.orderType ?? 'retail';
-  const paymentMode = options.paymentMode ?? 'cash';
-  const now = options.now ?? new Date();
+const VARIANT_PRICING_SELECT = `
+  SELECT v.id AS variant_id, v.sku, v.size_label, v.color_label, v.attributes, v.active,
+         v.price_override_rial::text AS price_override_rial,
+         p.id AS product_id, p.name AS product_name, p.category, p.status,
+         p.cash_price_rial, p.installment_price_rial, p.wholesale_price_rial,
+         p.installment_enabled, p.installment_policy, p.allow_installments,
+         p.disable_installments_on_discount
+  FROM product_variants v
+  JOIN products p ON p.id = v.product_id`;
 
-  const variant = await one<VariantPricingContextRow>(
-    db,
-    `SELECT v.id AS variant_id, v.sku, v.size_label, v.color_label, v.attributes, v.active,
-            v.price_override_rial::text AS price_override_rial,
-            p.id AS product_id, p.name AS product_name, p.category, p.status,
-            p.cash_price_rial, p.installment_price_rial, p.wholesale_price_rial
-     FROM product_variants v
-     JOIN products p ON p.id = v.product_id
-     WHERE v.id = $1`,
-    [variantId],
-  );
-  if (!variant || !variant.active) throw notFound();
+const RULE_PRICING_SELECT = `
+  SELECT r.id, r.promotion_id, r.name, r.channel, r.target_type, r.product_id,
+         r.color_id, r.size_code, r.variant_id, r.category,
+         r.discount_type, r.discount_value::text AS discount_value,
+         r.starts_at, r.ends_at, r.priority, r.created_at,
+         pr.kind AS promo_kind, pr.exclusive_policy AS promo_exclusive_policy,
+         pr.starts_at AS promo_starts_at, pr.ends_at AS promo_ends_at,
+         pr.priority AS promo_priority
+  FROM promotion_rules r
+  LEFT JOIN promotions pr ON pr.id = r.promotion_id
+  WHERE r.active = true
+    AND r.channel IN ('all', $1)
+    AND (r.starts_at IS NULL OR r.starts_at <= $2)
+    AND (r.ends_at IS NULL OR r.ends_at > $2)
+    -- DEC-PRICING-001 (PO decision = Option A): rules suspended by a festival stay
+    -- dormant even after the festival ends; the admin must reactivate them explicitly.
+    AND r.suspended_by_promotion_id IS NULL
+    AND (r.promotion_id IS NULL OR (
+      pr.active = true
+      AND pr.channel IN ('all', $1)
+      AND (pr.starts_at IS NULL OR pr.starts_at <= $2)
+      AND (pr.ends_at IS NULL OR pr.ends_at > $2)
+    ))`;
 
-  // Req 25 (Agent 2): a variant-level price override replaces the product cash
-  // price as the retail base; promotions then discount the overridden base.
-  // The deliberate installment price stays authoritative for 4-installment mode;
-  // the override only replaces the cash price (and its installment fallback).
-    const rawBasePrice = options.basePriceRial ?? (
-    orderType === 'wholesale'
-      ? variant.wholesale_price_rial
-      : paymentMode === 'four_installments'
-        ? (variant.installment_price_rial ?? variant.price_override_rial ?? variant.cash_price_rial)
-          : (variant.price_override_rial ?? variant.cash_price_rial));
+/** Retail cash base — the variant override replaces the product cash price before promotions (Req 25). */
+function retailCashBase(variant: VariantPricingContextRow, override: bigint | null): bigint | null {
+  if (override !== null) return override;
+  const cash = variant.price_override_rial ?? variant.cash_price_rial;
+  return cash === null ? null : rial(cash);
+}
 
-  if (rawBasePrice === null) {
-    throw badRequest(`قیمت فروش برای SKU ${variant.sku} تعریف نشده است.`);
+/** Explicit four-installment base — never auto-derived from the cash price (§7/§8). */
+function explicitInstallmentBase(variant: VariantPricingContextRow, override: bigint | null): bigint | null {
+  if (override !== null) return override;
+  return variant.installment_price_rial === null ? null : rial(variant.installment_price_rial);
+}
+
+function installmentAllowed(variant: VariantPricingContextRow): boolean {
+  return variant.installment_enabled && variant.allow_installments && variant.installment_policy !== 'disabled';
+}
+
+type RuleMatchKeys = { colorKeys: Set<string>; sizeKeys: Set<string> };
+
+function ruleMatchesVariant(rule: CandidateRuleRow, variant: VariantPricingContextRow, keys: RuleMatchKeys): boolean {
+  switch (rule.target_type) {
+    case 'variant':
+      return rule.variant_id === variant.variant_id && (!rule.product_id || rule.product_id === variant.product_id);
+    case 'color': {
+      if (rule.product_id !== variant.product_id || !rule.color_id) return false;
+      const ruleColorRaw = rule.color_id.trim().toLowerCase();
+      const ruleColorNorm = normalizeColorKey(rule.color_id);
+      return keys.colorKeys.has(ruleColorRaw) || (ruleColorNorm !== '' && keys.colorKeys.has(ruleColorNorm));
+    }
+    case 'size': {
+      if (rule.product_id !== variant.product_id || !rule.size_code) return false;
+      const ruleSizeNorm = normalizeSizeKey(rule.size_code);
+      return ruleSizeNorm !== '' && keys.sizeKeys.has(ruleSizeNorm);
+    }
+    case 'product':
+      return rule.product_id === variant.product_id;
+    case 'category':
+      return rule.category === variant.category;
   }
-  const basePrice = rial(rawBasePrice);
+}
 
-  const rulesResult = await db.query<CandidateRuleRow>(
-    `SELECT r.id, r.promotion_id, r.name, r.channel, r.target_type, r.product_id,
-            r.color_id, r.size_code, r.variant_id, r.category,
-            r.discount_type, r.discount_value::text AS discount_value,
-            r.starts_at, r.ends_at, r.priority, r.created_at,
-            pr.kind AS promo_kind, pr.exclusive_policy AS promo_exclusive_policy,
-            pr.starts_at AS promo_starts_at, pr.ends_at AS promo_ends_at,
-            pr.priority AS promo_priority
-     FROM promotion_rules r
-     LEFT JOIN promotions pr ON pr.id = r.promotion_id
-     WHERE r.active = true
-       AND r.channel IN ('all', $1)
-       AND (r.starts_at IS NULL OR r.starts_at <= $2)
-       AND (r.ends_at IS NULL OR r.ends_at > $2)
-       -- DEC-PRICING-001 (PO decision = Option A): rules suspended by a festival stay
-       -- dormant even after the festival ends; the admin must reactivate them explicitly.
-       AND r.suspended_by_promotion_id IS NULL
-       AND (r.promotion_id IS NULL OR (
-         pr.active = true
-         AND pr.channel IN ('all', $1)
-         AND (pr.starts_at IS NULL OR pr.starts_at <= $2)
-         AND (pr.ends_at IS NULL OR pr.ends_at > $2)
-       ))
-       AND (
-         (r.target_type = 'variant' AND r.variant_id = $3)
-         OR (r.target_type IN ('color', 'size', 'product') AND r.product_id = $4)
-         OR (r.target_type = 'category' AND r.category = $5)
-       )`,
-    [orderType, now, variant.variant_id, variant.product_id, variant.category],
-  );
-
-  const variantColorKeys = new Set<string>();
+function matchKeysOf(variant: VariantPricingContextRow): RuleMatchKeys {
+  const colorKeys = new Set<string>();
   if (variant.color_label) {
-    variantColorKeys.add(variant.color_label.trim().toLowerCase());
-    variantColorKeys.add(normalizeColorKey(variant.color_label));
+    colorKeys.add(variant.color_label.trim().toLowerCase());
+    colorKeys.add(normalizeColorKey(variant.color_label));
   }
   const attrColorId = typeof variant.attributes?.colorId === 'string'
     ? variant.attributes.colorId
@@ -224,69 +252,104 @@ export async function resolveVariantPrice(
         ? variant.attributes.color
         : null;
   if (attrColorId) {
-    variantColorKeys.add(attrColorId.trim().toLowerCase());
-    variantColorKeys.add(normalizeColorKey(attrColorId));
+    colorKeys.add(attrColorId.trim().toLowerCase());
+    colorKeys.add(normalizeColorKey(attrColorId));
   }
 
-  const variantSizeKeys = new Set<string>();
-  if (variant.size_label) {
-    variantSizeKeys.add(normalizeSizeKey(variant.size_label));
-  }
+  const sizeKeys = new Set<string>();
+  if (variant.size_label) sizeKeys.add(normalizeSizeKey(variant.size_label));
   const attrSize = typeof variant.attributes?.size === 'string'
     ? variant.attributes.size
     : typeof variant.attributes?.sizeCode === 'string'
       ? variant.attributes.sizeCode
       : null;
-  if (attrSize) {
-    variantSizeKeys.add(normalizeSizeKey(attrSize));
+  if (attrSize) sizeKeys.add(normalizeSizeKey(attrSize));
+
+  return { colorKeys, sizeKeys };
+}
+
+/** A Festival is always exclusive from standalone/product discounts, regardless of a
+ *  misconfigured definition policy. Other campaigns retain their configured policy. */
+const isExclusiveRule = (rule: CandidateRuleRow) => rule.promo_kind === 'festival'
+  || rule.promo_exclusive_policy === 'override_all'
+  || rule.promo_exclusive_policy === 'festival_exclusive';
+
+/**
+ * THE canonical deterministic resolution for one variant. Both the single-variant resolver and the
+ * batch resolver call this function, so a storefront grid, the admin preview and the order pipeline
+ * can never diverge.
+ */
+function resolveVariantPricing(
+  variant: VariantPricingContextRow,
+  rules: CandidateRuleRow[],
+  options: { orderType: PriceChannel; paymentMode: PaymentMode; basePriceRial?: string },
+): ResolvedVariantPrice {
+  const channel = options.orderType;
+  const paymentMode = options.paymentMode;
+  const override = options.basePriceRial === undefined ? null : rial(options.basePriceRial);
+  const cashBase = retailCashBase(variant, paymentMode === 'cash' && channel === 'retail' ? override : null);
+
+  let basePrice: bigint | null;
+  if (channel === 'wholesale') {
+    // §10-§12: wholesale prices come from the wholesale authority (series allocation or the explicit
+    // product wholesale price). A missing wholesale price is an explicit business error — the resolver
+    // never silently falls back to the retail cash price.
+    basePrice = override ?? (variant.wholesale_price_rial === null ? null : rial(variant.wholesale_price_rial));
+    // §13/§20: 0 is «no price», never a free product — the resolver refuses instead of inventing one.
+    if (basePrice === null || basePrice <= 0n) throw badRequest(`قیمت عمده برای SKU ${variant.sku} تعریف نشده است.`);
+    // The four-installment offer is still gated by the product's canonical installment configuration.
+    if (paymentMode === 'four_installments' && !installmentAllowed(variant))
+      throw conflict(`خرید چهارقسطه برای SKU ${variant.sku} فعال نیست.`);
+  } else if (paymentMode === 'four_installments') {
+    if (!installmentAllowed(variant)) throw conflict(`خرید چهارقسطه برای SKU ${variant.sku} فعال نیست.`);
+    const installmentBase = explicitInstallmentBase(variant, override);
+    if (installmentBase === null || installmentBase <= 0n)
+      throw badRequest(`قیمت پایه چهارقسطه برای SKU ${variant.sku} تعریف نشده است.`);
+    basePrice = installmentBase;
+  } else {
+    if (cashBase === null || cashBase <= 0n) throw badRequest(`قیمت نقدی پایه برای SKU ${variant.sku} تعریف نشده است.`);
+    basePrice = cashBase;
   }
 
-  const matching = rulesResult.rows.filter((rule) => {
-    switch (rule.target_type) {
-      case 'variant':
-        return rule.variant_id === variant.variant_id && (!rule.product_id || rule.product_id === variant.product_id);
-      case 'color': {
-        if (rule.product_id !== variant.product_id || !rule.color_id) return false;
-        const ruleColorRaw = rule.color_id.trim().toLowerCase();
-        const ruleColorNorm = normalizeColorKey(rule.color_id);
-        return variantColorKeys.has(ruleColorRaw) || (ruleColorNorm !== '' && variantColorKeys.has(ruleColorNorm));
-      }
-      case 'size': {
-        if (rule.product_id !== variant.product_id || !rule.size_code) return false;
-        const ruleSizeNorm = normalizeSizeKey(rule.size_code);
-        return ruleSizeNorm !== '' && variantSizeKeys.has(ruleSizeNorm);
-      }
-      case 'product':
-        return rule.product_id === variant.product_id;
-      case 'category':
-        return rule.category === variant.category;
-    }
+  const installmentEnabled = installmentAllowed(variant);
+  const installmentPolicy = variant.installment_policy;
+  // «اعمال تخفیف روی خرید چهارقسطه»: only an explicit enabled_when_discounted / enabled policy
+  // allows ordinary discounts to reduce the installment base.
+  const installmentDiscountAllowed = installmentPolicy !== 'disabled_when_discounted'
+    && !variant.disable_installments_on_discount
+    && installmentPolicy !== 'disabled';
+
+  const keys = matchKeysOf(variant);
+  const matching = rules.filter((rule) => ruleMatchesVariant(rule, variant, keys));
+
+  const emptyPrice = (discountBlocked: boolean): ResolvedVariantPrice => ({
+    variantId: variant.variant_id,
+    productId: variant.product_id,
+    sku: variant.sku,
+    size: variant.size_label,
+    color: variant.color_label,
+    channel,
+    paymentMode,
+    basePrice: asRial(basePrice!),
+    cashBasePriceRial: asRial(cashBase ?? 0n),
+    installmentBasePriceRial: variant.installment_price_rial === null ? null : asRial(rial(variant.installment_price_rial)),
+    installmentEnabled,
+    installmentDiscountAllowed,
+    installmentPolicy,
+    installmentDiscountBlocked: discountBlocked,
+    matchedRule: null,
+    discountType: null,
+    discountValue: null,
+    discountAmount: '0',
+    finalPrice: asRial(basePrice!),
+    compareAtPriceRial: null,
+    startsAt: null,
+    endsAt: null,
+    source: 'none',
   });
 
-  if (matching.length === 0) {
-    return {
-      variantId: variant.variant_id,
-      productId: variant.product_id,
-      sku: variant.sku,
-      size: variant.size_label,
-      color: variant.color_label,
-      basePrice: asRial(basePrice),
-      matchedRule: null,
-      discountType: null,
-      discountValue: null,
-      discountAmount: '0',
-      finalPrice: asRial(basePrice),
-      startsAt: null,
-      endsAt: null,
-      source: 'none',
-    };
-  }
+  if (matching.length === 0) return emptyPrice(false);
 
-  // A Festival is always exclusive from standalone/product discounts, regardless of a
-  // misconfigured definition policy. Other campaigns retain their configured policy.
-  const isExclusiveRule = (rule: CandidateRuleRow) => rule.promo_kind === 'festival'
-    || rule.promo_exclusive_policy === 'override_all'
-    || rule.promo_exclusive_policy === 'festival_exclusive';
   const hasExclusiveFestival = matching.some(isExclusiveRule);
   const poolOfRules = hasExclusiveFestival ? matching.filter(isExclusiveRule) : matching;
 
@@ -296,16 +359,20 @@ export async function resolveVariantPrice(
     if (prioB !== prioA) return prioB - prioA;
     const specDiff = specificityRank(b.target_type) - specificityRank(a.target_type);
     if (specDiff !== 0) return specDiff;
-    const amtA = computeDiscountAmount(basePrice, a.discount_type, rial(a.discount_value));
-    const amtB = computeDiscountAmount(basePrice, b.discount_type, rial(b.discount_value));
+    const amtA = computeDiscountAmount(basePrice!, a.discount_type, rial(a.discount_value));
+    const amtB = computeDiscountAmount(basePrice!, b.discount_type, rial(b.discount_value));
     if (amtB !== amtA) return amtB > amtA ? 1 : -1;
     return b.created_at.getTime() - a.created_at.getTime();
   });
 
   const winner = poolOfRules[0]!;
   const discountValueBig = rial(winner.discount_value);
-  const discountAmountBig = computeDiscountAmount(basePrice, winner.discount_type, discountValueBig);
-  const finalPriceBig = basePrice - discountAmountBig;
+  const rawDiscount = computeDiscountAmount(basePrice!, winner.discount_type, discountValueBig);
+  // Ordinary discounts are ordinary: a product that forbids discounting on the installment path
+  // resolves to the untouched four-installment base (and the order pipeline rejects the purchase).
+  const blocked = paymentMode === 'four_installments' && rawDiscount > 0n && !installmentDiscountAllowed;
+  const discountAmountBig = blocked ? 0n : rawDiscount;
+  const finalPriceBig = basePrice! - discountAmountBig;
   const effectiveStartsAt = winner.starts_at ?? winner.promo_starts_at ?? null;
   const effectiveEndsAt = winner.ends_at ?? winner.promo_ends_at ?? null;
 
@@ -315,7 +382,15 @@ export async function resolveVariantPrice(
     sku: variant.sku,
     size: variant.size_label,
     color: variant.color_label,
-    basePrice: asRial(basePrice),
+    channel,
+    paymentMode,
+    basePrice: asRial(basePrice!),
+    cashBasePriceRial: asRial(cashBase ?? 0n),
+    installmentBasePriceRial: variant.installment_price_rial === null ? null : asRial(rial(variant.installment_price_rial)),
+    installmentEnabled,
+    installmentDiscountAllowed,
+    installmentPolicy,
+    installmentDiscountBlocked: blocked,
     matchedRule: {
       id: winner.id,
       promotionId: winner.promotion_id,
@@ -331,10 +406,95 @@ export async function resolveVariantPrice(
     discountValue: asRial(discountValueBig),
     discountAmount: asRial(discountAmountBig),
     finalPrice: asRial(finalPriceBig),
+    // §9: the crossed-out price is ALWAYS derived from the canonical base of the resolved discount.
+    compareAtPriceRial: discountAmountBig > 0n ? asRial(basePrice!) : null,
     startsAt: effectiveStartsAt ? effectiveStartsAt.toISOString() : null,
     endsAt: effectiveEndsAt ? effectiveEndsAt.toISOString() : null,
     source: winner.promo_kind === 'festival' ? 'festival' : 'promotion_rule',
   };
+}
+
+export async function resolveVariantPrice(
+  db: DbClient,
+  variantId: string,
+  options: {
+    orderType?: PriceChannel;
+    paymentMode?: PaymentMode;
+    now?: Date;
+    basePriceRial?: string;
+  } = {},
+): Promise<ResolvedVariantPrice> {
+  const orderType = options.orderType ?? 'retail';
+  const paymentMode = options.paymentMode ?? 'cash';
+  const now = options.now ?? new Date();
+
+  const variant = await one<VariantPricingContextRow>(db, `${VARIANT_PRICING_SELECT} WHERE v.id = $1`, [variantId]);
+  if (!variant || !variant.active) throw notFound();
+
+  const rulesResult = await db.query<CandidateRuleRow>(
+    `${RULE_PRICING_SELECT}
+       AND (
+         (r.target_type = 'variant' AND r.variant_id = $3)
+         OR (r.target_type IN ('color', 'size', 'product') AND r.product_id = $4)
+         OR (r.target_type = 'category' AND r.category = $5)
+       )`,
+    [orderType, now, variant.variant_id, variant.product_id, variant.category],
+  );
+
+  return resolveVariantPricing(variant, rulesResult.rows, {
+    orderType,
+    paymentMode,
+    ...(options.basePriceRial === undefined ? {} : { basePriceRial: options.basePriceRial }),
+  });
+}
+
+/**
+ * §56 — batched resolution for grids (catalog, wholesale catalog, product 360, hub): exactly two
+ * queries regardless of the number of variants, reusing the same per-variant resolution as
+ * `resolveVariantPrice` so no surface can invent a different price.
+ */
+export async function resolveVariantPricesBatch(
+  db: DbClient,
+  variantIds: string[],
+  options: { orderType?: PriceChannel; paymentMode?: PaymentMode; now?: Date; basePriceRialByVariant?: Map<string, string> } = {},
+): Promise<Map<string, ResolvedVariantPrice>> {
+  const orderType = options.orderType ?? 'retail';
+  const paymentMode = options.paymentMode ?? 'cash';
+  const now = options.now ?? new Date();
+  const resolved = new Map<string, ResolvedVariantPrice>();
+  if (variantIds.length === 0) return resolved;
+
+  const variants = await db.query<VariantPricingContextRow>(
+    `${VARIANT_PRICING_SELECT} WHERE v.id = ANY($1::uuid[]) AND v.active`, [variantIds]);
+  if (variants.rows.length === 0) return resolved;
+
+  const productIds = [...new Set(variants.rows.map((row) => row.product_id))];
+  const categories = [...new Set(variants.rows.map((row) => row.category))];
+  const rulesResult = await db.query<CandidateRuleRow>(
+    `${RULE_PRICING_SELECT}
+       AND (
+         (r.target_type = 'variant' AND r.variant_id = ANY($3::uuid[]))
+         OR (r.target_type IN ('color', 'size', 'product') AND r.product_id = ANY($4::uuid[]))
+         OR (r.target_type = 'category' AND r.category = ANY($5::text[]))
+       )`,
+    [orderType, now, variantIds, productIds, categories],
+  );
+
+  for (const variant of variants.rows) {
+    const override = options.basePriceRialByVariant?.get(variant.variant_id);
+    // A variant with a missing price for the requested mode is skipped from the batch (the caller
+    // surfaces it as an explicit business error in context) instead of blanking the whole grid.
+    try {
+      resolved.set(variant.variant_id, resolveVariantPricing(variant, rulesResult.rows, {
+        orderType,
+        paymentMode,
+        ...(override === undefined ? {} : { basePriceRial: override }),
+      }));
+    } catch {
+      continue;
+    }
+  }
+  return resolved;
 }
 
 const createPromotionSchema = z.object({
@@ -1132,10 +1292,12 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
     const body = z.object({
       orderType: z.enum(['retail', 'wholesale']).default('retail'),
       paymentMode: z.enum(['cash', 'four_installments']).default('cash'),
+      // §20: a wholesale Series request identifies the canonical Series (never a bare list of pieces).
+      series: z.array(z.object({ seriesTemplateId: z.uuid(), count: z.number().int().min(1).max(1000) }).strict()).max(20).optional(),
       items: z.array(z.object({
         variantId: z.uuid(),
         quantity: z.number().int().min(1).max(10000).default(1),
-      })).min(1).max(100),
+      })).max(100).default([]),
     }).parse(request.body);
 
     if (body.orderType === 'wholesale') {
@@ -1147,6 +1309,30 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
         [user.id],
       );
       if (!membership && !user.permissions.includes('orders:read')) throw conflict('مشاهده قیمت عمده نیازمند عضویت فعال است.');
+    }
+    if ((body.series?.length ?? 0) > 0 && body.orderType !== 'wholesale')
+      throw badRequest('سفارش بر مبنای سری فقط برای معاملات عمده مجاز است.');
+    if (body.items.length === 0 && !body.series?.length)
+      throw badRequest('حداقل یک قلم یا یک سری برای محاسبهٔ قیمت لازم است.');
+
+    // §20/§12: Series pricing comes from the same server allocation the order pipeline uses, so a
+    // wholesale preview always shows the exact total (direct) or the exact component sum (derived).
+    const seriesBlocks: Array<Record<string, unknown>> = [];
+    for (const entry of body.series ?? []) {
+      const composition = await loadSeriesComposition(pool, entry.seriesTemplateId);
+      if (!composition || !composition.template.active) throw badRequest('قالب سری انتخاب‌شده معتبر یا فعال نیست.');
+      if (composition.template.pricing_mode === 'legacy_product')
+        throw badRequest(`برای سری «${composition.template.name}» قیمت‌گذاری عمده تعریف نشده است.`);
+      const allocated = allocateSeriesPrice(composition.items, composition.template.pricing_mode, composition.template.total_price_rial);
+      const units = allocated.filter((item) => item.basePriceRial !== null);
+      const total = units.reduce((sum, item) => sum + BigInt(item.basePriceRial!) * BigInt(item.quantity_per_series) * BigInt(entry.count), 0n);
+      seriesBlocks.push({
+        seriesTemplateId: entry.seriesTemplateId, name: composition.template.name,
+        pricingMode: composition.template.pricing_mode, count: entry.count,
+        piecesPerSeries: allocated.reduce((sum, item) => sum + item.quantity_per_series, 0),
+        totalPriceRial: asRial(total),
+        unitPrices: units.map((item) => ({ variantId: item.variant_id, sku: item.sku, basePriceRial: item.basePriceRial })),
+      });
     }
 
     const lines = [];
@@ -1178,6 +1364,7 @@ export function registerPromotionRoutes(app: FastifyInstance, pool: DbPool, conf
     return {
       orderType: body.orderType,
       paymentMode: body.paymentMode,
+      series: seriesBlocks,
       lines,
       subtotalRial: asRial(addRial(baseTotals)),
       discountRial: asRial(addRial(discountTotals)),

@@ -246,6 +246,65 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     if (receivedNow) step(`موجودی اولیه ${receivedNow} واریانت «${definition.name}» از طریق WMS ثبت شد.`);
   }
 
+  /* ---------------- §66 canonical pricing showcase (idempotent) ----------------
+     Every canonical pricing shape must exist in a seeded database: retail-only, retail +
+     four-installment with an EXPLICIT installment base, both channels, a direct series price,
+     a component-derived series price and one product with a promotion-engine discount.
+     Re-running the seed is a no-op: existing series/rules are detected before writing. */
+  const showcase = (index: number) => products[index];
+  const retailOnly = showcase(7);
+  if (retailOnly) {
+    const res = await call(app, 'PATCH', `/api/v1/products/${retailOnly.id}`, { token: adminToken, payload: { wholesaleEnabled: false } });
+    if (res.status !== 200) throw new Error(`retail-only showcase: ${JSON.stringify(res.body)}`);
+    step('نمونهٔ قیمت‌گذاری: محصول فقط خرده‌فروشی ثبت شد.');
+  }
+  const installmentProduct = showcase(1);
+  if (installmentProduct) {
+    const base = BigInt(demoProducts[1].cash);
+    const installmentBase = String((base * 106n) / 100n);
+    const res = await call(app, 'PATCH', `/api/v1/products/${installmentProduct.id}`, { token: adminToken,
+      payload: { installmentEnabled: true, installmentPriceRial: installmentBase, installmentPolicy: 'enabled_when_discounted' } });
+    if (res.status !== 200) throw new Error(`installment showcase: ${JSON.stringify(res.body)}`);
+    step('نمونهٔ قیمت‌گذاری: قیمت پایه چهارقسطه (مستقل از قیمت نقدی) ثبت شد.');
+  }
+  const discountedProduct = showcase(2);
+  if (discountedProduct) {
+    const existingRule = await pool.query('SELECT id FROM promotion_rules WHERE product_id = $1 AND name = $2', [discountedProduct.id, 'تخفیف نمونهٔ پاییزه']);
+    if (!existingRule.rows[0]) {
+      const res = await call(app, 'POST', '/api/v1/promotions/rules', { token: adminToken, payload: {
+        name: 'تخفیف نمونهٔ پاییزه', channel: 'retail', targetType: 'product', productId: discountedProduct.id,
+        discountType: 'percent', discountValue: 10, active: true, priority: 0 } });
+      if (res.status !== 201 && res.status !== 200) throw new Error(`discount showcase: ${JSON.stringify(res.body)}`);
+      step('نمونهٔ قیمت‌گذاری: یک محصول با تخفیف موتور تخفیف ثبت شد.');
+    }
+  }
+  const seriesOf = (index: number, perSize: number, unitPrice?: string, totalPrice?: string) => {
+    const product = showcase(index);
+    const wholesale = demoProducts[index]?.wholesale;
+    if (!product || !wholesale) return null;
+    const color = product.variants[0]?.color ?? null;
+    const items = product.variants.filter((v) => v.color === color).slice(0, 3).map((v) => ({
+      variantId: v.id, quantityPerSeries: perSize, ...(unitPrice ? { unitPriceRial: unitPrice } : {}),
+    }));
+    const pieces = items.reduce((sum, item) => sum + item.quantityPerSeries, 0);
+    return { productId: product.id, items, pieces, totalPrice: totalPrice ?? String(BigInt(wholesale) * BigInt(pieces)) };
+  };
+  for (const [index, name, mode, unitPrice] of [
+    [4, 'سری شلوار پارچه‌ای', 'series_total', undefined],
+    [5, 'سری پالتوی زرشکی', 'component_sum', demoProducts[5].wholesale],
+  ] as Array<[number, string, 'series_total' | 'component_sum', string | undefined]>) {
+    const draft = seriesOf(index, 2, unitPrice);
+    if (!draft) continue;
+    const existing = await pool.query('SELECT id FROM series_templates WHERE product_id = $1 AND name = $2', [draft.productId, name]);
+    if (existing.rows[0]) continue;
+    const res = await call(app, 'POST', '/api/v1/series-templates', { token: adminToken, payload: {
+      productId: draft.productId, name, pricingMode: mode,
+      ...(mode === 'series_total' ? { totalPriceRial: draft.totalPrice } : {}),
+      minOrderSeries: 1, items: draft.items } });
+    if (res.status !== 201 && res.status !== 200) throw new Error(`series showcase ${name}: ${JSON.stringify(res.body)}`);
+    step(`نمونهٔ قیمت‌گذاری: ${mode === 'series_total' ? 'قیمت کل سری' : 'محاسبه از اجزای سری'} برای «${name}» ثبت شد.`);
+  }
+
   let wholesaleWarehouse = await pool.query("SELECT id FROM warehouses WHERE code='SEED-WHOLESALE'");
   if (!wholesaleWarehouse.rows[0]) {
     const created = await call(app, 'POST', '/api/v1/warehouses', { token: adminToken, payload: { code: 'SEED-WHOLESALE', name: 'انبار مرکزی عمده نمونه' } });

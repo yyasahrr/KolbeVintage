@@ -49,10 +49,12 @@ export async function saveProductSeries(client: DbClient, productId: string, ser
     }
     allocateSeriesPrice(items, input.pricingMode, input.totalPriceRial ?? null);
     const id = input.id ?? randomUUID();
+    let previous: Awaited<ReturnType<typeof loadSeriesComposition>> = null;
     if (input.id) {
       const existing = await one(client, 'SELECT id FROM series_templates WHERE id=$1 AND product_id=$2 FOR UPDATE', [id, productId]);
       if (!existing) throw badRequest('سری انتخاب‌شده متعلق به این محصول نیست.');
       const old = await loadSeriesComposition(client, id);
+      previous = old;
       const key = (rows: { variant_id: string; quantity_per_series: number }[]) => rows.map((i) => `${i.variant_id}:${i.quantity_per_series}`).sort().join('|');
       if (key(old!.items) !== key(items)) {
         const stock = await one<{ n: string }>(client, 'SELECT count(*)::text AS n FROM series_stock_balances WHERE series_template_id=$1 AND (on_hand>0 OR reserved>0 OR incoming>0)', [id]);
@@ -67,6 +69,28 @@ export async function saveProductSeries(client: DbClient, productId: string, ser
       [randomUUID(), id, item.variant_id, item.quantity_per_series, item.unit_price_rial]);
     kept.push(id);
     await audit(client, actorId, input.id ? 'series_template.updated' : 'series_template.created', 'series_template', id, undefined, input);
+    // §28 — series price history rides the existing audit trail: previous/new value, actor, timestamp,
+    // product + series context. A wholesale price change is never silent.
+    if (input.id && previous) {
+      const unitsOf = (rows: { variant_id: string; unit_price_rial?: string | null }[]) =>
+        rows.map((row) => `${row.variant_id}:${row.unit_price_rial ?? ''}`).sort().join('|');
+      const before = {
+        pricing_mode: previous.template.pricing_mode,
+        total_price_rial: previous.template.total_price_rial,
+        min_order_series: previous.template.min_order_series,
+        componentPrices: unitsOf(previous.items),
+      };
+      const next = {
+        pricing_mode: input.pricingMode,
+        total_price_rial: input.totalPriceRial ?? null,
+        min_order_series: input.minOrderSeries,
+        componentPrices: unitsOf(items),
+      };
+      if (JSON.stringify(before) !== JSON.stringify(next)) {
+        await audit(client, actorId, 'series_template.price_changed', 'series_template', id,
+          { ...before, seriesName: previous.template.name, productId }, { ...next, seriesName: input.name }, undefined);
+      }
+    }
   }
   // Retain referenced recipes; removing from the form archives, never hard-deletes.
   await client.query('UPDATE series_templates SET active=false,updated_at=now() WHERE product_id=$1 AND NOT (id=ANY($2::uuid[]))', [productId, kept]);

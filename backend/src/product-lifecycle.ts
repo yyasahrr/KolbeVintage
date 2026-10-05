@@ -25,6 +25,7 @@ import { audit, claimIdempotency, completeIdempotency, outbox } from './operatio
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 import { applySeriesMovement, assertWarehousePurpose, buildRecipeSnapshot } from './series-inventory.js';
 import { applyRecipePieces } from './supplier-consignment.js';
+import { resolveVariantPricesBatch } from './promotions.js';
 
 const requestHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -269,7 +270,56 @@ export function registerProductLifecycleRoutes(app: FastifyInstance, pool: DbPoo
        ORDER BY p.created_at DESC, p.id DESC LIMIT $5 OFFSET $6`, [...params, query.limit, query.offset]);
     const total = await one<{ n: string }>(pool,
       `SELECT count(*)::text AS n FROM products p WHERE ${where}`, params);
-    return { items: rows.rows, total: Number(total?.n ?? 0), view };
+    /* §34/§56: the hub price column shows the CANONICAL price per sales mode. Two batched
+       queries feed the ONE resolver for the whole page (never an N+1 loop, never a second engine):
+       resolved retail price + explicit four-installment configuration + the cheapest active series. */
+    const productIds = rows.rows.map((row) => String((row as { id: string }).id));
+    const variantRows = productIds.length
+      ? await pool.query<{ id: string; product_id: string }>(
+        'SELECT id, product_id FROM product_variants WHERE product_id = ANY($1::uuid[]) AND active', [productIds])
+      : { rows: [] as { id: string; product_id: string }[] };
+    const variantIds = variantRows.rows.map((row) => row.id);
+    const [cashPrices, installmentPrices] = await Promise.all([
+      resolveVariantPricesBatch(pool, variantIds, { orderType: 'retail', paymentMode: 'cash' }),
+      resolveVariantPricesBatch(pool, variantIds, { orderType: 'retail', paymentMode: 'four_installments' }),
+    ]);
+    const seriesPrices = productIds.length
+      ? await pool.query<{ product_id: string; price: string | null }>(
+        `SELECT t.product_id, min(CASE WHEN t.pricing_mode = 'series_total' THEN t.total_price_rial
+                 WHEN t.pricing_mode = 'component_sum'
+                   THEN (SELECT sum(i.quantity_per_series * i.unit_price_rial) FROM series_template_items i WHERE i.series_template_id = t.id)
+                 ELSE NULL END)::text AS price
+           FROM series_templates t
+          WHERE t.product_id = ANY($1::uuid[]) AND t.active AND t.pricing_mode <> 'legacy_product'
+          GROUP BY t.product_id`, [productIds])
+      : { rows: [] as { product_id: string; price: string | null }[] };
+    const seriesByProduct = new Map(seriesPrices.rows.map((row) => [row.product_id, row.price]));
+    const priced = rows.rows.map((row) => {
+      const product = row as { id: string; cash_price_rial?: string | null; installment_price_rial?: string | null;
+        installment_policy?: string | null; installment_enabled?: boolean; allow_installments?: boolean;
+        retail_enabled?: boolean; wholesale_enabled?: boolean };
+      const mine = variantRows.rows.filter((variant) => variant.product_id === product.id).map((variant) => variant.id);
+      const resolvedCash = mine.map((id) => cashPrices.get(id)).filter((value) => value !== undefined);
+      const resolvedInstallment = mine.map((id) => installmentPrices.get(id)).filter((value) => value !== undefined);
+      const cheapest = resolvedCash.reduce<typeof resolvedCash[number] | null>((best, current) =>
+        best === null || BigInt(current.finalPrice) < BigInt(best.finalPrice) ? current : best, null);
+      const cheapestInstallment = resolvedInstallment[0] ?? null;
+      return {
+        ...row,
+        pricing: {
+          retailBasePriceRial: cheapest?.basePrice ?? product.cash_price_rial ?? null,
+          retailFinalPriceRial: cheapest?.finalPrice ?? product.cash_price_rial ?? null,
+          retailDiscountRial: cheapest?.discountAmount ?? '0',
+          discountSource: cheapest?.source ?? 'none',
+          compareAtPriceRial: cheapest?.compareAtPriceRial ?? null,
+          installmentBasePriceRial: product.installment_price_rial ?? null,
+          installmentEnabled: Boolean(cheapestInstallment?.installmentEnabled),
+          installmentDiscountAllowed: cheapestInstallment?.installmentDiscountAllowed ?? false,
+          minSeriesTotalRial: seriesByProduct.get(product.id) ?? null,
+        },
+      };
+    });
+    return { items: priced, total: Number(total?.n ?? 0), view };
   });
 
   /* ---------- §17-§20: inventory setup — the ONLY bridge from definition to stock ---------- */

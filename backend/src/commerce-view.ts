@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import type { DbPool } from './db.js';
 import { installmentOffers, installmentProviders, type InstallmentOffer, type InstallmentProvider } from './installments.js';
+import { resolveVariantPricesBatch } from './promotions.js';
 
 /* Shared, read-only commerce projections used by CMS, Style Builder, Recommendation and Account.
    Rule (Req 185, 260, 319): nobody keeps its own copy of product/price/stock — everything here is
@@ -83,6 +84,7 @@ export function buildCollectionQuery(rules: CollectionRules) {
 const PRODUCT_SELECT = `
   SELECT p.id, p.name, p.brand, p.category, p.product_type_code, p.gender, p.seasons, p.vibes,
          p.cash_price_rial::text AS cash_price_rial, p.installment_price_rial::text AS installment_price_rial,
+         p.installment_policy, p.allow_installments, p.disable_installments_on_discount,
          p.discount_percent, p.installment_enabled, p.installment_providers, p.metadata, p.created_at,
          COALESCE(b.available, 0)::int AS available,
          COALESCE(r.avg_rating, 0)::float AS avg_rating, COALESCE(r.review_count, 0)::int AS review_count,
@@ -108,18 +110,75 @@ const PRODUCT_SELECT = `
     WHERE o.status NOT IN ('pending_payment', 'cancelled') GROUP BY ol.product_id
   ) s ON s.product_id = p.id`;
 
-export function toCommerceProduct(row: Record<string, unknown>): CommerceProduct {
+/** Canonical retail pricing of a product page, resolved by THE server resolver (never `discount_percent`
+ *  and never the browser): cheapest resolved variant wins the advertised price. */
+export type RetailPricingSummary = {
+  basePriceRial: string; finalPriceRial: string; discountAmountRial: string; discountPercent: number;
+  compareAtPriceRial: string | null; source: string;
+  installmentBasePriceRial: string | null; installmentEnabled: boolean; installmentDiscountAllowed: boolean;
+};
+
+export async function retailPricingSummary(db: Queryable, productIds: string[]): Promise<Map<string, RetailPricingSummary>> {
+  const summaries = new Map<string, RetailPricingSummary>();
+  if (!productIds.length) return summaries;
+  const products = await db.query<{ id: string; cash_price_rial: string; installment_price_rial: string | null;
+    installment_enabled: boolean; installment_policy: string; allow_installments: boolean; disable_installments_on_discount: boolean }>(
+    `SELECT id, cash_price_rial::text AS cash_price_rial, installment_price_rial::text AS installment_price_rial,
+            installment_enabled, installment_policy, allow_installments, disable_installments_on_discount
+     FROM products WHERE id = ANY($1::uuid[])`, [productIds]);
+  const variants = await db.query<{ id: string; product_id: string }>(
+    'SELECT id, product_id FROM product_variants WHERE product_id = ANY($1::uuid[]) AND active', [productIds]);
+  const resolved = await resolveVariantPricesBatch(db, variants.rows.map((v) => v.id), { orderType: 'retail', paymentMode: 'cash' });
+  const bestByProduct = new Map<string, { base: string; final: string; discount: string; source: string }>();
+  for (const variant of variants.rows) {
+    const price = resolved.get(variant.id);
+    if (!price) continue;
+    const current = bestByProduct.get(variant.product_id);
+    if (!current || BigInt(price.finalPrice) < BigInt(current.final)) {
+      bestByProduct.set(variant.product_id, { base: price.basePrice, final: price.finalPrice, discount: price.discountAmount, source: price.source });
+    }
+  }
+  for (const product of products.rows) {
+    const best = bestByProduct.get(product.id);
+    const base = best?.base ?? product.cash_price_rial;
+    const final = best?.final ?? base;
+    const discount = best?.discount ?? '0';
+    const baseBig = BigInt(base);
+    const discountBig = BigInt(discount);
+    const installmentBase = product.installment_price_rial === null ? null : product.installment_price_rial;
+    summaries.set(product.id, {
+      basePriceRial: asPrice(base), finalPriceRial: asPrice(final), discountAmountRial: asPrice(discount),
+      discountPercent: baseBig > 0n && discountBig > 0n ? Number((discountBig * 100n) / baseBig) : 0,
+      compareAtPriceRial: discountBig > 0n ? asPrice(base) : null,
+      source: best?.source ?? 'none',
+      installmentBasePriceRial: installmentBase,
+      installmentEnabled: Boolean(product.installment_enabled) && installmentBase !== null
+        && Boolean(product.allow_installments) && product.installment_policy !== 'disabled',
+      installmentDiscountAllowed: product.installment_policy !== 'disabled_when_discounted' && !product.disable_installments_on_discount,
+    });
+  }
+  return summaries;
+}
+
+/** Prices crossing this projection are canonical strings — never a float, never a rounded JS number. */
+function asPrice(value: string): string { return String(value); }
+
+export function toCommerceProduct(row: Record<string, unknown>, pricing?: RetailPricingSummary): CommerceProduct {
   const metadata = (row.metadata ?? {}) as Record<string, unknown>;
   const images = Array.isArray(metadata.images) ? metadata.images : [];
   const cutout = metadata.cutout as { status?: string; src?: string } | undefined;
   const cash = BigInt(String(row.cash_price_rial ?? '0'));
-  const installment = row.installment_price_rial === null || row.installment_price_rial === undefined ? null : BigInt(String(row.installment_price_rial));
-  const installmentBase = installment ?? cash;
-  const installmentEnabled = Boolean(row.installment_enabled);
-  const discount = Number(row.discount_percent ?? 0);
-  // QA2-PRICE-010 / §17.7: the manual metadata.compareAtRial is NOT pricing truth and is no
-  // longer rendered; the strikethrough derives only from the server-side discount engine.
-  const compare = discount > 0 ? ((cash * 100n) / BigInt(100 - Math.min(discount, 95))).toString() : null;
+  const explicitInstallment = row.installment_price_rial === null || row.installment_price_rial === undefined ? null : BigInt(String(row.installment_price_rial));
+  const installmentBasePriceRial = explicitInstallment === null ? null : explicitInstallment.toString();
+  const installmentBase = explicitInstallment ?? 0n;
+  const installmentEnabled = Boolean(row.installment_enabled) && explicitInstallment !== null
+    && row.allow_installments !== false && row.installment_policy !== 'disabled'
+    && (pricing?.installmentEnabled ?? true);
+  // §4/§9: `products.discount_percent` is a retired legacy authority — the advertised discount and
+  // the crossed-out price come from the canonical resolver summary handed in by the caller.
+  const discount = pricing?.discountPercent ?? 0;
+  const compare = pricing?.compareAtPriceRial ?? null;
+  const advertisedPrice = pricing ? BigInt(pricing.finalPriceRial) : cash;
   const createdAt = new Date(String(row.created_at));
   const flatLay = (row.flat_lay_media as string | null)
     ?? (cutout?.status === 'ready' && cutout.src && /^https?:\/\/|^\/api\/v1\/media\//.test(cutout.src) ? cutout.src : null);
@@ -127,7 +186,9 @@ export function toCommerceProduct(row: Record<string, unknown>): CommerceProduct
     id: String(row.id), name: String(row.name), brand: String(row.brand), category: String(row.category),
     productType: (row.product_type_code as string | null) ?? null, gender: String(row.gender ?? 'unisex'),
     seasons: (row.seasons as string[]) ?? [], vibes: (row.vibes as string[]) ?? [],
-    priceRial: cash.toString(), installmentPriceRial: installment?.toString() ?? null,
+    priceRial: advertisedPrice.toString(),
+    // §7: the four-installment base is the explicit column only — never the cash price.
+    installmentPriceRial: installmentBasePriceRial,
     // Server-side installment maths (Req 188-191): CMS/UI only render this value.
     perInstallmentRial: installmentEnabled && installmentBase > 0n ? ((installmentBase + 3n) / 4n).toString() : null,
     installmentsCount: installmentEnabled && installmentBase > 0n ? 4 : null, installmentOffers: [],
@@ -144,9 +205,11 @@ export function toCommerceProduct(row: Record<string, unknown>): CommerceProduct
 /** Applies the Installment Provider policy: the first eligible provider drives the card numbers; with no provider
  *  configured at all the legacy 4-part split stays (fresh installs), with providers but none eligible → no offer (Req 190). */
 export function applyInstallmentPolicy(products: CommerceProduct[], providers: InstallmentProvider[]): CommerceProduct[] {
-  if (!providers.length) return products;
+  if (!providers.length) return products.map((product) => ({ ...product, perInstallmentRial: null, installmentsCount: null, installmentOffers: [] }));
   return products.map((product) => {
-    const base = BigInt(product.installmentPriceRial ?? product.priceRial);
+    // No explicit «قیمت پایه چهارقسطه» → no installment offer (never derived from the cash price).
+    if (product.installmentPriceRial === null) return { ...product, perInstallmentRial: null, installmentsCount: null, installmentOffers: [] };
+    const base = BigInt(product.installmentPriceRial);
     const offers = installmentOffers(base, product.installmentEnabled, product.installmentProviders, providers);
     const primary = offers[0];
     return { ...product, installmentOffers: offers, perInstallmentRial: primary?.perInstallmentRial ?? null, installmentsCount: primary?.count ?? null };
@@ -156,13 +219,15 @@ export function applyInstallmentPolicy(products: CommerceProduct[], providers: I
 export async function queryCommerceProducts(db: Queryable, rules: CollectionRules): Promise<CommerceProduct[]> {
   const { where, params, order, limit } = buildCollectionQuery(rules);
   const rows = await db.query(`${PRODUCT_SELECT} WHERE ${where} ORDER BY ${order} LIMIT ${limit}`, params);
-  return applyInstallmentPolicy(rows.rows.map(toCommerceProduct), await installmentProviders(db));
+  const pricing = await retailPricingSummary(db, rows.rows.map((row) => String(row.id)));
+  return applyInstallmentPolicy(rows.rows.map((row) => toCommerceProduct(row, pricing.get(String(row.id)))), await installmentProviders(db));
 }
 
 export async function commerceProductsByIds(db: Queryable, ids: string[]): Promise<CommerceProduct[]> {
   if (!ids.length) return [];
   const rows = await db.query(`${PRODUCT_SELECT} WHERE p.id = ANY($1::uuid[])`, [ids]);
-  const products = applyInstallmentPolicy(rows.rows.map(toCommerceProduct), await installmentProviders(db));
+  const pricing = await retailPricingSummary(db, rows.rows.map((row) => String(row.id)));
+  const products = applyInstallmentPolicy(rows.rows.map((row) => toCommerceProduct(row, pricing.get(String(row.id)))), await installmentProviders(db));
   const order = new Map(ids.map((id, i) => [id, i]));
   return products.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }

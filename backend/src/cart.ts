@@ -9,6 +9,7 @@ import { audit } from './operations.js';
 import { asRial, rial } from './money.js';
 import { consentedRecipients, ensureContact, recordTimeline } from './crm-intelligence.js';
 import { principal, requirePermission } from './auth.js';
+import { resolveVariantPrice } from './promotions.js';
 
 /**
  * Requirement 23 — `cart.abandoned` must be a real server-side event, not a browser
@@ -37,25 +38,33 @@ export type AbandonedCartRow = {
   id: string; user_id: string; value_rial: string; item_count: number; updated_at: Date; display_name: string | null;
 };
 
-/** Price and sellable stock come from the catalogue + WMS, never from the browser.
- *  `available = on_hand - reserved - damaged`, exactly like the inventory module. */
+/** §38: the cart unit price is the LATEST canonical server resolution (base + resolved promotion),
+ *  never a browser-supplied number and never a stale copy of the product row. Sellable stock comes
+ *  from WMS: `available = on_hand - reserved - damaged`, exactly like the inventory module. */
 async function resolvePrice(client: DbClient, productId: string, variantId: string | null) {
-  const product = await one<{ cash_price_rial: string; wholesale_price_rial: string | null; status: string }>(client,
-    'SELECT cash_price_rial::text AS cash_price_rial, wholesale_price_rial::text AS wholesale_price_rial, status FROM products WHERE id = $1',
-    [productId]);
+  const product = await one<{ cash_price_rial: string; status: string }>(client,
+    'SELECT cash_price_rial::text AS cash_price_rial, status FROM products WHERE id = $1', [productId]);
   if (!product || product.status !== 'published') throw notFound();
   const variant = variantId
     ? await one<{ id: string }>(client, 'SELECT id FROM product_variants WHERE id = $1 AND product_id = $2 AND active',
       [variantId, productId])
     : await one<{ id: string }>(client,
       'SELECT id FROM product_variants WHERE product_id = $1 AND active ORDER BY created_at LIMIT 1', [productId]);
-  const price = rial(product.cash_price_rial);
+  const resolved = variant
+    ? await resolveVariantPrice(client, variant.id, { orderType: 'retail', paymentMode: 'cash' })
+    : null;
+  const base = resolved ? rial(resolved.basePrice) : rial(product.cash_price_rial);
+  const price = resolved ? rial(resolved.finalPrice) : base;
   const stock = variant
     ? await one<{ available: string }>(client,
       `SELECT COALESCE(sum(b.on_hand - b.reserved - b.damaged),0)::text AS available
        FROM stock_balances b WHERE b.variant_id = $1`, [variant.id])
     : null;
-  return { price, variantId: variant?.id ?? null, available: Number(stock?.available ?? 0) };
+  return {
+    price, basePrice: base, discountAmount: base - price,
+    matchedRuleId: resolved?.matchedRule?.id ?? null, variantId: variant?.id ?? null,
+    available: Number(stock?.available ?? 0),
+  };
 }
 
 async function recompute(client: DbClient, cartId: string) {

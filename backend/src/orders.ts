@@ -457,10 +457,12 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         const finalUnitPrice = rial(resolvedPrice.finalPrice);
 
         if (body.paymentMode === 'four_installments') {
-          if (!variant.allow_installments) {
+          // The canonical resolver decides both eligibility and whether ordinary discounts may
+          // reduce the four-installment purchase — the order pipeline never re-derives the policy.
+          if (!resolvedPrice.installmentEnabled || !variant.allow_installments) {
             throw conflict(`خرید اقساطی برای کالای ${variant.sku} غیرفعال است.`);
           }
-          if (variant.disable_installments_on_discount && unitDiscount > 0n) {
+          if (resolvedPrice.installmentDiscountBlocked) {
             throw conflict(`کالای ${variant.sku} دارای تخفیف فعال است و امکان خرید اقساطی ندارد.`);
           }
         }
@@ -597,6 +599,20 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
           ? { eligible: true, count: installmentCount, perInstallmentRial: (total / BigInt(installmentCount)).toString(), totalRial: total.toString() }
           : { eligible: installmentEligible, count: installmentCount, reason: installmentBlockReason },
         policies: lines.map((line) => ({ productId: line.variant.product_id, policy: line.variant.installment_policy })),
+        // §25: the order keeps its OWN commercial truth — channel, payment mode and one
+        // resolver-based pricing line per sold item, unaffected by later price/series edits.
+        orderType: body.orderType,
+        paymentMode: body.paymentMode,
+        lines: lines.map((line) => ({
+          variantId: line.variant.variant_id, productId: line.variant.product_id, sku: line.variant.sku,
+          quantity: line.quantity,
+          baseUnitRial: line.basePrice.toString(), discountUnitRial: line.unitDiscount.toString(),
+          finalUnitRial: line.finalUnitPrice.toString(), lineTotalRial: line.total.toString(),
+          channel: line.pricing.channel, paymentMode: line.pricing.paymentMode,
+          installmentPolicy: line.pricing.installmentPolicy, installmentDiscountBlocked: line.pricing.installmentDiscountBlocked,
+          source: line.pricing.source, matchedRuleId: line.pricing.matchedRule?.id ?? null,
+          matchedTarget: line.pricing.matchedRule?.targetType ?? null,
+        })),
         shipping: shippingQuote ? { methodId: shippingMethodId, ...shippingQuote } : null,
       };
 
@@ -722,7 +738,15 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
             line.discountTotal.toString(),
             line.total.toString(),
             line.matchedRuleId,
-            JSON.stringify(line.pricing),
+            JSON.stringify({
+              ...line.pricing,
+              // §25: the order line snapshots the commercial truth it was sold under.
+              quantity: line.quantity,
+              lineBaseRial: line.baseTotal.toString(),
+              lineDiscountRial: line.discountTotal.toString(),
+              lineTotalRial: line.total.toString(),
+              series: seriesSnapshot?.length ? seriesSnapshot : null,
+            }),
             fulfillmentId,
             isKolbeDirect ? 'accepted' : 'pending',
             isKolbeDirect ? new Date() : null,

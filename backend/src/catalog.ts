@@ -11,7 +11,7 @@ import { validateSpecifications, type SpecField } from './profile.js';
 import { categoryProfileFor, validateCategoryRequirements } from './product-lifecycle.js';
 import { publicationBlocked, publicationReadiness } from './publication.js';
 import { assertSupplierMay, supplierCapViolation } from './supplier360.js';
-import { resolveVariantPrice } from './promotions.js';
+import { resolveVariantPrice, resolveVariantPricesBatch } from './promotions.js';
 import { productSeriesSchema, saveProductSeries } from './series.js';
 
 const installmentPolicy = z.enum(['disabled', 'enabled', 'disabled_when_discounted', 'enabled_when_discounted']);
@@ -63,7 +63,9 @@ const productBody = z.object({
   specifications: z.record(z.string(), z.unknown()).default({}),
   gender: z.enum(['men', 'women', 'unisex', 'kids']).default('unisex'),
   vibes: z.array(z.string().regex(/^[a-z0-9-]{2,40}$/)).max(8).default([]),
-  installmentEnabled: z.boolean().default(true),
+  /** §7: a separate switch — defining the four-installment base enables it explicitly. */
+  installmentEnabled: z.boolean().optional(),
+  /** Legacy product-level discount column: never a pricing authority (the promotion engine prices discounts). */
   discountPercent: z.number().int().min(0).max(95).default(0),
   productTypeId: z.uuid().nullable().optional(),
   retailEnabled: z.boolean().optional(),
@@ -147,6 +149,44 @@ async function normalizeCatalogMedia(db: DbPool | import('pg').PoolClient, metad
   }
 }
 
+/** Canonical product-level retail pricing block: base/final/discount of the cheapest resolved
+ *  variant, plus the explicit four-installment configuration. Storefront grids, the hub price
+ *  column and the PDP all render THIS block — nobody recomputes a discount in the browser. */
+function retailPricingBlock(row: ProductListRow, variants: Array<Record<string, unknown>>) {
+  const priced = variants.filter((v) => typeof v.finalPriceRial === 'string');
+  const best = priced.reduce<Record<string, unknown> | null>((acc, v) =>
+    acc === null || BigInt(String(v.finalPriceRial)) < BigInt(String(acc.finalPriceRial)) ? v : acc, null);
+  const base = best ? String(best.basePriceRial) : asRial(row.cash_price_rial);
+  const final = best ? String(best.finalPriceRial) : base;
+  const discount = best ? String(best.discountRial ?? '0') : '0';
+  const baseBig = BigInt(base);
+  const discountBig = BigInt(discount);
+  const installmentBase = row.installment_price_rial === null || row.installment_price_rial === undefined
+    ? null : asRial(row.installment_price_rial!);
+  const installmentEnabled = Boolean(row.installment_enabled) && installmentBase !== null
+    && Boolean(row.allow_installments) && row.installment_policy !== 'disabled';
+  return {
+    channel: 'retail' as const,
+    basePriceRial: base,
+    finalPriceRial: final,
+    discountAmountRial: discount,
+    discountPercent: baseBig > 0n && discountBig > 0n ? Number((discountBig * 100n) / baseBig) : 0,
+    compareAtPriceRial: discountBig > 0n ? base : null,
+    source: best ? String(best.discountSource ?? 'none') : 'none',
+    matchedRuleId: best && best.matchedRule ? (best.matchedRule as { id?: string }).id ?? null : null,
+    matchedTarget: best && best.matchedRule ? (best.matchedRule as { targetType?: string }).targetType ?? null : null,
+    installmentEnabled,
+    installmentBasePriceRial: installmentBase,
+    installmentDiscountAllowed: row.installment_policy !== 'disabled_when_discounted' && !row.disable_installments_on_discount,
+    variants: Object.fromEntries(variants.map((v) => [String(v.id), {
+      basePriceRial: v.basePriceRial, finalPriceRial: v.finalPriceRial, discountAmountRial: v.discountRial,
+      discountSource: v.discountSource, compareAtPriceRial: v.compareAtPriceRial,
+      installmentEnabled: v.installmentEnabled, installmentBasePriceRial: v.installmentBasePriceRial,
+      installmentPriceRial: v.installmentPriceRial, installmentDiscountAllowed: v.installmentDiscountAllowed,
+    }])),
+  };
+}
+
 export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.get('/api/v1/products', async (request) => {
     const query = z.object({
@@ -215,23 +255,36 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       FROM series_templates t JOIN products p ON p.id=t.product_id JOIN series_template_items i ON i.series_template_id=t.id
       JOIN product_variants v ON v.id=i.variant_id WHERE t.product_id=ANY($1::uuid[]) AND t.active
       GROUP BY t.id,p.id ORDER BY t.created_at,t.id`, [result.rows.map((r) => r.id)]);
+    const allVariants = (result.rows as ProductListRow[]).flatMap((row) => row.variants);
+    // §56: ONE batched, cache-free resolution for the whole page (2 queries) — never a per-variant N+1 loop.
+    const [cashPrices, installmentPrices] = await Promise.all([
+      resolveVariantPricesBatch(pool, allVariants.map((v) => v.id), { orderType: 'retail', paymentMode: 'cash' }),
+      resolveVariantPricesBatch(pool, allVariants.map((v) => v.id), { orderType: 'retail', paymentMode: 'four_installments' }),
+    ]);
     const items = [];
     for (const row of result.rows as ProductListRow[]) {
       const enrichedVariants = [];
       let totalRetailAvailable = 0;
       for (const v of row.variants) {
-        const resolved = await resolveVariantPrice(pool, v.id, { orderType: 'retail', paymentMode: 'cash' });
+        const resolved = cashPrices.get(v.id);
+        const installment = installmentPrices.get(v.id);
         const stock = Number(v.retailAvailableStock ?? 0);
         totalRetailAvailable += stock;
         enrichedVariants.push({
           ...v,
           retailAvailableStock: stock,
-          basePriceRial: resolved.basePrice,
-          discountRial: resolved.discountAmount,
-          finalPriceRial: resolved.finalPrice,
-          discountType: resolved.discountType,
-          discountValue: resolved.discountValue,
-          matchedRule: resolved.matchedRule,
+          basePriceRial: resolved?.basePrice ?? asRial(row.cash_price_rial),
+          discountRial: resolved?.discountAmount ?? '0',
+          finalPriceRial: resolved?.finalPrice ?? asRial(row.cash_price_rial),
+          discountType: resolved?.discountType ?? null,
+          discountValue: resolved?.discountValue ?? null,
+          matchedRule: resolved?.matchedRule ?? null,
+          discountSource: resolved?.source ?? 'none',
+          compareAtPriceRial: resolved?.compareAtPriceRial ?? null,
+          installmentBasePriceRial: resolved?.installmentBasePriceRial ?? null,
+          installmentEnabled: resolved?.installmentEnabled ?? false,
+          installmentDiscountAllowed: resolved?.installmentDiscountAllowed ?? false,
+          installmentPriceRial: installment?.finalPrice ?? null,
         });
       }
       const sum = (key: 'available' | 'reserved' | 'incoming' | 'damaged') =>
@@ -265,6 +318,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
           id: t.id, name: t.name, colorLabel: t.color_label, composition: t.composition, pieces: t.pieces,
           minOrderSeries: t.min_order_series, pricePerSeriesRial: t.price_rial, availableSeries: t.available_series,
         })),
+        pricing: retailPricingBlock(row, enrichedVariants),
         variants: enrichedVariants,
         createdAt: row.created_at,
         productTypeCode: row.product_type_code,
@@ -551,7 +605,13 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         : body.disableInstallmentsOnDiscount === true
           ? 'disabled_when_discounted'
           : 'enabled');
-    const allowInstallments = body.allowInstallments ?? (resolvedPolicy !== 'disabled');
+    // §7/§8: four-installment sales need BOTH the explicit enable flag and the explicit
+    // «قیمت پایه چهارقسطه». The base is never derived from the cash price, so a product that
+    // enables installments without a base is rejected instead of silently guessing a price.
+    const installmentEnabled = body.installmentEnabled ?? (body.installmentPriceRial !== undefined);
+    if (installmentEnabled && body.installmentPriceRial === undefined)
+      throw badRequest('برای فعال‌سازی خرید چهارقسطه، «قیمت پایه چهارقسطه» را وارد کنید.');
+    const allowInstallments = installmentEnabled && (body.allowInstallments ?? (resolvedPolicy !== 'disabled'));
     const disableInstallmentsOnDiscount = body.disableInstallmentsOnDiscount ?? (resolvedPolicy === 'disabled_when_discounted');
     const saleTerms = body.saleTerms ?? {
       moq: body.wholesaleMoq ?? 1,
@@ -592,7 +652,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
           body.gender,
           seasons,
           body.vibes,
-          body.installmentEnabled,
+          installmentEnabled,
           body.discountPercent,
           body.productTypeId ?? null,
           ownerType,
@@ -622,9 +682,12 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
           ...(variant.color ? { colorId: variant.color } : {}),
           ...(variant.size ? { sizeCode: variant.size } : {}),
         };
+        // The variant-level retail price override is part of the canonical price model — it must
+        // survive the create path instead of silently disappearing on the first save.
         await client.query(
-          'INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [id, productId, sku, variant.size ?? null, variant.color ?? null, variant.weightGrams ?? null, JSON.stringify(attrs)],
+          'INSERT INTO product_variants(id,product_id,sku,size_label,color_label,weight_grams,attributes,price_override_rial) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+          [id, productId, sku, variant.size ?? null, variant.color ?? null, variant.weightGrams ?? null, JSON.stringify(attrs),
+            variant.priceOverrideRial ?? null],
         );
         variants.push({ id, sku, color: variant.color ?? null, size: variant.size ?? null, weightGrams: variant.weightGrams ?? null });
       }
@@ -749,8 +812,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     else await assertSupplierMay(pool, user.id, 'product_edit', { resource: 'product', resourceId: id, ip: request.ip });
     return transaction(pool, async (client) => {
       const before = await one<{ supplier_id: string | null; status: string; product_type_code: string | null; owner_type: string;
-        category: string; specifications: Record<string, unknown> }>(client,
-        'SELECT supplier_id, status, product_type_code, owner_type, category, specifications FROM products WHERE id = $1 FOR UPDATE', [id]);
+        category: string; specifications: Record<string, unknown>; cash_price_rial: string; installment_price_rial: string | null;
+        wholesale_price_rial: string | null; installment_enabled: boolean; installment_policy: string }>(client,
+        'SELECT supplier_id, status, product_type_code, owner_type, category, specifications, cash_price_rial::text, installment_price_rial::text, wholesale_price_rial::text, installment_enabled, installment_policy FROM products WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
       const category = body.category ?? before.category;
       const categoryProfile = await categoryProfileFor(client, category);
@@ -772,6 +836,13 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       if (body.cashPriceRial !== undefined) rial(body.cashPriceRial);
       if (body.installmentPriceRial) rial(body.installmentPriceRial);
       if (body.wholesalePriceRial) rial(body.wholesalePriceRial);
+      // §7/§8/§30: the saved state must never claim «installment enabled» without an explicit base.
+      const nextInstallmentEnabled = body.installmentEnabled ?? before.installment_enabled;
+      const nextInstallmentBase = body.installmentPriceRial !== undefined ? body.installmentPriceRial : before.installment_price_rial;
+      if (nextInstallmentEnabled && (nextInstallmentBase === null || nextInstallmentBase === undefined))
+        throw badRequest('برای فعال‌سازی خرید چهارقسطه، «قیمت پایه چهارقسطه» را وارد کنید.');
+      if (body.installmentPriceRial !== undefined && body.installmentPriceRial !== null && body.installmentEnabled === undefined)
+        body.installmentEnabled = true;
       if (body.metadata) await normalizeCatalogMedia(client, body.metadata, user.id, user.permissions.includes('products:write'));
       if (body.productTypeId) {
         const type = await one<{ active: boolean }>(client, 'SELECT active FROM product_types WHERE id = $1', [body.productTypeId]);
@@ -784,12 +855,27 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         cashPriceRial: 'cash_price_rial', installmentPriceRial: 'installment_price_rial',
         wholesalePriceRial: 'wholesale_price_rial', metadata: 'metadata',
         productTypeCode: 'product_type_code', specifications: 'specifications', gender: 'gender', seasons: 'seasons',
-        vibes: 'vibes', installmentEnabled: 'installment_enabled', discountPercent: 'discount_percent',
+        vibes: 'vibes', discountPercent: 'discount_percent',
         productTypeId: 'product_type_id', retailEnabled: 'retail_enabled', wholesaleEnabled: 'wholesale_enabled',
-        installmentPolicy: 'installment_policy', wholesaleMoq: 'wholesale_moq', genderCode: 'gender_code',
+        wholesaleMoq: 'wholesale_moq', genderCode: 'gender_code',
       };
       const values: unknown[] = [id];
       const updates: string[] = [];
+      // Canonical installment flags. `installment_enabled`/`allow_installments` are the resolver's
+      // authority; `disable_installments_on_discount` mirrors the «اعمال تخفیف روی خرید چهارقسطه» policy.
+      const derived: Record<string, unknown> = {};
+      if (body.installmentEnabled !== undefined) derived.installment_enabled = body.installmentEnabled;
+      if (body.installmentPolicy !== undefined) {
+        derived.installment_policy = body.installmentPolicy;
+        derived.allow_installments = body.installmentPolicy !== 'disabled';
+        derived.disable_installments_on_discount = body.installmentPolicy === 'disabled_when_discounted';
+      }
+      if (body.installmentEnabled === false) {
+        derived.allow_installments = false;
+        derived.disable_installments_on_discount = false;
+      } else if (body.installmentEnabled === true || (body.installmentPriceRial !== undefined && body.installmentPriceRial !== null)) {
+        derived.allow_installments = (body.installmentPolicy ?? before.installment_policy) !== 'disabled';
+      }
       for (const [key, column] of Object.entries(columns)) {
         const value = (body as Record<string, unknown>)[key];
         if (value === undefined) continue;
@@ -802,6 +888,22 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         for (const season of new Set(body.seasons)) {
           await client.query('INSERT INTO product_seasons(product_id, season_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, season]);
         }
+      }
+      for (const [column, value] of Object.entries(derived)) {
+        if (value === undefined) continue;
+        values.push(value); updates.push(`${column} = $${values.length}`);
+      }
+      // §28 — price history on the existing audit trail: previous/new value, actor, timestamp, product.
+      const priceDiffs = ([
+        ['cash_price_rial', 'قیمت نقدی پایه', before.cash_price_rial, body.cashPriceRial],
+        ['installment_price_rial', 'قیمت پایه چهارقسطه', before.installment_price_rial, body.installmentPriceRial],
+        ['wholesale_price_rial', 'قیمت عمده', before.wholesale_price_rial, body.wholesalePriceRial],
+      ] as Array<[string, string, string | null, string | null | undefined]>)
+        .filter(([, , oldValue, newValue]) => newValue !== undefined && String(oldValue ?? '') !== String(newValue ?? ''));
+      if (priceDiffs.length) {
+        await audit(client, user.id, 'product.price_changed', 'product', id,
+          Object.fromEntries(priceDiffs.map(([column, label, oldValue]) => [column, { label, value: oldValue ?? null }])),
+          Object.fromEntries(priceDiffs.map(([column, label, , newValue]) => [column, { label, value: newValue ?? null }])), request.ip);
       }
       if (body.wholesaleSeries) await saveProductSeries(client, id, body.wholesaleSeries, user.id);
       if (!updates.length && body.seasons === undefined && body.wholesaleSeries === undefined) throw badRequest('تغییری برای ذخیره وجود ندارد.');
