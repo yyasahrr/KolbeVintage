@@ -325,7 +325,8 @@ try {
   check('pending receipts disappear after final receive', (await inventoryApi.pendingReceipts({ variantId: uxVariant, warehouseId: warehouse.id, inventoryDomain: 'retail' })).items.length === 0);
 
   // ---------- (11/12/30) promo: Jalali input → ISO → reload → same Jalali ----------
-  const couponExpiry = persianInputToIso('۱۴۰۵/۰۷/۱۳')!;
+  const couponExpiry = addDaysIso(todayIso(), 7);
+  const couponExpiryJalali = isoToPersianInput(couponExpiry);
   const coupon = await promoApi.createCoupon({
     code: `SMOKE${suffix.slice(-4)}`, campaignName: `کمپین اسموک ${suffix}`,
     type: 'percent', value: '15', minOrderRial: '0', audience: ['customer'],
@@ -333,8 +334,9 @@ try {
   }) as { id: string };
   const couponList = await promoApi.coupons() as { items: { id: string; code: string; type: string; source: string; ends_at: string }[] };
   const couponRow = couponList.items.find((row) => row.id === coupon.id);
-  check('promo coupon Jalali round trip: ۱۴۰۵/۰۷/۱۳ → ISO → reload → same Jalali',
-    Boolean(couponRow) && formatPersianDate(couponRow!.ends_at) === '۱۴۰۵/۰۷/۱۳', couponRow ? formatPersianDate(couponRow.ends_at) : 'missing');
+  check('promo coupon Jalali round trip: future ISO expiry → reload → same Jalali',
+    Boolean(couponRow) && formatPersianDate(couponRow!.ends_at) === couponExpiryJalali,
+    couponRow ? `${formatPersianDate(couponRow.ends_at)} (expected ${couponExpiryJalali})` : 'missing');
   check('promo label maps are Persian while coupon type/source values stay English',
     COUPON_TYPE_LABEL.percent === 'درصدی' && COUPON_TYPE_LABEL.fixed === 'مبلغ ثابت' &&
     COUPON_SOURCE_LABEL.manual === 'دستی' && PROMO_AUDIENCE_LABEL.wholesale === 'عمده' && couponRow?.type === 'percent');
@@ -543,9 +545,11 @@ try {
     ['تعریف محصول', 'نیازمند راه‌اندازی', 'بازبینی تأمین‌کنندگان', 'همه کالاها', 'آرشیو'].every((t) => catalogHubSrc.includes(t)) &&
     !catalogHubSrc.includes('مالک محصول'));
   const product360Src = readFileSync(join(repoRoot, 'src/components/product-360.tsx'), 'utf8');
-  check('Product 360 is a WorkspaceModal with all ten separate read areas and explicit inventory/history tabs',
+  check('Product 360 is a WorkspaceModal with ten read areas, canonical pricing summary/Resolver, and read-only inventory/history',
     product360Src.includes('<WorkspaceModal') &&
-    ['نمای کلی', 'واریانت‌ها', 'مشخصات فنی', 'راهنمای سایز', 'رسانه', 'قیمت‌گذاری خرده', 'عمده و سری‌ها', 'موجودی', 'SEO', 'تاریخچه'].every((t) => product360Src.includes(t)) &&
+    ['نمای کلی', 'واریانت‌ها', 'مشخصات فنی', 'راهنمای سایز', 'رسانه', 'قیمت‌گذاری', 'عمده و سری‌ها', 'موجودی', 'SEO', 'تاریخچه'].every((t) => product360Src.includes(t)) &&
+    product360Src.includes('promotionRulesApi.productSummary(product.id)') && product360Src.includes('promotionRulesApi.resolvePrices') &&
+    product360Src.includes('مدیریت قیمت‌گذاری') && product360Src.includes('نتیجهٔ Pricing Resolver') &&
     product360Src.includes('view="inventory"') && product360Src.includes('view="history"'));
   const supplierChildPanelSrc = readFileSync(join(repoRoot, 'src/components/supplier-child-orders-panel.tsx'), 'utf8');
   check('supplier wholesale panel offers exactly the §71 actions (تأیید کامل/پیشنهاد کمتر/عدم امکان) + server-resolved dispatch',

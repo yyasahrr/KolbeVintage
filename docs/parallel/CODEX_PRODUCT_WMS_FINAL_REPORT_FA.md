@@ -1,59 +1,57 @@
-# FINAL PRODUCT/WMS INTEGRATION REPORT
+# PRODUCT PRICING + INITIAL INVENTORY FINAL REPORT
 
 **تاریخ:** 2026-10-05
-**شاخه:** `arena/01a10817-kolbevintage`
-**دامنه:** ادامهٔ verification و delivery ادغام موجود Product/WMS؛ بدون تغییر خارج از scope و بدون PASS 2.
+**شاخهٔ تحویل:** `arena/01a10817-kolbevintage`
+**مبنای بررسی:** `539cda7af605dbebccd12fa245aa616cbd4de888`
+**وضعیت پیاده‌سازی:** PASS — تغییر محدود به قیمت‌گذاری محصول، کنترل Promotion/Festival و ادامهٔ راه‌اندازی موجودی اولیه است.
 
-## نتیجهٔ کلی
+## تصمیم‌های معماری و دامنه
 
-تمام معیارهای صریح پذیرش این دور که در این گزارش فهرست شده‌اند، پس از اجرای مجدد PASS شدند. در verification نهایی defect کاربردی تازه‌ای بازتولید نشد؛ خطاهای اولیهٔ چند harness مربوط به نام کلید Puppeteer، scope متغیر تست، شمارش templateهای archiveشده و focus اپنر بود و هر مسیر با harness اصلاح‌شده دوباره PASS شد. این‌ها به‌عنوان defect محصول ثبت نشدند.
+- Product Studio مرجع تعریف کاتالوگ و قیمت‌های پایه باقی ماند؛ ایجاد/ویرایش محصول هیچ موجودی فیزیکی نمی‌نویسد و هیچ وضعیت قیمت‌گذاری در metadata ذخیره نمی‌کند.
+- موجودی همچنان فقط از مرزهای canonical WMS و ledger/رسیدهای آن تغییر می‌کند. ممیزی نشان داد عملیات مناسب `inventory-setup` از قبل وجود دارد؛ بنابراین عملیات افتتاحیه یا موجودیت ledger تازه‌ای ساخته نشد.
+- قیمت تبلیغی فقط در رکوردهای canonical `promotions` و `promotion_rules` ذخیره می‌شود. Promotion Center، Product Studio و Product 360 از APIهای موجود، خلاصهٔ محصول و Pricing Resolver واحد استفاده می‌کنند؛ موتور یا حقیقت سمت‌کلاینت موازی افزوده نشد.
+- Migration 061 همچنان marker تعلیق `suspended_by_promotion_id` را به کار می‌گیرد. توضیح منسوخ دربارهٔ بازگشت خودکار در migration و سند تصمیم PO اصلاح شد؛ داده‌ها یا ledgerهای موجود بازنویسی نشدند.
 
-## پذیرش مرورگر و رفتار کسب‌وکار
+## جریان موجودی اولیه
 
-| حوزه | نتیجه |
-|---|---|
-| Product 360 | `22/22` PASS. در عرض 1440، یک `WorkspaceModal` متمرکز و accessible؛ body scroll lock؛ شروع focus در dialog؛ trap با Shift+Tab/Tab؛ Escape، بستن یکتا و بازگردانی focus/scroll. هر 10 ناحیهٔ درخواست‌شده حاضر و خواندنی بود؛ موجودی/تاریخچه کنترل عملیاتی نداشتند و هیچ business write صادر نشد. در `360/390/768/1024/1440`، همهٔ 10 تب بدون overflow صفحه یا dialog تکراری بررسی شدند. مدت: `14.722 s`.
-| Sales modes و category | `26/26` PASS. فقط خرده، فقط عمده و خرده+عمده با save، navigation و browser reload روی سرور پایدار ماندند؛ Wholesale-only خرده را فعال نکرد. دسته با نام canonical ذخیره‌شده نمایش داده شد، نه شناسه. مدت: `22.246 s`.
-| Series Builder — ویرایش | تغییر template موجود از UI در جدول‌های relational سرور ذخیره شد، پس از reload دوباره خوانده شد و مقدار fixture به حالت اولیه بازگردانده شد (در suite بالا). |
-| Series Builder — ساخت | `9/9` PASS. کارت تازه ساخته شد، template فعال با ID واقعی relational ذخیره شد، پس از reload به فرم برگشت و حذف از فرم به‌صورت archive (بدون hard-delete) انجام شد؛ دو سری اصلی فعال ماندند. مدت: `7.991 s`.
-| Product Studio UAT | `145/145` PASS؛ create/edit، ساختار و category، قیمت و دو کانال، سری‌ها، رسانه و راهنمای سایز، no-stock-on-create، error/unsaved guard، RBAC و sweep پنج‌عرضی. مدت: `82.126 s`.
-| ماتریس رنگ×سایز | `7/7` PASS؛ ماتریس واقعی در `360/390/768/1024/1440` بدون overflow؛ فرم آزمایشی بدون ذخیره بسته شد. |
-| Series Builder responsive | `5/5` PASS در `360/390/768/1024/1440`؛ ترکیب سری و CTA اصلی در دسترس و بدون overflow. |
-| WMS browser | `28/28` PASS؛ تنظیمات و مکان انبار، رسیدهای مستقل، اصلاح با delta علامت‌دار، preview و validation، دریافت/کسری، تراز on-hand/incoming و توقف/فعال‌سازی فروش در سطح واریانت. مدت: `8.417 s`.
-| WMS responsive | `20/20` PASS؛ چهار تب خرده، انتقال، عمده و تنظیمات در پنج عرض `360/390/768/1024/1440` بدون overflow افقی صفحه و با تب جاری قابل مشاهده. مدت: `7.335 s`.
-| Supplier 360 | `15/15` PASS؛ dialog متمرکز، scroll/focus/Escape؛ تب «موجودی نزد کلبه» از WMS مقدار فیزیکی `۰` نشان داد، درحالی‌که «ظرفیت اعلامی» برای کارگاه نیلگون `۲۰` اعلامی و `۲۰` قابل‌درخواست نشان داد. این دو مقدار در UI و DB مجزا هستند؛ خواندن هیچ write نداشت. مدت: `5.170 s`.
-| Cutout/media privacy | `5/5` PASS در CDP؛ preview از دو `/files/:id` خصوصی ادمین استفاده کرد؛ هیچ درخواست `/api/v1/product-media/:id` در جریان Cutout صادر نشد؛ endpoint عمومی برای همان تصویر draft همچنان `404` است. سیاست published-only تغییر نکرد. مدت: `5.316 s`.
+- ایجاد محصول با `inventory_setup = pending` و بدون balance انجام می‌شود. صفحهٔ موفقیت Product Studio دکمهٔ مستقیم ادامه دارد و همان پنل **نیازمند راه‌اندازی** را با `productId` باز می‌کند؛ حالت Skip موجودی را pending نگه می‌دارد و mutation نمی‌فرستد.
+- ثبت موجودی اولیه از endpoint و عملیات transaction-safe و idempotent موجود عبور می‌کند: موجودی خرده به‌صورت receiptهای واقعی WMS ثبت می‌شود؛ موجودی عمدهٔ متعلق به Kolbe از Series ledger/stock balance canonical ثبت می‌شود.
+- آزمون‌ها مقدار برابر، مقدار جداگانهٔ هر واریانت، سری عمدهٔ Kolbe، مالکیت، audit، و replay با idempotency key بدون دوبرابرشدن موجودی را پوشش می‌دهند.
 
-### جریان عملیاتی واقعیِ series unpack
+## قیمت‌گذاری و ترفیع محصول
 
-در تست embedded `series-inventory.test.ts` با عنوان `PO acceptance: S2 M2 L2 × 3`، reservation و replay همزمان با یک idempotency key، رد payload تغییریافته با `409`، rollback اتمیک در صورت مغایرت، و dispatch/receive با snapshot ثابت PASS شد. سه سریِ دارای ترکیب S2/M2/L2 به دقیقاً `18` قطعهٔ retail رسیدند؛ مجموع ledger نیز `18` بود و 2 سری عمده با مالکیت Kolbe باقی ماندند. تست در مجموعهٔ embedded `187/187` PASS است.
+- فضای کامل قیمت‌گذاری از Product Studio و Product 360 مشترک است و قیمت نقدی، پایهٔ چهارقسطه، سیاست اقساط، قیمت عمده، Discount محصول/رنگ/سایز/واریانت، انتخاب Festival و نتیجهٔ سروری Resolver را فراهم می‌کند.
+- چهارقسطه کنترل روشن ON/OFF دارد و اطلاعات مبلغ/سیاست فقط هنگام ON دیده می‌شوند. تنظیمات جزئی Discount یا Festival در حالت خاموش به‌طور پیش‌فرض جمع هستند.
+- ماتریس واقعی Color × Size مقادیر تخفیف و وضعیت هر واریانت را آشکار می‌کند. Product 360 خلاصه‌ای فقط‌خواندنی از قیمت کاتالوگ، Promotionها و Resolver canonical ارائه می‌کند و موجودی/قیمت را نمی‌نویسد.
+- کنترل سمت‌سرور Festival و Discount مستقل را متقابلاً انحصاری می‌کند. با فعال‌شدن Festival، قوانین قبلی حذف یا تغییر مقدار نمی‌یابند و معلق می‌شوند؛ خاموش/منقضی‌شدن Festival آن‌ها را خودکار فعال نمی‌کند. فقط reactivation صریح Admin marker تعلیق را پاک و مقادیر ذخیره‌شده را عیناً بازمی‌گرداند. تغییرها در audit ثبت می‌شوند.
+- کنترل‌های نامعتبر نیز آزموده شدند: نوع/mode نامعتبر، Festival غیرفعال یا شناسه/کانال ناسازگار، درصد خارج از محدوده، Festival هدف‌گرفته‌شده به category، تخفیف مستقل هنگام Festival و انتقال بدون تأیید صریح، با پاسخ‌های 400/404/409 رد می‌شوند.
 
-## نتایج خودکار و build
+## نتایج آزمون و build
 
-| دستور | نتیجهٔ دقیق | مدت |
-|---|---:|---:|
-| `backend npm test` | 142 test؛ 77 PASS، 65 SKIP، 0 FAIL، 0 cancelled، 0 todo | TAP `50867.304 ms`؛ wall `51.046 s` |
-| `backend npm run test:embedded` | 187/187 PASS؛ بدون skip/fail | TAP `118564.609 ms`؛ wall `124.473 s` |
-| `backend npm run test:contract` | 104/104 checks | wall `10.173 s` |
-| `backend node scripts/verify-migrations.mjs` | 43/43 assertions؛ migrationهای 069/070 و upgrade داده‌دار تأیید شدند | wall `10.015 s` |
-| `backend npm run build` | TypeScript build موفق | wall `12.606 s` |
-| `npm run build` در ریشه | Vite build موفق؛ 2011 module | wall `7.020 s` |
+| کنترل | نتیجه |
+|---|---:|
+| آزمون متمرکز embedded برای Product/WMS/Pricing/Series (چهار فایل مرتبط) | **29/29 PASS**؛ 0 fail، 0 skip |
+| مجموعهٔ کامل `backend npm run test:embedded` | **188/188 PASS**؛ 0 fail، 0 skip، 0 cancelled، 0 todo؛ 51 migration روی DB تازه و اجرای دوم migration بدون تغییر |
+| `backend npm run test:contract` | **104/104 PASS** |
+| `backend node scripts/verify-migrations.mjs` | **ALL CHECKS PASSED**؛ پایگاه تازه، upgrade داده‌دار و اجرای idempotent دوباره تأیید شد |
+| `backend npm run build` | TypeScript موفق |
+| `node node_modules/typescript/bin/tsc --noEmit` | TypeScript فرانت موفق |
+| `node node_modules/vite/bin/vite.js build` | Vite موفق؛ **2,023** ماژول تبدیل شد |
+| `LD_LIBRARY_PATH=/tmp/al2023/lib:/tmp npm run test:browser` | **103/103 PASS** |
 
-اجرای عادی `npm test`، 65 تست integration را در نبود embedded DB skip می‌کند؛ اجرای embedded همهٔ 187 تست را فعال و PASS کرد. خروجی build فرانت (`dist/index.html`) artifact تولیدی است و نباید وارد commit شود.
+### پذیرش مرورگر
 
-## تشخیص‌های مرورگر و دادهٔ تست
+- محصول تازه: عدم نوشتن stock در Studio، ادامه به همان Needs Setup با محصول انتخاب‌شده، صفر موجودی اولیه و Skip بدون mutation.
+- Product Studio و Product 360: workspace مشترک، ورودی‌های canonical، پیش‌نمایش Resolver، ثبت/بازخوانی از Center و حفظ مقادیر پس از reload.
+- مقادیر واقعی واریانت **Black/M = 15%، Black/L = 20%، Cream/XL = 10%** در مسیر `Discount ON → Festival ON → Festival OFF → explicit Discount ON` حفظ شدند؛ Festival در حالت فعال بر Resolver غالب بود، پس از خاموشی تخفیف‌ها خودکار برنگشتند، و reactivation صریح نتیجه‌های canonical را برگرداند.
+- ابعاد dialog در **360 / 390 / 768 / 1024 / 1440 px** بدون overflow پذیرفته شدند. هر **25** بخش کنسول نیز walk شد.
+- گزارش smoke شامل `failedResponses` است: **0** پاسخ HTTP با status ≥500 و **0** خطای صفحهٔ unhandled. از 113 پیام خام کنسول، 99 مورد `ERR_CONNECTION_CLOSED` برای منابع بیرونیِ مسدودشده در sandbox و 14 مورد 401 از مسیر refresh/auth بودند؛ مورد غیرمنتظره‌ای در assertion باقی نماند.
+- اسکن برچسب‌های انگلیسی PASS شد. فقط شناسهٔ فنی seed با الگوی محدود `SEED-*` از تشخیص label کنار گذاشته می‌شود؛ متن UI همچنان اسکن می‌شود.
 
-- Product Studio UAT: `0` uncaught page errors و `0` duplicate-key warning.
-- یک `PATCH 400` عمداً در تست خطای ذخیره inject شد؛ فرم باز ماند، ویرایش حفظ شد و stack/Zod خام نشان داده نشد. این پاسخ خطای موردانتظار تست بود، نه خطای سرویس.
-- `68` درخواست resource خارجی از `images.pexels.com` و `fonts.googleapis.com` به‌علت egress محدود sandbox با `ERR_CONNECTION_CLOSED` شکست خوردند؛ درخواست‌های API محلی، upload و preview فایل خصوصی PASS بودند.
-- WMS/Product Studio UAT از fixtureهای QA روی PGlite محلی استفاده کرد. تغییرهای عمدی آن‌ها صرفاً دادهٔ تست بودند؛ Product 360 و Supplier 360 هیچ business write نداشتند. سری آزمایشی ایجادشده در انتها archive شد و سری‌های اصلی فعال باقی ماندند.
+## فایل‌های شواهد و دادهٔ محلی
 
-## موارد باز — صریح و محدود
+گزارش مرورگر و تصاویر در `/tmp/kolbe-admin-smoke/` تولید شدند و artifactهای محلی هستند. `backend/storage/private/2026-10-05/` فقط فایل‌های محلیِ ignored برای fixture/media است و به commit افزوده نمی‌شود. خروجی build در `dist/` و churn نصب/cache در `node_modules/` نیز artifact هستند و وارد commit نمی‌شوند.
 
-1. فیلد/قابلیت «حداکثر تعداد سفارش عمده» در Product Studio پیاده‌سازی نشده (`NOT IMPLEMENTED` در UAT). به‌علت دستور verification-only و منع PASS 2 در این دور تغییر نکرد و **PASS/VERIFIED نیست**.
-2. دریافت تصاویر و فونت‌های remote از دامنه‌های خارجی در sandbox محدود است؛ این مورد از API یا preview خصوصی محلی ناشی نشد.
-3. هیچ ردیف دیگری از gap matrix صرفاً به‌خاطر این گزارش VERIFIED نمی‌شود؛ فقط شواهد دوباره‌اجراشدهٔ بالا تأییدشده‌اند.
+## تحویل Git
 
-## Git delivery
-
-تأیید push با `git push origin arena/01a10817-kolbevintage`، برابری local/remote HEAD و clean working tree مرحلهٔ مستقل delivery است و در پیام نهایی اعلام می‌شود؛ این فایل صرفاً شواهد آزمون و build را ثبت می‌کند.
+تمام تغییرات محصول و این گزارش فقط روی `arena/01a10817-kolbevintage` تحویل می‌شوند. پس از commit و push، برابری HEAD محلی/remote و clean بودن worktree به‌طور مستقل بررسی می‌شود؛ وضعیت نهایی در پیام تحویل اعلام خواهد شد.
