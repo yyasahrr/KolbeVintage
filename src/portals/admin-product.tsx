@@ -1,28 +1,79 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, BadgePercent, Boxes, Check, Film, Image as ImageIcon, Loader2, Pencil, Plus, Save, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
+import { ArrowLeft, BadgePercent, Boxes, Check, Film, Image as ImageIcon, Loader2, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
 import { COLORS, IMG, fmtMoney, fmtNum, nextSku, type Colorway, type Product, type SeriesDef } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE } from "../data/platform";
 import { useOps } from "../data/ops";
 import { fileToUrl, removeBackground, sendToN8n } from "../components/media";
-import { authBlobUrl, filesApi, integrationsApi, inventoryApi, productColorsApi, productStructureApi, productsApi, seriesTemplatesApi } from "../data/api";
+import { authBlobUrl, filesApi, integrationsApi, inventoryApi, productColorsApi, productStructureApi, productsApi, seriesTemplatesApi, sizeGuidesApi, specsApi } from "../data/api";
 import {
   INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, buildProductCreatePayload, normalizeProductTypes, normalizeTaxonomies, normalizeWarehouses,
   productVariantSkus, readProductCreateResponse, rialFromToman, variantKey, variantMatrix,
   type InstallmentPolicy, type ProductType as StructureProductType, type Taxonomy, type Warehouse,
 } from "../data/contracts";
-import { ProductSpecsEditor } from "../components/product-specs-editor";
+import { DynamicTableEditor, emptyTable, normalizeTable, useProductTable, type DataTable } from "../components/dynamic-table-editor";
 import { ProductInventoryDrawer } from "../components/product-inventory";
 import { DiscountManager } from "../components/discount-manager";
 import { seriesComplete, seriesSizesFor } from "./series-templates";
 import { AdaptiveSpecForm, missingRequiredSpecs } from "./admin-product-types";
 import { productTypesApi, siteApi, studioApi, type ProductType } from "../data/experience-api";
-import { catalogOpsApi } from "../data/api";
-import { Btn, Card, WorkspaceModal, Empty, Field, Input, LoadingState, Modal, Segmented, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
+import { catalogOpsApi, promotionRulesApi } from "../data/api";
+import { Btn, Card, WorkspaceModal, Field, Input, LoadingState, Modal, SafeImg, Segmented, Select, Status, Switch, SwitchRow, Textarea, SearchBox } from "../components/primitives";
 import { cn } from "../utils/cn";
 import { CanonicalSeriesLibrary, ProductSeriesEditor, productSeriesPayload } from "../components/product-series-editor";
 
 type F = (m: string) => void;
+
+/** §9-§12: one panel of the merged «مشخصات و راهنمای سایز» step.
+ *  The operator defines the columns AND the rows — there is no template, no category schema and
+ *  no live template binding. Two of these live side by side and are fully independent: editing or
+ *  saving one never touches the other (§22).
+ *  Storage (§12) is `products.metadata.tables.{specs,sizeGuide}` — a JSON column that already
+ *  exists, so no migration and no second authority; the legacy `product_spec_values` and
+ *  `product_size_guides` rows stay readable and are never deleted. */
+function TablePanel({ productId, kind, title, hint, table, onChange, flash }: {
+  productId: string | null; kind: "specs" | "sizeGuide";
+  title: string; hint: string; table: DataTable;
+  onChange: (table: DataTable) => void;
+  flash: F;
+}) {
+  const { loading, saving, saved, persist } = useProductTable(productId, {
+    load: async () => {
+      if (kind === "specs") {
+        const r = (await specsApi.productSpecs(productId!)) as { table?: unknown } | null;
+        return r?.table ?? null;
+      }
+      const r = (await sizeGuidesApi.productGuide(productId!)) as { mode?: string; guide?: { table?: unknown } } | null;
+      return r?.guide?.table ?? null;
+    },
+    save: async (next) => (kind === "specs"
+      ? specsApi.saveProductSpecs(productId!, { table: next })
+      : sizeGuidesApi.saveProductTableGuide(productId!, next)),
+    onLoaded: onChange,
+    onError: flash,
+  });
+  if (loading) return <Card className="p-4"><LoadingState label={`در حال دریافت ${title}…`} /></Card>;
+  return (
+    <Card className="p-4">
+      <DynamicTableEditor
+        title={title}
+        hint={hint}
+        table={table}
+        onChange={onChange}
+        busy={saving}
+        saved={saved}
+        /* §12: persistence is per table — the save button belongs to the table it saves. */
+        onSave={productId ? async () => { if (await persist(table)) flash(`${title} ذخیره شد.`); } : undefined}
+      />
+      {!productId && (
+        <p className="mt-2 text-[11px] text-[var(--kv-muted)]">
+          این جدول همراه محصول ذخیره می‌شود؛ پس از «ذخیره پیش‌نویس» روی سرور هم ثبت خواهد شد.
+        </p>
+      )}
+    </Card>
+  );
+}
+
 type Cutout = NonNullable<Product["cutout"]>;
 const CUT_LABEL: Record<Cutout["status"], string> = { none: "بدون تصویر", queued: "در صف n8n", processing: "در حال پردازش", ready: "آماده استایل‌بیلدر", failed: "ناموفق" };
 
@@ -143,8 +194,10 @@ type Draft = {
   typeCode: string; specs: Record<string, unknown>; gender: "men" | "women" | "unisex" | "kids"; seasons: string[]; vibes: string[];
   productTypeId: string; genderCode: string;
   installmentPolicy: InstallmentPolicy; wholesaleMoq: string; variantWeights: Record<string, string>;
+  /** §9-§10: «مشخصات فنی» and «راهنمای سایز» as arbitrary Admin-defined 2D tables. */
+  specsTable: DataTable; sizeGuideTable: DataTable;
 };
-const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [], productTypeId: "", genderCode: "", installmentPolicy: "enabled", wholesaleMoq: "", variantWeights: {} });
+const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [], productTypeId: "", genderCode: "", installmentPolicy: "enabled", wholesaleMoq: "", variantWeights: {}, specsTable: emptyTable(), sizeGuideTable: emptyTable() });
 
 type MatrixVariant = {
   id: string; sku: string; active: boolean; weight_grams: number | null;
@@ -223,7 +276,7 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
  *    no intermediate surface and no second product-creation authority.
  *  `onExit` — [انصراف] / «بازگشت به فهرست» / «خروج بدون ذخیره» hand control back to the caller.
  */
-export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resumeProductId, onResumeHandled, embedded, onExit }: {
+export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resumeProductId, onResumeHandled, embedded, onExit, onPublished }: {
   flash: F;
   onContinueToInventory?: (productId: string) => void;
   onDraftSaved?: (productId: string) => void;
@@ -231,6 +284,8 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   onResumeHandled?: () => void;
   embedded?: boolean;
   onExit?: () => void;
+  /** §5: after a successful publication the caller reloads its own canonical list. */
+  onPublished?: (productId: string) => void;
 }) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct, reload } = useStore();
@@ -293,7 +348,13 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [d.category, isDemo]);
   useEffect(() => { loadTypes(); if (!isDemo) siteApi.vibes().then((r) => setVibeOptions(r.items)).catch(() => undefined); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
-  const [specsFor, setSpecsFor] = useState<Product | null>(null);
+  /* §5: publication — in-flight guard (no double submit), server readiness, and the state. */
+  const [publishing, setPublishing] = useState(false);
+  const [readiness, setReadiness] = useState<{ publishable: boolean; issues: { code: string; label: string; step: string }[] } | null>(null);
+  /** §4: the publication state of the product being edited (server truth, never local guess). */
+  const [publicationState, setPublicationState] = useState<"draft" | "published" | "archived" | "">("");
+  /* §7: read-only promotion/festival summary — Promotion Center stays the authority. */
+  const [promoSummary, setPromoSummary] = useState<{ activeStandaloneRules: number; suspendedStandaloneRules: number; configuredStandaloneRules: number; assignedFestival: { name: string; effective: boolean } | null } | null>(null);
   const [productTypes, setProductTypes] = useState<StructureProductType[]>([]);
   const [taxonomies, setTaxonomies] = useState<Taxonomy[]>([]);
 
@@ -448,7 +509,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
   };
 
   /** Loads the real server product into the shared studio form (Req 38). */
-  const openEdit = async (p: Product) => {
+  const openEdit = async (p: Product, targetSec?: string) => {
     try {
       const detail = await productsApi.adminDetail(p.id);
       const meta = (detail.metadata ?? {}) as Record<string, unknown>;
@@ -478,6 +539,10 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
         productTypeId: String(detail.product_type_id ?? ""), genderCode: String(detail.gender_code ?? ""),
         installmentPolicy: (detail.installment_policy as InstallmentPolicy) ?? "enabled",
         wholesaleMoq: detail.wholesale_moq === null || detail.wholesale_moq === undefined ? "" : String(detail.wholesale_moq),
+        /* §12: the two arbitrary tables live in `metadata.tables` — reading them here means the
+           merged step shows exactly what the server stored, with no local-only draft. */
+        specsTable: normalizeTable((meta.tables as { specs?: unknown } | undefined)?.specs),
+        sizeGuideTable: normalizeTable((meta.tables as { sizeGuide?: unknown } | undefined)?.sizeGuide),
       };
       loadedDraft.images = await Promise.all(loadedDraft.images.map(async (image) => image.fileId ? {
         ...image, url: `/api/v1/product-media/${image.fileId}`, previewUrl: await authBlobUrl(`/files/${image.fileId}`),
@@ -498,9 +563,74 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
       setEditing({ id: p.id, metadata: meta });
       setEditVariants(variants);
       setCellOff({});
-      setSec("base");
+      /* §2: publication state is server truth — the Studio never guesses it from stock. */
+      setPublicationState((String(detail.status ?? "draft") as "draft" | "published" | "archived"));
+      void refreshPublication(p.id);
+      void loadPromoSummary(p.id);
+      setSec(targetSec ?? "base");
       setOpen(true);
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری محصول از سرور"); }
+  };
+
+  /* ---------- Publication (§1-§5): explicit, server-authoritative, retry-safe ---------- */
+
+  /** §4: the Studio shows the SERVER's checklist. A failed read degrades to "unknown",
+   *  never to a locally invented requirement list. */
+  const refreshPublication = async (productId: string) => {
+    try {
+      const r = await catalogOpsApi.publicationReadiness(productId);
+      setReadiness({ publishable: r.publishable, issues: r.issues.map((i) => ({ code: i.code, label: i.label, step: i.step })) });
+      setPublicationState((String(r.status ?? "draft") as "draft" | "published" | "archived"));
+    } catch {
+      setReadiness(null);
+    }
+  };
+
+  /** §7: promotion/festival are READ from the Promotion Center — no local toggle exists. */
+  const loadPromoSummary = async (productId: string) => {
+    try {
+      const r = await promotionRulesApi.productSummary(productId);
+      setPromoSummary({
+        activeStandaloneRules: r.activeStandaloneRules ?? 0,
+        suspendedStandaloneRules: r.suspendedStandaloneRules ?? 0,
+        configuredStandaloneRules: r.configuredStandaloneRules ?? 0,
+        assignedFestival: r.assignedFestival ? { name: r.assignedFestival.name, effective: Boolean(r.assignedFestival.effective) } : null,
+      });
+    } catch { setPromoSummary(null); }
+  };
+
+  /** §1/§2/§5: the explicit «انتشار» action.
+   *  - Idempotent: publishing an already-published product is a server no-op and is reported as success.
+   *  - Guarded: a single in-flight flag makes a double submit impossible.
+   *  - Honest: a 422 from the canonical validator is shown with its exact Persian issue list and
+   *    the operator's work is untouched (nothing is optimistically flipped).
+   *  - Persisted: the product row and every canonical list are re-read from the server afterwards. */
+  const publishProduct = async () => {
+    if (!editing || publishing) return;
+    setPublishing(true);
+    try {
+      await productsApi.status(editing.id, "published");
+      setPublicationState("published");
+      await refreshPublication(editing.id);
+      /* §2: reload every canonical read model so refresh/reopen/hub agree with the server. */
+      await reload();
+      await loadServerDrafts();
+      onPublished?.(editing.id);
+      flash("محصول منتشر شد");
+    } catch (e) {
+      const err = e as { status?: number; details?: { issues?: { code: string; label: string; step: string }[] }; message?: string };
+      const issues = err?.details?.issues;
+      if (Array.isArray(issues) && issues.length) {
+        setReadiness({ publishable: false, issues });
+        flash("برای انتشار محصول این موارد را تکمیل کنید: " + issues.map((i) => i.label).join("، "));
+      } else {
+        flash(err?.message ?? "خطا در انتشار محصول");
+      }
+      /* §5: keep the operator's work intact — re-read the true state, never assume failure. */
+      await refreshPublication(editing.id);
+    } finally {
+      setPublishing(false);
+    }
   };
 
   const refreshEditVariants = async () => {
@@ -541,6 +671,9 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
         seo: { title: d.seoTitle.trim() || d.name.trim(), slug: d.slug.trim() },
         editorialSku: d.sku.trim() || null,
         cutout: d.cutout && d.cutout.status !== "none" ? d.cutout : null,
+        /* §12: the arbitrary tables are stored in the existing `metadata` JSON column — no new
+           table, no migration, and the legacy spec/size-guide rows stay intact and readable. */
+        tables: { specs: d.specsTable, sizeGuide: d.sizeGuideTable },
       });
       await productsApi.update(editing.id, {
         name: d.name.trim(), brand: d.brand.trim(), category: d.category.trim(), description: d.desc,
@@ -649,12 +782,23 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
     !d.retailOn && !d.wholesaleOn && { label: "یک کانال فروش", sec: "price" },
     d.retailOn && !(Number(d.retail) > 0) && { label: "قیمت خرده", sec: "price" },
     d.retailOn && d.installment && !(Number(d.installment) > 0) && { label: "قیمت چهارقسطه معتبر", sec: "price" },
-    d.wholesaleOn && !seriesComplete(d.series) && { label: "سری‌های عمده (قیمت، حداقل و رنگ)", sec: "series" },
+    d.wholesaleOn && !seriesComplete(d.series) && { label: "سری‌های عمده (قیمت، حداقل و رنگ)", sec: "price" },
     !d.images.length && { label: "دست‌کم یک تصویر", sec: "media" },
     ...missingCategorySpecs.map((field) => ({ label: `مشخصه «${field.label}» الزامی است`, sec: "specs" })),
     ...missingRequiredSpecs(selectedType, d.specs).map((label) => ({ label: `مشخصه «${label}»`, sec: "base" })),
   ].filter(Boolean) as { label: string; sec: string }[];
   const issues = issueItems.map((item) => item.label);
+  /* §6: Sales Mode is derived from the two channel flags, so there is exactly one source of
+     truth and no dead combined price-mode switch. Both-off is not a valid business state. */
+  type SalesMode = "retail" | "wholesale" | "both";
+  const SALE_MODES: { id: SalesMode; label: string; hint: string; retail: boolean; wholesale: boolean }[] = [
+    { id: "retail", label: "فقط خرده", hint: "فروش تک‌عدد به مشتری نهایی", retail: true, wholesale: false },
+    { id: "wholesale", label: "فقط عمده", hint: "فروش سری‌بندی‌شده به همکار", retail: false, wholesale: true },
+    { id: "both", label: "خرده + عمده", hint: "هر دو کانال هم‌زمان فعال", retail: true, wholesale: true },
+  ];
+  const salesMode: SalesMode = d.retailOn && d.wholesaleOn ? "both" : d.retailOn ? "retail" : "wholesale";
+  /** §6: installment is a retail capability — «غیرفعال» is a real state, not an empty field. */
+  const installmentEnabled = d.installmentPolicy !== "disabled";
   /** §8: Save Draft ≠ Publish. A Draft only has to be STRUCTURALLY valid — identity and
    *  category are mandatory, everything else may be completed later (§9). */
   const draftBlockers = [
@@ -761,6 +905,9 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
         wholesaleMoq: d.wholesaleMoq || undefined,
         variantWeights: d.variantWeights,
         cutout: d.cutout,
+        /* §12: a NEW product's tables are persisted by the canonical create write — no second
+           PATCH round-trip, and never a client-only draft. */
+        tables: { specs: d.specsTable, sizeGuide: d.sizeGuideTable },
         series: d.series.map((series) => ({
           name: series.name, pieces: series.pieces, moqSeries: series.moqSeries,
           pricePerSeries: series.pricePerSeries, available: series.available, colorIds: series.colorIds,
@@ -805,12 +952,15 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
 
   // One unified studio for create AND edit (Req 39). §4 (corrective): NO operational stock
   // step — definition answers «این کالا چیست؟» and WMS answers «کجا و چقدر موجود است؟».
+  /* §13 (final UX pass): the canonical 8 steps — «سری‌های عمده» folded into «قیمت‌گذاری»
+     and «مشخصات فنی» + «راهنمای سایز» merged into one step. The list is FIXED on purpose:
+     hiding a step because of a mode makes required work invisible to the operator. */
   const secs = [
     ["base", "اطلاعات پایه"], ["variant", "رنگ و سایز"], ["media", "تصویر و ویدیو"], ["cutout", "تصویر استایل‌بیلدر"],
-    ["price", "قیمت‌گذاری"], ["series", "سری‌های عمده"],
-    // QA2-SPEC-007 (§17.3): specs and size guide are two independent steps.
-    ["specs", "مشخصات فنی"], ["sizeguide", "راهنمای سایز"], ["seo", "سئو و کانال‌ها"], ["review", "بازبینی و انتشار"],
-  ].filter(([key]) => (d.retailOn || !["price", "cutout"].includes(key!)) && (d.wholesaleOn || key !== "series"));
+    ["price", "قیمت‌گذاری"],
+    // §9-§10: one merged step, two independent tables.
+    ["specs", "مشخصات و راهنمای سایز"], ["seo", "سئو و کانال‌ها"], ["review", "بازبینی و انتشار"],
+  ];
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       {/* §3: in embedded mode the caller owns the canonical product list, so the studio renders
@@ -855,7 +1005,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                   <td className="text-[12px] text-[var(--kv-muted)]">{fmtNum((p.images ?? []).length)} تصویر{p.video ? " · ویدیو" : ""}</td>
                   <td><button onClick={() => setCutFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)]"><Sparkles size={13} />{CUT_LABEL[p.cutout?.status ?? "none"]}</button></td>
                   <td>
-                    <button onClick={() => setSpecsFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline">
+                    <button onClick={() => void openEdit(p, "specs")} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline">
                       مشخصات و راهنمای سایز
                     </button>
                   </td>
@@ -864,7 +1014,9 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                       ? <span className="text-[11.5px] text-[var(--kv-muted)]">—</span>
                       : <button onClick={() => void openEdit(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)] hover:underline"><Pencil size={13} />ویرایش</button>}
                   </td>
-                  <td><Switch on={p.status === "published"} onToggle={async () => { const next = p.status === "published" ? "draft" : "published"; if (!isDemo) { try { await productsApi.status(p.id, next); await reload(); flash(next === "published" ? `${p.name} منتشر شد` : `${p.name} از فروش خارج شد`); return; } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت"); return; } } setStatus(p.id, next); flash(p.status === "published" ? `${p.name} از فروش خارج شد (demo)` : `${p.name} منتشر شد (demo)`); }} /></td>
+                  {/* §4: the same canonical publication validator protects this switch; a blocked
+                      publish surfaces the exact Persian issue list instead of a raw error. */}
+                  <td><Switch on={p.status === "published"} onToggle={async () => { const next = p.status === "published" ? "draft" : "published"; if (!isDemo) { try { await productsApi.status(p.id, next); await reload(); flash(next === "published" ? `${p.name} منتشر شد` : `${p.name} از فروش خارج شد`); return; } catch (e) { const details = (e as { details?: { labels?: string[] } }).details; flash(details?.labels?.length ? `برای انتشار محصول این موارد را تکمیل کنید: ${details.labels.join("، ")}` : e instanceof Error ? e.message : "خطا در تغییر وضعیت"); return; } } setStatus(p.id, next); flash(p.status === "published" ? `${p.name} از فروش خارج شد (demo)` : `${p.name} منتشر شد (demo)`); }} /></td>
                 </tr>
               ))}
             </tbody>
@@ -889,10 +1041,21 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
           ))}</nav>
           <div className="min-w-0 space-y-4">
             {sec === "base" && <>
-              <Field label="نوع فروش" hint="تنظیمات محصول بر اساس بازار انتخاب‌شده نمایش داده می‌شود؛ موجودی در انبار مدیریت می‌شود.">
-                <Segmented options={[{ v: "retail", label: "فقط خرده" }, { v: "wholesale", label: "فقط عمده" }, { v: "both", label: "خرده + عمده" }]}
-                  value={d.retailOn ? (d.wholesaleOn ? "both" : "retail") : "wholesale"}
-                  onChange={(mode) => setD((cur) => ({ ...cur, retailOn: mode !== "wholesale", wholesaleOn: mode !== "retail" }))} />
+              {/* §6/§16: ONE editable Sales Mode control — the pricing step only reflects it. */}
+              <Field label="حالت فروش" hint="تعیین می‌کند این محصول در کدام کانال‌ها فروخته می‌شود؛ بخش قیمت‌گذاری خودش را با همین انتخاب تنظیم می‌کند. موجودی همیشه در انبار مدیریت می‌شود.">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {SALE_MODES.map((mode) => (
+                    <button key={mode.id} type="button" aria-pressed={salesMode === mode.id}
+                      onClick={() => setD({ ...d, retailOn: mode.retail, wholesaleOn: mode.wholesale })}
+                      className={cn("flex min-h-[64px] flex-col items-start justify-center gap-0.5 rounded-[12px] border px-3 py-2 text-right transition-colors",
+                        salesMode === mode.id
+                          ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10 ring-2 ring-[var(--kv-accent)]/20"
+                          : "border-[var(--kv-line)] hover:bg-[var(--kv-surface-2)]")}>
+                      <span className="text-[12.5px] font-extrabold">{mode.label}</span>
+                      <span className="text-[10.5px] leading-4 text-[var(--kv-muted)]">{mode.hint}</span>
+                    </button>
+                  ))}
+                </div>
               </Field>
               <Field label="نام محصول"><Input value={d.name} onChange={(v) => setD({ ...d, name: v })} placeholder="مثلاً کت پشمی دو‌دکمه" /></Field>
               <div className="grid gap-3 sm:grid-cols-3"><Field label="برند"><Input value={d.brand} onChange={(v) => setD({ ...d, brand: v })} /></Field><Field label="دسته" hint={!isDemo && categories.length ? "سلسله‌مراتبی از سرور (زیر‌دسته‌ها با — تورفتگی)" : undefined}>
@@ -1140,7 +1303,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
               <div>
                 <div className="mb-2 flex items-center justify-between"><p className="text-[13px] font-semibold">تصاویر فروشگاه ({fmtNum(d.images.length)})</p><span className="text-[11.5px] text-[var(--kv-muted)]">اولین تصویر، کاور است · نسبت ۳:۴</span></div>
                 <div className="grid grid-cols-4 gap-2">
-                  {d.images.map((im, i) => <div key={`${im.fileId ?? im.url}-${i}`} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><img src={im.previewUrl ?? im.url} alt="" className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<span className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-bold text-white">{im.fileId ? "ذخیره‌شده" : "محلی"}</span><button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
+                  {d.images.map((im, i) => <div key={`${im.fileId ?? im.url}-${i}`} className="group relative overflow-hidden rounded-[10px] border border-[var(--kv-line)]"><SafeImg src={im.previewUrl ?? im.url} alt={`تصویر ${i + 1} از محصول`} className="aspect-[3/4] w-full object-cover" />{i === 0 && <span className="absolute bottom-1 right-1 rounded-full bg-[#1B2A4A]/85 px-2 py-0.5 text-[10px] font-bold text-white">کاور</span>}<span className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-bold text-white">{im.fileId ? "ذخیره‌شده" : "محلی"}</span><button aria-label="حذف تصویر" onClick={() => setD({ ...d, images: d.images.filter((_, j) => j !== i) })} className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white"><Trash2 size={13} /></button>{i > 0 && <button onClick={() => setD({ ...d, images: [im, ...d.images.filter((_, j) => j !== i)] })} className="absolute bottom-1 left-1 rounded-full bg-white/85 px-2 py-0.5 text-[10px] font-bold text-[#1B2A4A]">کاور کن</button>}</div>)}
                   <input ref={imgRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" onChange={async (e) => { const files = Array.from(e.target.files ?? []).slice(0, 8); if (!files.length) return; setMediaBusy(true); try { const uploaded: DraftImage[] = []; for (const file of files) uploaded.push(await uploadImage(file)); setD((prev) => ({ ...prev, images: [...prev.images, ...uploaded] })); if (!isDemo) flash(`${uploaded.length.toLocaleString("fa-IR")} تصویر روی سرور ذخیره شد`); } catch (err) { flash(err instanceof Error ? err.message : "خطا در بارگذاری تصویر"); } finally { setMediaBusy(false); } }} />
                   <button onClick={() => imgRef.current?.click()} className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-[10px] border-2 border-dashed border-[var(--kv-line-strong)] text-[11.5px] font-semibold text-[var(--kv-muted)] hover:border-[var(--kv-accent)]"><ImageIcon size={18} />افزودن تصویر</button>
                 </div>
@@ -1162,29 +1325,121 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
             {sec === "cutout" && <CutoutUploader productId="new" value={d.cutout} onChange={(c) => setD((p) => ({ ...p, cutout: c }))} candidates={d.images.map((image) => image.previewUrl ?? image.url)} flash={flash} />}
             {sec === "price" && <>
               <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
-                قیمت پایه، اقساط و تخفیف‌های محصول از فضای قیمت‌گذاری اختصاصی و موتور Pricing Resolver خوانده می‌شوند؛ این فرم تعریف، موجودی یا تخفیف سمت کلاینت نمی‌نویسد.
+                قیمت‌های این بخش، مبنای کاتالوگ محصول هستند. قیمت نهایی مشتری در زمان خرید توسط سرور و با اعمال تخفیف‌ها و جشنواره‌ها محاسبه می‌شود.
               </p>
-              {editing ? (
+
+              {/* §6: pricing ADAPTS to the canonical Sales Mode; the mode itself is edited once,
+                  in «اطلاعات پایه» — this row only reflects it and links there. */}
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 px-3 py-2">
+                <p className="text-[12px] font-bold">
+                  حالت فروش: <span className="text-[var(--kv-ink)]">{salesMode === "both" ? "خرده + عمده" : salesMode === "retail" ? "فقط خرده" : "فقط عمده"}</span>
+                  <span className="mr-2 font-normal text-[var(--kv-muted)]">— بخش‌های زیر بر همین اساس نمایش داده می‌شوند.</span>
+                </p>
+                <Btn size="sm" variant="ghost" onClick={() => setSec("base")}>تغییر حالت فروش</Btn>
+              </div>
+
+              {d.retailOn && (
                 <Card className="space-y-3 p-4">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div><p className="text-xs text-[var(--kv-muted)]">قیمت پایه خرده · نقدی</p><p className="mt-1 font-bold">{d.retail ? `${fmtNum(Number(d.retail))} تومان` : "—"}</p></div>
-                    <div><p className="text-xs text-[var(--kv-muted)]">قیمت چهارقسطه</p><p className="mt-1 font-bold">{d.installment ? `${fmtNum(Number(d.installment))} تومان` : "برابر نقدی"}</p></div>
-                    <div className="sm:col-span-2"><p className="text-xs text-[var(--kv-muted)]">سیاست قسط</p><p className="mt-1 font-bold">{INSTALLMENT_POLICY_LABEL[d.installmentPolicy]}</p></div>
+                  <div>
+                    <p className="text-[13px] font-extrabold">فروش خرده</p>
+                    <p className="mt-0.5 text-[11px] leading-5 text-[var(--kv-muted)]">قیمت تک‌عدد برای مشتری نهایی در فروشگاه آنلاین.</p>
                   </div>
-                  <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">ویرایش‌های کاتالوگ این فرم نمی‌توانند قیمت جدیدتری را بازنویسی کنند.</p>
-                  <Btn variant="accent" icon={<BadgePercent size={14} />} onClick={() => setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>مدیریت قیمت، اقساط و تخفیف‌ها</Btn>
+                  {editing ? (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div><p className="text-[11px] text-[var(--kv-muted)]">قیمت نقدی پایه</p><p className="mt-1 text-[13px] font-bold">{d.retail ? `${fmtNum(Number(d.retail))} تومان` : "—"}</p></div>
+                        <div><p className="text-[11px] text-[var(--kv-muted)]">خرید چهارقسطه</p><p className="mt-1 text-[13px] font-bold">{installmentEnabled ? (d.installment && Number(d.installment) > 0 ? `${fmtNum(Number(d.installment))} تومان` : "فعال — برابر قیمت نقدی") : "غیرفعال"}</p></div>
+                        <div className="sm:col-span-2"><p className="text-[11px] text-[var(--kv-muted)]">سیاست اعمال تخفیف روی خرید چهارقسطه</p><p className="mt-1 text-[13px] font-bold">{INSTALLMENT_POLICY_LABEL[d.installmentPolicy]}</p></div>
+                      </div>
+                      <Btn variant="accent" icon={<BadgePercent size={14} />} onClick={() => setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>مدیریت قیمت، اقساط و تخفیف‌ها</Btn>
+                    </>
+                  ) : (
+                    <>
+                      <Field label="قیمت نقدی پایه (تومان)" hint="مبنای اصلی قیمت تک‌عدد در فروشگاه" required>
+                        <Input value={d.retail} onChange={(v) => setD({ ...d, retail: v.replace(/\D/g, "") })} ariaLabel="قیمت نقدی پایه (تومان)" />
+                      </Field>
+                      {/* §6: «خرید چهارقسطه» is an explicit enable/disable — never an empty field. */}
+                      <SwitchRow
+                        label="خرید چهارقسطه"
+                        hint="با روشن بودن، مشتری می‌تواند این کالا را در چهار قسط بخرد."
+                        on={installmentEnabled}
+                        onChange={(on) => setD({ ...d, installmentPolicy: on ? "enabled" : "disabled" })}
+                      />
+                      {installmentEnabled && (
+                        <>
+                          <Field label="قیمت پایه چهارقسطه (تومان)" hint="هر قسط از این مبلغ محاسبه می‌شود؛ خالی یعنی برابر قیمت نقدی">
+                            <Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} ariaLabel="قیمت پایه چهارقسطه (تومان)" />
+                          </Field>
+                          {Number(d.installment || d.retail) > 0 && (
+                            <p className="text-[12px] text-[var(--kv-muted)]">هر قسط: {fmtMoney(Math.ceil(Number(d.installment || d.retail) / 4))}</p>
+                          )}
+                          <Field label="سیاست اعمال تخفیف روی خرید چهارقسطه" hint="سرور در تسویه‌حساب همین سیاست را اعمال می‌کند">
+                            <Select options={([...INSTALLMENT_POLICIES]).map((p) => INSTALLMENT_POLICY_LABEL[p])} value={INSTALLMENT_POLICY_LABEL[d.installmentPolicy]} onChange={(label) => { const found = ([...INSTALLMENT_POLICIES]).find((p) => INSTALLMENT_POLICY_LABEL[p] === label); if (found) setD({ ...d, installmentPolicy: found }); }} />
+                          </Field>
+                        </>
+                      )}
+                    </>
+                  )}
                 </Card>
-              ) : (
-                <>
-                  {d.retailOn && <div className="grid gap-3 sm:grid-cols-2"><Field label="قیمت پایه خرده — نقدی (تومان)" hint="مبنای اصلی قیمت تک‌عدد در kolbe.ir"><Input value={d.retail} onChange={(v) => setD({ ...d, retail: v.replace(/\D/g, "") })} /></Field><Field label="قیمت مخصوص چهارقسطه (تومان)" hint="هر قسط از این مبلغ محاسبه می‌شود؛ خالی یعنی برابر قیمت نقدی"><Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} /></Field></div>}
-                  {d.retailOn && Number(d.installment || d.retail) > 0 && <p className="text-[12px] text-[var(--kv-muted)]">هر قسط: {fmtMoney(Math.ceil(Number(d.installment || d.retail) / 4))}</p>}
-                  <Field label="سیاست قسط" hint="سرور در تسویه‌حساب همین سیاست را اعمال می‌کند"><Select options={([...INSTALLMENT_POLICIES]).map((p) => INSTALLMENT_POLICY_LABEL[p])} value={INSTALLMENT_POLICY_LABEL[d.installmentPolicy]} onChange={(label) => { const found = ([...INSTALLMENT_POLICIES]).find((p) => INSTALLMENT_POLICY_LABEL[p] === label); if (found) setD({ ...d, installmentPolicy: found }); }} /></Field>
-                </>
               )}
-            </>}
-            {sec === "series" && <>
-              {d.wholesaleOn && <Field label="حداقل سفارش عمده (عدد)" hint="سرور در ثبت سفارش عمده همین کف را برای مجموع واریانت‌های این محصول اعمال می‌کند"><Input value={d.wholesaleMoq} onChange={(v) => setD({ ...d, wholesaleMoq: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۲" /></Field>}
-              {d.wholesaleOn && <ProductSeriesEditor colors={d.colors} sizes={d.sizes} value={d.series} onChange={(series) => setD({ ...d, series })} />}
+
+              {d.wholesaleOn && (
+                <Card className="space-y-3 p-4">
+                  <div>
+                    <p className="text-[13px] font-extrabold">فروش عمده</p>
+                    <p className="mt-0.5 text-[11px] leading-5 text-[var(--kv-muted)]">
+                      فروش عمده با «سری» قیمت‌گذاری می‌شود: هر سری ترکیب سایزهای یک رنگ است و قیمت آن یا به صورت «قیمت کل سری» وارد می‌شود یا با «محاسبه قیمت از اجزای سری» از جمع قیمت تکه‌ها به دست می‌آید.
+                    </p>
+                  </div>
+                  <Field label="حداقل سفارش عمده (عدد)" hint="سرور در ثبت سفارش عمده همین کف را برای مجموع واریانت‌های این محصول اعمال می‌کند">
+                    <Input value={d.wholesaleMoq} onChange={(v) => setD({ ...d, wholesaleMoq: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۲" ariaLabel="حداقل سفارش عمده (عدد)" />
+                  </Field>
+                  <ProductSeriesEditor colors={d.colors} sizes={d.sizes} value={d.series} onChange={(series) => setD({ ...d, series })} />
+                </Card>
+              )}
+
+              {/* §7: discount + festival are READ-ONLY here. The Promotion Center is the only
+                  authority — no local ON/OFF toggle can exist in the Studio (§16). */}
+              <div className="grid gap-3 lg:grid-cols-2">
+                <Card className="space-y-2 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[13px] font-extrabold">تخفیف محصول</p>
+                    <span className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-extrabold",
+                      promoSummary && promoSummary.activeStandaloneRules > 0 ? "bg-emerald-100 text-emerald-800" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>
+                      {promoSummary ? (promoSummary.activeStandaloneRules > 0 ? "فعال" : "بدون تخفیف فعال") : "…"}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
+                    {promoSummary
+                      ? `${promoSummary.activeStandaloneRules.toLocaleString("fa-IR")} قانون تخفیف فعال از مجموع ${promoSummary.configuredStandaloneRules.toLocaleString("fa-IR")} قانون تعریف‌شده، به‌علاوهٔ ${promoSummary.suspendedStandaloneRules.toLocaleString("fa-IR")} قانون که سرور به‌دلیل تداخل متوقف کرده است.`
+                      : editing ? "در حال دریافت وضعیت تخفیف…" : "پس از ذخیرهٔ محصول، وضعیت تخفیف اینجا نمایش داده می‌شود."}
+                  </p>
+                  <Btn variant="soft" icon={<BadgePercent size={14} />} disabled={!editing}
+                    onClick={() => editing && setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>
+                    مدیریت تخفیف
+                  </Btn>
+                </Card>
+                <Card className="space-y-2 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[13px] font-extrabold">جشنواره</p>
+                    <span className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-extrabold",
+                      promoSummary?.assignedFestival?.effective ? "bg-emerald-100 text-emerald-800" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>
+                      {promoSummary ? (promoSummary.assignedFestival ? (promoSummary.assignedFestival.effective ? "عضو و اعمال‌شده" : "عضو ولی اعمال‌نشده") : "عضو نیست") : "…"}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
+                    {promoSummary
+                      ? promoSummary.assignedFestival
+                        ? `این محصول عضو جشنوارهٔ «${promoSummary.assignedFestival.name}» است${promoSummary.assignedFestival.effective ? " و تخفیف آن روی قیمت اعمال می‌شود." : " اما تخفیف آن در حال حاضر روی قیمت اعمال نمی‌شود."}`
+                        : "این محصول عضو هیچ جشنواره‌ای نیست."
+                      : editing ? "در حال دریافت وضعیت جشنواره…" : "پس از ذخیرهٔ محصول، وضعیت جشنواره اینجا نمایش داده می‌شود."}
+                  </p>
+                  <Btn variant="soft" icon={<Sparkles size={14} />} disabled={!editing}
+                    onClick={() => editing && setDiscountFor({ id: editing.id, name: d.name, images: d.images.map((image) => image.url), sku: d.sku } as Product)}>
+                    مدیریت جشنواره
+                  </Btn>
+                </Card>
+              </div>
             </>}
             {/* §4/§15 (corrective): the «موجودی اولیه» step was removed from Product Definition.
                 Opening stock lives ONLY in the canonical «ورود اولیه کالا» WMS document,
@@ -1215,29 +1470,48 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                 </div>
               </div>
             )}
+            {/* §9-§11: ONE merged step — «مشخصات و راهنمای سایز» — with two INDEPENDENT
+                arbitrary tables, with no template binding of any kind: the operator defines the
+                columns and rows this product actually needs. */}
             {sec === "specs" && (
-              <div className="space-y-4">
-                {/* Req 45: fabric/care moved here from basic info — same fields, no data loss. */}
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="جنس پارچه"><Input value={d.fabric} onChange={(v) => setD({ ...d, fabric: v })} /></Field>
-                  <Field label="نگهداری"><Input value={d.care} onChange={(v) => setD({ ...d, care: v })} /></Field>
-                </div>
-                {editing ? (
-                  <ProductSpecsEditor key={editing.id} productId={editing.id} flash={flash} section="specs" />
-                ) : categoryDriven && (catSchema?.specFields.length ?? 0) > 0 ? (
-                  /* §10 (final gate): the CATEGORY schema fields render right here in create mode —
-                     required blanks produce a field-specific Persian error and block publish. */
-                  <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
-                    <p className="mb-1 text-[12.5px] font-extrabold">مشخصات فنی دسته «{d.category}»</p>
-                    <p className="mb-3 text-[11.5px] text-[var(--kv-muted)]">این فیلدها از پروفایل دسته‌بندی می‌آیند و همراه محصول ذخیره می‌شوند؛ موارد ستاره‌دار الزامی‌اند.</p>
+              <div className="space-y-5">
+                <TablePanel
+                  productId={editing?.id ?? null}
+                  kind="specs"
+                  title="مشخصات فنی"
+                  hint="ستون‌ها و سطرهای این جدول را خودتان تعریف می‌کنید؛ هیچ قالب ازپیش‌تعریف‌شده‌ای تحمیل نمی‌شود."
+                  table={d.specsTable}
+                  onChange={(specsTable: DataTable) => setD((cur) => ({ ...cur, specsTable }))}
+                  flash={flash}
+                />
+                <TablePanel
+                  productId={editing?.id ?? null}
+                  kind="sizeGuide"
+                  title="راهنمای سایز"
+                  hint="اندازه‌های هر سایز را در ستون‌های دلخواه وارد کنید. این جدول مستقل از مشخصات فنی است."
+                  table={d.sizeGuideTable}
+                  onChange={(sizeGuideTable: DataTable) => setD((cur) => ({ ...cur, sizeGuideTable }))}
+                  flash={flash}
+                />
+                {/* §11/§27: attributes the CATEGORY itself needs for filtering and for publication.
+                    This is a catalog requirement of the chosen category — not a template, not a
+                    schema binding — and it never blocks the two tables above. */}
+                {categoryDriven && (catSchema?.specFields.length ?? 0) > 0 && (
+                  <Card className="space-y-3 p-4">
+                    <div>
+                      <p className="text-[13px] font-extrabold">ویژگی‌های دسته «{d.category}»</p>
+                      <p className="mt-0.5 text-[11px] leading-5 text-[var(--kv-muted)]">
+                        این ویژگی‌ها برای فیلترشدن محصول در فروشگاه و تکمیل اطلاعات دسته لازم است؛ موارد «الزامی» باید پر شوند.
+                      </p>
+                    </div>
                     <div className="grid gap-3 sm:grid-cols-2">
-                      {catSchema!.specFields.map((field) => {
+                      {(catSchema?.specFields ?? []).map((field) => {
                         const value = d.specs[field.code];
                         const empty = value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
                         const setValue = (next: unknown) => setD((cur) => ({ ...cur, specs: { ...cur.specs, [field.code]: next } }));
                         return (
                           <div key={field.code} className={field.type === "textarea" ? "sm:col-span-2" : undefined}>
-                            <Field label={`${field.label}${field.required ? " *" : ""}${field.unit ? ` (${field.unit})` : ""}`}>
+                            <Field label={`${field.label}${field.unit ? ` (${field.unit})` : ""}`} required={field.required}>
                               {field.type === "single_select" ? (
                                 <Select options={["—", ...field.options.map((o) => o.label)]}
                                   value={field.options.find((o) => o.value === value)?.label ?? "—"}
@@ -1257,7 +1531,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                               ) : field.type === "textarea" ? (
                                 <Textarea rows={3} value={typeof value === "string" ? value : ""} onChange={(v) => setValue(v)} />
                               ) : field.type === "boolean" ? (
-                                <Switch on={value === true} onToggle={() => setValue(value !== true)} />
+                                <SwitchRow label={field.label} on={value === true} onChange={(next) => setValue(next)} />
                               ) : field.type === "number" || field.type === "decimal" || field.type === "measurement" ? (
                                 <Input value={value === null || value === undefined ? "" : String(value)} onChange={(v) => setValue(v === "" ? null : Number(v))} placeholder={field.unit ?? ""} />
                               ) : (
@@ -1269,24 +1543,7 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                         );
                       })}
                     </div>
-                    <p className="mt-3 text-[11px] text-[var(--kv-muted)]">مشخصه اختصاصیِ خارج از قالب (فقط برای همین محصول) پس از ذخیره، از دکمه «ویرایش» همین بخش اضافه می‌شود.</p>
-                  </div>
-                ) : (
-                  <Empty
-                    title="مشخصات ساختاریافته و راهنمای سایز پس از ذخیره"
-                    desc="ویرایشگر مشخصات فنی (بر اساس ساختار دسته‌بندی) و اتصال راهنمای سایز به شناسه محصول روی سرور نیاز دارند؛ بعد از «ذخیره پیش‌نویس» یا «ذخیره و ادامه»، از دکمه «ویرایش» همین بخش فعال می‌شود."
-                  />
-                )}
-              </div>
-            )}
-            {sec === "sizeguide" && (
-              <div className="space-y-4">
-                {editing ? (
-                  <ProductSpecsEditor key={`sg-${editing.id}`} productId={editing.id} flash={flash} section="size-guide" />
-                ) : (
-                  <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
-                    راهنمای سایز پس از «ذخیره» محصول از همین بخش به آن متصل می‌شود؛ ابتدا محصول را ذخیره کنید.
-                  </p>
+                  </Card>
                 )}
               </div>
             )}
@@ -1296,12 +1553,45 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
               <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">عنوان پایه همراه محصول ذخیره می‌شود؛ توضیح متا، Canonical، ایندکس، تصویر شبکه‌های اجتماعی و Schema محصول (قیمت و موجودی زنده از سرور) پس از ذخیره در «استودیو CMS ← سئو ← محصولات» مدیریت می‌شود.</p>
               <p className="text-[12px] text-[var(--kv-muted)]">کانال‌ها: {[d.retailOn && "فروشگاه خرده", d.wholesaleOn && "بازارچه عمده", d.cutout.status === "ready" && "استایل‌بیلدر"].filter(Boolean).join("، ") || "هیچ‌کدام"}</p>
             </>}
-            {/* §30 (final gate): review step — completion checklist with click-to-section links. */}
+            {/* §1-§5/§30: review step — the SERVER's publication checklist plus the ONE
+                explicit «انتشار» action. Nothing here is optimistic: the button asks the server,
+                shows its answer, and re-reads every canonical read model afterwards. */}
             {sec === "review" && (
               <div className="space-y-4">
+                {/* §5/§27: the publication state is always visible, with the reason when it is blocked. */}
+                <div className={cn("rounded-[12px] border px-3 py-2.5",
+                  publicationState === "published" ? "border-emerald-200 bg-emerald-50"
+                    : readiness && !readiness.publishable ? "border-amber-300 bg-amber-50"
+                      : "border-[var(--kv-line)] bg-[var(--kv-surface-2)]")}>
+                  <p className={cn("text-[13px] font-extrabold",
+                    publicationState === "published" ? "text-emerald-800" : readiness && !readiness.publishable ? "text-amber-800" : "text-[var(--kv-ink)]")}>
+                    {publicationState === "published"
+                      ? "این محصول منتشر شده است و در فروشگاه دیده می‌شود."
+                      : readiness === null
+                        ? (editing ? "وضعیت انتشار در حال بررسی است…" : "این محصول هنوز ذخیره نشده است.")
+                        : readiness.publishable
+                          ? "همهٔ موارد لازم برای انتشار کامل است."
+                          : "برای انتشار محصول این موارد را تکمیل کنید:"}
+                  </p>
+                  {publicationState !== "published" && readiness && !readiness.publishable && (
+                    <ul className="mt-2 space-y-1.5">
+                      {readiness.issues.map((issue) => (
+                        <li key={issue.code}>
+                          {/* §4: every issue deep-links to the canonical step that fixes it. */}
+                          <button type="button" onClick={() => setSec(issue.step)}
+                            className="flex min-h-10 w-full items-center justify-between gap-2 rounded-[10px] border border-amber-300 bg-white/70 px-3 py-2 text-right text-[12.5px] font-bold text-amber-900 hover:border-amber-400">
+                            <span>{issue.label}</span>
+                            <span className="shrink-0 text-[11px] text-amber-700">رفتن به بخش مربوط</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 {!editing && issueItems.length > 0 && (
                   <div>
-                    <p className="mb-2 text-[13px] font-extrabold">برای انتشار، این موارد باقی مانده است:</p>
+                    <p className="mb-2 text-[13px] font-extrabold">برای تکمیل تعریف، این موارد باقی مانده است:</p>
                     <ul className="space-y-1.5">
                       {issueItems.map((item, i) => (
                         <li key={`${item.label}-${i}`}>
@@ -1319,6 +1609,23 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                     همه بخش‌ها کامل است — می‌توانید «ذخیره و ادامه» را بزنید و موجودی اولیه را ثبت کنید.
                   </p>
                 )}
+
+                {/* §1/§2/§5: THE publish control. Disabled while in flight and after publication,
+                    so a double submit is impossible and the state is never cosmetic. */}
+                {editing && (
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Btn variant="soft" icon={<RefreshCw size={14} />} disabled={publishing}
+                      onClick={() => { void refreshPublication(editing.id); void loadPromoSummary(editing.id); }}>
+                      بررسی دوبارهٔ آمادگی انتشار
+                    </Btn>
+                    <Btn variant="accent" icon={publishing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                      disabled={publishing || publicationState === "published"}
+                      onClick={() => void publishProduct()}>
+                      {publicationState === "published" ? "منتشر شده" : publishing ? "در حال انتشار…" : "انتشار محصول"}
+                    </Btn>
+                  </div>
+                )}
+
                 <div>
                   <p className="mb-2 text-[13px] font-extrabold">خلاصه محصول</p>
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -1331,9 +1638,12 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                         ? `${editVariants.length.toLocaleString("fa-IR")} واریانت روی سرور`
                         : `${variantMatrix(d.colors.map((c) => c.name), d.sizes).filter(({ color, size }) => !cellOff[variantKey(color, size)]).length.toLocaleString("fa-IR")} از ${(d.colors.length * d.sizes.length).toLocaleString("fa-IR")} خانه ماتریس`],
                       ["تصاویر", `${d.images.length.toLocaleString("fa-IR")} تصویر${d.video ? " · ویدیو دارد" : ""}`],
-                      ["کانال‌ها", [d.retailOn && "فروشگاه خرده", d.wholesaleOn && "بازارچه عمده", d.cutout.status === "ready" && "استایل‌بیلدر"].filter(Boolean).join("، ") || "هیچ‌کدام"],
-                      ["قیمت خرده", d.retailOn && d.retail ? fmtMoney(Number(d.retail)) : "—"],
+                      ["حالت فروش", salesMode === "both" ? "خرده + عمده" : salesMode === "retail" ? "فقط خرده" : "فقط عمده"],
+                      ["قیمت نقدی پایه", d.retailOn && d.retail ? fmtMoney(Number(d.retail)) : "—"],
+                      ["خرید چهارقسطه", !d.retailOn ? "—" : installmentEnabled ? (d.installment && Number(d.installment) > 0 ? fmtMoney(Number(d.installment)) : "فعال — برابر قیمت نقدی") : "غیرفعال"],
                       ["سری‌های عمده", d.wholesaleOn ? `${d.series.filter((s) => s.available).length.toLocaleString("fa-IR")} سری فعال` : "غیرفعال"],
+                      ["مشخصات فنی", `${d.specsTable.columns.length.toLocaleString("fa-IR")} ستون · ${d.specsTable.rows.length.toLocaleString("fa-IR")} سطر`],
+                      ["راهنمای سایز", `${d.sizeGuideTable.columns.length.toLocaleString("fa-IR")} ستون · ${d.sizeGuideTable.rows.length.toLocaleString("fa-IR")} سطر`],
                       ["سئو", d.seoTitle.trim() || d.slug.trim() ? `${d.seoTitle.trim() || d.name.trim()}${d.slug.trim() ? ` · ${d.slug.trim()}` : ""}` : "پیش‌فرض (نام محصول)"],
                     ] as [string, string][]).map(([label, value]) => (
                       <div key={label} className="rounded-[12px] border border-[var(--kv-line)] px-3 py-2">
@@ -1343,10 +1653,11 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
                     ))}
                   </div>
                 </div>
-                {/* §6/§15: the honest next step — definition writes no stock at all. */}
+                {/* §6/§15/§27: the honest next step — definition writes no stock at all. */}
                 <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
                   «ذخیره پیش‌نویس» محصول را با شناسهٔ قطعی و بدون هیچ موجودی ذخیره می‌کند تا بعداً ادامه‌اش بدهید؛
                   «ذخیره و ادامه» بلافاصله «ورود اولیه کالا» را با همین محصول باز می‌کند و موجودی فقط با سند انبار ثبت می‌شود.
+                  انتشار ربطی به موجودی ندارد: محصولِ منتشرشدهٔ بدون موجودی، «ناموجود» نمایش داده می‌شود و همچنان منتشرشده می‌ماند.
                 </p>
               </div>
             )}
@@ -1378,9 +1689,6 @@ export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resu
         {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={async (c) => { if (!isDemo) { try { const existing = ((products.find((x) => x.id === cutFor.id) as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {}); await productsApi.update(cutFor.id, { metadata: { ...existing, cutout: c } }); flash("تصویر استایل‌بیلدر ذخیره شد"); await reload(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); return; } } updateProduct(cutFor.id, { cutout: c }); }} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
       </WorkspaceModal>
       <WorkspaceModal open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه"><CanonicalSeriesLibrary /></WorkspaceModal>
-      <WorkspaceModal open={!!specsFor} onClose={() => setSpecsFor(null)} title={specsFor ? `مشخصات · ${specsFor.name}` : ""}>
-        {specsFor && <ProductSpecsEditor key={specsFor.id} productId={specsFor.id} flash={flash} />}
-      </WorkspaceModal>
       <WorkspaceModal open={!!inventoryFor} onClose={() => setInventoryFor(null)} title={inventoryFor ? `موجودی · ${inventoryFor.name}` : ""}>
         <ProductInventoryDrawer product={inventoryFor} warehouses={warehouses ?? []} onClose={() => setInventoryFor(null)} onFlash={flash} />
       </WorkspaceModal>

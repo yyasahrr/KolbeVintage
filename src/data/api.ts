@@ -14,7 +14,7 @@
  */
 import {
   apiCall, refreshAdminToken, AdminApiError, getApiBaseUrl, setApiBaseUrl,
-  type ApiRequest,
+  type ApiErrorDetails, type ApiRequest,
 } from "./admin-api";
 import type {
   TicketCreate, TicketReply, TicketUpdate, Ticket, TicketBoard,
@@ -116,8 +116,8 @@ export async function authBlobUrl(path: string, init: RequestInit = {}): Promise
     }
   }
   if (!response.ok) {
-    const error = await response.json().catch(() => null) as { message?: string; code?: string } | null;
-    throw new AdminApiError(error?.message ?? `خطای سرویس (${response.status})`, response.status, error?.code);
+    const error = await response.json().catch(() => null) as { message?: string; code?: string; details?: ApiErrorDetails } | null;
+    throw new AdminApiError(error?.message ?? `خطای سرویس (${response.status})`, response.status, error?.code, error?.details);
   }
   return URL.createObjectURL(await response.blob());
 }
@@ -947,7 +947,9 @@ export const specsApi = {
   detachAttribute: (templateId: string, attributeId: string) =>
     apiClient.del<unknown>(`/admin/spec-templates/${templateId}/attributes/${attributeId}`),
   productSpecs: (productId: string) => publicApi.get<unknown>(`/products/${productId}/specs`),
-  saveProductSpecs: (productId: string, payload: { values: { attributeId?: string; attributeCode?: string; variantId?: string | null; value: unknown }[]; addToTemplate?: boolean }) =>
+  /** §12: `table` is the canonical arbitrary 2D representation stored in `products.metadata.tables.specs`.
+      Sending it persists the table WITHOUT touching the legacy `product_spec_values` rows. */
+  saveProductSpecs: (productId: string, payload: { values?: { attributeId?: string; attributeCode?: string; variantId?: string | null; value: unknown }[]; addToTemplate?: boolean; table?: unknown | null }) =>
     apiClient.put<unknown>(`/products/${productId}/specs`, payload),
 };
 
@@ -973,7 +975,10 @@ export const sizeGuidesApi = {
   deleteMedia: (guideId: string, mediaId: string) =>
     apiClient.del<unknown>(`/admin/size-guides/${guideId}/media/${mediaId}`),
   newVersion: (guideId: string) => apiClient.post<unknown>(`/admin/size-guides/${guideId}/version`),
-  productGuide: (productId: string) => publicApi.get<unknown>(`/products/${productId}/size-guide`),
+  productGuide: (productId: string) => apiClient.get<unknown>(`/products/${productId}/size-guide`),
+  /** §12: `table` is stored in `products.metadata.tables.sizeGuide` — independent from the spec table. */
+  saveProductTableGuide: (productId: string, table: unknown | null) =>
+    apiClient.put<unknown>(`/products/${productId}/size-guide`, { table }),
   attachToProduct: (productId: string, payload: { guideId: string; mode: "link" | "detached" }) =>
     apiClient.put<unknown>(`/products/${productId}/size-guide`, payload),
   detachFromProduct: (productId: string) => apiClient.del<unknown>(`/products/${productId}/size-guide`),
@@ -1745,6 +1750,13 @@ export const catalogOpsApi = {
   categorySchema: (category: string) =>
     authFetch<{ category: string; configured: boolean; specFields: Record<string, unknown>[]; sizeGuide: { id: string; name: string } | null; allowedSizes: string[] }>(
       `/catalog/categories/${encodeURIComponent(category)}/schema`),
+  /** §4: canonical publication checklist — the SERVER decides what blocks publication,
+   *  so the Studio never invents requirements and never fails silently. */
+  publicationReadiness: (productId: string) => apiClient.get<{
+    productId: string; status: string; publishable: boolean; stockIndependent: boolean;
+    issues: { code: string; label: string; step: "base" | "variant" | "media" | "cutout" | "price" | "specs" | "seo" | "review" }[];
+  }>(`/admin/products/${productId}/publication-readiness`),
+
 };
 
 export type SupplierOfferRow = Record<string, unknown> & {

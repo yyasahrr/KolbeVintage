@@ -283,6 +283,13 @@ export type ProductMetadata = {
   channels: { retail: boolean; wholesale: boolean; styleBuilder: boolean };
   /** Stock and all pricing/promotion state are stored in their owning WMS/catalog domains, never here. */
   editorialSku: string | null;
+  /** §12: the two arbitrary Product Studio tables (specs + size guide). Stored inside the
+   *  existing `metadata` JSON column — no migration, no parallel spec/size-guide authority.
+   *  Shape: `{ columns: {id,label}[]; rows: {id, values: Record<columnId,string>}[] }`. */
+  tables?: {
+    specs?: { columns: { id: string; label: string }[]; rows: { id: string; values: Record<string, string> }[] };
+    sizeGuide?: { columns: { id: string; label: string }[]; rows: { id: string; values: Record<string, string> }[] };
+  };
 };
 
 export const INSTALLMENT_POLICIES = ["enabled", "disabled", "disabled_when_discounted", "enabled_when_discounted"] as const;
@@ -346,6 +353,8 @@ export type ProductStudioDraft = {
   wholesaleMoq?: string;
   /** Per-variant weight in grams, keyed by `${color}|${size}` (same key as `variantKey`). */
   variantWeights?: Record<string, string>;
+  /** §12: arbitrary specs / size-guide tables defined by the operator (no forced template). */
+  tables?: ProductMetadata["tables"];
 };
 
 /** Toman (UI) → Rial (server). Integer strings only; the backend regex is /^\\d+$/. */
@@ -437,6 +446,9 @@ export function buildProductCreatePayload(draft: ProductStudioDraft): ProductCre
     cutout: draft.cutout && draft.cutout.status !== "none" ? draft.cutout : null,
     channels: { retail: draft.retailOn, wholesale: draft.wholesaleOn, styleBuilder: draft.cutout?.status === "ready" },
     editorialSku: draft.editorialSku?.trim() || null,
+    /* §12: the operator-defined tables travel with the create payload, so a NEW product's
+       specs and size guide are persisted by the same canonical write as the product itself. */
+    ...(draft.tables ? { tables: draft.tables } : {}),
   };
 
   const genderCode = draft.genderCode?.trim() || undefined;

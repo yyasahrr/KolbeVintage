@@ -46,7 +46,7 @@ export function ProductSeriesEditor({ colors, sizes, value, onChange }: {
         </select></Field>
         <Field label="حداقل سفارش (سری)"><Input value={String(series.moqSeries)} onChange={(v) => patch(series.id, { moqSeries: Number(v.replace(/\D/g, "")) || 0 })} /></Field>
       </div>
-      <Segmented options={[{ v: "series_total", label: "قیمت کل سری" }, { v: "component_sum", label: "جمع قیمت اجزا" }]}
+      <Segmented options={[{ v: "series_total", label: "قیمت کل سری" }, { v: "component_sum", label: "محاسبه قیمت از اجزای سری" }]}
         value={series.pricingMode ?? "series_total"} onChange={(pricingMode) => patch(series.id, { pricingMode })} />
       <div className="overflow-x-auto"><table className="kv-table w-full min-w-[300px]"><thead><tr><th>سایز</th><th>تعداد در هر سری</th>{series.pricingMode === "component_sum" && <th>قیمت هر تکه (تومان)</th>}</tr></thead><tbody>
         {[...new Set([...sizes, ...Object.keys(series.composition)])].map((size) => <tr key={size}><td>{size}</td><td>

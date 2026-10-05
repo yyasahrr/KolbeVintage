@@ -25,8 +25,15 @@ export const getApiBaseUrl = () => apiBaseUrl;
 
 export type ApiRequest = <T>(path: string, init?: RequestInit) => Promise<T>;
 
+/** §4: structured failure details forwarded by the API (e.g. the publication issue list). */
+export type ApiErrorDetails = {
+  issues?: { code: string; label: string; step: string }[];
+  labels?: string[];
+  [key: string]: unknown;
+} | undefined;
+
 export class AdminApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
+  constructor(message: string, readonly status: number, readonly code?: string, readonly details?: ApiErrorDetails) { super(message); }
 }
 
 /** JSON string bodies get a Content-Type header; FormData and friends must not. */
@@ -43,8 +50,8 @@ export async function apiCall<T>(path: string, init: RequestInit = {}, token?: s
     },
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => null) as { message?: string; code?: string } | null;
-    throw new AdminApiError(error?.message ?? `خطای سرویس (${response.status})`, response.status, error?.code);
+    const error = await response.json().catch(() => null) as { message?: string; code?: string; details?: ApiErrorDetails } | null;
+    throw new AdminApiError(error?.message ?? `خطای سرویس (${response.status})`, response.status, error?.code, error?.details);
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }

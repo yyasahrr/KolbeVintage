@@ -1,5 +1,5 @@
-import { ReactNode, useId } from "react";
-import { Check, ChevronLeft, Minus, Plus, Search, X } from "lucide-react";
+import { ReactNode, useId, useEffect, useState } from "react";
+import { Check, ChevronLeft, ImageOff, Minus, Plus, Search, X } from "lucide-react";
 import { cn } from "../utils/cn";
 import { useDialogFocus } from "./focus-trap";
 
@@ -96,10 +96,14 @@ export function Tag({ children, active, onClick }: { children: ReactNode; active
 }
 
 /* ---------- Inputs ---------- */
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
+export function Field({ label, children, hint, required }: { label: string; children: ReactNode; hint?: string; required?: boolean }) {
   return (
     <label className="block">
-      <span className="mb-2 block text-[13px] font-semibold text-[var(--kv-ink-2)]">{label}</span>
+      <span className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-[var(--kv-ink-2)]">
+        <span>{label}</span>
+        {/* §27: mandatory fields are visible up-front, not discovered by failing to save. */}
+        {required && <span className="rounded-full bg-[var(--kv-danger)]/10 px-1.5 py-0.5 text-[9.5px] font-extrabold text-[var(--kv-danger)]">الزامی</span>}
+      </span>
       {children}
       {hint && <span className="mt-1.5 block text-xs text-[var(--kv-muted)]">{hint}</span>}
     </label>
@@ -147,6 +151,41 @@ export function Switch({ on, onToggle, label }: { on: boolean; onToggle: () => v
       <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all", on ? "right-[22px]" : "right-0.5")} />
     </button>
   );
+}
+
+/** §14: a switch with a real 44px-tall hit area, a business label and a hint — the whole row
+ *  toggles, and the label is clickable, so the operator never has to hit a 24px pill. */
+export function SwitchRow({ on, onChange, label, hint, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string; disabled?: boolean }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled}
+      onClick={() => onChange(!on)}
+      className="flex w-full min-h-11 items-center justify-between gap-3 rounded-[12px] border border-[var(--kv-line)] px-3 py-2 text-right transition-colors hover:bg-[var(--kv-surface-2)] disabled:opacity-60">
+      <span className="min-w-0">
+        <span className="block text-[12.5px] font-bold">{label}</span>
+        {hint && <span className="mt-0.5 block text-[10.5px] leading-4 text-[var(--kv-muted)]">{hint}</span>}
+      </span>
+      <span className={cn("relative h-6 w-11 shrink-0 rounded-full transition-colors", on ? "bg-[var(--kv-success)]" : "bg-[var(--kv-surface-3)]")}>
+        <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all", on ? "right-[22px]" : "right-0.5")} />
+      </span>
+    </button>
+  );
+}
+
+/** §15: a deliberate product-image placeholder — never a browser broken-image glyph.
+ *  The element keeps its caller-provided size/aspect class in both states, so a missing or
+ *  unreachable file can never distort a product row or a media grid. */
+export function SafeImg({ src, alt, className, fallbackClassName }: { src?: string | null; alt: string; className?: string; fallbackClassName?: string }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => { setBroken(false); }, [src]);
+  if (broken || !src) {
+    return (
+      <span role="img" aria-label={`${alt} — تصویر در دسترس نیست`}
+        className={cn("flex items-center justify-center bg-[var(--kv-surface-2)] text-[var(--kv-faint)]", className, fallbackClassName)}>
+        <ImageOff size={16} />
+      </span>
+    );
+  }
+  return <img src={src} alt={alt} className={className} loading="lazy" decoding="async" onError={() => setBroken(true)} />;
 }
 
 export function Stepper({ value, onChange, min = 1 }: { value: number; onChange: (v: number) => void; min?: number }) {

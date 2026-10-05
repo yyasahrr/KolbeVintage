@@ -19,7 +19,7 @@ import {
   BadgePercent, Boxes, PackagePlus, PartyPopper, Pencil, Plus, RefreshCw, ScanEye, Warehouse,
 } from "lucide-react";
 import {
-  Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, WorkspaceModal,
+  Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, SafeImg, SearchBox, Segmented, WorkspaceModal,
 } from "./primitives";
 import { DiscountManager } from "./discount-manager";
 import { Product360 } from "./product-360";
@@ -135,6 +135,9 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
             .catch(() => flash("محصول ذخیره شد؛ برای ادامه، آن را از فهرست پیش‌نویس‌ها باز کنید."));
         }}
         onDraftSaved={() => { setScreen({ k: "list" }); load(); }}
+        /** §2/§5: an explicit publish reloads the hub list so the row, the status badge and the
+            «منتشرشده» / «پیش‌نویس‌ها» filters all reflect the server in the same click. */
+        onPublished={(productId) => { void productsApi.adminDetail(productId); load(); }}
       />
     </div>
   );
@@ -235,9 +238,10 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms }: {
                       <td>
                         <div className="flex items-center gap-2.5">
                           <span className="flex h-10 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface-2)]">
-                            {p.cover_file_id
-                              ? <img src={`/api/v1/product-media/${p.cover_file_id}`} alt="" className="h-full w-full object-cover" />
-                              : <PackagePlus size={14} className="text-[var(--kv-faint)]" />}
+                            {/* §15: a missing/unreachable cover must never show a broken-image glyph. */}
+                            <SafeImg src={p.cover_file_id ? `/api/v1/product-media/${p.cover_file_id}` : null}
+                              alt={`تصویر ${p.name}`} className="h-full w-full object-cover"
+                              fallbackClassName="flex h-full w-full" />
                           </span>
                           <span className="min-w-0">
                             <b className="block max-w-[220px] truncate">{p.name}</b>

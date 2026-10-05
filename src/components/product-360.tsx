@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { authBlobUrl, catalogOpsApi, productsApi, promotionRulesApi, seriesTemplatesApi, sizeGuidesApi, specsApi } from "../data/api";
 import { fmtToman, INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, normalizeSizeGuide, readProductSpecs } from "../data/contracts";
 import type { InstallmentPolicy, ProductSpecs, SizeGuide } from "../data/contracts";
-import { Btn, Card, Empty, ErrorState, LoadingState, Segmented, WorkspaceModal } from "./primitives";
+import { Btn, Card, Empty, ErrorState, LoadingState, SafeImg, Segmented, WorkspaceModal } from "./primitives";
 import { ProductInventoryDrawer } from "./product-inventory";
 
 type Detail = Awaited<ReturnType<typeof productsApi.adminDetail>>;
@@ -191,7 +191,7 @@ export function Product360({ product, onClose, onPricing }: {
         </Card> : <Empty title="راهنمای سایز متصل نیست" desc="راهنمای اندازه را پس از ذخیره در استودیوی محصول به این محصول متصل کنید." />)}
 
         {tab === "media" && (data.images.length || data.videoUrl ? <div className="space-y-4">
-          {data.images.length > 0 && <div className="grid grid-cols-2 gap-4 md:grid-cols-4">{data.images.map((src, index) => <img key={`${src}-${index}`} src={src} alt={`${product.name} — تصویر ${fa(index + 1)}`} className="aspect-[3/4] w-full rounded-xl object-cover" />)}</div>}
+          {data.images.length > 0 && <div className="grid grid-cols-2 gap-4 md:grid-cols-4">{data.images.map((src, index) => <SafeImg key={`${src}-${index}`} src={src} alt={`${product.name} — تصویر ${fa(index + 1)}`} className="aspect-[3/4] w-full rounded-xl object-cover" />)}</div>}
           {data.videoUrl && <video src={data.videoUrl} controls className="max-h-[420px] w-full rounded-xl bg-black" aria-label={`ویدیوی ${product.name}`} />}
         </div> : <Empty title="رسانه‌ای ثبت نشده" desc="تصاویر و ویدیو را در استودیوی محصول بارگذاری کنید." />)}
 
