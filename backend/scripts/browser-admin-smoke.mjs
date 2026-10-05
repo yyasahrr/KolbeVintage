@@ -623,7 +623,7 @@ try {
     return Boolean(orange && cream && [...document.querySelectorAll('button')].some((button) => button.innerText.trim() === 'مشکی' && button.getAttribute('aria-pressed') === 'true'));
   });
   await clickByText('قیمت‌گذاری');
-  const priceSet = await setInput('قیمت پایه خرده — نقدی (تومان)', '100000');
+  const priceSet = await setInput('قیمت نقدی پایه (تومان)', '100000');
   await clickByText('تصویر و ویدیو');
   const tinyProductImage = join(tmpdir(), 'kolbe-browser-smoke-product.png');
   writeFileSync(tinyProductImage, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7WQAAAAASUVORK5CYII=', 'base64'));
@@ -670,6 +670,56 @@ try {
       `status=${detailAfterSkip.body.status} setup=${detailAfterSkip.body.inventory_setup}`);
   }
 
+  /* §18 PUBLISH-01 — the release-blocking lifecycle defect, end to end in the browser:
+     complete the WMS opening receipt, verify the product is STILL draft, then publish
+     explicitly from «بازبینی و انتشار» and verify the state actually persisted. */
+  if (studioProductId) {
+    const setupAgain = await clickByText('ادامه تکمیل محصول');
+    await waitForText(`ورود اولیه کالا — ${studioProductName}`, 60);
+    const receiptConfirmed = setupAgain && await clickByText('تأیید و ثبت سند افتتاحیه');
+    await sleep(2500);
+    const afterReceipt = await adminApi(`/admin/products/${studioProductId}`);
+    check('§18/§B the WMS opening receipt does NOT auto-publish (still پیش‌نویس)',
+      receiptConfirmed && afterReceipt.body.status === 'draft' && afterReceipt.body.inventory_setup === 'configured',
+      `status=${afterReceipt.body.status} setup=${afterReceipt.body.inventory_setup}`);
+
+    await clickByText('همه محصولات');
+    await waitForText(studioProductName, 60);
+    const reopened = await page.evaluate((name) => {
+      const row = [...document.querySelectorAll('tbody tr')].find((candidate) => candidate.innerText.includes(name));
+      const button = [...(row?.querySelectorAll('button') ?? [])].find((candidate) => candidate.innerText.includes('ویرایش'));
+      button?.click();
+      return Boolean(button);
+    }, studioProductName);
+    check('§18 reopening a completed product uses the same canonical Studio', reopened && await waitForText('ویرایش محصول ·', 40));
+    await clickByText('بازبینی و انتشار');
+    await sleep(800);
+    const blockedBefore = (await text()).includes('برای انتشار محصول این موارد را تکمیل کنید:');
+    const publishClicked = await clickByText('انتشار محصول');
+    await sleep(2500);
+    const afterPublish = await adminApi(`/admin/products/${studioProductId}`);
+    check('§18/§C explicit «انتشار محصول» publishes the product server-side',
+      publishClicked && afterPublish.body.status === 'published',
+      `blockedChecklist=${blockedBefore} status=${afterPublish.body.status}`);
+    check('§18/§E publishing a fully configured product shows success feedback',
+      await waitForText('محصول منتشر شد', 30));
+    await clickByText('بستن');
+    await sleep(800);
+    const publishedList = await adminApi(`/admin/products?view=published&owner=kolbe&limit=200`);
+    const draftList = await adminApi(`/admin/products?view=drafts&owner=kolbe&limit=200`);
+    check('§18/§D the published product appears under «منتشرشده» and left «پیش‌نویس‌ها»',
+      publishedList.body.items.some((item) => item.id === studioProductId)
+        && !draftList.body.items.some((item) => item.id === studioProductId));
+    const catalogueAfterPublish = await adminApi('/products?limit=200');
+    check('§2 the storefront read model reflects the new publication state',
+      catalogueAfterPublish.body.items.some((item) => item.id === studioProductId));
+    /* hard reload: state must survive (no optimistic-only success) */
+    await page.reload({ waitUntil: 'networkidle2' });
+    await sleep(1500);
+    const afterReload = await adminApi(`/admin/products/${studioProductId}`);
+    check('§18/§D the published state survives a hard browser refresh', afterReload.body.status === 'published');
+  }
+
   // The Product Studio row opens the exact same product pricing workspace as Product 360.
   await clickByText('همه محصولات');
   const studioListReady = await waitForText(studioProductName, 60);
@@ -711,6 +761,23 @@ try {
   check('Product 360 is a centered accessible WorkspaceModal', Boolean(dialogBox)
     && Math.abs((dialogBox.x + dialogBox.width / 2) - dialogBox.viewport / 2) < 3
     && Boolean(dialogBox.title));
+  /* §26-G/§26-I: the Studio must offer no local promotion authority and must expose the
+     canonical Sales Mode + merged specs step (static DOM truth after the flows above). */
+  await clickByText('همه محصولات');
+  await clickByText('افزودن محصول');
+  await sleep(1200);
+  const freshStudio = await text();
+  check('§26-I the fresh Studio exposes the canonical Sales Mode and the merged specs step',
+    freshStudio.includes('حالت فروش') && freshStudio.includes('فقط خرده') && freshStudio.includes('فقط عمده') && freshStudio.includes('خرده + عمده')
+    && freshStudio.includes('مشخصات و راهنمای سایز'));
+  check('§26-G the fresh Studio shows no local discount/festival authority toggle',
+    await page.evaluate(() => ![...document.querySelectorAll('[role="switch"]')].some((el) => /تخفیف|جشنواره/.test(el.getAttribute('aria-label') ?? ''))));
+  check('§11 the specs step demands no template or category binding',
+    !/قالب مشخصات|اتصال زنده|کپی ثابت/.test(freshStudio));
+  await clickByText('انصراف');
+  await sleep(800);
+  if ((await text()).includes('تغییرات ذخیره‌نشده')) { await clickByText('خروج بدون ذخیره'); await sleep(600); }
+
   const product360Tabs = ['نمای کلی', 'واریانت‌ها', 'مشخصات فنی', 'راهنمای سایز', 'رسانه', 'قیمت‌گذاری', 'عمده و سری‌ها', 'موجودی', 'SEO', 'تاریخچه'];
   check('Product 360 exposes all ten useful read areas', product360Tabs.every((label) => body.includes(label)));
   await clickInDialogByText('موجودی'); await sleep(1800); body = await text();

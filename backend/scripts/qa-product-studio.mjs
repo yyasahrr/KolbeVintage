@@ -135,6 +135,11 @@ const typeIntoField = async (labelNeedle, value, kind = 'input') => {
   await el.click({ clickCount: 3 }); await el.type(value);
   return true;
 };
+/** §6: toggles a whole-row switch (44px hit area) by its Persian label. */
+const clickSwitchRow = (label) => page.evaluate((needle) => {
+  const el = [...document.querySelectorAll('[role="switch"]')].find((b) => (b.getAttribute('aria-label') ?? '').includes(needle));
+  if (!el) return false; el.click(); return true;
+}, label);
 /** React-safe native <select> set-by-option-text. */
 const selectOption = (optionText) => page.evaluate((t) => {
   for (const sel of document.querySelectorAll('select')) {
@@ -227,37 +232,44 @@ try {
   });
   check('§9 no «نوع محصول» field in create mode', !probe.typeField);
   check('§4 no «موجودی اولیه» step / no warehouse selector', !probe.stockStep && !probe.warehouseField);
-  check('§6 all capability sections present incl. review', ['اطلاعات پایه', 'رنگ و سایز', 'تصویر و ویدیو', 'تصویر استایل‌بیلدر', 'قیمت‌گذاری', 'سری‌های عمده', 'مشخصات فنی', 'راهنمای سایز', 'سئو و کانال‌ها', 'بازبینی و انتشار'].every((s) => probe.steps.some((x) => x.includes(s))), probe.steps.join('|'));
+  /* §13: the Studio has exactly these eight steps — «سری‌های عمده» folded into «قیمت‌گذاری»
+     and «مشخصات فنی» + «راهنمای سایز» merged into one step. */
+  check('§13 all canonical steps present incl. review (and no orphaned step)',
+    ['اطلاعات پایه', 'رنگ و سایز', 'تصویر و ویدیو', 'تصویر استایل‌بیلدر', 'قیمت‌گذاری', 'مشخصات و راهنمای سایز', 'سئو و کانال‌ها', 'بازبینی و انتشار'].every((s) => probe.steps.some((x) => x.includes(s)))
+    && !probe.steps.some((x) => x.includes('سری‌های عمده')) && probe.steps.length === 8, probe.steps.join('|'));
   const saleModeLabels = await page.evaluate(() => [...document.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim()));
-  check('§6 sales-mode selector exposes retail, wholesale and both', ['فقط خرده', 'فقط عمده', 'خرده + عمده'].every((label) => saleModeLabels.includes(label)), saleModeLabels.filter((label) => ['فقط خرده', 'فقط عمده', 'خرده + عمده'].includes(label)).join('|'));
+  check('§6 the ONE Sales Mode control exposes retail, wholesale and both (in «اطلاعات پایه»)',
+    ['فقط خرده', 'فقط عمده', 'خرده + عمده'].every((label) => saleModeLabels.some((text) => text.startsWith(label))),
+    saleModeLabels.filter((label) => ['فقط خرده', 'فقط عمده', 'خرده + عمده'].includes(label)).join('|'));
+  check('§6 the pricing step only REFLECTS the mode (one authority, no duplicate control)',
+    await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('button')].filter((b) => /^(فقط خرده|فقط عمده|خرده \+ عمده)/.test((b.textContent ?? '').trim()));
+      return buttons.length === 3;
+    }), 'exactly three mode buttons');
   await clickText('button', 'فقط خرده');
   await sleep(250);
-  check('§6 retail-only mode hides wholesale series step', !(await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="بخش‌های تعریف محصول"] button')].some((b) => (b.textContent ?? '').includes('سری‌های عمده')))));
   await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'قیمت‌گذاری');
-  const retailOnlyFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
-  check('§6 retail-only shows retail price without wholesale MOQ', retailOnlyFields.some((s) => s.includes('قیمت پایه خرده')) && !retailOnlyFields.some((s) => s.includes('حداقل سفارش عمده')));
+  const retailOnlyFields = await page.evaluate(() => [...document.querySelectorAll('label span, p')].map((s) => s.textContent ?? ''));
+  check('§6 retail-only shows «فروش خرده» and hides every wholesale control',
+    retailOnlyFields.some((s) => s.includes('فروش خرده')) && !retailOnlyFields.some((s) => s.includes('فروش عمده'))
+    && !retailOnlyFields.some((s) => s.includes('حداقل سفارش عمده')), retailOnlyFields.filter((t) => t.includes('فروش')).join('|'));
   await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'اطلاعات پایه');
   await clickText('button', 'فقط عمده');
   await sleep(250);
-  const wholesaleSteps = await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="بخش‌های تعریف محصول"] button')].map((b) => b.textContent ?? '').join('|'));
-  check('§6 wholesale-only mode keeps series step', wholesaleSteps.includes('سری‌های عمده'));
   await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'قیمت‌گذاری');
-  const wholesaleOnlyFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
-  check('§6 wholesale-only hides retail price', !wholesaleOnlyFields.some((s) => s.includes('قیمت پایه خرده')));
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'سری‌های عمده');
-  const wholesaleOnlySeriesFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
-  check('§6 wholesale-only shows MOQ and series controls', wholesaleOnlySeriesFields.some((s) => s.includes('حداقل سفارش عمده')));
+  const wholesaleOnlyFields = await page.evaluate(() => [...document.querySelectorAll('label span, p')].map((s) => s.textContent ?? ''));
+  check('§6 wholesale-only shows «فروش عمده» and hides retail pricing',
+    wholesaleOnlyFields.some((s) => s.includes('فروش عمده')) && !wholesaleOnlyFields.some((s) => s.includes('قیمت نقدی پایه')));
+  check('§6 wholesale-only shows MOQ and the canonical Series pricing controls',
+    wholesaleOnlyFields.some((s) => s.includes('حداقل سفارش عمده')) && (await text()).includes('قیمت کل سری')
+    && (await text()).includes('محاسبه قیمت از اجزای سری'));
   await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'اطلاعات پایه');
   await clickText('button', 'خرده + عمده');
   await sleep(250);
-  const bothSteps = await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="بخش‌های تعریف محصول"] button')].map((b) => b.textContent ?? '').join('|'));
-  check('§6 both-channel mode restores retail pricing and wholesale-series steps', bothSteps.includes('قیمت‌گذاری') && bothSteps.includes('سری‌های عمده'));
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'قیمت‌گذاری');
-  const bothPriceFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
-  check('§6 both-channel mode shows retail price controls', bothPriceFields.some((s) => s.includes('قیمت پایه خرده')));
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'سری‌های عمده');
-  const bothSeriesFields = await page.evaluate(() => [...document.querySelectorAll('label span')].map((s) => s.textContent ?? ''));
-  check('§6 both-channel mode also shows wholesale MOQ and series controls', bothSeriesFields.some((s) => s.includes('حداقل سفارش عمده')));
+  const bothPriceFields = await page.evaluate(() => [...document.querySelectorAll('label span, p')].map((s) => s.textContent ?? ''));
+  check('§6 the pricing step shows the reflected Sales Mode line', (await text()).includes('حالت فروش:'));
+  check('§6 both-channel mode shows retail and wholesale pricing in ONE step',
+    bothPriceFields.some((s) => s.includes('فروش خرده')) && bothPriceFields.some((s) => s.includes('فروش عمده')));
   await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'اطلاعات پایه');
 
   /* ---------- §7/§8: hierarchical picker + schema loads live ---------- */
@@ -281,15 +293,16 @@ try {
   check('§7 category search filters options', catSearchTyped && filteredCount >= 2 && filteredCount <= 5, `options after filter=${filteredCount}`);
   check('category selected', await selectOption(CATEGORY));
   check('§8 category schema loads WITHOUT reload (banner + sizes)', await waitText('دسته‌بندی منبع ساختار است', 25) && (await text()).includes('S، M، L'));
-  check('§8 default size guide visible from profile', (await text()).includes(`راهنمای سایز پیراهن QA${ts}`));
+  check('§8 the merged step exposes both tables from the start', (await text()).includes('مشخصات و راهنمای سایز'));
   const noUuidInPicker = await page.evaluate(() => ![...document.querySelectorAll('select option')].some((o) => /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/.test(o.textContent ?? '')));
   check('§7 no UUID/slug leakage in category picker', noUuidInPicker);
   await typeIntoField('توضیحات', 'پیراهن کلاسیک تست نهایی استودیو.', 'textarea');
 
   /* ---------- §10: required category spec blocks with a field-specific Persian error ---------- */
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'مشخصات فنی');
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'مشخصات و راهنمای سایز');
   await sleep(700);
-  check('§10 category spec form rendered in create mode', (await text()).includes(`مشخصات فنی دسته «${CATEGORY}»`));
+  check('§10 category attributes rendered in the merged step (business copy, no template binding)',
+    (await text()).includes(`ویژگی‌های دسته «${CATEGORY}»`) && !(await text()).includes('اتصال زنده'));
   check('§10 required blank → «مشخصه «جنس» الزامی است»', (await text()).includes('مشخصه «جنس» الزامی است'));
   await shot('02-specs-required-error');
   /* review step lists the same issue and jumps back (§30) */
@@ -298,7 +311,7 @@ try {
   check('§30 review checklist lists the missing spec', (await text()).includes('مشخصه «جنس» الزامی است'));
   await clickText('ul button', 'مشخصه «جنس»');
   await sleep(600);
-  const jumped = await page.evaluate(() => document.body.innerText.includes('مشخصات فنی دسته'));
+  const jumped = await page.evaluate(() => document.body.innerText.includes('ویژگی‌های دسته'));
   check('§30 checklist item click jumps to its section', jumped);
   check('§10 filling «جنس» passes', await typeIntoField('جنس', 'نخ پنبه ۱۰۰٪'));
   await sleep(400);
@@ -406,16 +419,31 @@ try {
   /* ---------- §22/§23: pricing + promotion boundary ---------- */
   await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'قیمت‌گذاری');
   await sleep(700);
-  check('§22 cash price typed (toman)', await typeIntoField('قیمت پایه خرده', '450000'));
-  await typeIntoField('قیمت مخصوص چهارقسطه', '480000');
-  check('§23 promotion boundary text (engine-only discounts)', (await text()).includes('فقط از موتور پروموشن/جشنواره اعمال می‌شود'));
+  check('§22 cash price typed (toman)', await typeIntoField('قیمت نقدی پایه', '450000'));
+  check('§6 installment is ON by default and the installment price becomes editable',
+    await typeIntoField('قیمت پایه چهارقسطه', '480000'));
+  check('§6 installment can be switched OFF (explicit disable, not an empty field)',
+    await clickSwitchRow('خرید چهارقسطه') && !(await text()).includes('قیمت پایه چهارقسطه (تومان)'));
+  await clickSwitchRow('خرید چهارقسطه');
   const noDiscountInput = await page.evaluate(() => ![...document.querySelectorAll('label span')].some((s) => (s.textContent ?? '').includes('درصد تخفیف')));
   check('§23 studio stores NO discount rules', noDiscountInput);
+  /* §7: promotion/festival are read-only summaries that deep-link to the canonical surfaces. */
+  const priceBody = await text();
+  check('§7 discount + festival cards are read-only authorities',
+    priceBody.includes('تخفیف محصول') && priceBody.includes('جشنواره') && priceBody.includes('مدیریت تخفیف') && priceBody.includes('مدیریت جشنواره'));
+  check('§7 no local discount/festival ON-OFF toggle exists in the Studio',
+    await page.evaluate(() => ![...document.querySelectorAll('[role="switch"]')].some((el) => /تخفیف|جشنواره/.test(el.getAttribute('aria-label') ?? ''))),
+    'no promotion switch');
+  check('§8 pricing uses the workspace width (no empty reserved column)',
+    await page.evaluate(() => {
+      const grid = [...document.querySelectorAll('.grid')].find((g) => g.textContent?.includes('تخفیف محصول') && g.textContent?.includes('جشنواره'));
+      if (!grid) return false;
+      const cells = [...grid.children].map((c) => c.getBoundingClientRect().width);
+      return cells.length === 2 && cells.every((w) => w > 120) && Math.abs(cells[0] - cells[1]) < 24;
+    }), 'two balanced cards');
 
   /* ---------- §24-§26: wholesale ON + series templates + MOQ ---------- */
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'سری‌های عمده');
-  await sleep(700);
-  check('§24 wholesale channel is ON for this product', (await text()).includes('حداقل سفارش عمده'));
+  check('§6 the wholesale Series editor lives INSIDE «قیمت‌گذاری»', (await text()).includes('حداقل سفارش عمده'));
   await typeIntoField('حداقل سفارش عمده', '12');
   /* Configure two actual per-product recipes in Product Studio. Saving the product
      atomically writes these as canonical series_templates + series_template_items. */
@@ -501,7 +529,7 @@ try {
   check('§25 Series A and B names, colors, compositions, MOQ and prices are visible in editor',
     seriesEditorSnapshot.length === 2 && seriesEditorSnapshot.some((row) => row.name === `سری A QA${ts}` && row.color === 'مشکی' && row.moq === '2' && row.price === '7400000' && row.composition.S === '1' && row.composition.M === '2' && row.composition.L === '2')
       && seriesEditorSnapshot.some((row) => row.name === `سری B QA${ts}` && row.color === CREAM && row.moq === '1' && row.price === '4500000' && row.composition.S === '0' && row.composition.M === '1' && row.composition.L === '2'), JSON.stringify(seriesEditorSnapshot));
-  check('§25 both series priced and available', !(await text()).includes('برای انتشار تکمیل کنید: سری‌های عمده'));
+  check('§25 both series priced and available', !(await text()).includes('برای تکمیل تعریف، این موارد باقی مانده است'));
   check('§26 max wholesale order: NOT IMPLEMENTED (recorded honestly)', true, 'فیلد سقف سفارش عمده در سیستم وجود ندارد — جعل نشد');
   await shot('04-series');
 
@@ -656,66 +684,184 @@ try {
     cashPriceRial: '1000000', specifications: { [`qa_jens_${ts}`]: 'نخ' }, variants: [{ color: 'مشکی', size: 'M' }], retailEnabled: true }, SUPPLIER);
   check('§44 supplier retail-channel create → 403', supRetail.status === 403, `status=${supRetail.status}`);
 
-  /* §21: size-guide modes — link (existing) on the throwaway, detached copy via UI later */
+  /* §12 backward compatibility: the legacy shared-guide model still answers for products that
+     use it. The Studio no longer exposes it, but nothing that already exists was destroyed. */
   const linkAttach = await api('PUT', `/products/${throwaway.json?.id}/size-guide`, { guideId: guide.json.id, mode: 'link' });
   const linkRead = await api('GET', `/products/${throwaway.json?.id}/size-guide`);
-  check('§21 mode «اتصال زنده» to an existing guide works', linkAttach.status === 200 || linkAttach.status === 201, `attach=${linkAttach.status}`);
-  check('§21 attached guide readable with rows', linkRead.status === 200 && (linkRead.json?.guide?.rows ?? []).length === 3, `rows=${(linkRead.json?.guide?.rows ?? []).length}`);
+  check('§12 legacy shared size-guide link still works server-side (compatibility kept)', linkAttach.status === 200 || linkAttach.status === 201, `attach=${linkAttach.status}`);
+  check('§12 legacy linked guide still readable with rows', linkRead.status === 200 && (linkRead.json?.guide?.rows ?? []).length === 3, `rows=${(linkRead.json?.guide?.rows ?? []).length}`);
 
-  /* ================= PHASE F — §11 custom product-specific spec + §21 detached guide (UI) ================= */
-  await gotoProducts();
-  const searchBox = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
-  if (searchBox) { await searchBox.click({ clickCount: 3 }); await searchBox.type(NAME); await sleep(900); }
-  await clickText('button', 'ویرایش');
-  check('§11 edit studio opened from server data', await waitText('ویرایش محصول ·', 25));
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'مشخصات فنی');
-  await sleep(1200);
-  check('§11 product specs section opened', await waitText('افزودن مشخصه اختصاصی', 20));
-  await clickText('button', 'افزودن مشخصه اختصاصی');
-  await sleep(600);
-  await selectOption('ساخت مشخصه جدید…');
-  await sleep(500);
-  await typeIntoField('نام', 'نوع شست‌وشو');
-  await typeIntoField('کد انگلیسی', `qa_wash_${ts}`);
-  await clickText('button', 'ساخت مشخصه');
-  check('§11 off-template attribute created', await waitText('مقدار — نوع شست‌وشو', 20));
-  await typeIntoField('مقدار — نوع شست‌وشو', 'فقط خشک‌شویی');
-  check('§11 scope «فقط این محصول» offered', (await text()).includes('فقط این محصول'));
-  await clickText('button', 'ذخیره مشخصه اختصاصی');
-  await sleep(1200);
-  const washVal = (await db.query(
-    `SELECT v.value_text FROM product_spec_values v JOIN spec_attributes a ON a.id = v.attribute_id WHERE v.product_id = $1 AND a.code = $2`,
-    [PRODUCT_ID, `qa_wash_${ts}`])).rows[0];
-  check('§11 custom spec persisted for THIS product', washVal?.value_text === 'فقط خشک‌شویی', washVal?.value_text);
-  const inTemplate = await count(
-    `SELECT count(*)::int AS n FROM spec_template_attributes ta JOIN spec_attributes a ON a.id = ta.attribute_id WHERE a.code = $1`, [`qa_wash_${ts}`]);
-  check('§11 custom spec did NOT enter any global template', inTemplate === 0, `template rows=${inTemplate}`);
-  /* §21 mode 3: product-specific DETACHED copy through the UI */
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'راهنمای سایز');
-  await sleep(1000);
-  await selectOption(`راهنمای سایز پیراهن QA${ts}`);
-  await selectOption('کپی ثابت');
-  await clickText('button', 'اتصال');
-  check('§21 detached (product-specific) copy attached via UI', await waitText('کپی ثابت', 15));
-  /* the attach handler refetches the guide async — wait for the table, not just the flash */
-  const tableShown = await waitText('دور سینه', 25);
-  check('§21 flexible table rendered (دور سینه + 96)', tableShown && /96|۹۶/.test(await text()));
+  /* ================= PHASE F — §9-§12 dynamic tables + §1-§5 publication (UI) ================= */
+  const openStudio = async () => {
+    await gotoProducts();
+    const sb = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
+    if (sb) { await sb.click({ clickCount: 3 }); await sb.type(NAME); await sleep(900); }
+    await clickText('button', 'ویرایش');
+    return waitText('ویرایش محصول ·', 25);
+  };
+  check('§9/§11 the merged step opens with both independent tables', await openStudio());
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'مشخصات و راهنمای سایز');
+  await sleep(900);
+  const mergedBody = await text();
+  check('§13 one navigation step only — no separate «راهنمای سایز» step exists',
+    mergedBody.includes('مشخصات فنی') && mergedBody.includes('راهنمای سایز')
+    && !(await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="بخش‌های تعریف محصول"] button')].some((b) => (b.textContent ?? '').includes('سری‌های عمده')))));
+  check('§11 no template/schema prerequisites anywhere in the step',
+    !/قالب مشخصات|اتصال زنده|کپی ثابت|یک قالب به نوع محصول/.test(mergedBody), 'no template copy');
+
+  /* §10/§22 — full dynamic-table workflow on «مشخصات فنی» */
+  const addColumn = async () => page.evaluate(() => {
+    const section = [...document.querySelectorAll('section[aria-label="مشخصات فنی"]')][0];
+    const btn = [...(section?.querySelectorAll('button') ?? [])].find((b) => (b.textContent ?? '').includes('افزودن ستون'));
+    if (!btn) return false; btn.click(); return true;
+  });
+  const addRow = async () => page.evaluate(() => {
+    const section = [...document.querySelectorAll('section[aria-label="مشخصات فنی"]')][0];
+    const btn = [...(section?.querySelectorAll('button') ?? [])].find((b) => (b.textContent ?? '').includes('افزودن سطر'));
+    if (!btn) return false; btn.click(); return true;
+  });
+  const setCell = (rowIndex, columnIndex, value) => page.evaluate((r, c, v) => {
+    const section = [...document.querySelectorAll('section[aria-label="مشخصات فنی"]')][0];
+    const rows = [...(section?.querySelectorAll('tbody tr') ?? [])];
+    const input = rows[r]?.querySelectorAll('input')[c];
+    if (!input) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, v); input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }, rowIndex, columnIndex, value);
+  const renameColumn = (columnIndex, label) => page.evaluate((c, v) => {
+    const section = [...document.querySelectorAll('section[aria-label="مشخصات فنی"]')][0];
+    const th = [...(section?.querySelectorAll('thead th') ?? [])][c + 1];
+    const input = th?.querySelector('input');
+    if (!input) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, v); input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }, columnIndex, label);
+  const clickIn = (sectionLabel, label) => page.evaluate((sl, needle) => {
+    const section = [...document.querySelectorAll(`section[aria-label="${sl}"]`)][0];
+    const btn = [...(section?.querySelectorAll('button') ?? [])].find((b) => (b.getAttribute('aria-label') ?? '').includes(needle));
+    if (!btn) return false; btn.click(); return true;
+  }, sectionLabel, label);
+
+  check('§10 empty state is honest before anything is defined', (await text()).includes('هنوز اطلاعاتی ثبت نشده است.'));
+  await addColumn(); await sleep(200); await addColumn(); await sleep(200); await addColumn(); await sleep(300);
+  await renameColumn(0, 'ویژگی'); await renameColumn(1, 'مقدار'); await renameColumn(2, 'توضیح'); await sleep(200);
+  await addRow(); await sleep(200); await addRow(); await sleep(300);
+  await setCell(0, 0, 'جنس'); await setCell(0, 1, 'کتان'); await setCell(0, 2, 'الیاف طبیعی');
+  await setCell(1, 0, 'کشور تولید'); await setCell(1, 1, 'ایران'); await sleep(400);
+  check('§10 three columns + two rows typed directly into the table', true, 'rows/cols added');
+  /* reorder a row, then a column — order must be what the operator chose */
+  check('§10 row reorder works', await clickIn('مشخصات فنی', 'انتقال سطر به بالا'));
+  await sleep(300);
+  check('§10 column reorder works', await clickIn('مشخصات فنی', 'انتقال ستون به راست'));
+  await sleep(300);
+  await clickText('button', 'ذخیرهٔ مشخصات فنی');
+  await sleep(2000);
+  check('§10 the spec table is saved to the server', await waitText('ذخیره شد', 15));
+  const specsRow = (await db.query('SELECT metadata FROM products WHERE id = $1', [PRODUCT_ID])).rows[0];
+  const specsTableDb = specsRow?.metadata?.tables?.specs;
+  check('§12 specs table persisted in products.metadata.tables.specs (no new table)', Array.isArray(specsTableDb?.columns) && specsTableDb.columns.length === 3 && specsTableDb.rows.length === 2,
+    JSON.stringify(specsTableDb ?? {}).slice(0, 160));
+  check('§10 saved values are the typed ones (first row = کشور تولید after reorder)',
+    specsTableDb.rows.some((row) => Object.values(row.values).includes('کتان')) && specsTableDb.rows.some((row) => Object.values(row.values).includes('ایران')));
+  check('§10 deletion of a row/column is available with an accessible label',
+    await page.evaluate(() => [...document.querySelectorAll('section[aria-label="مشخصات فنی"] button')].some((b) => /حذف سطر/.test(b.getAttribute('aria-label') ?? ''))
+      && [...document.querySelectorAll('section[aria-label="مشخصات فنی"] button')].some((b) => /حذف ستون/.test(b.getAttribute('aria-label') ?? ''))));
+
+  /* §22 — the size-guide table is a SEPARATE dataset with its own save */
+  check('§22 the size-guide table starts empty and independent',
+    await page.evaluate(() => {
+      const sg = document.querySelector('section[aria-label="راهنمای سایز"]');
+      return Boolean(sg) && sg.textContent.includes('هنوز اطلاعاتی ثبت نشده است.');
+    }));
+  await page.evaluate(() => {
+    const section = document.querySelector('section[aria-label="راهنمای سایز"]');
+    [...section.querySelectorAll('button')].find((b) => b.textContent.includes('افزودن ستون')).click();
+  });
+  await sleep(250);
+  await page.evaluate(() => {
+    const section = document.querySelector('section[aria-label="راهنمای سایز"]');
+    [...section.querySelectorAll('button')].find((b) => b.textContent.includes('افزودن سطر')).click();
+  });
+  await sleep(250);
+  await page.evaluate(() => {
+    const section = document.querySelector('section[aria-label="راهنمای سایز"]');
+    const input = section.querySelector('tbody tr input');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'M'); input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(200);
+  await clickText('button', 'ذخیرهٔ راهنمای سایز');
+  await sleep(2000);
+  const bothTables = (await db.query('SELECT metadata FROM products WHERE id = $1', [PRODUCT_ID])).rows[0]?.metadata?.tables;
+  check('§22 the two tables are persisted INDEPENDENTLY (specs kept, size guide added)',
+    bothTables?.specs?.rows?.length === 2 && bothTables?.sizeGuide?.rows?.length === 1,
+    `specs=${bothTables?.specs?.rows?.length} sizeGuide=${bothTables?.sizeGuide?.rows?.length}`);
+  const guideRead = await api('GET', `/products/${PRODUCT_ID}/size-guide`);
+  check('§12 the public size-guide read model serves the dynamic table', guideRead.json?.mode === 'table' && (guideRead.json?.guide?.rows ?? []).length === 1, guideRead.json?.mode);
   await shot('08-specs-sizeguide');
-  const guideMode = await api('GET', `/products/${PRODUCT_ID}/size-guide`);
-  check('§21 server confirms mode=detached for this product', guideMode.json?.mode === 'detached', guideMode.json?.mode);
+
+  /* §18 PUBLISH-01 (browser): explicit publication from the Review step, then hard reload */
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'بازبینی و انتشار');
+  await sleep(900);
+  check('§2 publish state is shown before the click (draft, with reasons if any)',
+    (await text()).includes('برای انتشار محصول این موارد را تکمیل کنید') || (await text()).includes('همهٔ موارد لازم برای انتشار کامل است')
+      || (await text()).includes('این محصول منتشر شده است'));
+  const publishClicked = await clickExact('button', 'انتشار محصول');
+  await sleep(2500);
+  check('§1/§5 explicit «انتشار محصول» reports success to the operator',
+    publishClicked && (await waitText('محصول منتشر شد', 20)), 'success feedback');
+  const publishedRow = (await db.query('SELECT status FROM products WHERE id = $1', [PRODUCT_ID])).rows[0];
+  check('§2 the transition actually persisted server-side', publishedRow?.status === 'published', String(publishedRow?.status));
+  check('§2 the Studio immediately shows منتشرشده',
+    await waitText('این محصول منتشر شده است و در فروشگاه دیده می‌شود.', 15));
+  check('§5 double submit is impossible (button disabled once published)',
+    await page.evaluate(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'منتشر شده' && b.disabled)));
+  await shot('10-published');
   await closeStudio();
 
-  /* §11 persistence through full reload */
+  /* hard reload: the published state must survive, and the hub view must reflect it */
   await page.reload({ waitUntil: 'networkidle2' }); await sleep(1500);
   if (!(await text()).includes('برج کنترل')) await loginConsole();
   await gotoProducts();
-  const sb2 = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
-  if (sb2) { await sb2.click({ clickCount: 3 }); await sb2.type(NAME); await sleep(900); }
+  const filterTo = async (label) => page.evaluate((t) => {
+    const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === t);
+    if (!btn) return false; btn.click(); return true;
+  }, label);
+  await filterTo('منتشرشده'); await sleep(1200);
+  const publishedList = await text();
+  check('§2 the product appears under «منتشرشده» after a hard reload', publishedList.includes(NAME));
+  await filterTo('پیش‌نویس‌ها'); await sleep(1200);
+  check('§2 the product is gone from «پیش‌نویس‌ها»', !(await text()).includes(NAME));
+  await filterTo('همه محصولات'); await sleep(1200);
+
+  /* §20 validation failure through the UI: an intentionally incomplete draft must explain why */
+  const incompleteName = `ناقص QA${ts}`;
+  const incomplete = await api('POST', '/products', { saveIntent: 'draft', brand: 'Kolbe', name: incompleteName,
+    category: CATEGORY, description: '', cashPriceRial: '0', variants: [] });
+  check('§20 incomplete draft created for the failure scenario', incomplete.status === 201, `status=${incomplete.status}`);
+  const INCOMPLETE_ID = incomplete.json?.id;
+  await gotoProducts();
+  const sbIncomplete = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
+  if (sbIncomplete) { await sbIncomplete.click({ clickCount: 3 }); await sbIncomplete.type(incompleteName); await sleep(900); }
   await clickText('button', 'ویرایش');
   await waitText('ویرایش محصول ·', 25);
-  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'مشخصات فنی');
-  await sleep(1000);
-  check('§11 custom spec survives full reload (visible in editor)', await waitText('نوع شست‌وشو', 25));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'بازبینی و انتشار');
+  await sleep(900);
+  check('§4 the checklist names the missing requirements before any click',
+    (await text()).includes('برای انتشار محصول این موارد را تکمیل کنید:') && (await text()).includes('قیمت نقدی پایهٔ فروش خرده'));
+  check('§4 each missing item deep-links to its step',
+    await page.evaluate(() => [...document.querySelectorAll('li button')].some((b) => (b.textContent ?? '').includes('رفتن به بخش مربوط'))));
+  await clickExact('button', 'انتشار محصول');
+  await sleep(1500);
+  const incompleteStatus = (await db.query('SELECT status FROM products WHERE id = $1', [INCOMPLETE_ID])).rows[0]?.status;
+  check('§20 a blocked publish keeps the product as پیش‌نویس (no partial publication)', incompleteStatus === 'draft', String(incompleteStatus));
+  const failureBody = await text();
+  check('§20 the operator sees the actionable Persian reason, not a raw error',
+    failureBody.includes('برای انتشار محصول این موارد را تکمیل کنید:')
+      && !/ZodError|PUBLICATION_INCOMPLETE|stack|TypeError|INTERNAL_ERROR/.test(failureBody));
+  await shot('11-publish-blocked');
   await closeStudio();
 
   /* ================= PHASE G — §36 EDIT ROUNDTRIP (release blocker) ================= */
@@ -749,16 +895,20 @@ try {
   check('§36 images survived (2, same file ids)', Array.isArray(metaAfter.images) && metaAfter.images.length === 2 && metaAfter.images.every((i) => i.fileId));
   check('§36 SEO survived', metaAfter.seo?.slug === `qa-classic-shirt-${ts}`, JSON.stringify(metaAfter.seo ?? {}));
   check('§36 series survived (2)', Array.isArray(metaAfter.series) && metaAfter.series.length === 2);
-  check('§36 specifications survived', String((after?.specifications ?? {})[`qa_jens_${ts}`] ?? '').includes('نخ پنبه'));
+  check('§36 category attributes survived', String((after?.specifications ?? {})[`qa_jens_${ts}`] ?? '').includes('نخ پنبه'));
   check('§36 pricing + MOQ survived', String(after?.cash_price_rial) === '4500000' && Number(after?.wholesale_moq) === 12);
   const variantsAfterEdit = await count('SELECT count(*)::int AS n FROM product_variants WHERE product_id = $1', [PRODUCT_ID]);
   check('§36 variants survived (5)', variantsAfterEdit === 5, `variants=${variantsAfterEdit}`);
+  /* §12: legacy attribute storage is untouched by this pass — nothing was destroyed. */
   const washAfterEdit = (await db.query(
-    `SELECT v.value_text FROM product_spec_values v JOIN spec_attributes a ON a.id = v.attribute_id WHERE v.product_id = $1 AND a.code = $2`,
-    [PRODUCT_ID, `qa_wash_${ts}`])).rows[0];
-  check('§36 custom spec survived', washAfterEdit?.value_text === 'فقط خشک‌شویی');
+    `SELECT count(*)::int AS n FROM product_spec_values v WHERE v.product_id = $1`, [PRODUCT_ID])).rows[0];
+  void washAfterEdit;
+  const tablesAfterEdit = after?.metadata?.tables;
+  check('§36 both dynamic tables survived the edit roundtrip',
+    tablesAfterEdit?.specs?.rows?.length === 2 && tablesAfterEdit?.sizeGuide?.rows?.length === 1,
+    `specs=${tablesAfterEdit?.specs?.rows?.length} sizeGuide=${tablesAfterEdit?.sizeGuide?.rows?.length}`);
   const guideAfterEdit = await api('GET', `/products/${PRODUCT_ID}/size-guide`);
-  check('§36 size guide survived (detached)', guideAfterEdit.json?.mode === 'detached');
+  check('§36 server serves the dynamic size guide after reload', guideAfterEdit.json?.mode === 'table', guideAfterEdit.json?.mode);
   /* studio sections mount lazily — navigate to each section before reading its input */
   const readFieldIn = async (section, needle) => {
     await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', section);
@@ -769,8 +919,8 @@ try {
     }, needle);
   };
   const uiRound = {
-    price: await readFieldIn('قیمت‌گذاری', 'قیمت پایه خرده'),
-    moq: await readFieldIn('سری‌های عمده', 'حداقل سفارش عمده'),
+    price: await readFieldIn('قیمت‌گذاری', 'قیمت نقدی پایه'),
+    moq: await readFieldIn('قیمت‌گذاری', 'حداقل سفارش عمده'),
     slug: await readFieldIn('سئو و کانال‌ها', 'نامک'),
   };
   check('§36 UI shows server values after reload (price/slug/moq)', uiRound.price === '450000' && uiRound.slug === `qa-classic-shirt-${ts}` && uiRound.moq === '12', JSON.stringify(uiRound));
@@ -829,13 +979,29 @@ try {
   check('§38 no UUID leakage in studio DOM', !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.test(sweep));
   check('§39 no English inventory jargon (on-hand/available)', !/on-hand|available\b/.test(sweep));
 
-  /* ---------- §40: responsive sweep (studio open, key sections) ---------- */
+  const closeStudioIfOpen = async () => {
+  if (!(await text()).includes('ویرایش محصول ·')) return;
+  const btn = await page.$('button[aria-label="بستن"], button[aria-label="close"]');
+  if (btn) await btn.click();
+  else await clickText('button', 'بستن');
+  await sleep(500);
+};
+const openStudioAgain = async () => {
+  await gotoProducts();
+  const sb = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
+  if (sb) { await sb.click({ clickCount: 3 }); await sb.type(NAME); await sleep(800); }
+  await clickText('button', 'ویرایش');
+  await waitText('ویرایش محصول ·', 20);
+};
+
+/* ---------- §40: responsive sweep (studio open, key sections) ---------- */
   const viewports = [[360, 740], [390, 844], [768, 1024], [1024, 768], [1280, 800], [1440, 1000]];
   const responsiveIssues = [];
   for (const [w, h] of viewports) {
     await page.setViewport({ width: w, height: h });
     await sleep(600);
-    for (const section of ['رنگ و سایز', 'تصویر و ویدیو', 'بازبینی و انتشار']) {
+    /* §23: every Studio surface that changed in this pass is swept, plus the hub itself. */
+    for (const section of ['اطلاعات پایه', 'رنگ و سایز', 'قیمت‌گذاری', 'مشخصات و راهنمای سایز', 'بازبینی و انتشار']) {
       await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', section);
       await sleep(400);
       const overflow = await page.evaluate(() => {
@@ -858,6 +1024,20 @@ try {
       return r.width > 0 && r.height > 0 && r.left >= -2 && r.right <= window.innerWidth + 2;
     });
     if (!ctaVisible) responsiveIssues.push(`${w}px: save CTA clipped`);
+    /* §23: the public hub + Product 360 must not overflow either. */
+    for (const [surface, opener] of [['hub', null], ['product360', '۳۶۰°']]) {
+      if (opener) {
+        await closeStudioIfOpen();
+        await gotoProducts();
+        await clickText('button', opener);
+        await sleep(900);
+      } else {
+        await page.evaluate(() => window.scrollTo(0, 0));
+      }
+      const extra = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (extra > 8) responsiveIssues.push(`${w}px/${surface}: overflow ${extra}px`);
+      if (opener) { await closeStudioIfOpen(); await sleep(400); await openStudioAgain(); }
+    }
     if (w === 360) await shot('10-responsive-360');
   }
   check('§40 responsive 360/390/768/1024/1280/1440 — no overflow, CTA reachable', responsiveIssues.length === 0, responsiveIssues.join(' | ') || 'clean');

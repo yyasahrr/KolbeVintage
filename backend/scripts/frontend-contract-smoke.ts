@@ -11,6 +11,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,14 +182,103 @@ try {
   check('productsApi.create (ProductStudio payload) → 201 with server SKUs',
     product.variants.length === 6 && skus.every((sku) => sku.startsWith('KV-COAT-')), `${product.variants.length} variants: ${skus[0] ?? '-'}`);
 
-  const status = await productsApi.status(product.id, 'published');
-  check('productsApi.status → published', status.status === 'published');
+  /* The Studio's own product is completed the canonical way: it carries a Series price, so the
+     explicit publish succeeds and the storefront read model can expose its server media. */
+  const studioStatus = await productsApi.status(product.id, 'published');
+  check('§1 the Studio-created product publishes explicitly → منتشرشده', studioStatus.status === 'published', studioStatus.status);
+
+  /* ---------- publication contract (Prompt-1 §1-§5) ----------
+   * Publication is an explicit, server-authoritative decision. It is blocked with an actionable
+   * Persian list when a catalog requirement is missing, and it never depends on stock. */
+  const wholesaleOnlyName = `بدون قیمت عمده ${suffix}`;
+  const wholesaleOnly = await apiClient.post<{ id: string }>('/products', {
+    saveIntent: 'draft', brand: 'Kolbe', name: wholesaleOnlyName, category: 'کت',
+    retailEnabled: false, wholesaleEnabled: true, cashPriceRial: '0',
+    variants: [{ size: 'M', color: 'مشکی' }],
+  });
+  check('§4 a wholesale product without any wholesale price can still be SAVED as a draft',
+    Boolean(wholesaleOnly.id), wholesaleOnly.id);
+  const blocked = await productsApi.status(wholesaleOnly!.id, 'published').then(
+    () => null,
+    (error: unknown) => error as { status?: number; message?: string; details?: { issues?: { code: string }[]; labels?: string[] } },
+  );
+  check('§4 publish of an incomplete product is rejected with 422 PUBLICATION_INCOMPLETE',
+    blocked?.status === 422, `status=${blocked?.status ?? 'no error'}`);
+  check('§4 the rejection carries the actionable Persian message',
+    blocked?.message === 'برای انتشار محصول این موارد را تکمیل کنید:', String(blocked?.message));
+  check('§4 the rejection lists the exact missing wholesale requirement',
+    (blocked?.details?.issues ?? []).some((issue) => issue.code === 'series'),
+    (blocked?.details?.labels ?? []).join('، ') || 'no issues');
+  const stillDraft = await apiClient.get<{ status: string }>(`/admin/products/${wholesaleOnly!.id}`);
+  check('§4 a blocked publish mutates nothing (the product stays پیش‌نویس)',
+    String(stillDraft.status) !== 'published', String(stillDraft.status));
+
+  // The canonical wholesale price makes it publishable — and NO stock is involved (§3/§19).
+  await apiClient.patch<{ updated: string[] }>(`/products/${wholesaleOnly!.id}`, { wholesalePriceRial: '35000000' });
+  const readiness = await apiClient.get<{ publishable: boolean; stockIndependent: boolean; issues: { code: string }[] }>(
+    `/admin/products/${wholesaleOnly!.id}/publication-readiness`);
+  check('§4 the readiness endpoint is the same authority the publish call enforces',
+    readiness.publishable === true && readiness.stockIndependent === true && readiness.issues.length === 0,
+    `publishable=${readiness.publishable} issues=${readiness.issues.map((i) => i.code).join(',') || 'none'}`);
+  const wholesalePublish = await productsApi.status(wholesaleOnly!.id, 'published');
+  check('§1/§2 explicit publish succeeds with ZERO physical stock', wholesalePublish.status === 'published');
+  const republished = await productsApi.status(wholesaleOnly!.id, 'published');
+  check('§5 re-publishing an already published product is an idempotent no-op', republished.status === 'published');
+  const publishedList = await apiClient.get<{ items: { id: string }[] }>('/admin/products?view=published&owner=kolbe&limit=100');
+  const draftList = await apiClient.get<{ items: { id: string }[] }>('/admin/products?view=drafts&owner=kolbe&limit=100');
+  check('§2 the published product is in «منتشرشده» and no longer in «پیش‌نویس‌ها»',
+    publishedList.items.some((item) => item.id === wholesaleOnly!.id) && !draftList.items.some((item) => item.id === wholesaleOnly!.id));
 
   await productsApi.update(product.id, { metadata: { images: [{ fileId: uploaded.id, url: filesApi.downloadPath(uploaded.id) }], channels: { retail: true, wholesale: true } } });
   const catalog = await apiClient.get<{ items: { id: string; metadata: { images?: { fileId: string }[] } }[] }>('/products');
   const published = catalog.items.find((item) => item.id === product.id);
   check('catalog exposes persisted server file reference (no data URL)',
     published?.metadata.images?.[0]?.fileId === uploaded.id);
+
+  // =================== Product Studio remediation (Prompt-1) ===================
+  // Static contract checks on the single canonical Studio source: the 8-step nav, the explicit
+  // publish control, the absence of template binding, and the merged specs + size-guide step.
+  {
+    const studio = await readFile(new URL('../../src/portals/admin-product.tsx', import.meta.url), 'utf8');
+    const both = (...needles: string[]) => needles.every((needle) => studio.includes(needle));
+    // The nav is read straight out of the `secs` declaration so a renamed or re-added step fails here.
+    const secsBlock = studio.slice(studio.indexOf('const secs = ['), studio.indexOf('];', studio.indexOf('const secs = [')));
+    check('§13 the Studio nav is exactly the canonical 8 steps, in order',
+      JSON.stringify([...secsBlock.matchAll(/([\u0600-\u06FF][^"\]]*)/g)].map((m) => m[1]).filter((label) => label.trim().length > 2))
+        === JSON.stringify(['اطلاعات پایه', 'رنگ و سایز', 'تصویر و ویدیو', 'تصویر استایل‌بیلدر', 'قیمت‌گذاری',
+          'مشخصات و راهنمای سایز', 'سئو و کانال‌ها', 'بازبینی و انتشار']),
+      secsBlock.replace(/\s+/g, ' ').slice(0, 220));
+    check('§9/§11 the merged step no longer binds a template or a category schema',
+      !studio.includes('ProductSpecsEditor') && !studio.includes('قالب مشخصات')
+      && !studio.includes('اتصال زنده') && !studio.includes('کپی ثابت'),
+      'no ProductSpecsEditor / template binding');
+    check('§1 the Review step owns an explicit «انتشار محصول» action',
+      studio.includes('انتشار محصول') && studio.includes('publishProduct'), 'publish control present');
+    check('§5 publication is guarded against double submit and reports true state',
+      studio.includes('publishing || publicationState === "published"') && studio.includes('setPublishing(true)'),
+      'in-flight guard present');
+    check('§4 a blocked publish shows the server issue list, never a raw error',
+      studio.includes('برای انتشار محصول این موارد را تکمیل کنید: '), 'canonical message shown');
+    check('§6 Sales Mode replaces the old retail/wholesale price mode switch',
+      both('فقط خرده', 'فقط عمده', 'خرده + عمده') && !studio.includes('حالت قیمت خرده/عمده'),
+      'sales mode control');
+    check('§6 retail section = cash price + installment enable + installment base + discount policy',
+      both('قیمت نقدی پایه (تومان)', 'خرید چهارقسطه', 'قیمت پایه چهارقسطه (تومان)', 'سیاست اعمال تخفیف روی خرید چهارقسطه'),
+      'retail pricing fields');
+    check('§7 discount/festival are read-only cards linking to the Promotion Center',
+      both('مدیریت تخفیف', 'مدیریت جشنواره') && !studio.includes('localFestivalDraft') && !studio.includes('discountDraftMetadata'),
+      'promotion center is the authority');
+    check('§12 the two tables persist through the existing metadata JSON column (no new authority)',
+      studio.includes('tables: { specs: d.specsTable, sizeGuide: d.sizeGuideTable }')
+      && studio.includes('normalizeTable((meta.tables as { specs?: unknown } | undefined)?.specs)'),
+      'tables in product metadata');
+  }
+  {
+    const editor = await readFile(new URL('../../src/components/dynamic-table-editor.tsx', import.meta.url), 'utf8');
+    check('§10 the table editors support add/rename/delete/reorder and the canonical empty state',
+      ['افزودن ستون', 'افزودن سطر', 'هنوز اطلاعاتی ثبت نشده است.', 'renameColumn', 'deleteColumn', 'moveColumn', 'deleteRow', 'moveRow']
+        .every((needle) => editor.includes(needle)), 'dynamic table editor');
+  }
 
   // =========================== admin reconciliation ===========================
   // Exercised through the same client/payload code the admin console uses, on a database that has
@@ -434,8 +524,15 @@ try {
   const seriesProduct = await productsApi.create({
     brand: 'Kolbe', name: `کتانی سری اسموک ${suffix}`, category: 'کفش',
     cashPriceRial: '6000000', wholesalePriceRial: '3500000',
+    metadata: { images: [{ fileId: uploaded.id, url: filesApi.downloadPath(uploaded.id) }] },
     variants: [{ size: '40', color: 'سفید' }, { size: '41', color: 'سفید' }, { size: '42', color: 'سفید' }],
   }) as { id: string; variants: { id: string; sku: string }[] };
+  // §6/§4: wholesale is canonical Series pricing, so publication needs a priced, orderable series.
+  await apiClient.patch<{ updated: string[] }>(`/products/${seriesProduct.id}`, {
+    wholesaleSeries: [{ name: 'سری کتانی اسموک', color: 'سفید', active: true, pricingMode: 'series_total',
+      totalPriceRial: '35000000', minOrderSeries: 1,
+      items: [{ size: '40', quantityPerSeries: 1 }, { size: '41', quantityPerSeries: 1 }, { size: '42', quantityPerSeries: 1 }] }],
+  });
   await productsApi.status(seriesProduct.id, 'published');
   // Wholesale stock 40→10, 41→10, 42→3 (42 is the bottleneck component).
   for (const [i, qty] of [10, 10, 3].entries()) {

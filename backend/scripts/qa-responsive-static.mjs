@@ -21,6 +21,9 @@ const FILES = [
   'src/portals/admin-product.tsx',
   'src/portals/admin.tsx',
   'src/portals/warehouse-hub.tsx',
+  /* Prompt-1 final pass: the merged specs + size-guide step renders the shared table editor. */
+  'src/components/dynamic-table-editor.tsx',
+  'src/components/product-series-editor.tsx',
 ];
 const LOOKBACK = 6;
 const MIN_PX = 320;
