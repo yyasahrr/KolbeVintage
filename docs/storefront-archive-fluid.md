@@ -110,7 +110,7 @@ tools are invoked through `node` directly rather than the missing `node_modules/
 | Check | Command | Result |
 | --- | --- | --- |
 | Types | `node node_modules/typescript/bin/tsc --noEmit` | 0 errors (strict, `noUnusedLocals`) |
-| Production build | `node node_modules/vite/bin/vite.js build` | ✓ 1944 modules, `dist/index.html` 932,872 B (gzip 238 kB) |
+| Production build | `node node_modules/vite/bin/vite.js build` | ✓ 1944 modules, `dist/index.html` 932,209 B (gzip 238 kB) |
 | Bundle cost | vs. `HEAD:dist/index.html` 872,963 B | +59,909 B (+6.9 %), no new runtime dependencies |
 | Behaviour (desktop) | jsdom smoke run over the real app bundle | 44/44 assertions, 0 runtime errors |
 | Behaviour (mobile) | same suite, `(min-width: 1024px)` false | 45/45 assertions, 0 runtime errors |
@@ -130,6 +130,11 @@ Worst-case fixtures: 100-character name, 8 colours, 1 colour, 0 colours, no seri
 no image, and a 9-digit price with a long category name. Outcomes: clamped name, `+۴` overflow
 chip, "بدون تنوع رنگ", "این محصول سایزبندی ندارد", disabled quick add with "ناموجود", image
 fallback message, `۹۹۹٬۹۹۹٬۹۹۹`, badge capped at `۹۹+`.
+
+`--kvaf-bottomnav-space` is 0 at `lg+` and 76px below it (nav = 64px tall floating 12px up),
+which is what keeps the last row of products, the add-to-cart toast and the support launcher
+clear of the floating nav. It is present in the shipped CSS as
+`@media (max-width:1023px){.kv-storefront{--kvaf-bottomnav-space:76px}}`.
 
 **Not verified here:** there is no Chromium in the sandbox and the Playwright download is
 blocked, so the layer has not been reviewed as rendered pixels and no screenshots are attached.

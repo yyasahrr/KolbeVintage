@@ -381,6 +381,11 @@ html[data-surface="storefront"] body { background-color: transparent; }
   border-radius: 24px;
 }
 @media (min-width: 1024px) { .kv-sf-bnav { display: none; } }
+/* The floating nav is 64px tall and floats 12px up, so touch widths reserve 76px:
+   page content, the add-to-cart toast and the support launcher all sit above it. */
+@media (max-width: 1023px) {
+  .kv-storefront { --kvaf-bottomnav-space: 76px; }
+}
 .kv-sf-bnav-item {
   flex: 1;
   display: flex;
