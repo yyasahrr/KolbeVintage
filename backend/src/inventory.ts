@@ -219,6 +219,9 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       hasIncoming: z.coerce.number().int().min(0).max(1).optional(),
       hasReservation: z.coerce.number().int().min(0).max(1).optional(),
       withTotal: z.coerce.number().int().min(0).max(1).optional(),
+      // §24: «مدیریت موجودی» from «محصولات کلبه» deep-links into real WMS operations for
+      // ONE product — server-backed filter, never a client-side scan of the whole warehouse.
+      productId: z.uuid().optional(),
     }).parse(request.query);
     const privileged = user.permissions.includes('inventory:read');
     // D3: real search across product name / SKU / color / size; O1: stock_status is
@@ -260,6 +263,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
          AND ($13::text IS NULL OR v.size_label ILIKE '%' || $13 || '%')
          AND ($14::integer IS NULL OR ($14 = 1 AND b.incoming > 0) OR ($14 = 0 AND b.incoming = 0))
          AND ($15::integer IS NULL OR ($15 = 1 AND b.reserved > 0) OR ($15 = 0 AND b.reserved = 0))
+         AND ($18::uuid IS NULL OR p.id = $18)
       )
       SELECT *, count(*) OVER()::int AS total_rows FROM base
       WHERE ($16::text IS NULL OR stock_status = $16)
@@ -269,7 +273,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
         privileged, user.id, query.lowStock ?? null, query.limit, query.inventoryDomain ?? null,
         query.supplierId ?? null, query.offset, query.category ?? null, query.colorLabel ?? null,
         query.sizeLabel ?? null, query.hasIncoming ?? null, query.hasReservation ?? null,
-        query.stockStatus ?? null, query.saleStatus ?? null]);
+        query.stockStatus ?? null, query.saleStatus ?? null, query.productId ?? null]);
     const total = rows.rows.length ? Number(rows.rows[0].total_rows) : 0;
     const items = rows.rows.map(({ total_rows: _ignored, ...row }) => row);
     return query.withTotal === 1 ? { items, total, limit: query.limit, offset: query.offset } : { items, total };
