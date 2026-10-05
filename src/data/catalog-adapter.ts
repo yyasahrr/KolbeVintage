@@ -1,4 +1,4 @@
-import type { Colorway, Product } from "./catalog";
+import type { Colorway, Product, ProductPricing } from "./catalog";
 import { mediaSrc, rialToToman } from "./experience-api";
 
 /* Single normalisation point: GET /products (rial, variants, metadata) → storefront Product (toman, images, sizes).
@@ -21,6 +21,7 @@ type CatalogRow = {
   genderCode?: string | null; gender?: string | null; seasons?: string[];
   metadata?: Record<string, unknown>; variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number }[];
   available?: number; supplierId?: string | null; discountPercent?: number; installmentEnabled?: boolean;
+  pricing?: ProductPricing;
   series?: { id: string; name: string; colorLabel: string | null; pieces: number; composition: Record<string, number>; minOrderSeries: number; pricePerSeriesRial: string | null; availableSeries: number }[];
 };
 
@@ -52,7 +53,10 @@ export function adaptCatalogProduct(row: CatalogRow): Product & { variants: NonN
     images: images.length ? images : ["data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3 4"><rect width="3" height="4" fill="#EFE7DA"/></svg>')],
     series, seriesCount: series.length, moq: row.wholesaleMoq ?? 1, stock: Number(row.available ?? 0),
     fabric: String(meta.fabric ?? "—") || "—", desc: row.description || "توضیحات این محصول در حال تکمیل است.",
-    cutout: cutout ?? undefined, badge: row.discountPercent ? `٪${row.discountPercent.toLocaleString("fa-IR")} تخفیف` : undefined,
+    cutout: cutout ?? undefined,
+    // §9/§36: the badge derives from the canonical resolved discount — never from a manual column.
+    badge: row.pricing && row.pricing.discountPercent > 0 ? `٪${row.pricing.discountPercent.toLocaleString("fa-IR")} تخفیف` : undefined,
+    pricing: row.pricing,
     genderCode: row.genderCode ?? GENDER_BRIDGE[row.gender ?? ""] ?? null,
     seasons: Array.isArray(row.seasons) ? row.seasons : [],
     variants, sizes: sizeCodes, installmentEnabled: row.installmentEnabled,

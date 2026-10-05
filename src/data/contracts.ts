@@ -425,9 +425,12 @@ export function buildProductCreatePayload(draft: ProductStudioDraft): ProductCre
       ? rialFromToman(Math.min(...offered.map((series) => series.pricePerSeries)))
     : undefined;
   const cashRial = draft.retailOn ? rialFromToman(draft.cashToman) : "0";
-  const installmentRial = draft.retailOn
-    ? rialFromToman(draft.installmentToman && draft.installmentToman !== "" ? draft.installmentToman : draft.cashToman)
-    : undefined;
+  /* §7/§8: the four-installment base is a SEPARATE, explicit price. It is never derived from the
+     cash price — enabling installments without it is a business validation error (Persian). */
+  const installmentEnabledOn = draft.retailOn && draft.installmentPolicy !== "disabled";
+  if (installmentEnabledOn && (!draft.installmentToman || Number(draft.installmentToman) <= 0))
+    throw new ContractError("قیمت پایه چهارقسطه لازم است؛ این قیمت مستقل از قیمت نقدی ثبت می‌شود.");
+  const installmentRial = installmentEnabledOn && draft.installmentToman ? rialFromToman(draft.installmentToman) : undefined;
 
   if (BigInt(cashRial) === 0n && (!wholesaleRial || BigInt(wholesaleRial) === 0n)) {
     throw new ContractError("دست‌کم یک قیمت معتبر (خرده یا عمده) لازم است.");
@@ -457,13 +460,14 @@ export function buildProductCreatePayload(draft: ProductStudioDraft): ProductCre
     brand, name, category,
     description: draft.description?.trim() ?? "",
     cashPriceRial: cashRial,
-    ...(installmentRial ? { installmentPriceRial: installmentRial } : {}),
+    ...(installmentRial ? { installmentPriceRial: installmentRial, installmentEnabled: true } : {}),
     ...(wholesaleRial ? { wholesalePriceRial: wholesaleRial } : {}),
     ...(draft.productTypeId ? { productTypeId: draft.productTypeId } : {}),
     // Channels default to both-on; only explicit opt-outs travel over the wire.
     ...(!draft.retailOn ? { retailEnabled: false } : {}),
     ...(!draft.wholesaleOn ? { wholesaleEnabled: false } : {}),
     ...(draft.installmentPolicy && draft.installmentPolicy !== "enabled" ? { installmentPolicy: draft.installmentPolicy } : {}),
+    ...(!installmentEnabledOn && draft.retailOn ? { installmentEnabled: false } : {}),
     ...(moq !== null && moq > 0 ? { wholesaleMoq: moq } : {}),
     ...(genderCode ? { genderCode } : {}),
     ...(seasons.length ? { seasons } : {}),

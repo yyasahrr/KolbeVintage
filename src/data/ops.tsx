@@ -1,7 +1,7 @@
 /* Operations store: now delegates to server APIs (/api/v1/*) for CMS, finance, CRM, coupons, etc.
    localStorage is retained only for non-sensitive UI prefs; authoritative operations state lives in PostgreSQL. */
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
-import { IMG } from "./catalog";
+import { IMG, type Product, type ProductPricing } from "./catalog";
 import { apiClient } from "./api";
 import { TICKET_STATUSES, TICKET_STATUS_LABEL, TICKET_PRIORITY_LABEL, type TicketStatus, type TicketPriority } from "./contracts";
 
@@ -249,6 +249,63 @@ export function resolveVariantPromotion(
     source: "none",
   };
 }
+
+/**
+ * §36/§4 — storefront pricing entry point. When the hydrated catalogue row carries the canonical
+ * server resolution, the card/PDP/cart render exactly those numbers; the local rule engine below is
+ * only the offline demo-seed fallback (the demo has no server row to trust).
+ */
+export function resolveDisplayPrice(
+  product: Product,
+  colorIdOrName: string | undefined,
+  sizeCode: string | undefined,
+  rules: PromotionRule[],
+  festivals: Festival[],
+  paymentMode: "cash" | "four_installments" = "cash",
+): ResolvedPromotionPrice {
+  const pricing: ProductPricing | undefined = product.pricing;
+  if (!pricing) return resolveVariantPromotion(product, colorIdOrName, sizeCode, rules, festivals, paymentMode);
+  const norm = (value?: string | null) => (value ?? "").trim().toLowerCase();
+  const variants = product.variants ?? [];
+  const variant = variants.find((v) => norm(v.size) === norm(sizeCode) && norm(v.color) === norm(colorIdOrName))
+    ?? variants.find((v) => norm(v.color) === norm(colorIdOrName)) ?? variants[0];
+  const row = variant ? pricing.variants[variant.id] : undefined;
+  if (!row) return resolveVariantPromotion(product, colorIdOrName, sizeCode, rules, festivals, paymentMode);
+  const toman = (rial: string | null | undefined) => { if (!rial) return 0; try { return Number(BigInt(rial) / 10n); } catch { return 0; } };
+  if (paymentMode === "four_installments") {
+    // No explicit «قیمت پایه چهارقسطه» → no installment number is invented for this selection.
+    if (!row.installmentEnabled || row.installmentBasePriceRial === null) {
+      return { basePrice: toman(row.basePriceRial), matchedRule: null, discountType: null, discountValue: null,
+        discountAmount: 0, finalPrice: toman(row.finalPriceRial), startsAt: null, endsAt: null, source: "none" };
+    }
+    const base = toman(row.installmentBasePriceRial);
+    const final = toman(row.installmentPriceRial ?? row.installmentBasePriceRial);
+    return { basePrice: base, matchedRule: base - final > 0 ? serverMatchedRule(pricing, row.discountSource) : null,
+      discountType: base - final > 0 ? "percent" : null, discountValue: base > 0 ? Math.round(((base - final) / base) * 100) : null,
+      discountAmount: Math.max(0, base - final), finalPrice: final, startsAt: null, endsAt: null,
+      source: (row.discountSource as ResolvedPromotionPrice["source"]) ?? "none" };
+  }
+  const base = toman(row.basePriceRial);
+  const final = toman(row.finalPriceRial);
+  const discountAmount = toman(row.discountAmountRial);
+  return {
+    basePrice: base,
+    matchedRule: discountAmount > 0 ? serverMatchedRule(pricing, row.discountSource) : null,
+    discountType: discountAmount > 0 ? "percent" : null,
+    discountValue: base > 0 ? Math.round((discountAmount / base) * 100) : null,
+    discountAmount,
+    finalPrice: final,
+    startsAt: null, endsAt: null,
+    source: (row.discountSource as ResolvedPromotionPrice["source"]) ?? "none",
+  };
+}
+
+const serverMatchedRule = (pricing: { matchedRuleId: string | null; matchedTarget: string | null }, source: string): ResolvedPromotionPrice["matchedRule"] => ({
+  id: pricing.matchedRuleId ?? "server",
+  name: source === "festival" ? "جشنواره" : "تخفیف محصول",
+  targetType: (pricing.matchedTarget as PromotionTargetType | null) ?? "product",
+  priority: 0,
+});
 
 /* ---------------- CRM ---------------- */
 export type LeadStage = "new" | "contacted" | "qualified" | "won" | "lost";

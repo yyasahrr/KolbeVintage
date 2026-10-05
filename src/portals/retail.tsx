@@ -5,13 +5,13 @@ import {
   ArrowLeft, BadgeCheck, Truck, RotateCcw, ShieldCheck, Heart, Star, ShoppingBag,
   SlidersHorizontal, Eye, Sparkles, Ruler, Check, ChevronLeft, Minus, Plus, Trash2, CreditCard, MapPin,
 } from "lucide-react";
-import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, type Product } from "../data/catalog";
+import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, serverUnitToman, type Product } from "../data/catalog";
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
 import { promoApi, publicApi } from "../data/api";
 import AccountExperience, { type AccountTab } from "./account";
-import { useOps, resolveVariantPromotion } from "../data/ops";
+import { useOps, resolveDisplayPrice } from "../data/ops";
 import { adaptCmsHero, adaptCmsSectionToBlock, adaptSitePage, normalizeTaxonomies, readPricingSnapshot, readShippingQuote, type PricingSnapshot, type Taxonomy } from "../data/contracts";
 import { cashbackApi, cmsApi, ordersApi, productStructureApi, shippingApi } from "../data/api";
 import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
@@ -54,7 +54,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
   const [added, setAdded] = useState(false);
   const toast = useToast();
   const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
-  const resolved = resolveVariantPromotion(p, chosenColor?.id ?? chosenColor?.name, size, ops.promotionRules, ops.festivals);
+  const resolved = resolveDisplayPrice(p, chosenColor?.id ?? chosenColor?.name, size, ops.promotionRules, ops.festivals);
   const quickAdd = () => {
     if (!chosenColor) { setMessage("رنگی برای این محصول تعریف نشده است"); return; }
     const ok = onAdd(size, chosenColor.name);
@@ -208,7 +208,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
   const sizes = productSizes(p);
   useEffect(() => { if (isAuthenticated()) accountApi.view(p.id); }, [p.id]);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
-  const resolved = resolveVariantPromotion(p, color?.id ?? color?.name, size, ops.promotionRules, ops.festivals);
+  const resolved = resolveDisplayPrice(p, color?.id ?? color?.name, size, ops.promotionRules, ops.festivals);
   // QA2-PDP-008: size guide + structured specs come from the canonical public endpoints.
   const isServerProduct = /^[0-9a-f-]{36}$/i.test(p.id);
   const [sizeGuide, setSizeGuide] = useState<{ name?: string; description?: string; columns: { id: string; code: string; label: string; unit: string | null }[]; rows: { id: string; values: Record<string, string | number> }[] } | null>(null);
@@ -586,11 +586,17 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     if (!variant) return false;
     return addToCart(cp.id, variant.size ?? "", variant.color ?? "");
   };
-  const cartTotal = cart.reduce((s, l) => s + (retailProducts.find((p) => p.id === l.id)?.retailPrice ?? 0) * l.qty, 0);
-  const installmentCartTotal = cart.reduce((s, l) => {
-    const product = retailProducts.find((p) => p.id === l.id);
-    return s + (product?.installmentPrice ?? product?.retailPrice ?? 0) * l.qty;
-  }, 0);
+  /* §36/§38: cart money comes from the canonical server resolution when the row carries it;
+     the legacy fields remain only for the offline demo seed. */
+  const cartUnit = (line: CartLine, mode: "cash" | "four_installments") => {
+    const product = retailProducts.find((p) => p.id === line.id);
+    const server = product ? serverUnitToman(product, line.color, line.size, mode) : null;
+    if (server !== null) return server;
+    if (!product) return 0;
+    return mode === "four_installments" ? (product.installmentPrice ?? product.retailPrice) : product.retailPrice;
+  };
+  const cartTotal = cart.reduce((sum, line) => sum + cartUnit(line, "cash") * line.qty, 0);
+  const installmentCartTotal = cart.reduce((sum, line) => sum + cartUnit(line, "four_installments") * line.qty, 0);
   const cats = ["همه", ...Array.from(new Set(retailProducts.map((p) => p.category)))];
 
   const [serverShipping, setServerShipping] = useState<any[] | null>(null);
@@ -660,7 +666,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const festivalDiscount = cart.reduce((sum, l) => {
     const p = retailProducts.find((x) => x.id === l.id);
     if (!p) return sum;
-    const resolved = resolveVariantPromotion(p, l.color, l.size, ops.promotionRules, ops.festivals, paymentMode);
+    // §9: with server pricing the discount is already inside the resolved unit price — never twice.
+    if (p.pricing) return sum;
+    const resolved = resolveDisplayPrice(p, l.color, l.size, ops.promotionRules, ops.festivals, paymentMode);
     return sum + resolved.discountAmount * l.qty;
   }, 0);
   const coupon = ops.coupons.find((c) => c.code === couponCode && c.channel === "retail");
@@ -869,7 +877,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
                               <span className="text-[13px] font-bold tabular-nums">{fmtNum(l.qty)}</span>
                               <button onClick={() => setCart(cart.map((x, j) => j === i ? { ...x, qty: Math.max(1, x.qty - 1) } : x))} className="p-1.5"><Minus size={13} /></button>
                             </div>
-                            <p className="text-sm font-extrabold tabular-nums">{fmtMoney(p.retailPrice * l.qty)}</p>
+                            <p className="text-sm font-extrabold tabular-nums">{fmtMoney(cartUnit(l, "cash") * l.qty)}</p>
                           </div>
                         </div>
                       </div>

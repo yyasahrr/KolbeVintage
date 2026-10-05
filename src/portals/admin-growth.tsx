@@ -432,7 +432,7 @@ export function PromoCenter({ flash }: { flash: F }) {
 
           <Card className="h-fit p-5 space-y-4">
             <div>
-              <p className="text-[14.5px] font-extrabold">شبیه‌ساز لحظه‌ای موتور قیمت‌گذاری (Pricing Resolver)</p>
+              <p className="text-[14.5px] font-extrabold">شبیه‌ساز لحظه‌ای قیمت‌گذاری سرور</p>
               <p className="mt-1 text-xs text-[var(--kv-muted)]">انتخاب محصول، رنگ و سایز برای بررسی قانون برنده و قیمت نهایی در PDP و Checkout</p>
             </div>
             <Field label="محصول">

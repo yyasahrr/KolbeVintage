@@ -269,9 +269,30 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo }:
                       <td className="whitespace-nowrap">
                         {p.retail_enabled && p.wholesale_enabled ? "خرده + عمده" : p.retail_enabled ? "خرده" : p.wholesale_enabled ? "عمده" : "—"}
                       </td>
+                      {/* §34: the price column reads the canonical price per sales mode — retail base/final
+                          (with the resolved discount) and the wholesale series price, never one misleading number. */}
                       <td className="whitespace-nowrap">
-                        <span className="block font-bold">{p.cash_price_rial ? fmtToman(p.cash_price_rial) : "—"}</span>
-                        {p.wholesale_price_rial && <span className="block text-[10px] text-[var(--kv-muted)]">عمده {fmtToman(p.wholesale_price_rial)}</span>}
+                        {p.retail_enabled && (
+                          <span className="block font-bold">
+                            {p.pricing?.retailFinalPriceRial ? fmtToman(p.pricing.retailFinalPriceRial)
+                              : p.cash_price_rial ? fmtToman(p.cash_price_rial) : "—"}
+                          </span>
+                        )}
+                        {p.retail_enabled && p.pricing && p.pricing.retailDiscountRial !== "0" && (
+                          <span className="block text-[10px] text-[var(--kv-muted)]">
+                            <s>{fmtToman(p.pricing.retailBasePriceRial ?? p.cash_price_rial ?? "0")}</s>
+                            {" · "}{p.pricing.discountSource === "festival" ? "جشنواره" : "تخفیف"}
+                          </span>
+                        )}
+                        {p.retail_enabled && p.pricing?.installmentEnabled && p.pricing.installmentBasePriceRial && (
+                          <span className="block text-[10px] text-[var(--kv-muted)]">چهارقسطه {fmtToman(p.pricing.installmentBasePriceRial)}</span>
+                        )}
+                        {p.wholesale_enabled && (
+                          <span className="block text-[10px] text-[var(--kv-muted)]">
+                            {p.pricing?.minSeriesTotalRial ? `سری از ${fmtToman(p.pricing.minSeriesTotalRial)}` : "قیمت سری تعیین نشده"}
+                          </span>
+                        )}
+                        {!p.retail_enabled && !p.wholesale_enabled && <span className="text-[var(--kv-faint)]">—</span>}
                       </td>
                       <td>{p.retail_enabled ? <StockCell pending={pending} value={p.retail_available} unit="عدد" /> : <span className="text-[var(--kv-faint)]">—</span>}</td>
                       <td>{p.wholesale_enabled ? <StockCell pending={pending} value={p.wholesale_series_available} unit="سری" /> : <span className="text-[var(--kv-faint)]">—</span>}</td>

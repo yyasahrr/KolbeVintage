@@ -23,6 +23,21 @@ export const STATUS_LABEL: Record<ProductStatus, string> = {
 
 export type ProductVideo = { id: string; src: string; title: string; kind: "youtube" | "direct"; thumbnail?: string; purpose: string; colorId?: string; duration?: number };
 export type ProductImageMeta = { alt?: string; title?: string; caption?: string; width?: number; height?: number; fileName?: string };
+/** §4/§36: the canonical server pricing of a catalog row (resolved by the ONE server resolver).
+ *  Storefront cards, PDP, cart and checkout render THESE numbers — never a browser-made discount. */
+export type ProductPricingVariant = {
+  basePriceRial: string; finalPriceRial: string; discountAmountRial: string; discountSource: string;
+  compareAtPriceRial: string | null; installmentEnabled: boolean; installmentBasePriceRial: string | null;
+  installmentPriceRial: string | null; installmentDiscountAllowed: boolean;
+};
+export type ProductPricing = {
+  channel: "retail"; basePriceRial: string; finalPriceRial: string; discountAmountRial: string;
+  discountPercent: number; compareAtPriceRial: string | null; source: string;
+  matchedRuleId: string | null; matchedTarget: string | null;
+  installmentEnabled: boolean; installmentBasePriceRial: string | null; installmentDiscountAllowed: boolean;
+  variants: Record<string, ProductPricingVariant>;
+};
+
 export type Product = {
   status?: ProductStatus;
   video?: string;
@@ -62,12 +77,39 @@ export type Product = {
   genderCode?: string | null;
   /** Server variant rows (hydrated catalog only) — checkout resolves the exact variant. */
   variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number }[];
+  /** Canonical server resolution (absent only in the offline demo seed). */
+  pricing?: ProductPricing;
 };
+
+const rialToTomanSafe = (rial: string | null | undefined) => {
+  if (rial === null || rial === undefined || rial === "") return 0;
+  try { return Number(BigInt(String(rial)) / 10n); } catch { return 0; }
+};
+
+/** §36: the server-resolved unit price (in تومان) of one cart/color/size selection, or null when the
+ *  row carries no server pricing (offline demo) or the requested mode is not configured. */
+export function serverUnitToman(product: Product, color: string | null | undefined, size: string | null | undefined,
+  mode: "cash" | "four_installments" = "cash"): number | null {
+  const pricing = product.pricing;
+  if (!pricing) return null;
+  const norm = (value?: string | null) => (value ?? "").trim().toLowerCase();
+  const variants = product.variants ?? [];
+  const variant = variants.find((v) => norm(v.size) === norm(size) && norm(v.color) === norm(color))
+    ?? variants.find((v) => norm(v.color) === norm(color)) ?? variants[0];
+  const row = variant ? pricing.variants[variant.id] : undefined;
+  if (!row) return null;
+  if (mode === "four_installments") {
+    if (!row.installmentEnabled || row.installmentBasePriceRial === null) return null;
+    return rialToTomanSafe(row.installmentPriceRial ?? row.installmentBasePriceRial);
+  }
+  return rialToTomanSafe(row.finalPriceRial);
+}
 
 export const fmtMoney = (n: number | null | undefined) =>
   Number.isFinite(Number(n)) ? Number(n).toLocaleString("fa-IR") + " تومان" : "—";
 
-export const fourPaymentAmount = (product: Product) => Math.ceil((product.installmentPrice ?? product.retailPrice) / 4);
+export const fourPaymentAmount = (product: Product) =>
+  Math.ceil((serverUnitToman(product, null, null, "four_installments") ?? product.installmentPrice ?? product.retailPrice) / 4);
 
 export const nextSku = (products: Product[], supplierId: string, category: string) => {
   const owner = supplierId === "kolbe" ? "KV" : supplierId.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);

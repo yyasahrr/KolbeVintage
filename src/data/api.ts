@@ -1737,6 +1737,13 @@ export type AdminProductRow = NeedsSetupRow & {
   cover_file_id?: string | null;
   /** First active variant SKU — enough to recognise a product without opening it. */
   sku?: string | null;
+  /** §34: canonical price projection of the row (ONE server resolver, batched for the whole page). */
+  pricing?: {
+    retailBasePriceRial: string | null; retailFinalPriceRial: string | null; retailDiscountRial: string;
+    discountSource: string; compareAtPriceRial: string | null;
+    installmentBasePriceRial: string | null; installmentEnabled: boolean; installmentDiscountAllowed: boolean;
+    minSeriesTotalRial: string | null;
+  } | null;
 };
 /** §5: the five canonical «محصولات کلبه» views. */
 export type ProductCenterView = "all" | "drafts" | "published" | "out_of_stock" | "archived";

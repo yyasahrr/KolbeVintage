@@ -7,7 +7,7 @@ import { useOps } from "../data/ops";
 import { fileToUrl, removeBackground, sendToN8n } from "../components/media";
 import { authBlobUrl, filesApi, integrationsApi, productColorsApi, productStructureApi, productsApi, seriesTemplatesApi, sizeGuidesApi, specsApi } from "../data/api";
 import {
-  INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, buildProductCreatePayload, normalizeProductTypes, normalizeTaxonomies,
+  buildProductCreatePayload, normalizeProductTypes, normalizeTaxonomies,
   productVariantSkus, readProductCreateResponse, rialFromToman, variantKey, variantMatrix,
   type InstallmentPolicy, type ProductType as StructureProductType, type Taxonomy,
 } from "../data/contracts";
@@ -25,6 +25,9 @@ import { CanonicalSeriesLibrary, ProductSeriesEditor, productSeriesPayload } fro
 
 type F = (m: string) => void;
 const fa = (value: number | string) => String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
+/** §55: the two canonical «اعمال تخفیف روی خرید چهارقسطه» policies. Legacy `enabled` maps to «اعمال شود». */
+const installmentPolicyLabel = (policy: InstallmentPolicy) =>
+  policy === "disabled_when_discounted" ? "تخفیف روی چهارقسطه اعمال نشود" : "تخفیف روی چهارقسطه اعمال شود";
 
 /* §1/§26 (unified Product Studio): the ONE canonical nine-step journey. Exported so the hub can
    deep-link a row action straight into the right step (قیمت‌گذاری / موجودی اولیه / …). */
@@ -213,7 +216,7 @@ type Draft = {
   /** §9-§10: «مشخصات فنی» and «راهنمای سایز» as arbitrary Admin-defined 2D tables. */
   specsTable: DataTable; sizeGuideTable: DataTable;
 };
-const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [], productTypeId: "", genderCode: "", installmentPolicy: "enabled", wholesaleMoq: "", variantWeights: {}, specsTable: emptyTable(), sizeGuideTable: emptyTable() });
+const blank = (): Draft => ({ name: "", brand: "Kolbe", category: "پیراهن", sku: "", desc: "", fabric: "", care: "", retail: "", installment: "", seoTitle: "", slug: "", retailOn: true, wholesaleOn: true, colors: [COLORS.orange, COLORS.black], sizes: ["S", "M", "L", "XL"], images: [], video: "", videoFileId: null, series: [], cutout: { status: "none" }, typeCode: "", specs: {}, gender: "unisex", seasons: ["autumn", "winter"], vibes: [], productTypeId: "", genderCode: "", installmentPolicy: "disabled_when_discounted", wholesaleMoq: "", variantWeights: {}, specsTable: emptyTable(), sizeGuideTable: emptyTable() });
 
 type MatrixVariant = {
   id: string; sku: string; active: boolean; weight_grams: number | null;
@@ -748,6 +751,8 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
     : [];
   // §7 (corrective): Product Type is NOT required in the new flow — category drives the
   // schema when a profile exists, and its absence never blocks a definition.
+  /** §6/§7: installment is a retail capability — the switch is independent from the discount policy. */
+  const installmentEnabled = d.installmentPolicy !== "disabled";
   /** §30: every completion issue knows which section fixes it (review-step deep links). */
   const issueItems = [
     !d.name.trim() && { label: "نام محصول", sec: "base" },
@@ -755,7 +760,7 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
     !d.sizes.length && { label: "سایزها", sec: "variant" },
     !d.retailOn && !d.wholesaleOn && { label: "یک کانال فروش", sec: "price" },
     d.retailOn && !(Number(d.retail) > 0) && { label: "قیمت خرده", sec: "price" },
-    d.retailOn && d.installment && !(Number(d.installment) > 0) && { label: "قیمت چهارقسطه معتبر", sec: "price" },
+    d.retailOn && installmentEnabled && !(Number(d.installment) > 0) && { label: "قیمت پایه چهارقسطه", sec: "price" },
     d.wholesaleOn && !seriesComplete(d.series) && { label: "سری‌های عمده (قیمت، حداقل و رنگ)", sec: "price" },
     !d.images.length && { label: "دست‌کم یک تصویر", sec: "media" },
     ...missingCategorySpecs.map((field) => ({ label: `مشخصه «${field.label}» الزامی است`, sec: "specs" })),
@@ -770,8 +775,6 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
     { id: "both", label: "خرده + عمده", hint: "هر دو کانال هم‌زمان فعال", retail: true, wholesale: true },
   ];
   const salesMode: SalesMode = d.retailOn && d.wholesaleOn ? "both" : d.retailOn ? "retail" : "wholesale";
-  /** §6: installment is a retail capability — «غیرفعال» is a real state, not an empty field. */
-  const installmentEnabled = d.installmentPolicy !== "disabled";
   /** §8: Save Draft ≠ Publish. A Draft only has to be STRUCTURALLY valid — identity and
    *  category are mandatory, everything else may be completed later (§9). */
   const draftBlockers = [
@@ -972,6 +975,7 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
     description: d.desc,
     ...(d.retailOn && Number(d.retail) > 0 ? { cashPriceRial: rialFromToman(d.retail) } : {}),
     installmentPriceRial: d.retailOn && installmentEnabled && Number(d.installment) > 0 ? rialFromToman(d.installment) : null,
+    installmentEnabled: d.retailOn && installmentEnabled,
     metadata,
     gender: d.gender, seasons: d.seasons, vibes: d.vibes,
     ...(d.genderCode ? { genderCode: d.genderCode } : {}),
@@ -1498,22 +1502,29 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
                           label="خرید چهارقسطه"
                           hint="با روشن بودن، مشتری می‌تواند این کالا را در چهار قسط بخرد."
                           on={installmentEnabled}
-                          onChange={(on) => setD({ ...d, installmentPolicy: on ? "enabled" : "disabled" })}
+                          onChange={(on) => setD({ ...d, installmentPolicy: on ? "enabled_when_discounted" : "disabled" })}
                         />
                         {installmentEnabled && (
-                          <Field label="قیمت پایه چهارقسطه (تومان)" hint="خالی یعنی برابر قیمت نقدی">
-                            <Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} ariaLabel="قیمت پایه چهارقسطه (تومان)" />
-                          </Field>
-                        )}
-                        {installmentEnabled && Number(d.installment || d.retail) > 0 && (
-                          <p className="text-[12px] text-[var(--kv-muted)]">هر قسط: {fmtMoney(Math.ceil(Number(d.installment || d.retail) / 4))}</p>
+                          <>
+                            {/* §8: a separate, explicit price — never derived from the cash price. */}
+                            <Field label="قیمت پایه چهارقسطه (تومان)" hint="لازم است؛ این قیمت مستقل از قیمت نقدی ثبت می‌شود." required>
+                              <Input value={d.installment} onChange={(v) => setD({ ...d, installment: v.replace(/\D/g, "") })} ariaLabel="قیمت پایه چهارقسطه (تومان)" />
+                            </Field>
+                            {!(Number(d.installment) > 0) && (
+                              <p role="alert" className="text-[12px] font-bold text-[var(--kv-danger)]">برای فعال‌بودن خرید چهارقسطه، قیمت پایه چهارقسطه را وارد کنید.</p>
+                            )}
+                            {Number(d.installment) > 0 && (
+                              <p className="text-[12px] text-[var(--kv-muted)]">هر قسط: {fmtMoney(Math.ceil(Number(d.installment) / 4))}</p>
+                            )}
+                          </>
                         )}
                       </div>
                       {installmentEnabled && (
-                        <Field label="سیاست اعمال تخفیف روی خرید چهارقسطه" hint="سرور در تسویه‌حساب همین سیاست را اعمال می‌کند">
-                          <Select options={([...INSTALLMENT_POLICIES]).map((policy) => INSTALLMENT_POLICY_LABEL[policy])}
-                            value={INSTALLMENT_POLICY_LABEL[d.installmentPolicy]}
-                            onChange={(label) => { const found = ([...INSTALLMENT_POLICIES]).find((policy) => INSTALLMENT_POLICY_LABEL[policy] === label); if (found) setD({ ...d, installmentPolicy: found }); }} />
+                        <Field label="سیاست اعمال تخفیف روی خرید چهارقسطه" hint="سیاست مستقل خرید چهارقسطه؛ تسویه‌حساب سرور همین انتخاب را اعمال می‌کند">
+                          <Select
+                            options={["تخفیف روی چهارقسطه اعمال نشود", "تخفیف روی چهارقسطه اعمال شود"]}
+                            value={installmentPolicyLabel(d.installmentPolicy)}
+                            onChange={(label) => setD({ ...d, installmentPolicy: label === "تخفیف روی چهارقسطه اعمال شود" ? "enabled_when_discounted" : "disabled_when_discounted" })} />
                         </Field>
                       )}
                     </div>
@@ -1801,7 +1812,9 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
                       ["تصاویر", `${d.images.length.toLocaleString("fa-IR")} تصویر${d.video ? " · ویدیو دارد" : ""}`],
                       ["حالت فروش", salesMode === "both" ? "خرده + عمده" : salesMode === "retail" ? "فقط خرده" : "فقط عمده"],
                       ["قیمت نقدی پایه", d.retailOn && d.retail ? fmtMoney(Number(d.retail)) : "—"],
-                      ["خرید چهارقسطه", !d.retailOn ? "—" : installmentEnabled ? (d.installment && Number(d.installment) > 0 ? fmtMoney(Number(d.installment)) : "فعال — برابر قیمت نقدی") : "غیرفعال"],
+                      ["خرید چهارقسطه", !d.retailOn ? "—" : installmentEnabled
+                        ? (Number(d.installment) > 0 ? `${fmtMoney(Number(d.installment))} · ${installmentPolicyLabel(d.installmentPolicy)}` : "ناقص — قیمت پایه چهارقسطه لازم است")
+                        : "غیرفعال"],
                       ["سری‌های عمده", d.wholesaleOn ? `${d.series.filter((s) => s.available).length.toLocaleString("fa-IR")} سری فعال` : "غیرفعال"],
                       ["مشخصات فنی", `${d.specsTable.columns.length.toLocaleString("fa-IR")} ستون · ${d.specsTable.rows.length.toLocaleString("fa-IR")} سطر`],
                       ["راهنمای سایز", `${d.sizeGuideTable.columns.length.toLocaleString("fa-IR")} ستون · ${d.sizeGuideTable.rows.length.toLocaleString("fa-IR")} سطر`],
