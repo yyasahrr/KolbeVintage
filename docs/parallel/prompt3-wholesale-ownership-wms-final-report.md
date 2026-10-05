@@ -14,7 +14,7 @@ Baseline for this prompt: Prompt-2 HEAD `56db7e3dd8493c74dba85fcbc60197595137231
 | --- | --- |
 | Session branch (all work committed here) | `arena/01a10ace-kolbevintage` |
 | Baseline (Prompt-2 close) | `56db7e3dd8493c74dba85fcbc601975951372314` (`56db7e3`) |
-| HEAD after this report commit | see §30 — **local == remote** after the pin commit |
+| HEAD (tip of this branch) | `c9424d2` (this report) followed by the docs pin commit — `git log -1` shows the tip; the tip was pushed and verified `local == remote` |
 | Merge-base with `origin/main` | `3cd9dace97e00e3131af018fb5b696f8c18d67fc` — `main` untouched, never merged |
 | Working tree | clean (no `dist/`, `node_modules/`, `.scratch/` or browser artifacts committed) |
 | Migration count | 51 — **no migration was added by Prompt 3** (see §23) |
@@ -443,7 +443,8 @@ decision entries):**
 | `9fae5a4` | fix(wms): idempotent destination receipt — `completed_with_discrepancy` is terminal and receipt confirmation replays |
 | `f08db66` | feat(wms-fe): name the wholesale→retail conversion in the approved vocabulary |
 | `a505c56` | test(wms): P3-WMS-001..020 acceptance matrix on the embedded harness (+ registration in `npm test`) |
-| _(this report + DEC-WMS-006/007)_ | docs(wms): Prompt-3 report and open decisions |
+| `c9424d2` | docs(wms): Prompt-3 final report (31 sections) and two open WMS decisions |
+| _(docs pin commit, tip)_ | docs(wms): pin the Prompt-3 report to the pushed HEAD and the commit table |
 
 **Verdict**
 
