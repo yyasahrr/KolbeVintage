@@ -418,9 +418,47 @@ export function registerProductTypeRoutes(app: FastifyInstance, pool: DbPool, co
     });
   });
 
+  /* §15 (browser-UAT delta): longer structural lists get search + active filter + count.
+     Additive: without query params the response is the same complete list as before. */
   app.get('/api/v1/admin/taxonomies', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'catalog:structure');
-    const rows = await pool.query('SELECT id, kind, code, label, active, position FROM product_taxonomies ORDER BY kind, position, label');
-    return { items: rows.rows };
+    const query = z.object({
+      kind: z.enum(['gender', 'season']).optional(),
+      q: z.string().trim().max(80).optional(),
+      active: z.enum(['0', '1']).optional(),
+    }).parse(request.query);
+    const rows = await pool.query(
+      `SELECT id, kind, code, label, active, position FROM product_taxonomies
+       WHERE ($1::text IS NULL OR kind = $1)
+         AND ($2::text IS NULL OR label ILIKE '%' || $2 || '%' OR code ILIKE '%' || $2 || '%')
+         AND ($3::text IS NULL OR active = ($3 = '1'))
+       ORDER BY kind, position, label`, [query.kind ?? null, query.q ?? null, query.active ?? null]);
+    return { items: rows.rows, total: rows.rowCount ?? rows.rows.length };
+  });
+
+  /* §12-§14 (browser-UAT delta): structural records need a real management lifecycle.
+     - label / active / position are editable (code stays IMMUTABLE: it is the reference key
+       used by products and by the storefront, so changing it would silently break history),
+     - delete is SAFE: an unreferenced value may be removed, a referenced one is refused with a
+       Persian explanation and the operator is directed to «غیرفعال کردن», which keeps every
+       historical product readable while hiding the value from NEW products. */
+  app.delete('/api/v1/admin/taxonomies/:id', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'catalog:structure');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    return transaction(pool, async (client) => {
+      const before = await one<{ id: string; kind: 'gender' | 'season'; code: string; label: string }>(
+        client, 'SELECT id, kind, code, label FROM product_taxonomies WHERE id = $1 FOR UPDATE', [id]);
+      if (!before) throw notFound();
+      const used = before.kind === 'gender'
+        ? await one<{ count: string }>(client, 'SELECT count(*)::text AS count FROM products WHERE gender_code = $1', [before.code])
+        : await one<{ count: string }>(client, 'SELECT count(*)::text AS count FROM products WHERE seasons @> ARRAY[$1]::text[]', [before.code]);
+      const references = Number(used?.count ?? 0);
+      if (references > 0) {
+        throw conflict(`«${before.label}» در ${references.toLocaleString('fa-IR')} محصول استفاده شده است و حذف آن تاریخچه را خراب می‌کند؛ به‌جای حذف، آن را «غیرفعال» کنید تا از فرم محصولات جدید حذف شود و محصولات قبلی سالم بمانند.`);
+      }
+      await client.query('DELETE FROM product_taxonomies WHERE id = $1', [id]);
+      await audit(client, user.id, 'taxonomy.deleted', 'product_taxonomy', id, before, undefined, request.ip);
+      return { id, deleted: true };
+    });
   });
 }

@@ -840,10 +840,20 @@ export const productStructureApi = {
     apiClient.del<unknown>(`/admin/product-types/${typeId}/sizes/${sizeId}`),
   taxonomies: (kind?: "gender" | "season") =>
     publicApi.get<{ items: unknown[] }>(kind ? `/taxonomies?kind=${kind}` : "/taxonomies"),
-  adminTaxonomies: () => apiClient.get<{ items: unknown[] }>("/admin/taxonomies"),
+  /** §15: longer structural lists are filterable ON THE SERVER (q / active) with a real total. */
+  adminTaxonomies: (kind?: "gender" | "season", params?: { q?: string; active?: boolean }) => {
+    const search = new URLSearchParams();
+    if (kind) search.set("kind", kind);
+    if (params?.q?.trim()) search.set("q", params.q.trim());
+    if (params?.active !== undefined) search.set("active", params.active ? "1" : "0");
+    const qs = search.toString();
+    return apiClient.get<{ items: unknown[]; total?: number }>(`/admin/taxonomies${qs ? `?${qs}` : ""}`);
+  },
   createTaxonomy: (payload: { kind: "gender" | "season"; code: string; label: string; active?: boolean; position?: number }) =>
     apiClient.post<unknown>("/admin/taxonomies", payload),
   updateTaxonomy: (id: string, payload: unknown) => apiClient.patch<unknown>(`/admin/taxonomies/${id}`, payload),
+  /** §13: safe delete — unreferenced values are removed, referenced ones answer 409 + a Persian reason. */
+  deleteTaxonomy: (id: string) => apiClient.del<unknown>(`/admin/taxonomies/${id}`),
 };
 
 /* --------------------- product colors (Req 30) --------------------- */

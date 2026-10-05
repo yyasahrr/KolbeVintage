@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Pencil, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
-import { Btn, Card, WorkspaceModal, Empty, Field, Input, LoadingState, Select, Segmented, Status, Switch, Textarea } from "./primitives";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Ban, Check, ChevronDown, ChevronLeft, Pencil, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { Btn, Card, Checkbox, WorkspaceModal, Empty, Field, Input, LoadingState, SearchBox, Select, Segmented, Status, Switch, Textarea } from "./primitives";
 import { CategoryProfilesPanel } from "./category-profiles-panel";
 import { filesApi, productStructureApi, specsApi, sizeGuidesApi } from "../data/api";
 import {
   SPEC_TYPES, SPEC_TYPE_LABEL, SIZE_GUIDE_STATUS_LABEL, isSpecAttributeType,
-  normalizeTaxonomies, normalizeSpecAttributes, normalizeSpecTemplate, normalizeSizeGuides, normalizeSizeGuide,
+  normalizeTaxonomies, normalizeProductTypes, normalizeSpecAttributes, normalizeSpecTemplate, normalizeSizeGuides, normalizeSizeGuide,
+  type ProductType, type ProductTypeSize,
   type SpecAttribute, type SpecTemplate, type SizeGuide, type Taxonomy, type SpecAttributeType,
 } from "../data/contracts";
 import { cn } from "../utils/cn";
@@ -16,38 +17,170 @@ type F = (message: string) => void;
 
 /* ================= Gender / season taxonomies (items 245-247) ================= */
 
+/** §12-§15 (browser-UAT delta): gender/season are REAL structural records, not toggles.
+ *  Every row now offers ویرایش / فعال‌وغیرفعال / حذف plus display-order controls, the list is
+ *  searchable + filterable with a result count, and delete is SAFE: the server refuses a
+ *  referenced value with a Persian explanation and points the operator at «غیرفعال کردن».
+ *  Codes stay read-only — they are the reference key used by existing products. */
 function TaxonomySection({ flash }: { flash: F }) {
   const [items, setItems] = useState<Taxonomy[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, { code: string; label: string }>>({ gender: { code: "", label: "" }, season: { code: "", label: "" } });
+  const [searchText, setSearchText] = useState("");
+  const [activeFilter, setActiveFilter] = useState(""); // "" | "1" | "0"
+  const [total, setTotal] = useState(0);
+  const [edit, setEdit] = useState<{ id: string; code: string; label: string; active: boolean; position: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Taxonomy | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
   const load = useCallback(async () => {
-    try { setItems(await productStructureApi.adminTaxonomies().then(normalizeTaxonomies)); }
-    catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری رده‌بندی‌ها"); }
-  }, [flash]);
+    try {
+      const res = await productStructureApi.adminTaxonomies(undefined, {
+        q: searchText, active: activeFilter === "" ? undefined : activeFilter === "1",
+      });
+      const list = normalizeTaxonomies(res);
+      setItems(list);
+      setTotal(Number((res as { total?: number }).total ?? list.length));
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری رده‌بندی‌ها"); }
+  }, [flash, searchText, activeFilter]);
   useEffect(() => { void load(); }, [load]);
   if (!items) return <LoadingState label="در حال بارگذاری رده‌بندی‌ها…" />;
+
+  const toggle = async (item: Taxonomy) => {
+    try { await productStructureApi.updateTaxonomy(item.id, { active: !item.active }); await load(); flash(item.active ? `«${item.label}» غیرفعال شد؛ محصولات قبلی سالم می‌مانند.` : `«${item.label}» فعال شد.`); }
+    catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت"); }
+  };
+  const move = async (item: Taxonomy, delta: number) => {
+    const list = (items ?? []).filter((entry) => entry.kind === item.kind);
+    const index = list.findIndex((entry) => entry.id === item.id);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= list.length) return;
+    const reordered = [...list];
+    [reordered[index], reordered[target]] = [reordered[target]!, reordered[index]!];
+    setBusy(true);
+    try {
+      await Promise.all(reordered.map((entry, position) => (entry.position === position ? null : productStructureApi.updateTaxonomy(entry.id, { position }))));
+      await load();
+      flash("ترتیب نمایش ذخیره شد.");
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره ترتیب"); }
+    finally { setBusy(false); }
+  };
+  const remove = async (item: Taxonomy) => {
+    setBusy(true); setDeleteError(null);
+    try {
+      await productStructureApi.deleteTaxonomy(item.id);
+      setPendingDelete(null);
+      await load();
+      flash(`«${item.label}» حذف شد.`);
+    } catch (e) { setDeleteError(e instanceof Error ? e.message : "حذف ممکن نیست؛ آن را غیرفعال کنید."); }
+    finally { setBusy(false); }
+  };
+
   const kinds: { kind: "gender" | "season"; title: string }[] = [{ kind: "gender", title: "جنسیت مخاطب" }, { kind: "season", title: "فصل" }];
   return (
-    <div className="grid gap-5 xl:grid-cols-2">
-      {kinds.map(({ kind, title }) => (
-        <Card key={kind} className="h-fit p-5">
-          <p className="text-sm font-extrabold">{title}</p>
-          <p className="mt-1 text-[12px] text-[var(--kv-muted)]">مقادیر فعال همین‌جا در فرم تعریف محصول نمایش داده می‌شوند.</p>
-          <div className="mt-3 space-y-1.5">
-            {items.filter((item) => item.kind === kind).map((item) => (
-              <div key={item.id} className={cn("flex items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2", !item.active && "opacity-55")}>
-                <b className="text-[13px]">{item.label}</b><span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{item.code}</span>
-                <span className="mr-auto"><Switch on={item.active} onToggle={() => void (async () => { try { await productStructureApi.updateTaxonomy(item.id, { active: !item.active }); await load(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } })()} /></span>
+    <div className="space-y-3">
+      {/* §15: search + active filter + result count, all server-backed. */}
+      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+        <div className="min-w-[200px] flex-1"><SearchBox value={searchText} onChange={setSearchText} placeholder="جست‌وجو در برچسب یا کد…" /></div>
+        <label className="flex items-center gap-1.5">
+          <span className="text-[var(--kv-muted)]">وضعیت</span>
+          <select aria-label="فیلتر وضعیت رده‌بندی" value={activeFilter} onChange={(e) => setActiveFilter(e.target.value)}
+            className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] px-2 py-1.5">
+            <option value="">همه</option><option value="1">فعال</option><option value="0">غیرفعال</option>
+          </select>
+        </label>
+        <span className="text-[11.5px] text-[var(--kv-muted)]" aria-live="polite">{total.toLocaleString("fa-IR")} مورد</span>
+        {(searchText.trim() || activeFilter) && (
+          <button type="button" className="rounded-lg border border-[var(--kv-line)] px-3 py-1.5 font-bold hover:border-[var(--kv-danger)] hover:text-[var(--kv-danger)]"
+            onClick={() => { setSearchText(""); setActiveFilter(""); }}>پاک کردن فیلترها</button>
+        )}
+      </div>
+      <div className="grid gap-5 xl:grid-cols-2">
+        {kinds.map(({ kind, title }) => {
+          const rows = items.filter((item) => item.kind === kind);
+          return (
+            <Card key={kind} className="h-fit p-5">
+              <p className="text-sm font-extrabold">{title}</p>
+              <p className="mt-1 text-[12px] text-[var(--kv-muted)]">مقادیر فعال همین‌جا در فرم تعریف محصول نمایش داده می‌شوند؛ غیرفعال‌ها فقط از فرم محصولات جدید حذف می‌شوند و تاریخچه دست‌نخورده می‌ماند.</p>
+              <div className="mt-3 space-y-1.5">
+                {rows.map((item, index) => (
+                  <div key={item.id} className={cn("flex flex-wrap items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2", !item.active && "opacity-60")}>
+                    <b className="text-[13px]">{item.label}</b>
+                    <span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{item.code}</span>
+                    {!item.active && <Status value="غیرفعال" />}
+                    <span className="mr-auto flex items-center gap-1">
+                      <RowAction label={`انتقال ${item.label} به بالا`} disabled={busy || index === 0} onClick={() => void move(item, -1)}><ArrowUp size={13} /></RowAction>
+                      <RowAction label={`انتقال ${item.label} به پایین`} disabled={busy || index === rows.length - 1} onClick={() => void move(item, 1)}><ArrowDown size={13} /></RowAction>
+                      <RowAction label={`ویرایش ${item.label}`} onClick={() => setEdit({ id: item.id, code: item.code, label: item.label, active: item.active, position: String(item.position) })}><Pencil size={13} /></RowAction>
+                      <RowAction label={item.active ? `غیرفعال کردن ${item.label}` : `فعال کردن ${item.label}`} disabled={busy} onClick={() => void toggle(item)}>{item.active ? <Ban size={13} /> : <Check size={13} />}</RowAction>
+                      <RowAction danger label={`حذف ${item.label}`} disabled={busy} onClick={() => { setDeleteError(null); setPendingDelete(item); }}><Trash2 size={13} /></RowAction>
+                    </span>
+                  </div>
+                ))}
+                {rows.length === 0 && <p className="py-2 text-[12px] text-[var(--kv-muted)]">موردی مطابق فیلتر نیست.</p>}
               </div>
-            ))}
+              <div className="mt-3 flex flex-wrap items-end gap-2">
+                <Field label="کد"><Input value={drafts[kind]!.code} onChange={(v) => setDrafts({ ...drafts, [kind]: { ...drafts[kind]!, code: v } })} placeholder={kind === "gender" ? "female" : "autumn"} /></Field>
+                <Field label="برچسب"><Input value={drafts[kind]!.label} onChange={(v) => setDrafts({ ...drafts, [kind]: { ...drafts[kind]!, label: v } })} placeholder={kind === "gender" ? "زنانه" : "پاییز"} /></Field>
+                <Btn variant="soft" size="sm" icon={<Plus size={14} />} disabled={!drafts[kind]!.code.trim() || !drafts[kind]!.label.trim()} onClick={() => void (async () => { try { await productStructureApi.createTaxonomy({ kind, code: drafts[kind]!.code.trim().toLowerCase(), label: drafts[kind]!.label.trim() }); setDrafts({ ...drafts, [kind]: { code: "", label: "" } }); await load(); flash("مقدار جدید اضافه شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن"); } })()}>افزودن</Btn>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* §14: only operator-facing fields — no UUID, no timestamp, no raw column. */}
+      <WorkspaceModal open={!!edit} onClose={() => setEdit(null)} title={edit ? `ویرایش «${edit.label}»` : "ویرایش"}>
+        {edit && (
+          <div className="space-y-4">
+            <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] text-[var(--kv-muted)]">
+              کد ثابت «<span dir="ltr">{edit.code}</span>» مرجع محصولات موجود است و تغییر نمی‌کند؛ فقط برچسب، ترتیب و وضعیت قابل ویرایش‌اند.
+            </p>
+            <Field label="برچسب"><Input value={edit.label} onChange={(v) => setEdit({ ...edit, label: v })} /></Field>
+            <Field label="ترتیب نمایش"><Input value={edit.position} onChange={(v) => { if (/^\d*$/.test(v)) setEdit({ ...edit, position: v }); }} /></Field>
+            <label className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-[13px] font-bold">فعال (نمایش در فرم محصولات جدید)<Switch on={edit.active} onToggle={() => setEdit({ ...edit, active: !edit.active })} /></label>
+            <Btn variant="accent" className="w-full" disabled={edit.label.trim().length < 2} onClick={() => void (async () => {
+              try {
+                await productStructureApi.updateTaxonomy(edit.id, { label: edit.label.trim(), active: edit.active, position: Number(edit.position) || 0 });
+                setEdit(null); await load(); flash("ذخیره شد.");
+              } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره"); }
+            })()}>ذخیره</Btn>
           </div>
-          <div className="mt-3 flex flex-wrap items-end gap-2">
-            <Field label="کد"><Input value={drafts[kind]!.code} onChange={(v) => setDrafts({ ...drafts, [kind]: { ...drafts[kind]!, code: v } })} placeholder={kind === "gender" ? "female" : "autumn"} /></Field>
-            <Field label="برچسب"><Input value={drafts[kind]!.label} onChange={(v) => setDrafts({ ...drafts, [kind]: { ...drafts[kind]!, label: v } })} placeholder={kind === "gender" ? "زنانه" : "پاییز"} /></Field>
-            <Btn variant="soft" size="sm" icon={<Plus size={14} />} disabled={!drafts[kind]!.code.trim() || !drafts[kind]!.label.trim()} onClick={() => void (async () => { try { await productStructureApi.createTaxonomy({ kind, code: drafts[kind]!.code.trim().toLowerCase(), label: drafts[kind]!.label.trim() }); setDrafts({ ...drafts, [kind]: { code: "", label: "" } }); await load(); flash("مقدار جدید اضافه شد"); } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن"); } })()}>افزودن</Btn>
+        )}
+      </WorkspaceModal>
+
+      {/* §13: delete asks for confirmation and explains the safe-delete rule up front. */}
+      <WorkspaceModal open={!!pendingDelete} onClose={() => { setPendingDelete(null); setDeleteError(null); }} title={pendingDelete ? `حذف «${pendingDelete.label}»` : "حذف"}>
+        {pendingDelete && (
+          <div className="space-y-3">
+            <p className="text-[12.5px] leading-6">
+              اگر این مقدار در هیچ محصولی استفاده نشده باشد برای همیشه حذف می‌شود. اگر استفاده شده باشد، حذف انجام نمی‌شود و باید آن را «غیرفعال» کنید تا از فرم محصولات جدید حذف شود و محصولات قبلی سالم بمانند.
+            </p>
+            {deleteError && <p role="alert" className="rounded-[10px] bg-red-50 px-3 py-2 text-[12px] font-bold leading-6 text-red-700">{deleteError}</p>}
+            <div className="flex gap-2">
+              <Btn variant="soft" onClick={() => { setPendingDelete(null); setDeleteError(null); }}>انصراف</Btn>
+              {!deleteError && <Btn variant="soft" className="text-[var(--kv-danger)]" disabled={busy} onClick={() => void remove(pendingDelete)}>حذف مقدار</Btn>}
+              {deleteError && <Btn variant="soft" disabled={busy} onClick={() => void (async () => { setPendingDelete(null); setDeleteError(null); await toggle(pendingDelete); })()}>غیرفعال کردن به‌جای حذف</Btn>}
+            </div>
           </div>
-        </Card>
-      ))}
+        )}
+      </WorkspaceModal>
     </div>
+  );
+}
+
+/** §12: shared row action — icon-only but always labelled for screen readers and tooltips. */
+function RowAction({ label, danger, disabled, onClick, children }: {
+  label: string; danger?: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode;
+}) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} aria-label={label} title={label}
+      className={cn("flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--kv-line)] text-[var(--kv-muted)] transition-colors",
+        "hover:border-[var(--kv-accent)] hover:text-[var(--kv-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--kv-accent)]",
+        danger && "hover:border-[var(--kv-danger)] hover:text-[var(--kv-danger)]",
+        disabled && "pointer-events-none opacity-40")}>
+      {children}
+    </button>
   );
 }
 
@@ -59,6 +192,9 @@ function AttributesSection({ flash }: { flash: F }) {
   const [items, setItems] = useState<SpecAttribute[] | null>(null);
   const [edit, setEdit] = useState<(ReturnType<typeof blankAttribute> & { id?: string }) | null>(null);
   const [optionDraft, setOptionDraft] = useState({ value: "", label: "" });
+  /* §15: long structural lists get search + active/inactive filter + a visible count. */
+  const [searchText, setSearchText] = useState("");
+  const [activeOnly, setActiveOnly] = useState(false);
   const load = useCallback(async () => {
     try { setItems(await specsApi.adminAttributes().then(normalizeSpecAttributes)); }
     catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری فیلدها"); }
@@ -83,6 +219,11 @@ function AttributesSection({ flash }: { flash: F }) {
       flash(edit.id ? "فیلد به‌روزرسانی شد" : "فیلد ساخته شد");
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره فیلد"); }
   };
+  const visibleAttributes = items.filter((attribute) => {
+    if (activeOnly && !attribute.active) return false;
+    const needle = searchText.trim().toLowerCase();
+    return !needle || attribute.label.toLowerCase().includes(needle) || attribute.code.toLowerCase().includes(needle);
+  });
   const isSelect = edit?.type === "single_select" || edit?.type === "multi_select";
   const isNumber = edit?.type === "number" || edit?.type === "decimal" || edit?.type === "measurement";
   const isText = edit?.type === "text" || edit?.type === "textarea";
@@ -93,12 +234,23 @@ function AttributesSection({ flash }: { flash: F }) {
         <p className="text-[13px] text-[var(--kv-muted)]">فیلدها یک‌بار اینجا تعریف می‌شوند و در قالب‌های مشخصات استفاده می‌شوند. مقادیر ذخیره‌شده با حذف فیلد پاک نمی‌شوند.</p>
         <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => { setEdit(blankAttribute()); setOptionDraft({ value: "", label: "" }); }}>فیلد جدید</Btn>
       </div>
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-[12px]">
+        <div className="min-w-[200px] flex-1"><SearchBox value={searchText} onChange={setSearchText} placeholder="جست‌وجو در برچسب یا کد فیلد…" /></div>
+        <Checkbox checked={activeOnly} onChange={setActiveOnly} label={<span className="text-[12px]">فقط فعال‌ها</span>} />
+        <span className="text-[11.5px] text-[var(--kv-muted)]" aria-live="polite">
+          {(searchText.trim() || activeOnly ? visibleAttributes.length : items.length).toLocaleString("fa-IR")} مورد{(searchText.trim() || activeOnly) ? " مطابق فیلتر" : ""}
+        </span>
+        {(searchText.trim() || activeOnly) && (
+          <button type="button" className="rounded-lg border border-[var(--kv-line)] px-3 py-1.5 font-bold hover:border-[var(--kv-danger)] hover:text-[var(--kv-danger)]"
+            onClick={() => { setSearchText(""); setActiveOnly(false); }}>پاک کردن فیلترها</button>
+        )}
+      </div>
       <Card className="overflow-hidden">
         <div className="kv-scroll overflow-x-auto">
           <table className="kv-table min-w-[860px]">
             <thead><tr><th>برچسب</th><th>کد</th><th>نوع</th><th>سطح</th><th>الزامی</th><th>فیلتر فروشگاه</th><th>فعال</th><th></th></tr></thead>
             <tbody>
-              {items.map((attribute) => (
+              {visibleAttributes.map((attribute) => (
                 <tr key={attribute.id}>
                   <td><b>{attribute.label}</b>{attribute.unit && <span className="text-[11px] text-[var(--kv-muted)]"> ({attribute.unit})</span>}</td>
                   <td className="font-mono text-[12px]" dir="ltr">{attribute.code}</td>
@@ -113,7 +265,7 @@ function AttributesSection({ flash }: { flash: F }) {
                   </span></td>
                 </tr>
               ))}
-              {items.length === 0 && <tr><td colSpan={8} className="py-8 text-center text-[var(--kv-muted)]">هنوز فیلدی تعریف نشده است.</td></tr>}
+              {visibleAttributes.length === 0 && <tr><td colSpan={8} className="py-8 text-center text-[var(--kv-muted)]">{items.length === 0 ? "هنوز فیلدی تعریف نشده است." : "موردی مطابق فیلتر نیست."}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -131,6 +283,7 @@ function AttributesSection({ flash }: { flash: F }) {
               <Field label="سطح"><Select options={["محصول", "واریانت"]} value={edit.scope === "variant" ? "واریانت" : "محصول"} onChange={(v) => setEdit({ ...edit, scope: v === "واریانت" ? "variant" : "product" })} /></Field>
               <Field label="واحد (اختیاری)"><Input value={edit.unit} onChange={(v) => setEdit({ ...edit, unit: v })} placeholder="cm" /></Field>
             </div>
+            <Field label="ترتیب نمایش" hint="۰ یعنی ابتدای فهرست"><Input value={edit.position} onChange={(v) => { if (/^\d*$/.test(v)) setEdit({ ...edit, position: v }); }} /></Field>
             {isSelect && (
               <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
                 <p className="mb-2 text-[12.5px] font-bold">گزینه‌های مجاز</p>
@@ -185,6 +338,7 @@ function TemplatesSection({ flash }: { flash: F }) {
   const [edit, setEdit] = useState<{ id?: string; code: string; name: string; description: string; active: boolean } | null>(null);
   const [groupName, setGroupName] = useState("");
   const [attach, setAttach] = useState({ attributeId: "", groupId: "" });
+  const [searchText, setSearchText] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -220,14 +374,24 @@ function TemplatesSection({ flash }: { flash: F }) {
           <p className="text-sm font-extrabold">قالب‌ها ({templates.length.toLocaleString("fa-IR")})</p>
           <Btn variant="accent" size="sm" icon={<Plus size={14} />} onClick={() => setEdit({ code: "", name: "", description: "", active: true })}>قالب جدید</Btn>
         </div>
+        <div className="mb-2">
+          <SearchBox value={searchText} onChange={setSearchText} placeholder="جست‌وجو در نام یا کد قالب…" />
+        </div>
         <div className="space-y-1.5">
-          {templates.map((template) => (
+          {templates.filter((template) => {
+            const needle = searchText.trim().toLowerCase();
+            return !needle || template.name.toLowerCase().includes(needle) || template.code.toLowerCase().includes(needle);
+          }).map((template) => (
             <button key={template.id} onClick={() => setSel(template.id)} className={cn("flex w-full items-center gap-2 rounded-[10px] border px-3 py-2.5 text-right", sel === template.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>
               <span className="min-w-0 flex-1"><b className="block truncate text-[13px]">{template.name}</b><span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{template.code}</span></span>
               {!template.active && <Status value="غیرفعال" />}
             </button>
           ))}
           {templates.length === 0 && <Empty title="قالبی نیست" desc="قالب مشخصات هر نوع محصول را اینجا بسازید." />}
+          {templates.length > 0 && searchText.trim() && !templates.some((template) => {
+            const needle = searchText.trim().toLowerCase();
+            return template.name.toLowerCase().includes(needle) || template.code.toLowerCase().includes(needle);
+          }) && <p className="py-2 text-center text-[12px] text-[var(--kv-muted)]">موردی مطابق جست‌وجو نیست.</p>}
         </div>
       </Card>
       <Card className="h-fit p-5">
@@ -311,6 +475,10 @@ function GuidesSection({ flash }: { flash: F }) {
   // QA2-SIZE-005: in-place column rename + row edit state
   const [colEdit, setColEdit] = useState<{ id: string; label: string; unit: string } | null>(null);
   const [rowEdit, setRowEdit] = useState<{ id: string; values: Record<string, string> } | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<SizeGuide | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -331,22 +499,42 @@ function GuidesSection({ flash }: { flash: F }) {
     try { setDetail(await sizeGuidesApi.detail(id).then(normalizeSizeGuide)); await load(); }
     catch (e) { flash(e instanceof Error ? e.message : "خطا در خواندن راهنما"); }
   };
+  /* §13: safe delete — the server refuses a linked/versioned guide with a Persian reason. */
+  const removeGuide = async (guide: SizeGuide) => {
+    setBusy(true); setDeleteError(null);
+    try {
+      await sizeGuidesApi.remove(guide.id);
+      setPendingDelete(null); setDetail(null); await load(); flash(`راهنمای «${guide.name}» حذف شد.`);
+    } catch (e) { setDeleteError(e instanceof Error ? e.message : "حذف ممکن نیست؛ آن را بایگانی کنید."); }
+    finally { setBusy(false); }
+  };
   if (!guides) return <LoadingState label="در حال بارگذاری راهنمای سایز…" />;
+  const visibleGuides = guides.filter((guide) => {
+    const needle = searchText.trim().toLowerCase();
+    return !needle || guide.name.toLowerCase().includes(needle) || guide.code.toLowerCase().includes(needle);
+  });
 
   return (
     <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)]">
       <Card className="h-fit p-4">
         <div className="mb-3 flex items-center justify-between">
-          <p className="text-sm font-extrabold">راهنماها ({guides.length.toLocaleString("fa-IR")})</p>
+          <p className="text-sm font-extrabold">راهنماها ({visibleGuides.length.toLocaleString("fa-IR")}/{guides.length.toLocaleString("fa-IR")})</p>
           <Btn variant="accent" size="sm" icon={<Plus size={14} />} onClick={() => setEdit({ code: "", name: "", description: "", status: "active" })}>راهنمای جدید</Btn>
         </div>
+        <div className="mb-2"><SearchBox value={searchText} onChange={setSearchText} placeholder="جست‌وجو در نام یا کد راهنما…" /></div>
         <div className="space-y-1.5">
-          {guides.map((guide) => (
-            <button key={guide.id} onClick={() => setSel(guide.id)} className={cn("flex w-full items-center gap-2 rounded-[10px] border px-3 py-2.5 text-right", sel === guide.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>
-              <span className="min-w-0 flex-1"><b className="block truncate text-[13px]">{guide.name}</b><span className="text-[11px] text-[var(--kv-muted)]">نسخه {guide.version.toLocaleString("fa-IR")} · {SIZE_GUIDE_STATUS_LABEL[guide.status] ?? guide.status}</span></span>
-            </button>
+          {visibleGuides.map((guide) => (
+            <div key={guide.id} className={cn("flex items-center gap-2 rounded-[10px] border px-3 py-2.5", sel === guide.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.06]" : "border-[var(--kv-line)]")}>
+              <button onClick={() => setSel(guide.id)} className="min-w-0 flex-1 text-right">
+                <b className="block truncate text-[13px]">{guide.name}</b>
+                <span className="text-[11px] text-[var(--kv-muted)]">نسخه {guide.version.toLocaleString("fa-IR")} · {SIZE_GUIDE_STATUS_LABEL[guide.status] ?? guide.status}</span>
+              </button>
+              <RowAction label={`ویرایش ${guide.name}`} onClick={() => setEdit({ id: guide.id, code: guide.code, name: guide.name, description: guide.description, status: guide.status })}><Pencil size={13} /></RowAction>
+              <RowAction danger label={`حذف ${guide.name}`} disabled={busy} onClick={() => { setDeleteError(null); setPendingDelete(guide); }}><Trash2 size={13} /></RowAction>
+            </div>
           ))}
           {guides.length === 0 && <Empty title="راهنمایی نیست" desc="جدول سایز هر دسته را اینجا بسازید." />}
+          {guides.length > 0 && visibleGuides.length === 0 && <p className="py-2 text-center text-[12px] text-[var(--kv-muted)]">موردی مطابق جست‌وجو نیست.</p>}
         </div>
       </Card>
       <Card className="h-fit p-5">
@@ -463,6 +651,18 @@ function GuidesSection({ flash }: { flash: F }) {
           </div>
         )}
       </Card>
+      <WorkspaceModal open={!!pendingDelete} onClose={() => { setPendingDelete(null); setDeleteError(null); }} title={pendingDelete ? `حذف راهنمای «${pendingDelete.name}»` : "حذف راهنما"}>
+        {pendingDelete && (
+          <div className="space-y-3">
+            <p className="text-[12.5px] leading-6">اگر این راهنما به محصولی وصل نباشد و نسخه جدیدتری هم نداشته باشد برای همیشه حذف می‌شود. در غیر این صورت حذف انجام نمی‌شود و بهتر است وضعیت آن را «بایگانی» کنید تا اتصال‌های موجود سالم بمانند.</p>
+            {deleteError && <p role="alert" className="rounded-[10px] bg-red-50 px-3 py-2 text-[12px] font-bold leading-6 text-red-700">{deleteError}</p>}
+            <div className="flex gap-2">
+              <Btn variant="soft" onClick={() => { setPendingDelete(null); setDeleteError(null); }}>انصراف</Btn>
+              {!deleteError && <Btn variant="soft" className="text-[var(--kv-danger)]" disabled={busy} onClick={() => void removeGuide(pendingDelete)}>حذف راهنما</Btn>}
+            </div>
+          </div>
+        )}
+      </WorkspaceModal>
       <WorkspaceModal open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "ویرایش راهنما" : "راهنمای جدید"}>
         {edit && (
           <div className="space-y-4">
@@ -480,15 +680,194 @@ function GuidesSection({ flash }: { flash: F }) {
   );
 }
 
+/* ============ Product types + their sizes (items 4-10) — §12-§15 ============
+   The API always supported a full lifecycle here; the surface only exposed it read-only from the
+   product form. Types and sizes are structural dictionaries, so they get the same management
+   actions as gender/season: ویرایش / فعال‌وغیرفعال / حذف + ordering, search and a result count.
+   Deleting is SAFE: the server refuses a referenced type/size with a Persian reason and points to
+   «غیرفعال کردن», which keeps every existing product readable. */
+
+function TypesSizesSection({ flash }: { flash: F }) {
+  const [types, setTypes] = useState<ProductType[] | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [typeEdit, setTypeEdit] = useState<{ id?: string; code: string; name: string; description: string; active: boolean; position: string } | null>(null);
+  const [sizeEdit, setSizeEdit] = useState<{ typeId: string; id: string; label: string; active: boolean; position: string } | null>(null);
+  const [sizeDrafts, setSizeDrafts] = useState<Record<string, { code: string; label: string }>>({});
+  const [pendingDelete, setPendingDelete] = useState<{ kind: "type" | "size"; typeId: string; id: string; name: string } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setTypes(await productStructureApi.types().then(normalizeProductTypes)); }
+    catch (e) { flash(e instanceof Error ? e.message : "خطا در بارگذاری انواع محصول"); }
+  }, [flash]);
+  useEffect(() => { void load(); }, [load]);
+  if (!types) return <LoadingState label="در حال بارگذاری انواع محصول و سایزها…" />;
+
+  const visibleTypes = types.filter((type) => {
+    const needle = searchText.trim().toLowerCase();
+    return !needle || type.name.toLowerCase().includes(needle) || type.code.toLowerCase().includes(needle);
+  });
+  const run = async (task: () => Promise<unknown>, message: string) => {
+    try { await task(); await load(); flash(message); }
+    catch (e) { flash(e instanceof Error ? e.message : "عملیات ناموفق بود"); }
+  };
+  const remove = async (target: { kind: "type" | "size"; typeId: string; id: string }) => {
+    setBusy(true); setDeleteError(null);
+    try {
+      if (target.kind === "type") await productStructureApi.deleteType(target.id);
+      else await productStructureApi.deleteSize(target.typeId, target.id);
+      setPendingDelete(null); await load(); flash("حذف شد.");
+    } catch (e) { setDeleteError(e instanceof Error ? e.message : "حذف ممکن نیست؛ آن را غیرفعال کنید."); }
+    finally { setBusy(false); }
+  };
+  const moveSize = async (type: ProductType, size: ProductTypeSize, delta: number) => {
+    const index = type.sizes.findIndex((entry) => entry.id === size.id);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= type.sizes.length) return;
+    const order = type.sizes.map((entry) => entry.id);
+    [order[index], order[target]] = [order[target]!, order[index]!];
+    await run(() => productStructureApi.reorderSizes(type.id, order), "ترتیب سایزها ذخیره شد.");
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+        <div className="min-w-[200px] flex-1"><SearchBox value={searchText} onChange={setSearchText} placeholder="جست‌وجو در نام یا کد نوع محصول…" /></div>
+        <span className="text-[11.5px] text-[var(--kv-muted)]" aria-live="polite">{visibleTypes.length.toLocaleString("fa-IR")} نوع محصول</span>
+        <Btn variant="accent" size="sm" icon={<Plus size={14} />} onClick={() => setTypeEdit({ code: "", name: "", description: "", active: true, position: "0" })}>نوع محصول جدید</Btn>
+      </div>
+      <p className="text-[12px] leading-6 text-[var(--kv-muted)]">
+        سایزهای هر نوع محصول از همین‌جا تعریف می‌شوند و در فرم محصول به‌صورت خودکار نمایش داده می‌شوند؛ اگر نوع یا سایزی غیرفعال شود، محصولات قبلی سالم می‌مانند و فقط در محصولات جدید دیده نمی‌شود.
+      </p>
+      <div className="space-y-2">
+        {visibleTypes.map((type) => {
+          const open = openId === type.id;
+          const draft = sizeDrafts[type.id] ?? { code: "", label: "" };
+          return (
+            <Card key={type.id} className="p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-right" aria-expanded={open} onClick={() => setOpenId(open ? null : type.id)}>
+                  {open ? <ChevronDown size={15} /> : <ChevronLeft size={15} />}
+                  <b className="text-[13.5px]">{type.name}</b>
+                  <span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{type.code}</span>
+                  <span className="text-[11px] text-[var(--kv-muted)]">· {type.sizes.length.toLocaleString("fa-IR")} سایز</span>
+                  {!type.active && <Status value="غیرفعال" />}
+                </button>
+                <span className="flex items-center gap-1">
+                  <RowAction label={`ویرایش ${type.name}`} onClick={() => setTypeEdit({ id: type.id, code: type.code, name: type.name, description: type.description, active: type.active, position: String(type.position) })}><Pencil size={13} /></RowAction>
+                  <RowAction label={type.active ? `غیرفعال کردن ${type.name}` : `فعال کردن ${type.name}`} disabled={busy}
+                    onClick={() => void run(() => productStructureApi.updateType(type.id, { active: !type.active }), type.active ? `«${type.name}» غیرفعال شد.` : `«${type.name}» فعال شد.`)}>{type.active ? <Ban size={13} /> : <Check size={13} />}</RowAction>
+                  <RowAction danger label={`حذف ${type.name}`} disabled={busy} onClick={() => { setDeleteError(null); setPendingDelete({ kind: "type", typeId: type.id, id: type.id, name: type.name }); }}><Trash2 size={13} /></RowAction>
+                </span>
+              </div>
+              {open && (
+                <div className="mt-3 space-y-1.5 border-t border-[var(--kv-line)] pt-3">
+                  {type.sizes.map((size, index) => (
+                    <div key={size.id} className={cn("flex flex-wrap items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2", !size.active && "opacity-60")}>
+                      <b className="text-[13px]">{size.label}</b>
+                      <span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{size.code}</span>
+                      {!size.active && <Status value="غیرفعال" />}
+                      <span className="mr-auto flex items-center gap-1">
+                        <RowAction label={`انتقال ${size.label} به بالا`} disabled={busy || index === 0} onClick={() => void moveSize(type, size, -1)}><ArrowUp size={13} /></RowAction>
+                        <RowAction label={`انتقال ${size.label} به پایین`} disabled={busy || index === type.sizes.length - 1} onClick={() => void moveSize(type, size, 1)}><ArrowDown size={13} /></RowAction>
+                        <RowAction label={`ویرایش ${size.label}`} onClick={() => setSizeEdit({ typeId: type.id, id: size.id, label: size.label, active: size.active, position: String(size.position) })}><Pencil size={13} /></RowAction>
+                        <RowAction label={size.active ? `غیرفعال کردن ${size.label}` : `فعال کردن ${size.label}`} disabled={busy}
+                          onClick={() => void run(() => productStructureApi.updateSize(type.id, size.id, { active: !size.active }), size.active ? `سایز «${size.label}» غیرفعال شد.` : `سایز «${size.label}» فعال شد.`)}>{size.active ? <Ban size={13} /> : <Check size={13} />}</RowAction>
+                        <RowAction danger label={`حذف ${size.label}`} disabled={busy} onClick={() => { setDeleteError(null); setPendingDelete({ kind: "size", typeId: type.id, id: size.id, name: `${size.label} (${type.name})` }); }}><Trash2 size={13} /></RowAction>
+                      </span>
+                    </div>
+                  ))}
+                  {type.sizes.length === 0 && <p className="py-1 text-[12px] text-[var(--kv-muted)]">هنوز سایزی برای این نوع تعریف نشده است.</p>}
+                  <div className="flex flex-wrap items-end gap-2 pt-1">
+                    <Field label="کد سایز"><Input value={draft.code} onChange={(v) => setSizeDrafts({ ...sizeDrafts, [type.id]: { ...draft, code: v } })} placeholder="M" /></Field>
+                    <Field label="برچسب"><Input value={draft.label} onChange={(v) => setSizeDrafts({ ...sizeDrafts, [type.id]: { ...draft, label: v } })} placeholder="متوسط" /></Field>
+                    <Btn variant="soft" size="sm" icon={<Plus size={13} />} disabled={!draft.code.trim() || !draft.label.trim()}
+                      onClick={() => void (async () => {
+                        try {
+                          await productStructureApi.createSize(type.id, { code: draft.code.trim(), label: draft.label.trim(), position: type.sizes.length });
+                          setSizeDrafts({ ...sizeDrafts, [type.id]: { code: "", label: "" } });
+                          await load(); flash("سایز جدید اضافه شد.");
+                        } catch (e) { flash(e instanceof Error ? e.message : "خطا در افزودن سایز"); }
+                      })()}>افزودن سایز</Btn>
+                  </div>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+        {visibleTypes.length === 0 && <Empty title="نوع محصولی نیست" desc={types.length === 0 ? "نخستین نوع محصول را بسازید." : "موردی مطابق جست‌وجو نیست."} />}
+      </div>
+
+      <WorkspaceModal open={!!typeEdit} onClose={() => setTypeEdit(null)} title={typeEdit?.id ? "ویرایش نوع محصول" : "نوع محصول جدید"}>
+        {typeEdit && (
+          <div className="space-y-4">
+            {typeEdit.id
+              ? <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] text-[var(--kv-muted)]">کد ثابت «<span dir="ltr">{typeEdit.code}</span>» مرجع محصولات موجود است و تغییر نمی‌کند.</p>
+              : <Field label="کد (انگلیسی، یکتا)"><Input value={typeEdit.code} onChange={(v) => setTypeEdit({ ...typeEdit, code: v })} placeholder="coat" /></Field>}
+            <Field label="نام"><Input value={typeEdit.name} onChange={(v) => setTypeEdit({ ...typeEdit, name: v })} placeholder="کت" /></Field>
+            <Field label="توضیحات"><Textarea rows={2} value={typeEdit.description} onChange={(v) => setTypeEdit({ ...typeEdit, description: v })} /></Field>
+            <Field label="ترتیب نمایش"><Input value={typeEdit.position} onChange={(v) => { if (/^\d*$/.test(v)) setTypeEdit({ ...typeEdit, position: v }); }} /></Field>
+            <label className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-[13px] font-bold">فعال (نمایش در فرم محصولات جدید)<Switch on={typeEdit.active} onToggle={() => setTypeEdit({ ...typeEdit, active: !typeEdit.active })} /></label>
+            <Btn variant="accent" className="w-full" disabled={typeEdit.name.trim().length < 2 || (!typeEdit.id && !typeEdit.code.trim())} onClick={() => void (async () => {
+              try {
+                const payload = { name: typeEdit.name.trim(), description: typeEdit.description.trim(), active: typeEdit.active, position: Number(typeEdit.position) || 0 };
+                if (typeEdit.id) await productStructureApi.updateType(typeEdit.id, payload);
+                else await productStructureApi.createType({ ...payload, code: typeEdit.code.trim().toLowerCase() });
+                setTypeEdit(null); await load(); flash("نوع محصول ذخیره شد.");
+              } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره نوع محصول"); }
+            })()}>ذخیره</Btn>
+          </div>
+        )}
+      </WorkspaceModal>
+
+      <WorkspaceModal open={!!sizeEdit} onClose={() => setSizeEdit(null)} title={sizeEdit ? `ویرایش سایز «${sizeEdit.label}»` : "ویرایش سایز"}>
+        {sizeEdit && (
+          <div className="space-y-4">
+            <Field label="برچسب"><Input value={sizeEdit.label} onChange={(v) => setSizeEdit({ ...sizeEdit, label: v })} /></Field>
+            <Field label="ترتیب نمایش"><Input value={sizeEdit.position} onChange={(v) => { if (/^\d*$/.test(v)) setSizeEdit({ ...sizeEdit, position: v }); }} /></Field>
+            <label className="flex items-center justify-between rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-[13px] font-bold">فعال (نمایش در فرم محصولات جدید)<Switch on={sizeEdit.active} onToggle={() => setSizeEdit({ ...sizeEdit, active: !sizeEdit.active })} /></label>
+            <Btn variant="accent" className="w-full" disabled={sizeEdit.label.trim().length < 1} onClick={() => void (async () => {
+              try {
+                await productStructureApi.updateSize(sizeEdit.typeId, sizeEdit.id, { label: sizeEdit.label.trim(), active: sizeEdit.active, position: Number(sizeEdit.position) || 0 });
+                setSizeEdit(null); await load(); flash("سایز ذخیره شد.");
+              } catch (e) { flash(e instanceof Error ? e.message : "خطا در ذخیره سایز"); }
+            })()}>ذخیره</Btn>
+          </div>
+        )}
+      </WorkspaceModal>
+
+      <WorkspaceModal open={!!pendingDelete} onClose={() => { setPendingDelete(null); setDeleteError(null); }} title={pendingDelete ? `حذف «${pendingDelete.name}»` : "حذف"}>
+        {pendingDelete && (
+          <div className="space-y-3">
+            <p className="text-[12.5px] leading-6">
+              {pendingDelete.kind === "type"
+                ? "اگر این نوع محصول در هیچ محصولی استفاده نشده باشد برای همیشه حذف می‌شود؛ در غیر این صورت حذف رد می‌شود و باید آن را غیرفعال کنید."
+                : "اگر این سایز در هیچ واریانتی استفاده نشده باشد برای همیشه حذف می‌شود؛ در غیر این صورت حذف رد می‌شود و باید آن را غیرفعال کنید."}
+            </p>
+            {deleteError && <p role="alert" className="rounded-[10px] bg-red-50 px-3 py-2 text-[12px] font-bold leading-6 text-red-700">{deleteError}</p>}
+            <div className="flex gap-2">
+              <Btn variant="soft" onClick={() => { setPendingDelete(null); setDeleteError(null); }}>انصراف</Btn>
+              {!deleteError && <Btn variant="soft" className="text-[var(--kv-danger)]" disabled={busy} onClick={() => void remove(pendingDelete)}>حذف</Btn>}
+            </div>
+          </div>
+        )}
+      </WorkspaceModal>
+    </div>
+  );
+}
+
 /* ================= Section shell (item 135) ================= */
 
 export function ProductStructurePanel({ flash }: { flash: F }) {
-  const [tab, setTab] = useState<"categories" | "taxonomy" | "attributes" | "templates" | "guides" | "series">("categories");
+  const [tab, setTab] = useState<"categories" | "types" | "taxonomy" | "attributes" | "templates" | "guides" | "series">("categories");
   return (
     <div className="animate-[fadeUp_0.35s_ease]">
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <Segmented options={[
           { v: "categories", label: "دسته‌بندی و پیش‌فرض‌ها" },
+          { v: "types", label: "انواع محصول و سایز" },
           { v: "taxonomy", label: "جنسیت و فصل" },
           { v: "attributes", label: "فیلدهای مشخصات" },
           { v: "templates", label: "قالب‌های مشخصات" },
@@ -498,6 +877,7 @@ export function ProductStructurePanel({ flash }: { flash: F }) {
         <span className="mr-auto text-[12px] text-[var(--kv-muted)]">فرم تعریف محصول و فیلترهای فروشگاه از همین‌جا ساخته می‌شوند — بدون جدول ثابت در فرانت‌اند.</span>
       </div>
       {tab === "categories" && <CategoryProfilesPanel flash={flash} />}
+      {tab === "types" && <TypesSizesSection flash={flash} />}
       {tab === "taxonomy" && <TaxonomySection flash={flash} />}
       {tab === "attributes" && <AttributesSection flash={flash} />}
       {tab === "templates" && <TemplatesSection flash={flash} />}
