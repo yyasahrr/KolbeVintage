@@ -162,7 +162,7 @@ function RetailInventoryTab({ flash }: { flash: F }) {
     <div className="space-y-4">
       <Card className="flex flex-wrap items-center justify-between gap-3 p-3">
         <p className="text-[12px] leading-6 text-[var(--kv-muted)]">
-          تأمین موجودی خرده از انبار مرکزی عمده انجام می‌شود (باز کردن سری کامل). «اصلاح موجودی» فقط برای اصلاح/مرجوعی است.
+          تأمین موجودی خرده از انبار مرکزی عمده انجام می‌شود — «تبدیل عمده به خرده» با باز کردن سری کامل و انتقال همهٔ عددهای آن به انبار خرده. «اصلاح موجودی» فقط برای اصلاح/مرجوعی است.
         </p>
         <Btn size="sm" variant="accent" onClick={() => setWizardOpen(true)}>تأمین از عمده</Btn>
       </Card>
