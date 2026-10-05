@@ -2,11 +2,17 @@
    final corrective prompt). Replaces the 17-check K2 suite with end-to-end coverage:
    category schema, required/custom specs, colors, sizes, invalid-size rejection, true matrix
    with a disabled cell, media, size guide modes, pricing, wholesale series + MOQ, SEO, review
-   step, create with ZERO inventory mutation, needs-setup, WMS-only opening inventory, edit
-   roundtrip, unsaved-changes guard, localization & raw-field sweeps, responsive, RBAC/spoof.
+   step, SAVE DRAFT with ZERO inventory mutation, SAVE & CONTINUE handoff into «ورود اولیه کالا»,
+   draft-as-the-only-unfinished-state (the «نیازمند راه‌اندازی» lifecycle is retired), WMS-only
+   opening inventory with no auto-publish, edit roundtrip, unsaved-changes guard, localization
+   & raw-field sweeps, responsive, RBAC/spoof.
 
    Uses the RUNNING stack (API :4000 + vite :5173 + PGlite :55449). Screenshots → /tmp/kv-studio-shots.
-   Run: cd backend && LD_LIBRARY_PATH=/tmp/chromedeps/lib:/tmp/chromedeps KV_CHROME_PATH=/tmp/chromium node scripts/qa-product-studio.mjs */
+   Run: cd backend && LD_LIBRARY_PATH=/tmp/chromedeps/lib:/tmp/chromedeps KV_CHROME_PATH=/tmp/chromium node scripts/qa-product-studio.mjs
+
+   NOTE (Prompt 1): the «تعریف محصول» / «نیازمند راه‌اندازی» studio sub-views were replaced by the
+   «محصولات کلبه» hub (همه محصولات / پیش‌نویس‌ها / منتشرشده / ناموجود / آرشیوشده) and by the
+   [ذخیره پیش‌نویس] / [ذخیره و ادامه] / [انصراف] creation actions. This gate targets that IA. */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import puppeteer from 'puppeteer-core';
@@ -155,12 +161,22 @@ const loginConsole = async () => {
   }
   return (await text()).includes('برج کنترل');
 };
-const gotoProducts = async () => {
-  await clickExact('button', 'استودیو محصول');
-  await sleep(1000);
-  await clickExact('button', 'تعریف محصول'); /* canonical lifecycle sub-view in Product Studio */
+/** §6/§37: leave the Product Studio, accepting the unsaved-changes guard when it appears. */
+const closeStudio = async () => {
+  const left = (await clickText('button', 'انصراف')) || (await clickText('button', 'بازگشت به فهرست'));
   await sleep(700);
-  return waitText('تعریف محصول جدید');
+  if (!left) return false;
+  if ((await text()).includes('تغییرات ذخیره‌نشده')) { await clickText('button', 'خروج بدون ذخیره'); await sleep(800); }
+  return true;
+};
+/** §3: the canonical entry is the «محصولات کلبه» hub; lands on the full product list. */
+const gotoProducts = async () => {
+  await clickExact('button', 'محصولات کلبه');
+  await sleep(1000);
+  await clickExact('button', 'همه محصولات');
+  await sleep(900);
+  return waitText('جست‌وجوی نام، برند یا دسته…', 20)
+    || Boolean(await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]'));
 };
 
 try {
@@ -169,22 +185,23 @@ try {
   // Ignore expected unauthenticated bootstrap probes; collect browser diagnostics only for
   // authenticated Product Studio/WMS acceptance flows below.
   Object.assign(browserDiagnostics, { consoleErrors: [], pageErrors: [], apiErrors: [], httpErrors: [], requestFailures: [] });
-  await clickExact('button', 'استودیو محصول');
-  await sleep(1000);
+  await clickExact('button', 'محصولات کلبه');
+  await sleep(1200);
   const studioLanding = await text();
-  check('Product Studio owns definition, setup queue, and canonical catalog list',
-    ['تعریف محصول', 'نیازمند راه‌اندازی', 'همه کالاها'].every((label) => studioLanding.includes(label)));
+  check('«محصولات کلبه» owns definition + the five canonical lifecycle views',
+    ['همه محصولات', 'پیش‌نویس‌ها', 'منتشرشده', 'ناموجود', 'آرشیوشده'].every((label) => studioLanding.includes(label)));
+  check('«نیازمند راه‌اندازی» retired as a user-facing lifecycle', !studioLanding.includes('نیازمند راه‌اندازی'));
   await clickExact('button', 'انبار و موجودی (WMS)');
   await sleep(1200);
   await waitText('موجودی فیزیکی', 25);
   const wmsLanding = await text();
   check('WMS is physical inventory only (no product lifecycle/catalog tabs)',
     ['خرده‌فروشی', 'نقل‌وانتقالات', 'انبار عمده', 'تنظیمات انبار'].every((label) => wmsLanding.includes(label))
-      && !['تعریف محصول', 'نیازمند راه‌اندازی', 'همه کالاها'].some((label) => wmsLanding.includes(label)));
+      && !['همه محصولات', 'پیش‌نویس‌ها', 'تعریف محصول جدید', 'نیازمند راه‌اندازی'].some((label) => wmsLanding.includes(label)));
   check('WMS opens on a physical inventory screen', wmsLanding.includes('موجودی فیزیکی'));
-  check('Product Studio browser route is reachable', await gotoProducts());
+  check('«محصولات کلبه» browser route is reachable', await gotoProducts());
 
-  await clickText('button', 'تعریف محصول جدید');
+  await clickText('button', 'افزودن محصول');
   await sleep(1200);
   await shot('01-studio-open');
 
@@ -493,30 +510,41 @@ try {
   check('§30 review summary shows 5/6 matrix cells', (await text()).includes('۵ از ۶'));
   await shot('05-review');
 
-  /* ---------- §31: create — ZERO inventory mutation ---------- */
+  /* ---------- §7/§31: create — ZERO inventory mutation, canonical draft ---------- */
   const preSave = await page.evaluate(() => {
-    const issues = [...document.querySelectorAll('p')].find((n) => (n.textContent ?? '').includes('برای انتشار تکمیل کنید'))?.textContent ?? '';
-    const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('ذخیره و انتشار'));
-    return { issues, disabled: btn ? btn.disabled : null };
+    const issues = [...document.querySelectorAll('p')].find((n) => (n.textContent ?? '').includes('برای ادامه تکمیل کنید'))?.textContent ?? '';
+    const draftBtn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('ذخیره پیش‌نویس'));
+    const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('ذخیره و ادامه'));
+    const cancelBtn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === 'انصراف');
+    return { issues, disabled: btn ? btn.disabled : null, hasDraft: Boolean(draftBtn), hasCancel: Boolean(cancelBtn) };
   });
   if (preSave.disabled) console.log('DIAG pre-save:', JSON.stringify(preSave));
-  check('save clicked', await clickText('button', 'ذخیره و انتشار'), preSave.disabled ? preSave.issues : '');
-  check('§32 post-create summary shown', await waitText('محصول با موفقیت تعریف شد', 40));
-  const summaryText = await text();
-  check('§32 summary: variants=5, colors=2, series=2', summaryText.includes('۵') && summaryText.includes('۲'), 'see 06-summary.png');
-  check('§32 summary says «نیازمند راه‌اندازی»', summaryText.includes('نیازمند راه‌اندازی'));
-  check('§32 CTAs: مشاهده محصول / تعریف محصول بعدی / راه‌اندازی موجودی', ['مشاهده محصول', 'تعریف محصول بعدی', 'رفتن به راه‌اندازی موجودی'].every((c) => summaryText.includes(c)));
-  await shot('06-summary');
+  check('§7 creation actions are [ذخیره پیش‌نویس] / [ذخیره و ادامه] / [انصراف]',
+    preSave.hasDraft && preSave.hasCancel && !(await text()).includes('ذخیره و انتشار'),
+    JSON.stringify(preSave).slice(0, 120));
+  check('§12 [ذخیره و ادامه] clicked', await clickText('button', 'ذخیره و ادامه'), preSave.disabled ? preSave.issues : '');
+  check('§13 handoff opens «ورود اولیه کالا» with the product preselected (no search)',
+    await waitText('ورود اولیه کالا — ' + NAME, 40));
+  const handoffText = await text();
+  check('§13 no creation success page in the journey', !handoffText.includes('محصول با موفقیت تعریف شد'));
+  check('§13 handoff is the canonical audited WMS receipt workspace',
+    handoffText.includes('سند رسید انبار') && !handoffText.includes('نیازمند راه‌اندازی'));
+  await shot('06-handoff-initial-inventory');
+  /* close the handoff workspace — the product must survive the interruption as a draft */
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button[aria-label="بستن"]')].pop(); if (b) b.click(); });
+  await sleep(900);
 
   const movesAfterCreate = await count('SELECT count(*)::int AS n FROM stock_movements');
   const receiptsAfterCreate = await count('SELECT count(*)::int AS n FROM stock_receipts');
   check('§31/§93 stock_movements unchanged by create', movesAfterCreate === movesBefore, `${movesBefore} → ${movesAfterCreate}`);
   check('§31/§93 stock_receipts unchanged by create', receiptsAfterCreate === receiptsBefore, `${receiptsBefore} → ${receiptsAfterCreate}`);
 
-  const prodRow = (await db.query('SELECT id, inventory_setup, owner_type, product_type_id, supplier_id, wholesale_moq, cash_price_rial, installment_price_rial, wholesale_price_rial, retail_enabled, wholesale_enabled, category_id, specifications, metadata FROM products WHERE name = $1', [NAME])).rows[0];
+  const prodRow = (await db.query('SELECT id, status, inventory_setup, owner_type, product_type_id, supplier_id, wholesale_moq, cash_price_rial, installment_price_rial, wholesale_price_rial, retail_enabled, wholesale_enabled, category_id, specifications, metadata FROM products WHERE name = $1', [NAME])).rows[0];
   check('§31 product persisted', Boolean(prodRow));
   const PRODUCT_ID = prodRow?.id;
-  check('§31 inventory_setup=pending, owner=kolbe, supplier NULL', prodRow?.inventory_setup === 'pending' && prodRow?.owner_type === 'kolbe' && prodRow?.supplier_id === null);
+  check('§7 product persisted as پیش‌نویس (draft), owner=kolbe, supplier NULL',
+    prodRow?.status === 'draft' && prodRow?.inventory_setup === 'pending' && prodRow?.owner_type === 'kolbe' && prodRow?.supplier_id === null,
+    `status=${prodRow?.status} setup=${prodRow?.inventory_setup}`);
   check('§9 created WITHOUT product_type_id', prodRow?.product_type_id === null);
   check('§22 cash price server-side = 4,500,000 rial', String(prodRow?.cash_price_rial) === '4500000', prodRow?.cash_price_rial);
   check('§22 four-installment amount persisted separately = 4,800,000 rial', String(prodRow?.installment_price_rial) === '4800000', prodRow?.installment_price_rial);
@@ -536,12 +564,17 @@ try {
   check('§16 variant identity: server SKU + color + size on every row', variants.every((v) => v.id && /^KV-/.test(v.sku) && v.color_label && v.size_label));
   check('§17 weight persisted as catalog data', variants.some((v) => Number(v.weight_grams) === 420), variants.map((v) => v.weight_grams).join(','));
 
-  /* ---------- §33/§34: needs-setup + «—» semantics ---------- */
-  await clickText('button', 'رفتن به راه‌اندازی موجودی');
-  await sleep(1500);
-  check('§33 product listed in «نیازمند راه‌اندازی»', await waitText(NAME, 25));
-  check('§34 pre-setup inventory shown as «نیازمند راه‌اندازی» (not 0)', (await text()).includes('نیازمند راه‌اندازی'));
-  await shot('07-needs-setup');
+  /* ---------- §29/§33/§34: draft is the single authoritative unfinished state ---------- */
+  await gotoProducts();
+  await clickExact('button', 'پیش‌نویس‌ها');
+  await sleep(1200);
+  check('§33 interrupted draft is listed in «پیش‌نویس‌ها»', await waitText(NAME, 25));
+  const draftsText = await text();
+  check('§33 no «نیازمند راه‌اندازی» lifecycle/filter anywhere in the hub', !draftsText.includes('نیازمند راه‌اندازی'));
+  check('§14 draft row offers «ادامه تکمیل محصول»', draftsText.includes('ادامه تکمیل محصول'));
+  check('§34 pre-receipt inventory never reads as 0 (pending receipt)',
+    draftsText.includes('موجودی ثبت‌نشده') || draftsText.includes('—'));
+  await shot('07-drafts');
 
   /* ================= PHASE E — API-side: canonical recipes, invalid size, spoof, RBAC ================= */
   const recipeRows = (await db.query(`SELECT t.id,t.name,t.pricing_mode,t.total_price_rial::text,t.min_order_series,t.color_label,
@@ -604,8 +637,10 @@ try {
   const custCreate = await api('POST', '/products', { brand: 'x', name: 'نفوذ مشتری', category: CATEGORY, description: '',
     cashPriceRial: '1000000', variants: [{ color: 'مشکی', size: 'M' }] }, CUSTOMER);
   check('§42 customer POST /products → 403', custCreate.status === 403, `status=${custCreate.status}`);
-  const custAdmin = await api('GET', '/admin/products/needs-setup', undefined, CUSTOMER);
-  check('§42 customer admin needs-setup → 403', custAdmin.status === 403, `status=${custAdmin.status}`);
+  const custAdmin = await api('GET', '/admin/products?view=drafts&owner=kolbe', undefined, CUSTOMER);
+  check('§42 customer admin drafts list → 403', custAdmin.status === 403, `status=${custAdmin.status}`);
+  const custSetup = await api('POST', `/admin/products/${randomUUID()}/inventory-setup`, { retail: { mode: 'per_variant', perVariant: [] } }, CUSTOMER);
+  check('§42 customer initial-receipt API → 403', custSetup.status === 403, `status=${custSetup.status}`);
   /* §44: supplier cannot push a product into the retail channel */
   const SUPPLIER = await login('seed.supplier@kolbe.ir', 'Seed-Supplier-123456');
   const supRetail = await api('POST', '/products', { brand: 'x', name: `نفوذ تأمین QA${ts}`, category: CATEGORY, description: '',
@@ -620,12 +655,14 @@ try {
 
   /* ================= PHASE F — §11 custom product-specific spec + §21 detached guide (UI) ================= */
   await gotoProducts();
-  const searchBox = await page.$('input[placeholder="جست‌وجوی محصول یا SKU…"]');
+  const searchBox = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
   if (searchBox) { await searchBox.click({ clickCount: 3 }); await searchBox.type(NAME); await sleep(900); }
-  await clickText('button', 'مشخصات و راهنمای سایز');
-  await sleep(1500);
-  check('§11 product specs drawer opened', await waitText('افزودن مشخصه اختصاصی', 20));
-  await clickText('button', 'مشخصه اختصاصی');
+  await clickText('button', 'ویرایش');
+  check('§11 edit studio opened from server data', await waitText('ویرایش محصول ·', 25));
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'مشخصات فنی');
+  await sleep(1200);
+  check('§11 product specs section opened', await waitText('افزودن مشخصه اختصاصی', 20));
+  await clickText('button', 'افزودن مشخصه اختصاصی');
   await sleep(600);
   await selectOption('ساخت مشخصه جدید…');
   await sleep(500);
@@ -645,6 +682,8 @@ try {
     `SELECT count(*)::int AS n FROM spec_template_attributes ta JOIN spec_attributes a ON a.id = ta.attribute_id WHERE a.code = $1`, [`qa_wash_${ts}`]);
   check('§11 custom spec did NOT enter any global template', inTemplate === 0, `template rows=${inTemplate}`);
   /* §21 mode 3: product-specific DETACHED copy through the UI */
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'راهنمای سایز');
+  await sleep(1000);
   await selectOption(`راهنمای سایز پیراهن QA${ts}`);
   await selectOption('کپی ثابت');
   await clickText('button', 'اتصال');
@@ -655,19 +694,20 @@ try {
   await shot('08-specs-sizeguide');
   const guideMode = await api('GET', `/products/${PRODUCT_ID}/size-guide`);
   check('§21 server confirms mode=detached for this product', guideMode.json?.mode === 'detached', guideMode.json?.mode);
-  await page.evaluate(() => { [...document.querySelectorAll('button[aria-label="بستن"]')].pop()?.click(); });
-  await sleep(600);
+  await closeStudio();
 
   /* §11 persistence through full reload */
   await page.reload({ waitUntil: 'networkidle2' }); await sleep(1500);
   if (!(await text()).includes('برج کنترل')) await loginConsole();
   await gotoProducts();
-  const sb2 = await page.$('input[placeholder="جست‌وجوی محصول یا SKU…"]');
+  const sb2 = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
   if (sb2) { await sb2.click({ clickCount: 3 }); await sb2.type(NAME); await sleep(900); }
-  await clickText('button', 'مشخصات و راهنمای سایز');
+  await clickText('button', 'ویرایش');
+  await waitText('ویرایش محصول ·', 25);
+  await clickText('nav[aria-label="بخش‌های تعریف محصول"] button', 'مشخصات فنی');
+  await sleep(1000);
   check('§11 custom spec survives full reload (visible in editor)', await waitText('نوع شست‌وشو', 25));
-  await page.evaluate(() => { [...document.querySelectorAll('button[aria-label="بستن"]')].pop()?.click(); });
-  await sleep(600);
+  await closeStudio();
 
   /* ================= PHASE G — §36 EDIT ROUNDTRIP (release blocker) ================= */
   const metaBefore = JSON.stringify((await db.query('SELECT metadata, specifications FROM products WHERE id = $1', [PRODUCT_ID])).rows[0]);
@@ -689,7 +729,7 @@ try {
   await page.reload({ waitUntil: 'networkidle2' }); await sleep(1500);
   if (!(await text()).includes('برج کنترل')) await loginConsole();
   await gotoProducts();
-  const sb3 = await page.$('input[placeholder="جست‌وجوی محصول یا SKU…"]');
+  const sb3 = await page.$('input[placeholder="جست‌وجوی نام، برند یا دسته…"]');
   if (sb3) { await sb3.click({ clickCount: 3 }); await sb3.type(NAME); await sleep(900); }
   await clickText('button', 'ویرایش');
   await waitText('ویرایش محصول ·', 25);
@@ -761,19 +801,19 @@ try {
   await waitText('تغییرات ذخیره‌نشده', 10);
   await clickText('button', 'خروج بدون ذخیره');
   await sleep(800);
-  check('§37 discard leaves to the list', (await text()).includes('تعریف محصول جدید'));
+  check('§37 discard leaves to the «محصولات کلبه» list', (await text()).includes('افزودن محصول'));
   const nameUntouched = (await db.query('SELECT name FROM products WHERE id = $1', [PRODUCT_ID])).rows[0];
   check('§37 discarded edit did NOT touch the server', nameUntouched?.name === NAME, nameUntouched?.name);
   /* clean exit without changes → no confirm */
-  await clickText('button', 'تعریف محصول جدید');
-  await sleep(800);
-  await clickText('button', 'بازگشت به فهرست');
+  await clickText('button', 'افزودن محصول');
+  await sleep(1000);
+  await clickText('button', 'انصراف');
   await sleep(500);
   check('§37 pristine draft exits WITHOUT confirm', !(await text()).includes('تغییرات ذخیره‌نشده'));
 
   /* ---------- §38/§39: raw-field + Persian sweeps inside the studio ---------- */
-  await clickText('button', 'تعریف محصول جدید');
-  await sleep(900);
+  await clickText('button', 'افزودن محصول');
+  await sleep(1200);
   const sweep = await text();
   check('§38 no raw technical identifiers in studio DOM',
     !/product_type_code|productTypeId|owner_type|inventory_domain|target_type|metadata\.images|POST \/files/.test(sweep));
@@ -781,7 +821,7 @@ try {
   check('§39 no English inventory jargon (on-hand/available)', !/on-hand|available\b/.test(sweep));
 
   /* ---------- §40: responsive sweep (studio open, key sections) ---------- */
-  const viewports = [[360, 740], [390, 844], [768, 1024], [1024, 768], [1440, 1000]];
+  const viewports = [[360, 740], [390, 844], [768, 1024], [1024, 768], [1280, 800], [1440, 1000]];
   const responsiveIssues = [];
   for (const [w, h] of viewports) {
     await page.setViewport({ width: w, height: h });
@@ -802,7 +842,7 @@ try {
       if (overflow.extra > 8) responsiveIssues.push(`${w}px/${section}: overflow ${overflow.extra}px (${JSON.stringify(overflow.worst)})`);
     }
     const ctaVisible = await page.evaluate(() => {
-      const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('ذخیره و انتشار'));
+      const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('ذخیره و ادامه'));
       if (!btn) return false;
       btn.scrollIntoView({ block: 'center' });
       const r = btn.getBoundingClientRect();
@@ -811,7 +851,7 @@ try {
     if (!ctaVisible) responsiveIssues.push(`${w}px: save CTA clipped`);
     if (w === 360) await shot('10-responsive-360');
   }
-  check('§40 responsive 360/390/768/1024/1440 — no overflow, CTA reachable', responsiveIssues.length === 0, responsiveIssues.join(' | ') || 'clean');
+  check('§40 responsive 360/390/768/1024/1280/1440 — no overflow, CTA reachable', responsiveIssues.length === 0, responsiveIssues.join(' | ') || 'clean');
   await page.setViewport({ width: 1440, height: 1000 });
   await clickText('button', 'بازگشت به فهرست');
   await sleep(500);
@@ -827,9 +867,10 @@ try {
     throw new Error('§35 prerequisites missing — aborting phase K');
   }
   const auditBefore = await count("SELECT count(*)::int AS n FROM audit_logs WHERE action = 'product.inventory_setup'");
+  const IDEM_SETUP = `qa-setup-${ts}`;
   const setup = await api('POST', `/admin/products/${PRODUCT_ID}/inventory-setup`,
     { retail: { warehouseId: retailWh.id, mode: 'per_variant', perVariant: [{ variantId: blackS.id, quantity: 7 }] } },
-    ADMIN, { 'idempotency-key': `qa-setup-${ts}-${randomUUID().slice(0, 8)}` });
+    ADMIN, { 'idempotency-key': IDEM_SETUP });
   check('§35 opening inventory registered via WMS document', setup.status === 200 || setup.status === 201, `status=${setup.status} ${JSON.stringify(setup.json).slice(0, 120)}`);
   const movesAfterSetup = await count('SELECT count(*)::int AS n FROM stock_movements');
   const receiptsAfterSetup = await count('SELECT count(*)::int AS n FROM stock_receipts');
@@ -842,10 +883,22 @@ try {
   check('§34 post-setup zero-stock variants read as REAL 0 (4 balance rows)', zeroBalances === 4, `zero rows=${zeroBalances}`);
   const auditAfter = await count("SELECT count(*)::int AS n FROM audit_logs WHERE action = 'product.inventory_setup'");
   check('§35 audit row written', auditAfter === auditBefore + 1, `${auditBefore}→${auditAfter}`);
-  const setupState = (await db.query('SELECT inventory_setup FROM products WHERE id = $1', [PRODUCT_ID])).rows[0];
+  const setupState = (await db.query('SELECT inventory_setup, status FROM products WHERE id = $1', [PRODUCT_ID])).rows[0];
   check('§34 inventory_setup flipped to configured', setupState?.inventory_setup === 'configured');
-  const needsList = await api('GET', '/admin/products/needs-setup');
-  check('§33 product left the needs-setup queue', !(needsList.json?.items ?? []).some((p) => p.id === PRODUCT_ID));
+  check('§16 opening receipt does NOT auto-publish (status stays draft)', setupState?.status === 'draft', `status=${setupState?.status}`);
+  const draftsList = await api('GET', '/admin/products?view=drafts&owner=kolbe');
+  check('§34 configured draft remains پیش‌نویس until Admin publishes it',
+    (draftsList.json?.items ?? []).some((p) => p.id === PRODUCT_ID));
+  const pubList = await api('GET', '/admin/products?view=published&owner=kolbe');
+  check('§16 draft is absent from «منتشرشده» after the receipt',
+    !(pubList.json?.items ?? []).some((p) => p.id === PRODUCT_ID));
+  const setupReplay = await api('POST', `/admin/products/${PRODUCT_ID}/inventory-setup`,
+    { retail: { warehouseId: retailWh.id, mode: 'per_variant', perVariant: [{ variantId: blackS.id, quantity: 7 }] } },
+    ADMIN, { 'idempotency-key': IDEM_SETUP });
+  check('§20 initial receipt is idempotent under the same Idempotency-Key',
+    setupReplay.status === 200 || setupReplay.status === 201, `status=${setupReplay.status}`);
+  const balReplay = (await db.query("SELECT on_hand FROM stock_balances WHERE variant_id = $1 AND inventory_domain = 'retail'", [blackS.id])).rows[0];
+  check('§20 replay did NOT duplicate physical stock (on_hand still 7)', Number(balReplay?.on_hand) === 7, balReplay?.on_hand);
   check('browser has no uncaught page exceptions during Product Studio flow', browserDiagnostics.pageErrors.length === 0, browserDiagnostics.pageErrors.join(' | '));
   console.log('BROWSER_DIAGNOSTICS:', JSON.stringify(browserDiagnostics));
 } catch (err) {

@@ -592,7 +592,7 @@ try {
   }
 
   // Product Studio catalog-only create → post-create direct WMS setup handoff.
-  await openTab('استودیو محصول');
+  await openTab('محصولات کلبه');
   const studioProductName = `محصول شروع موجودی ${Date.now()}`;
   let studioProductId = null;
   const captureStudioCreate = async (response) => {
@@ -600,8 +600,9 @@ try {
     try { studioProductId = (await response.json()).id ?? studioProductId; } catch { /* not a JSON product response */ }
   };
   page.on('response', captureStudioCreate);
-  const formOpened = await clickByText('تعریف محصول جدید');
-  check('Product Studio opens its catalog definition form', formOpened && (await text()).includes('تعریف محصول جدید'));
+  const formOpened = await clickByText('افزودن محصول');
+  check('«محصولات کلبه» opens the canonical Product Studio definition form',
+    formOpened && (await text()).includes('تعریف محصول جدید'));
   const retailOnly = await clickByText('فقط خرده');
   const named = await setInput('نام محصول', studioProductName);
   await clickByText('رنگ و سایز');
@@ -624,46 +625,49 @@ try {
   await clickByText('بازبینی و انتشار');
   body = await text();
   const reviewReady = body.includes('همه بخش‌ها کامل است');
-  const saveClicked = reviewReady && await clickByText('ذخیره و انتشار');
-  const successVisible = await waitForText('محصول با موفقیت تعریف شد', 60);
+  const saveClicked = reviewReady && await clickByText('ذخیره و ادامه');
+  const successVisible = await waitForText(`ورود اولیه کالا — ${studioProductName}`, 60);
   page.off('response', captureStudioCreate);
   check('Product Studio catalog create validates retail product + image without stock fields',
     retailOnly && named && colorsSet && priceSet && productImageUploaded && reviewReady && saveClicked && successVisible,
     `channel=${retailOnly} colors=${colorsSet} image=${productImageUploaded} id=${studioProductId ?? 'missing'}`);
-  check('Product create success offers direct continuation to the canonical WMS workspace',
-    successVisible && (await text()).includes('رفتن به راه‌اندازی موجودی') && Boolean(studioProductId));
+  check('§13 [ذخیره و ادامه] hands off straight into «ورود اولیه کالا» — no success page',
+    successVisible && Boolean(studioProductId) && !(await text()).includes('محصول با موفقیت تعریف شد'));
 
   if (studioProductId) {
     const beforeSetup = await adminApi(`/admin/products/${studioProductId}`);
-    const pendingRow = await adminApi(`/admin/products/needs-setup?productId=${studioProductId}&limit=1`);
-    check('new Product Studio product has zero physical stock and remains setup-pending',
+    const draftsRow = await adminApi(`/admin/products?view=drafts&owner=kolbe&limit=200`);
+    check('new Product Studio product has zero physical stock and stays پیش‌نویس (draft)',
       beforeSetup.body.inventory_setup === 'pending'
+        && beforeSetup.body.status === 'draft'
         && beforeSetup.body.variants.every((variant) => Number(variant.on_hand) === 0)
-        && pendingRow.body.items.some((item) => item.id === studioProductId));
+        && draftsRow.body.items.some((item) => item.id === studioProductId),
+      `status=${beforeSetup.body.status} setup=${beforeSetup.body.inventory_setup}`);
   }
-  await clickByText('رفتن به راه‌اندازی موجودی');
-  const setupWorkspaceOpened = await waitForText(`راه‌اندازی موجودی — ${studioProductName}`, 60);
-  check('success CTA opens Needs Setup workspace preselected by productId',
-    setupWorkspaceOpened && Boolean(studioProductId) && sawCall('GET', `/admin/products/needs-setup?productId=${studioProductId}`));
-  check('post-create WMS workspace is the same canonical Needs Setup form',
+  const setupWorkspaceOpened = await waitForText(`ورود اولیه کالا — ${studioProductName}`, 60);
+  check('handoff opens «ورود اولیه کالا» with the product preselected (no product search)',
+    setupWorkspaceOpened && Boolean(studioProductId));
+  check('handoff workspace is the canonical audited opening-receipt form',
     setupWorkspaceOpened && (await text()).includes('تأیید و ثبت سند افتتاحیه') && (await text()).includes('انبار خرده‌فروشی'));
   await clickByText('انصراف');
-  await sleep(500);
+  await sleep(700);
   if (studioProductId) {
-    const afterSkip = await adminApi(`/admin/products/needs-setup?productId=${studioProductId}&limit=1`);
+    const afterSkip = await adminApi(`/admin/products?view=drafts&owner=kolbe&limit=200`);
     const detailAfterSkip = await adminApi(`/admin/products/${studioProductId}`);
-    check('Skip leaves WMS setup pending and makes no stock mutation',
+    check('§14 interrupted handoff leaves the product draft with no stock mutation',
       afterSkip.body.items.some((item) => item.id === studioProductId)
+        && detailAfterSkip.body.status === 'draft'
         && detailAfterSkip.body.inventory_setup === 'pending'
-        && detailAfterSkip.body.variants.every((variant) => Number(variant.on_hand) === 0));
+        && detailAfterSkip.body.variants.every((variant) => Number(variant.on_hand) === 0),
+      `status=${detailAfterSkip.body.status} setup=${detailAfterSkip.body.inventory_setup}`);
   }
 
   // The Product Studio row opens the exact same product pricing workspace as Product 360.
-  await clickByText('تعریف محصول');
+  await clickByText('همه محصولات');
   const studioListReady = await waitForText(studioProductName, 60);
   const studioPricingOpened = await page.evaluate((name) => {
     const row = [...document.querySelectorAll('tbody tr')].find((candidate) => candidate.innerText.includes(name));
-    const button = [...(row?.querySelectorAll('button') ?? [])].find((candidate) => candidate.innerText.includes('تخفیف / جشنواره'));
+    const button = [...(row?.querySelectorAll('button') ?? [])].find((candidate) => candidate.innerText.includes('قیمت‌گذاری'));
     button?.click();
     return Boolean(button);
   }, studioProductName);
@@ -673,16 +677,21 @@ try {
   if (studioWorkspaceReady) await clickByText('بستن');
 
   // Product 360 owns the canonical list; search the exact acceptance product to test cross-surface pricing.
-  await clickByText('همه کالاها');
-  const catalogueReady = await waitForText('همه کالاها');
-  const exactProductSearch = pricingScenarioReady && await setSearch('جستجوی نام/برند/دسته...', pricingProductName);
+  await clickByText('همه محصولات');
+  const catalogueReady = await waitForText('همه محصولات');
+  const exactProductSearch = pricingScenarioReady && await setSearch('جست‌وجوی نام، برند یا دسته…', pricingProductName);
   const exactProductListed = pricingScenarioReady && await waitForText(pricingProductName, 60);
   check('Product Studio canonical list can locate the pricing acceptance product', catalogueReady && (!pricingScenarioReady || exactProductSearch && exactProductListed));
   const firstProduct = pricingScenarioReady
     ? pricingProductName
     : await page.evaluate(() => document.querySelector('tbody tr td button')?.textContent?.trim() ?? '');
-  const productOpened = firstProduct ? await clickByText(firstProduct) : false;
-  check('Product 360 opens from the canonical list', productOpened);
+  const productOpened = firstProduct ? await page.evaluate((name) => {
+    const row = [...document.querySelectorAll('tbody tr')].find((candidate) => candidate.innerText.includes(name));
+    const button = [...(row?.querySelectorAll('button') ?? [])].find((candidate) => candidate.innerText.includes('۳۶۰°'));
+    button?.click();
+    return Boolean(button);
+  }, firstProduct) : false;
+  check('Product 360 opens from the canonical list row action «۳۶۰°»', productOpened);
   await sleep(2200);
   body = await text();
   const dialogBox = await page.evaluate(() => {
@@ -855,7 +864,7 @@ try {
       pricingShellReady = await page.evaluate(() => [...document.querySelectorAll('button')].some((button) => button.innerText.trim().startsWith('برج کنترل')));
     }
     adminToken = await page.evaluate(() => localStorage.getItem('kolbe-access-token'));
-    await openTab('استودیو محصول');
+    await openTab('محصولات کلبه');
     const pricingStudioRow = await page.evaluate((name) => {
       const row = [...document.querySelectorAll('tbody tr')].find((candidate) => candidate.innerText.includes(name));
       const button = [...(row?.querySelectorAll('button') ?? [])].find((candidate) => candidate.innerText.includes('تخفیف / جشنواره'));
@@ -877,8 +886,13 @@ try {
     await page.keyboard.press('Escape');
     await sleep(450);
 
-    await clickByText('همه کالاها');
-    const postReloadProduct360 = await clickByText(pricingProductName);
+    await clickByText('همه محصولات');
+    const postReloadProduct360 = await page.evaluate((name) => {
+      const row = [...document.querySelectorAll('tbody tr')].find((candidate) => candidate.innerText.includes(name));
+      const button = [...(row?.querySelectorAll('button') ?? [])].find((candidate) => candidate.innerText.includes('۳۶۰°'));
+      button?.click();
+      return Boolean(button);
+    }, pricingProductName);
     await sleep(1800);
     const postReloadPricingTab = postReloadProduct360 && await clickInDialogByText('قیمت‌گذاری');
     const postReloadSummaryReady = postReloadPricingTab && await waitForText('نتیجهٔ Pricing Resolver', 40);
@@ -932,7 +946,7 @@ try {
   // ---- full console walk: every section of the sidebar, in order ----
   // Product Studio and WMS are separate entries; the rest of the sidebar is consolidated.
   const allTabs = [
-    'مرکز سفارشات', 'استودیو محصول', 'انبار و موجودی (WMS)', 'برج کنترل', 'مرکز ورود داده', 'اسناد و صورت‌حساب',
+    'مرکز سفارشات', 'محصولات کلبه', 'انبار و موجودی (WMS)', 'برج کنترل', 'مرکز ورود داده', 'اسناد و صورت‌حساب',
     'درخواست همکاری', 'پلن‌های عضویت', 'ساختار محصولات و سری‌ها', 'مشتریان (CRM)', 'تخفیف و جشنواره',
     'محتوا (CMS)', 'مرکز SEO', 'مجله و رسانه‌ها', 'اعلان‌ها', 'مرکز مالی', 'یکپارچه‌سازی‌ها',
     'اتوماسیون و n8n', 'نظرات و امتیازها', 'توصیه‌گر هوشمند', 'پشتیبانی و مرجوعی', 'کیف پول کش‌بک', 'گزارش حسابرسی',
