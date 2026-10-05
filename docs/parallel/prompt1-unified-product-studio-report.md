@@ -180,10 +180,10 @@ Commits (this phase, on top of `e262411`):
 |--------|---------|
 | `4d075cf` | feat(product-studio): ONE unified 9-step Studio + hub step routing + embedded pricing/inventory |
 | `4b57a5a` | refactor: remove the superseded pricing workspace / specs editor / second WMS panel + align the gates |
-| `3409e93` | docs: this report |
+| docs commits | this report and its commit-list pin (tip of `arena/01a10ace-kolbevintage`) |
 
-Pushed to `origin/arena/01a10ace-kolbevintage` (`e262411..<tip>`); local `HEAD` == remote `HEAD` verified;
-working tree clean; `main` (`3cd9dac`) untouched and never merged.
+Pushed to `origin/arena/01a10ace-kolbevintage` (`e262411..<tip of the branch>`); local `HEAD` == remote `HEAD`
+verified after `git fetch`; `git status --porcelain` empty; `main` (`3cd9dac`) untouched and never merged.
 
 ## 15. Remaining risks / notes for the Product Owner
 
