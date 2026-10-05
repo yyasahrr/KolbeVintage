@@ -471,9 +471,10 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub?.startsWith("contacts:") ? "contacts" : hubSub} tabs={[
             { v: "overview", label: "نمای کلی", node: <CrmRelationshipCenter mode="overview" flash={flash} /> },
             { v: "contacts", label: "مخاطبان", node: <HubTabs initial={hubSub?.startsWith("contacts:") ? hubSub.split(":")[1] : undefined} tabs={[
-              { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel /> },
-              { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
-              { v: "suppliers", label: "تأمین‌کنندگان", node: <CrmSuppliersHub flash={flash} /> },
+              { v: "all", label: "همه", node: <CrmRelationshipCenter mode="contacts" flash={flash} /> },
+              { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel onNavigate={go} /> },
+              { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} onNavigate={go} /> },
+              { v: "suppliers", label: "تأمین‌کنندگان", node: <CrmSuppliersHub flash={flash} onNavigate={go} /> },
             ]} /> },
             { v: "followups", label: "پیگیری‌ها", node: <CrmRelationshipCenter mode="followups" flash={flash} /> },
             { v: "marketing", label: "بازاریابی", node: <CrmCenter flash={flash} /> },
@@ -579,7 +580,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
 /** §68 (corrective): CRM suppliers tab — list with an always-available «پروفایل ۳۶۰°» per row
  *  (centered WorkspaceModal) + the unique change-request review capability, no duplicate panels. */
-function CrmSuppliersHub({ flash }: { flash: (message: string) => void }) {
+function CrmSuppliersHub({ flash,onNavigate }: { flash: (message: string) => void; onNavigate:(domain:string)=>void }) {
   const [open360, setOpen360] = useState<string | null>(null);
   return (
     <div className="space-y-5">
@@ -589,7 +590,7 @@ function CrmSuppliersHub({ flash }: { flash: (message: string) => void }) {
         <SupplierChangeReview flash={flash} />
       </section>
       {open360 && (
-        <SupplierCrmWorkspace supplierId={open360} onClose={() => setOpen360(null)} />
+        <SupplierCrmWorkspace onNavigate={onNavigate} supplierId={open360} onClose={() => setOpen360(null)} />
       )}
     </div>
   );

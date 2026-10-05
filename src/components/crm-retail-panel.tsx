@@ -1,9 +1,10 @@
+import { CrmRelationshipCenter } from "./crm-relationship-center";
 import { useCallback, useEffect, useState } from "react";
 import { HelpCircle, RefreshCw, UserRound } from "lucide-react";
 import { fmtNum } from "../data/catalog";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
 import { buyersApi, cashbackApi, crmApi, crmIntelApi } from "../data/api";
-import { Btn, Card, Checkbox, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status, Textarea, WorkspaceModal } from "./primitives";
+import { Btn, Card, Checkbox, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status, WorkspaceModal } from "./primitives";
 import { ACCOUNT_STATUS_FA, ORDER_STATUS_FA, ORDER_TYPE_FA, PAYMENT_MODE_FA, RETURN_STATUS_FA, REVIEW_STATUS_FA, TICKET_STATUS_FA, CASHBACK_TX_FA, faEvent, faLabel } from "../data/fa-labels";
 
 /** Money arrives as rial strings; UI copy shows toman (÷۱۰). */
@@ -59,7 +60,7 @@ const VIEWS = [
 const PAGE = 25;
 
 /** مشتریان خرده — server-backed list + full-width 360 workspace (master §6-§10). */
-export function CrmRetailPanel() {
+export function CrmRetailPanel({onNavigate}:{onNavigate?:(domain:string)=>void}={}) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -91,6 +92,7 @@ export function CrmRetailPanel() {
 
   return (
     <div className="space-y-4 animate-[fadeUp_0.35s_ease]">
+      {error && <ErrorState message={error} onRetry={load} />}
       {kpis && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
           {([
@@ -164,8 +166,8 @@ export function CrmRetailPanel() {
       </Card>
 
       {profileUser && (
-        <Customer360Workspace loading={!profile} data={profile} userId={profileUser}
-          onRefresh={async () => { try { setProfile(await crmApi.user360(profileUser)); } catch { /* keep last state */ } }}
+        <Customer360Workspace onNavigate={onNavigate} loading={!profile} data={profile} userId={profileUser}
+          onRefresh={async () => { setProfile(await crmApi.user360(profileUser)); }}
           onClose={() => { setProfileUser(null); setProfile(null); }} />
       )}
     </div>
@@ -241,15 +243,15 @@ function Mini({ head, rows, empty }: { head: string[]; rows: React.ReactNode[][]
 /** Customer 360 — Corrective §55/§66: a CENTERED WorkspaceModal (same family as
  *  VIP/Supplier 360) composed from existing domains; missing data reads «ثبت نشده»،
  *  and consent toggles actually persist through the canonical consent endpoint. */
-function Customer360Workspace({ loading, data, userId, onRefresh, onClose }: {
-  loading: boolean; data: Row | null; userId: string; onRefresh: () => Promise<void>; onClose: () => void;
+function Customer360Workspace({ loading, data, userId, onRefresh, onClose,onNavigate }: {
+  loading: boolean; data: Row | null; userId: string; onRefresh: () => Promise<void>; onClose: () => void;onNavigate?:(domain:string)=>void;
 }) {
   const [tab, setTab] = useState<TabKey>("overview");
+  const [relationshipOpen,setRelationshipOpen]=useState(false);
+  const [relationshipMessage,setRelationshipMessage]=useState("");
   const [sortDesc, setSortDesc] = useState(true);
   const [consentBusy, setConsentBusy] = useState<string | null>(null);
   const [consentError, setConsentError] = useState<string | null>(null);
-  const [noteBody, setNoteBody] = useState("");
-  const [noteBusy, setNoteBusy] = useState(false);
   const [behavior, setBehavior] = useState<Row | null>(null);
   const contact = (data?.contact ?? {}) as Row;
   const kpis = (data?.kpis ?? {}) as Record<string, string | number>;
@@ -305,6 +307,8 @@ function Customer360Workspace({ loading, data, userId, onRefresh, onClose }: {
       subtitle={`موبایل: ${text(contact.phone)} — پروندهٔ کامل مشتری خرده‌فروشی`}>
       {loading || !data ? <LoadingState label="در حال بارگذاری پروفایل…" /> : (
         <div className="space-y-4">
+          <div className="flex flex-wrap gap-2"><Btn variant="soft" onClick={()=>setRelationshipOpen(true)}>تعاملات و پیگیری‌ها</Btn>{onNavigate&&<><Btn size="sm" variant="soft" onClick={()=>onNavigate("orders")}>مرکز سفارش‌ها</Btn><Btn size="sm" variant="soft" onClick={()=>onNavigate("cashback")}>مدیریت کش‌بک</Btn></>}</div>
+          {relationshipMessage&&<p role="status" className="text-sm">{relationshipMessage}</p>}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {([
               ["تعداد خرید", fmtNum(Number(kpis.order_count ?? 0))],
@@ -351,7 +355,7 @@ function Customer360Workspace({ loading, data, userId, onRefresh, onClose }: {
               <div>
                 <p className="mb-2 text-[12.5px] font-bold">برچسب‌ها و سگمنت‌ها</p>
                 <div className="flex flex-wrap gap-2 text-[11.5px]">
-                  {labels.map((l) => <span key={String(l.label_code)} className="rounded-full border border-[var(--kv-line)] px-3 py-1">{text(l.title ?? l.label_code)}</span>)}
+                  {labels.map((l) => <span key={String(l.label_code)} className="rounded-full border border-[var(--kv-line)] px-3 py-1">{text(l.title)}</span>)}
                   {segments.map((s) => <span key={String(s.code)} className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1">{text(s.title)}</span>)}
                   {!labels.length && !segments.length && <span className="text-[var(--kv-muted)]">برچسبی ثبت نشده است.</span>}
                 </div>
@@ -461,16 +465,8 @@ function Customer360Workspace({ loading, data, userId, onRefresh, onClose }: {
                 <p className="mb-2 text-[12.5px] font-bold">یادداشت‌های داخلی (هرگز برای مشتری نمایش داده نمی‌شود)</p>
                 <Mini head={["یادداشت", "نویسنده", "تاریخ"]} empty="یادداشتی ثبت نشده است."
                   rows={notes.map((n) => [text(n.body), text(n.author_name), day(n.created_at)])} />
-                {/* Migrated from the legacy «پروفایل و تایم‌لاین» tab — note-writing now lives inside the 360. */}
-                <div className="mt-2 space-y-2">
-                  <Textarea rows={2} value={noteBody} onChange={setNoteBody} placeholder="یادداشت داخلی…" />
-                  <Btn variant="soft" size="sm" disabled={noteBusy || noteBody.trim().length < 3}
-                    onClick={() => { setNoteBusy(true); void (async () => {
-                      try { await crmIntelApi.addNote(String(contact.id), { body: noteBody, visibility: "internal" }); setNoteBody(""); await onRefresh(); }
-                      catch (error) { setConsentError(error instanceof Error ? error.message : "ثبت یادداشت ناموفق بود."); }
-                      finally { setNoteBusy(false); }
-                    })(); }}>{noteBusy ? "در حال ثبت…" : "ثبت یادداشت"}</Btn>
-                </div>
+                <Btn variant="soft" size="sm" onClick={()=>setRelationshipOpen(true)}>ثبت یادداشت در پرونده ارتباط</Btn>
+
               </div>
             </div>
           )}
@@ -479,11 +475,12 @@ function Customer360Workspace({ loading, data, userId, onRefresh, onClose }: {
             <div className="space-y-2">
               <p className="text-[11.5px] text-[var(--kv-muted)]">تاریخچهٔ کامل رویدادهای این مشتری از منبع واحد رویدادها.</p>
               <Mini head={["رویداد", "عنوان", "منبع", "زمان"]} empty="رویدادی ثبت نشده است."
-                rows={timeline.map((t) => [faEvent(t.event_type), text(t.title), text(t.source), t.occurred_at ? formatPersianDateTime(String(t.occurred_at)) : "ثبت نشده"])} />
+                rows={timeline.map((t) => [faEvent(t.event_type), text(t.title), ({crm:"ارتباط با مخاطب",crm_rule:"قاعده ارتباط",orders:"سفارش‌ها",order:"سفارش",support:"پشتیبانی",membership:"عضویت",system:"سیستم"} as Record<string,string>)[String(t.source)]??"رویداد", t.occurred_at ? formatPersianDateTime(String(t.occurred_at)) : "ثبت نشده"])} />
             </div>
           )}
         </div>
       )}
+    {relationshipOpen&&<CrmRelationshipCenter mode="relationship" userId={userId} flash={setRelationshipMessage} onClose={()=>{setRelationshipOpen(false);void onRefresh().catch(e=>setRelationshipMessage(e instanceof Error?e.message:"به‌روزرسانی پرونده انجام نشد."));}}/>}
     </WorkspaceModal>
   );
 }

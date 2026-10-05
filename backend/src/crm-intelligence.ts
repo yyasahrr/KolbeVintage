@@ -540,12 +540,14 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
   app.get('/api/v1/admin/crm/segments/:id/members', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const query=z.object({limit:z.coerce.number().int().min(1).max(500).default(50),offset:z.coerce.number().int().min(0).max(100000).default(0)}).parse(request.query);
     const rows = await pool.query(
-      `SELECT m.user_id,u.display_name,u.phone,m.matched_at,
+      `SELECT m.user_id,u.display_name,u.phone,m.matched_at,s.definition AS membership_definition,
+              (SELECT max(o.created_at) FROM orders o WHERE o.buyer_id=m.user_id AND o.status<>'cancelled') AS last_order_at,
               (SELECT COALESCE(sum(o.total_rial),0)::text FROM orders o WHERE o.buyer_id = m.user_id AND o.status <> 'cancelled') AS total_rial,
               (SELECT count(*)::int FROM orders o WHERE o.buyer_id = m.user_id) AS order_count
-       FROM crm_segment_members m JOIN users u ON u.id = m.user_id
-       WHERE m.segment_id = $1 ORDER BY m.matched_at DESC LIMIT 500`, [id]);
+       FROM crm_segment_members m JOIN users u ON u.id = m.user_id JOIN crm_segments s ON s.id=m.segment_id
+       WHERE m.segment_id = $1 ORDER BY m.matched_at DESC,m.user_id LIMIT $2 OFFSET $3`, [id,query.limit,query.offset]);
     return { items: rows.rows.map((row) => ({ ...row, total_rial: asRial(row.total_rial) })) };
   });
 
@@ -1092,6 +1094,7 @@ export async function applyLabelRule(pool: DbPool, ruleId: string, options: {
   if (rule.requires_approval && !rule.approved_at && !options.approve)
     throw conflict('این قانون نیازمند تأیید دستی است؛ با approve=true تأیید کنید.');
   const metrics = await loadMetrics(pool);
+  const label=await one<{title:string}>(pool,'SELECT title FROM crm_labels WHERE code=$1',[rule.label_code]);
   const matched = metrics.filter((item) => evaluateConditions(item, rule.conditions as RuleCondition[], rule.match_mode as 'all' | 'any'));
   const applied = await transaction(pool, async (client) => {
     if (rule.requires_approval && !rule.approved_at) {
@@ -1110,7 +1113,7 @@ export async function applyLabelRule(pool: DbPool, ruleId: string, options: {
         [contactId, rule.label_code, ruleId, options.actorId ?? null]);
       assigned += inserted.rowCount ?? 0;
       await recordTimeline(client, { userId: item.userId, eventType: 'crm.label_assigned', source: 'crm_rule',
-        title: `برچسب ${String(rule.label_code)} اعمال شد`, refType: 'crm_label_rule', refId: ruleId, actorId: options.actorId ?? null });
+        title: `برچسب ${label?.title ?? 'ارتباط'} اعمال شد`, refType: 'crm_label_rule', refId: ruleId, actorId: options.actorId ?? null });
     }
     if (rule.label_code) {
       const stale = await client.query(

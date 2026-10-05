@@ -7,7 +7,7 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { asRial } from './money.js';
 import { audit, outbox } from './operations.js';
-import { notFound } from './errors.js';
+import { badRequest, notFound } from './errors.js';
 import { createCoupon } from './coupons.js';
 
 /* CRM for every actor type (item 16): contacts, activity timeline, segments,
@@ -174,6 +174,7 @@ export function registerCrmRoutes(app: FastifyInstance, pool: DbPool, config: Co
     const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = contactPatch.parse(request.body);
+    if (body.tags !== undefined || body.segment !== undefined) throw badRequest('برای برچسب‌ها و گروه‌بندی از بخش بازاریابی و پرونده ارتباط استفاده کنید.');
     return transaction(pool, async (client) => {
       const before = await one<Record<string, unknown>>(client, 'SELECT * FROM crm_contacts WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
@@ -198,6 +199,8 @@ export function registerCrmRoutes(app: FastifyInstance, pool: DbPool, config: Co
     const user = await principal(request, pool, config); requirePermission(user, 'crm:manage');
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = activityBody.parse(request.body);
+    if (body.type === 'note') throw badRequest('یادداشت داخلی را از بخش یادداشت‌های پرونده ارتباط ثبت کنید.');
+    if (['call','sms','email'].includes(body.type)) throw badRequest('ارتباط با مخاطب را از فرم ثبت تعامل در پرونده ارتباط ثبت کنید.');
     const exists = await one(pool, 'SELECT id FROM crm_contacts WHERE id = $1', [id]);
     if (!exists) throw notFound();
     const activityId = randomUUID();

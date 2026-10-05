@@ -35,7 +35,7 @@ import { adjustmentPreview, pendingForRows } from '../../src/data/warehouse-ux.t
 import { fmtRial, fmtToman, rialFromToman, tomanFromRial } from '../../src/data/contracts.ts';
 import {
   cmsApi, financeApi, financeOpsApi, integrationsApi, inventoryApi, invoiceDocsApi, manualOrdersApi, promoApi,
-  shippingApi, supplier360Api,
+  shippingApi, supplier360Api, crmApi, crmIntelApi, buyersApi,
 } from '../../src/data/api.ts';
 
 /** Pick a free loopback port so a stale server from an earlier run can never hijack the smoke. */
@@ -90,13 +90,13 @@ const run = (command: string, args: string[], extraEnv: Record<string, string | 
   });
 
 let app: ReturnType<typeof spawn> | null = null;
+const log: string[] = [];
 try {
   if (await run('npm', ['run', '--silent', 'migrate']) !== 0) throw new Error('migrations failed');
   if (await run('npx', ['tsx', 'src/bootstrap-admin.ts'], { BOOTSTRAP_ADMIN_EMAIL: adminEmail, BOOTSTRAP_ADMIN_PASSWORD: adminPassword }) !== 0) {
     throw new Error('admin bootstrap failed');
   }
   app = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
-  const log: string[] = [];
   app.stdout?.on('data', (chunk) => log.push(String(chunk)));
   app.stderr?.on('data', (chunk) => log.push(String(chunk)));
   let ready = false;
@@ -638,8 +638,30 @@ try {
   check('OrdersHub drawer mounts ManualOrderForm — legacy manual-sale CREATE panel no longer offered',
     ordersHubSrc.includes('<ManualOrderForm />') && !ordersHubSrc.includes('<ManualSalesPanel'));
 
+  const crmUser=await crmApi.userRelationship(me.id);
+  const crmContactId=String(crmUser.contact.id);
+  const crmLabels=await crmIntelApi.labels();
+  const crmLabel=String(crmLabels.items[0]!.code);
+  await buyersApi.addLabel(me.id,{labelCode:crmLabel});
+  await buyersApi.addNote(me.id,{body:'یادداشت قرارداد تیم',visibility:'team'});
+  const crmDetail=await crmApi.relationship(crmContactId);
+  check('VIP client label picker posts canonical labels array and persists',crmDetail.labels.some(label=>label.code===crmLabel));
+  check('VIP client team-note visibility matches canonical API',crmDetail.notes.some(note=>note.body==='یادداشت قرارداد تیم'&&note.visibility==='team'));
+  await buyersApi.saveConsent(me.id,{marketingSms:false,emailMarketing:false,reason:'آزمون قرارداد بازاریابی'});
+  const consentAfter=await buyersApi.view360(me.id);
+  check('marketing consent updates leave transactional consent enabled',consentAfter.crm.consent?.marketing_sms===false&&consentAfter.crm.consent?.transactional_sms===true);
+  const crmLead=await crmApi.createLead({name:`سرنخ قرارداد ${suffix}`,nextFollowupAt:new Date(Date.now()+86_400_000).toISOString()});
+  const leadDetail=await crmApi.relationship(crmLead.id);
+  check('CRM frontend lead date creates a server-backed canonical task',leadDetail.tasks.length===1);
+  const crmSearch=await crmApi.globalSearch(`سرنخ قرارداد ${suffix}`);
+  check('global CRM search client returns standalone lead identity',crmSearch.items.some(row=>row.contact_id===crmLead.id));
+  const crmSegment=await crmIntelApi.createSegment({code:`crm_contract_${suffix}`,title:'گروه آزمون قرارداد',kind:'dynamic',definition:{matchMode:'all',conditions:[{field:'order_count',op:'>=',value:0}]}}) as {id:string};
+  await crmIntelApi.refreshSegment(crmSegment.id);
+  const segmentMembers=await crmIntelApi.segmentMembers(crmSegment.id);
+  check('segment member workspace receives metrics and membership criteria from API',segmentMembers.items.length>0&&segmentMembers.items.every(row=>'order_count'in row&&'total_rial'in row&&'membership_definition'in row&&'last_order_at'in row));
   setAccessToken(null);
 } catch (error) {
+  console.error('API diagnostic tail:',log.join('').split('\n').slice(-20).join('\n'));
   console.error('SMOKE ERROR:', error instanceof Error ? error.message : error);
   check('frontend contract smoke completed without exceptions', false, String(error instanceof Error ? error.stack ?? error.message : error).slice(0, 400));
 } finally {

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { CrmRelationshipCenter } from "./crm-relationship-center";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Check, FileText, HelpCircle, ShieldCheck, UserCog } from "lucide-react";
-import { REVIEW_STATUS_FA, SMS_STATUS_FA, TICKET_STATUS_FA, faEvent, faLabel } from "../data/fa-labels";
+import { ACCOUNT_STATUS_FA, CRM_DOCUMENT_TYPE_FA, CRM_DOCUMENT_STATUS_FA, CRM_PRIORITY_FA, REVIEW_STATUS_FA, SMS_STATUS_FA, TICKET_STATUS_FA, faEvent, faLabel } from "../data/fa-labels";
 import { fmtNum } from "../data/catalog";
 import { fmtToman } from "../data/contracts";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
-import { buyersApi, type Buyer360Payload } from "../data/api";
+import { crmIntelApi, buyersApi, type Buyer360Payload } from "../data/api";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Status, Tag, Textarea, WorkspaceModal } from "./primitives";
 
 /** Rial values arrive as strings (money is never a JS float); admin displays تومان (rial ÷ ۱۰). */
@@ -52,7 +53,11 @@ function MiniTable({ head, rows, empty }: { head: string[]; rows: React.ReactNod
 
 /** Buyer 360° (items 18-19): one page with every dimension of a wholesale buyer plus
  *  audited admin controls (membership, credit, block, labels, notes, documents). */
-export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
+export function Buyer360Panel({ flash, onNavigate }: { flash: (message: string) => void; onNavigate?: (domain:string)=>void }) {
+  const [relationshipOpen,setRelationshipOpen]=useState(false);
+  const [availableLabels,setAvailableLabels]=useState<Record<string,unknown>[]>([]);
+  const [actionBusy,setActionBusy]=useState(false);
+  const pending=useRef(false);
   const [list, setList] = useState<Record<string, unknown>[] | null>(null);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -65,13 +70,13 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
   const [whyFor, setWhyFor] = useState<string | null>(null);
   const [blockReason, setBlockReason] = useState("");
   const [labelForm, setLabelForm] = useState({ labelCode: "", note: "" });
-  const [noteForm, setNoteForm] = useState({ body: "", visibility: "internal" as "internal" | "support" });
   const [correction, setCorrection] = useState({ field: "city" as "firstName" | "lastName" | "birthday" | "city", newValue: "", reason: "" });
   const [document, setDocument] = useState({ open: false, docType: "trade_license", title: "", note: "" });
 
   const PAGE = 25;
   const loadList = useCallback(async () => {
     try {
+      setError(null);
       // vipOnly: this tab is «خریداران VIP (عمده)» — only canonical members, not every retail user.
       const res = await buyersApi.list({ search: search || undefined, view: listView, vipOnly: "true", limit: PAGE, offset });
       setList(res.items); setTotal(Number(res.total ?? res.items.length));
@@ -80,22 +85,26 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
 
   const loadView = useCallback(async (userId: string) => {
     try {
+      setError(null);
       const res = await buyersApi.view360(userId);
       setView(res);
     } catch (e) { setError(e instanceof Error ? e.message : "خطا در دریافت نمای ۳۶۰"); }
   }, []);
 
-  useEffect(() => { void loadList(); }, [loadList]);
+  useEffect(() => { const timer=window.setTimeout(()=>void loadList(),300);return()=>window.clearTimeout(timer); }, [loadList]);
+  useEffect(()=>{void crmIntelApi.labels().then(r=>setAvailableLabels(r.items)).catch(e=>flash(e instanceof Error?e.message:"دریافت برچسب‌ها انجام نشد."));},[flash]);
   useEffect(() => { if (selected) void loadView(selected); }, [selected, loadView]);
   useEffect(() => { void buyersApi.list({ limit: 1 }).catch(() => undefined); }, []);
 
   const act = async (label: string, run: () => Promise<unknown>) => {
+    if(pending.current)return;
+    pending.current=true;setActionBusy(true);
     try { await run(); flash(`${label} انجام شد`);
       if (selected) await loadView(selected); void loadList();
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در اجرای عملیات"); }
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در اجرای عملیات"); } finally{pending.current=false;setActionBusy(false);}
   };
 
-  if (error && !view) return <ErrorState message={error} onRetry={() => { setError(null); void loadList(); }} />;
+  if (error && !view) return <ErrorState message={error} onRetry={() => { if(selected)void loadView(selected);else void loadList(); }} />;
   const account = (view?.account ?? {}) as Record<string, unknown>;
   const membership = view?.membership as Record<string, unknown> | null;
   const crm = view?.crm;
@@ -189,18 +198,20 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     {membership && <span className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1 text-[11.5px] font-bold">{text(membership.plan_title, "پلن VIP")} · سطح {fmtNum(Number(membership.plan_tier ?? 0))}</span>}
                     {membership && <span className="text-[11.5px] text-[var(--kv-muted)]">تا {day(membership.ends_at)}</span>}
                     {account.blocked ? <Status value="مسدود" /> : null}
-                    {account.vip_level && String(account.vip_level) !== "none" ? <Status value={`VIP ${account.vip_level}`} /> : null}
+                    {account.vip_level && String(account.vip_level) !== "none" ? <Status value={({gold:"طلایی",silver:"نقره‌ای",bronze:"برنزی",platinum:"پلاتینیوم"} as Record<string,string>)[String(account.vip_level)]??"خریدار ویژه"} /> : null}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <Btn variant="soft" size="sm" onClick={()=>setRelationshipOpen(true)}>تعاملات و پیگیری‌ها</Btn>
+                  {onNavigate&&<Btn variant="soft" size="sm" onClick={()=>onNavigate("plans")}>مدیریت عضویت</Btn>}
                   <input value={blockReason} onChange={(e) => setBlockReason(e.target.value)} placeholder="دلیل مسدودسازی"
                     aria-label="دلیل مسدودسازی"
                     className="h-10 w-40 rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[12.5px]" />
-                  <Btn variant="soft" size="sm" icon={<ShieldCheck size={14} />}
+                  <Btn disabled={actionBusy} variant="soft" size="sm" icon={<ShieldCheck size={14} />}
                     onClick={() => void act("به‌روزرسانی حساب", () => buyersApi.updateProfile(String(selected), {
                       businessName: account.business_name ?? null, city: account.city ?? null,
                     }, "به‌روزرسانی از نمای ۳۶۰"))}>به‌روزرسانی حساب</Btn>
-                  <Btn variant={account.blocked ? "accent" : "soft"} size="sm" icon={<Ban size={14} />}
+                  <Btn disabled={actionBusy} variant={account.blocked ? "accent" : "soft"} size="sm" icon={<Ban size={14} />}
                     onClick={() => void act(account.blocked ? "رفع مسدودی" : "مسدودسازی", () => buyersApi.block(String(selected), { blocked: !account.blocked, reason: blockReason || "اقدام مدیریتی" }))}>
                     {account.blocked ? "رفع مسدودی" : "مسدودسازی"}
                   </Btn>
@@ -230,7 +241,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     ["نام کسب‌وکار", text(account.business_name, "—")],
                     ["کد صنفی", text(account.trade_code, "—")],
                     ["شهر / استان", `${text(account.city, "—")} / ${text(account.province, "—")}`],
-                    ["وضعیت حساب", account.blocked ? "مسدود" : text(account.status, "فعال")],
+                    ["وضعیت حساب", account.blocked ? "مسدود" : faLabel(ACCOUNT_STATUS_FA,account.status,"فعال")],
                     ["تلفن ثابت", text(account.business_phone, "—")],
                     ["وب‌سایت", text(account.website, "—")],
                   ]} />
@@ -242,7 +253,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     <MiniTable head={["رویداد", "از → به", "مبلغ", "تاریخ"]} empty="رویدادی ثبت نشده است."
                       rows={(view.membershipHistory ?? []).map((row) => [
                         faEvent(row.event_type ?? row.action),
-                        `${text(row.from_status ?? row.from_plan_code, "—")} → ${text(row.to_status ?? row.to_plan_code, "—")}`,
+                        `${row.from_status?faLabel(ACCOUNT_STATUS_FA,row.from_status):text(row.from_plan_title,"پلن قبلی")} → ${row.to_status?faLabel(ACCOUNT_STATUS_FA,row.to_status):text(row.to_plan_title,"پلن بعدی")}`,
                         rial(row.amount_rial ?? 0), day(row.created_at ?? row.occurred_at),
                       ])} />
                   </div>
@@ -256,7 +267,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     ["کد اقتصادی", text(account.economic_code ?? account.trade_code, "—")],
                     ["آدرس انبار", text(account.address_line, "—")],
                     ["امتیاز داخلی", text(account.internal_score, "—")],
-                    ["سیاست تسویه", text(account.settlement_policy, "—")],
+                    ["سیاست تسویه", faLabel({prepaid:"پیش‌پرداخت",cash:"نقدی",credit:"اعتباری",manual:"بررسی دستی"},account.settlement_policy,"ثبت نشده")],
                   ]} />
                   <div className="flex items-center justify-between border-t border-[var(--kv-line)] pt-4">
                     <p className="text-[12.5px] font-bold">مدارک احراز هویت ({fmtNum(view.documents.length)})</p>
@@ -264,7 +275,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                   </div>
                   <MiniTable head={["نوع", "عنوان", "وضعیت", "تأیید", "اقدام"]} empty="مدرکی ثبت نشده است."
                     rows={view.documents.map((doc) => [
-                      text(doc.doc_type), text(doc.title), text(doc.status),
+                      faLabel(CRM_DOCUMENT_TYPE_FA,doc.doc_type), text(doc.title), faLabel(CRM_DOCUMENT_STATUS_FA,doc.status),
                       day(doc.verified_at),
                       <span key="a" className="flex gap-1">
                         <Btn variant="soft" size="sm" icon={<Check size={13} />} onClick={() => void act("تأیید مدرک", () => buyersApi.verifyDocument(String(selected), String(doc.id), { status: "verified" }))}>تأیید</Btn>
@@ -305,6 +316,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
 
               {section === "finance" && (
                 <div className="mt-4 space-y-4">
+                  {onNavigate&&<Btn variant="soft" size="sm" onClick={()=>onNavigate("finance")}>مرکز مالی</Btn>}
                   <Rows rows={[
                     ["فاکتورهای باز", rial(view.finance.open_invoices_rial)],
                     ["تعداد فاکتور", fmtNum(Number(view.finance.invoice_count ?? 0))],
@@ -319,6 +331,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
 
               {section === "support" && (
                 <div className="mt-4 space-y-5">
+                  <Btn variant="soft" onClick={()=>setRelationshipOpen(true)}>تعاملات و پیگیری‌ها</Btn>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">تیکت‌ها</p>
                     <MiniTable head={["موضوع", "دسته", "وضعیت", "تاریخ"]} empty="تیکتی ثبت نشده است."
@@ -327,7 +340,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">اعلان‌ها</p>
                     <MiniTable head={["عنوان", "اولویت", "خوانده‌شده", "تاریخ"]} empty="اعلانی ثبت نشده است."
-                      rows={view.support.notifications.map((row) => [text(row.title), text(row.priority), row.read_at ? "بله" : "خیر", day(row.created_at)])} />
+                      rows={view.support.notifications.map((row) => [text(row.title), faLabel(CRM_PRIORITY_FA,row.priority), row.read_at ? "بله" : "خیر", day(row.created_at)])} />
                   </div>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">پیامک‌های ارسالی</p>
@@ -336,13 +349,8 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                   </div>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">یادداشت داخلی</p>
-                    <Textarea placeholder="یادداشت فقط برای تیم داخلی…" value={noteForm.body} onChange={(v) => setNoteForm({ ...noteForm, body: v })} rows={3} />
-                    <div className="mt-2 flex flex-wrap items-center gap-3">
-                      <Select options={["internal", "support"]} value={noteForm.visibility} onChange={(v) => setNoteForm({ ...noteForm, visibility: v as typeof noteForm.visibility })} />
-                      <Btn variant="soft" size="sm" disabled={noteForm.body.trim().length < 3}
-                        onClick={() => void act("ثبت یادداشت", async () => { await buyersApi.addNote(String(selected), noteForm); setNoteForm({ body: "", visibility: "internal" }); })}>ثبت یادداشت</Btn>
-                      <span className="text-[11.5px] text-[var(--kv-muted)]">یادداشت‌ها هرگز به مشتری نمایش داده نمی‌شوند.</span>
-                    </div>
+                    <Btn variant="soft" size="sm" onClick={()=>setRelationshipOpen(true)}>ثبت یادداشت در پرونده ارتباط</Btn>
+
                   </div>
                 </div>
               )}
@@ -354,7 +362,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     <div className="flex flex-wrap gap-2">
                       {(crm?.labels ?? []).map((label) => (
                         <span key={String(label.label_code)} className="inline-flex items-center gap-2 rounded-full border border-[var(--kv-line)] px-3 py-1.5 text-[11.5px]">
-                          {text(label.title ?? label.label_code)}
+                          {text(label.title,"برچسب")}
                           <button className="text-[var(--kv-danger)]" title="حذف برچسب"
                             onClick={() => void act("حذف برچسب", () => buyersApi.removeLabel(String(selected), String(label.label_code)))}>×</button>
                         </span>
@@ -363,9 +371,8 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                       {!(crm?.labels ?? []).length && !(crm?.segments ?? []).length && <span className="text-[12.5px] text-[var(--kv-muted)]">برچسبی ثبت نشده است.</span>}
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                      <Input placeholder="کد برچسب (مثلاً loyal_customer)" value={labelForm.labelCode} onChange={(v) => setLabelForm({ ...labelForm, labelCode: v })} />
-                      <Input placeholder="یادداشت" value={labelForm.note} onChange={(v) => setLabelForm({ ...labelForm, note: v })} />
-                      <Btn variant="soft" size="sm" disabled={!labelForm.labelCode.trim()}
+                      <select aria-label="انتخاب برچسب" className="h-10 rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] px-2" value={labelForm.labelCode} onChange={e=>setLabelForm({...labelForm,labelCode:e.target.value})}><option value="">انتخاب برچسب</option>{availableLabels.map(label=><option key={String(label.code)} value={String(label.code)}>{text(label.title,"برچسب")}</option>)}</select>
+                      <Btn variant="soft" size="sm" disabled={actionBusy||!labelForm.labelCode.trim()}
                         onClick={() => void act("افزودن برچسب", async () => { await buyersApi.addLabel(String(selected), labelForm); setLabelForm({ labelCode: "", note: "" }); })}>افزودن برچسب</Btn>
                     </div>
                   </div>
@@ -373,11 +380,11 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     <p className="mb-2 text-[12.5px] font-bold">رضایت بازاریابی</p>
                     <div className="flex flex-wrap gap-4 text-[12.5px]">
                       <Checkbox checked={!!crm?.consent?.marketing_sms} label="پیامک تبلیغاتی"
-                        onChange={(v) => void act("ثبت رضایت", () => buyersApi.saveConsent(String(selected), { marketingSms: v, transactionalSms: !!crm?.consent?.transactional_sms, emailMarketing: !!crm?.consent?.email_marketing, doNotContact: !!crm?.consent?.do_not_contact, reason: "تنظیم از پنل مدیریت" }))} />
+                        onChange={(v) => void act("ثبت رضایت", () => buyersApi.saveConsent(String(selected), { marketingSms: v, emailMarketing: !!crm?.consent?.email_marketing, doNotContact: !!crm?.consent?.do_not_contact, reason: "تنظیم از پنل مدیریت" }))} />
                       <Checkbox checked={!!crm?.consent?.email_marketing} label="ایمیل تبلیغاتی"
-                        onChange={(v) => void act("ثبت رضایت", () => buyersApi.saveConsent(String(selected), { marketingSms: !!crm?.consent?.marketing_sms, transactionalSms: !!crm?.consent?.transactional_sms, emailMarketing: v, doNotContact: !!crm?.consent?.do_not_contact, reason: "تنظیم از پنل مدیریت" }))} />
-                      <Checkbox checked={!!crm?.consent?.do_not_contact} label="عدم تماس (do-not-contact)"
-                        onChange={(v) => void act("ثبت رضایت", () => buyersApi.saveConsent(String(selected), { marketingSms: !!crm?.consent?.marketing_sms, transactionalSms: !!crm?.consent?.transactional_sms, emailMarketing: !!crm?.consent?.email_marketing, doNotContact: v, reason: "تنظیم از پنل مدیریت" }))} />
+                        onChange={(v) => void act("ثبت رضایت", () => buyersApi.saveConsent(String(selected), { marketingSms: !!crm?.consent?.marketing_sms, emailMarketing: v, doNotContact: !!crm?.consent?.do_not_contact, reason: "تنظیم از پنل مدیریت" }))} />
+                      <Checkbox checked={!!crm?.consent?.do_not_contact} label="عدم ارسال پیام تبلیغاتی"
+                        onChange={(v) => void act("ثبت رضایت", () => buyersApi.saveConsent(String(selected), { marketingSms: !!crm?.consent?.marketing_sms, emailMarketing: !!crm?.consent?.email_marketing, doNotContact: v, reason: "تنظیم از پنل مدیریت" }))} />
                     </div>
                   </div>
                   <div>
@@ -388,30 +395,22 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">تایم‌لاین کامل فعالیت</p>
                     <MiniTable head={["رویداد", "عنوان", "منبع", "زمان"]} empty="فعالیتی ثبت نشده است."
-                      rows={(crm?.timeline ?? []).map((row) => [faEvent(row.event_type), text(row.title), text(row.source), row.occurred_at ? formatPersianDateTime(String(row.occurred_at)) : "—"])} />
+                      rows={(crm?.timeline ?? []).map((row) => [faEvent(row.event_type), text(row.title), ({crm:"ارتباط با مخاطب",orders:"سفارش‌ها",order:"سفارش",support:"پشتیبانی",membership:"عضویت",system:"سیستم"} as Record<string,string>)[String(row.source)]??"رویداد", row.occurred_at ? formatPersianDateTime(String(row.occurred_at)) : "—"])} />
                   </div>
-                  <div>
-                    <p className="mb-2 text-[12.5px] font-bold">حسابرسی اقدامات مدیریتی</p>
-                    <MiniTable head={["اقدام", "مقدار قبلی", "مقدار جدید", "زمان"]} empty="موردی ثبت نشده است."
-                      rows={view.audit.map((row) => [
-                        text(row.action),
-                        <code key="o" className="text-[11px] text-[var(--kv-muted)]">{JSON.stringify(row.old_value ?? {}).slice(0, 60)}</code>,
-                        <code key="n" className="text-[11px]">{JSON.stringify(row.new_value ?? {}).slice(0, 60)}</code>,
-                        row.created_at ? formatPersianDateTime(String(row.created_at)) : "—",
-                      ])} />
-                  </div>
+
                 </div>
               )}
             </Card>
           </>
         )}
       </div>
+      {relationshipOpen&&selected&&<CrmRelationshipCenter mode="relationship" userId={selected} flash={flash} onClose={()=>{setRelationshipOpen(false);void loadView(selected);}}/>}
       </WorkspaceModal>
       )}
 
       <Modal open={document.open} onClose={() => setDocument({ ...document, open: false })} title="ثبت مدرک خریدار">
         <div className="space-y-3">
-          <Field label="نوع مدرک"><Select options={["trade_license", "business_card", "national_id", "store_photo", "other"]} value={document.docType} onChange={(v) => setDocument({ ...document, docType: v })} /></Field>
+          <Field label="نوع مدرک"><Select options={["trade_license", "business_card", "national_id", "store_photo", "other"]} labels={CRM_DOCUMENT_TYPE_FA} value={document.docType} onChange={(v) => setDocument({ ...document, docType: v })} /></Field>
           <Field label="عنوان"><Input value={document.title} onChange={(v) => setDocument({ ...document, title: v })} placeholder="پروانه کسب ۱۴۰۳" /></Field>
           <Field label="یادداشت"><Textarea value={document.note} onChange={(v) => setDocument({ ...document, note: v })} /></Field>
           <Btn variant="accent" className="w-full" disabled={document.title.trim().length < 2}
