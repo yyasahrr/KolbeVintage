@@ -6,7 +6,7 @@ import { principal, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { conflict, notFound } from './errors.js';
-import { recordTimeline } from './crm-intelligence.js';
+import { ensureContact, recordTimeline } from './crm-intelligence.js';
 
 const stage = z.enum(['lead','prospect','active','loyal','at_risk','dormant','churned','partner']);
 const priority = z.enum(['low','normal','high','urgent']);
@@ -120,22 +120,28 @@ export function registerCrmRelationshipRoutes(app: FastifyInstance, pool: DbPool
     const actor = await principal(request, pool, config); requirePermission(actor, 'crm:manage');
     const query = z.object({ q: z.string().trim().min(2).max(120), limit: z.coerce.number().int().min(1).max(30).default(15) }).parse(request.query);
     const rows = await pool.query(`
-      SELECT c.id AS contact_id,c.user_id,c.actor_type,c.lifecycle_stage,c.priority,c.next_followup_at,
-             COALESCE(u.display_name,c.lead_name,'بدون نام') AS display_name,
-             COALESCE(u.phone,c.lead_phone) AS phone,
-             COALESCE(u.email,c.lead_email) AS email,
-             COALESCE(sp.brand_name,bp.business_name,c.organization) AS organization,
-             owner.display_name AS owner_name
-        FROM crm_contacts c
-        LEFT JOIN users u ON u.id=c.user_id
-        LEFT JOIN supplier_profiles sp ON sp.user_id=c.user_id
-        LEFT JOIN buyer_profiles bp ON bp.user_id=c.user_id
-        LEFT JOIN users owner ON owner.id=c.owner_user_id
-       WHERE COALESCE(u.display_name,c.lead_name,'') ILIKE '%'||$1||'%'
-          OR COALESCE(u.phone,c.lead_phone,'') ILIKE '%'||$1||'%'
-          OR COALESCE(u.email,c.lead_email,'') ILIKE '%'||$1||'%'
-          OR COALESCE(sp.brand_name,bp.business_name,c.organization,'') ILIKE '%'||$1||'%'
-       ORDER BY c.updated_at DESC LIMIT $2`, [query.q, query.limit]);
+      WITH people AS (
+        SELECT c.id AS contact_id,u.id AS user_id,
+               COALESCE(c.actor_type,CASE WHEN sp.user_id IS NOT NULL THEN 'supplier' WHEN bp.user_id IS NOT NULL THEN 'wholesale_buyer' ELSE 'customer' END) AS actor_type,
+               COALESCE(c.lifecycle_stage,'active') AS lifecycle_stage,COALESCE(c.priority,'normal') AS priority,c.next_followup_at,
+               u.display_name,u.phone,u.email,COALESCE(sp.brand_name,bp.business_name) AS organization,
+               owner.display_name AS owner_name,COALESCE(c.updated_at,u.created_at) AS sort_at
+          FROM users u
+          LEFT JOIN crm_contacts c ON c.user_id=u.id
+          LEFT JOIN supplier_profiles sp ON sp.user_id=u.id
+          LEFT JOIN buyer_profiles bp ON bp.user_id=u.id
+          LEFT JOIN users owner ON owner.id=c.owner_user_id
+         WHERE u.display_name ILIKE '%'||$1||'%' OR COALESCE(u.phone,'') ILIKE '%'||$1||'%'
+            OR COALESCE(u.email,'') ILIKE '%'||$1||'%' OR COALESCE(sp.brand_name,bp.business_name,'') ILIKE '%'||$1||'%'
+        UNION ALL
+        SELECT c.id,NULL,c.actor_type,c.lifecycle_stage,c.priority,c.next_followup_at,
+               COALESCE(c.lead_name,'بدون نام'),c.lead_phone,c.lead_email,c.organization,owner.display_name,c.updated_at
+          FROM crm_contacts c LEFT JOIN users owner ON owner.id=c.owner_user_id
+         WHERE c.user_id IS NULL AND (COALESCE(c.lead_name,'') ILIKE '%'||$1||'%'
+            OR COALESCE(c.lead_phone,'') ILIKE '%'||$1||'%' OR COALESCE(c.lead_email,'') ILIKE '%'||$1||'%'
+            OR COALESCE(c.organization,'') ILIKE '%'||$1||'%')
+      )
+      SELECT * FROM people ORDER BY sort_at DESC LIMIT $2`, [query.q, query.limit]);
     return { items: rows.rows };
   });
 
@@ -253,8 +259,17 @@ export function registerCrmRelationshipRoutes(app: FastifyInstance, pool: DbPool
   app.get('/api/v1/admin/crm/users/:userId/relationship', async (request) => {
     const actor = await principal(request, pool, config); requirePermission(actor, 'crm:manage');
     const { userId }=z.object({userId:z.uuid()}).parse(request.params);
-    const contact=await contactForUser(pool,userId);
-    if(!contact) throw notFound();
+    let contact=await contactForUser(pool,userId);
+    if(!contact){
+      const exists=await one<{actor_type:string}>(pool,`
+        SELECT CASE WHEN EXISTS(SELECT 1 FROM supplier_profiles WHERE user_id=$1) THEN 'supplier'
+                    WHEN EXISTS(SELECT 1 FROM buyer_profiles WHERE user_id=$1) THEN 'wholesale_buyer'
+                    ELSE 'customer' END AS actor_type
+        FROM users WHERE id=$1`,[userId]);
+      if(!exists) throw notFound();
+      const id=await transaction(pool,(client)=>ensureContact(client,userId,exists.actor_type));
+      contact={id};
+    }
     const detail=await one<Record<string,unknown>>(pool,`
       SELECT c.*,owner.display_name AS owner_name FROM crm_contacts c LEFT JOIN users owner ON owner.id=c.owner_user_id WHERE c.id=$1`,[contact.id]);
     return { contact:detail };
