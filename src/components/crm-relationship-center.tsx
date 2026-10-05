@@ -65,6 +65,16 @@ export function CrmRelationshipCenter({ mode, flash }: { mode: "overview" | "fol
     try{setDetail(await crmApi.relationship(id));}
     catch(e){flash(e instanceof Error?e.message:"خطا در باز کردن پرونده");setSelected(null);}
   };
+  const openSearchResult=async(row:Row)=>{
+    try{
+      let contactId=row.contact_id?String(row.contact_id):"";
+      if(!contactId&&row.user_id){
+        const linked=await crmApi.userRelationship(String(row.user_id));
+        contactId=String(linked.contact.id);
+      }
+      if(contactId) await openDetail(contactId);
+    }catch(e){flash(e instanceof Error?e.message:"خطا در باز کردن پرونده");}
+  };
 
   const saveLead=async()=>{
     if(lead.name.trim().length<2)return;
@@ -129,7 +139,7 @@ export function CrmRelationshipCenter({ mode, flash }: { mode: "overview" | "fol
         {searching&&<div className="mt-3"><LoadingState label="در حال جست‌وجو…"/></div>}
         {!searching&&search.trim().length>=2&&searchRows.length===0&&<div className="mt-3"><Empty title="موردی پیدا نشد" desc="عبارت دیگری را امتحان کنید."/></div>}
         {searchRows.length>0&&<div className="mt-3 divide-y divide-[var(--kv-line)] rounded-[12px] border border-[var(--kv-line)]">
-          {searchRows.map(row=><button key={String(row.contact_id)} onClick={()=>void openDetail(String(row.contact_id))}
+          {searchRows.map(row=><button key={String(row.contact_id)} onClick={()=>void openSearchResult(row)}
             className="flex w-full items-center justify-between gap-3 px-3 py-3 text-right hover:bg-[var(--kv-surface-2)]">
             <span><span className="block text-[12.5px] font-bold">{text(row.display_name,"بدون نام")}</span>
               <span className="text-[11px] text-[var(--kv-muted)]">{text(row.organization,"—")} · {text(row.phone,"بدون شماره")}</span></span>
