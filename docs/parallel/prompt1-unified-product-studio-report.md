@@ -174,9 +174,16 @@ Relevant skills unavailable; used repository design system.
 
 ## 14. Commits / git state
 
-Commits: see `git log --oneline` on `arena/01a10ace-kolbevintage` for this phase (three logical commits:
-unified Studio; removal of superseded surfaces; gate alignment + this report). Pushed to
-`origin/arena/01a10ace-kolbevintage`; local `HEAD` == remote `HEAD` verified; working tree clean; `main` untouched.
+Commits (this phase, on top of `e262411`):
+
+| commit | content |
+|--------|---------|
+| `4d075cf` | feat(product-studio): ONE unified 9-step Studio + hub step routing + embedded pricing/inventory |
+| `4b57a5a` | refactor: remove the superseded pricing workspace / specs editor / second WMS panel + align the gates |
+| `3409e93` | docs: this report |
+
+Pushed to `origin/arena/01a10ace-kolbevintage` (`e262411..<tip>`); local `HEAD` == remote `HEAD` verified;
+working tree clean; `main` (`3cd9dac`) untouched and never merged.
 
 ## 15. Remaining risks / notes for the Product Owner
 
