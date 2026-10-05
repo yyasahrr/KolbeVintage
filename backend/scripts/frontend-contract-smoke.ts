@@ -537,13 +537,37 @@ try {
     ['خرده‌فروشی', 'نقل‌وانتقالات', 'انبار عمده', 'تنظیمات انبار'].every((label) => hubOptions.includes(label)) &&
     !hubOptions.includes('کالاها') && !hubSrc.includes('CatalogHub'));
   const adminSrc = readFileSync(join(repoRoot, 'src/portals/admin.tsx'), 'utf8');
-  check('Product Studio and WMS resolve to separate render branches while legacy product route is preserved',
-    adminSrc.includes('rproducts: "wms:goods"') && adminSrc.includes('hubSub === "goods"') &&
-    adminSrc.includes('<CatalogHub flash={flash} />') && adminSrc.includes('<WarehouseHub flash={flash} initial={hubSub} />'));
-  const catalogHubSrc = readFileSync(join(repoRoot, 'src/components/catalog-hub.tsx'), 'utf8');
-  check('Product Studio owns the canonical list/lifecycle and has no owner picker in product definition',
-    ['تعریف محصول', 'نیازمند راه‌اندازی', 'بازبینی تأمین‌کنندگان', 'همه کالاها', 'آرشیو'].every((t) => catalogHubSrc.includes(t)) &&
-    !catalogHubSrc.includes('مالک محصول'));
+  // §3/§25: «محصولات کلبه» is the canonical Product entry; Product Studio lives inside it and
+  // WMS stays purely physical. Legacy product bookmarks (rproducts / wms:goods) still resolve.
+  check('«محصولات کلبه» is the canonical product entry and WMS stays physical-only',
+    adminSrc.includes('{ v: "products", label: "محصولات کلبه"') &&
+    adminSrc.includes('<KolbeProductsHub flash={flash}') &&
+    adminSrc.includes('<WarehouseHub flash={flash} initial={hubSub} />') &&
+    !adminSrc.includes('"استودیو محصول"'));
+  check('legacy product routes redirect into «محصولات کلبه» (bookmarks keep working)',
+    adminSrc.includes('rproducts: "products"') && adminSrc.indexOf('"wms:goods": "products"') > 0);
+  const productsHubSrc = readFileSync(join(repoRoot, 'src/components/kolbe-products-hub.tsx'), 'utf8');
+  // §5/§26: the five canonical Product views, and NO «نیازمند راه‌اندازی» lifecycle anywhere.
+  const userFacing = (source: string) => source.split('\n').filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join('\n');
+  check('«محصولات کلبه» exposes exactly the five canonical views and no «نیازمند راه‌اندازی» lifecycle',
+    ['همه محصولات', 'پیش‌نویس‌ها', 'منتشرشده', 'ناموجود', 'آرشیوشده'].every((t) => productsHubSrc.includes(t)) &&
+    !userFacing(productsHubSrc).includes('نیازمند راه‌اندازی'));
+  check('«محصولات کلبه» primary action opens the canonical Product Studio and offers the canonical row actions',
+    productsHubSrc.includes('افزودن محصول') && productsHubSrc.includes('<ProductStudio') &&
+    ['ادامه تکمیل محصول', 'ویرایش', '۳۶۰°', 'قیمت‌گذاری', 'مدیریت موجودی', 'ورود اولیه کالا']
+      .every((t) => productsHubSrc.includes(t)) &&
+    !productsHubSrc.includes('مالک محصول'));
+  const studioSrc = readFileSync(join(repoRoot, 'src/portals/admin-product.tsx'), 'utf8');
+  // §6: the canonical creation actions — no success page, no needs-setup queue.
+  check('Product Studio create actions are [ذخیره پیش‌نویس] / [ذخیره و ادامه] / [انصراف] with no success page',
+    ['ذخیره پیش‌نویس', 'ذخیره و ادامه', 'انصراف'].every((t) => studioSrc.includes(t)) &&
+    !studioSrc.includes('ذخیره و انتشار') && !studioSrc.includes('createdSummary') &&
+    !userFacing(studioSrc).includes('نیازمند راه‌اندازی'));
+  const setupSrc = readFileSync(join(repoRoot, 'src/components/initial-inventory-workspace.tsx'), 'utf8');
+  check('ورود اولیه کالا is the single canonical initial-inventory workspace (Color×Size + Series, two domains)',
+    setupSrc.includes('ورود اولیه کالا') && setupSrc.includes('initial-inventory-workspace') === false &&
+    setupSrc.includes('catalogOpsApi.inventorySetup') && setupSrc.includes('inventoryDomain') === false &&
+    setupSrc.includes('retail') && setupSrc.includes('wholesale'));
   const product360Src = readFileSync(join(repoRoot, 'src/components/product-360.tsx'), 'utf8');
   check('Product 360 is a WorkspaceModal with ten read areas, canonical pricing summary/Resolver, and read-only inventory/history',
     product360Src.includes('<WorkspaceModal') &&
