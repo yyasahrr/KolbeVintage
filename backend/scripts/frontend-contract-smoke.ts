@@ -242,12 +242,27 @@ try {
     const studio = await readFile(new URL('../../src/portals/admin-product.tsx', import.meta.url), 'utf8');
     const both = (...needles: string[]) => needles.every((needle) => studio.includes(needle));
     // The nav is read straight out of the `secs` declaration so a renamed or re-added step fails here.
-    const secsBlock = studio.slice(studio.indexOf('const secs = ['), studio.indexOf('];', studio.indexOf('const secs = [')));
-    check('§13 the Studio nav is exactly the canonical 8 steps, in order',
-      JSON.stringify([...secsBlock.matchAll(/([\u0600-\u06FF][^"\]]*)/g)].map((m) => m[1]).filter((label) => label.trim().length > 2))
-        === JSON.stringify(['اطلاعات پایه', 'رنگ و سایز', 'تصویر و ویدیو', 'تصویر استایل‌بیلدر', 'قیمت‌گذاری',
-          'مشخصات و راهنمای سایز', 'سئو و کانال‌ها', 'بازبینی و انتشار']),
-      secsBlock.replace(/\s+/g, ' ').slice(0, 220));
+    const stepIds = studio.slice(studio.indexOf('export const STUDIO_STEPS = ['),
+      studio.indexOf('] as const;', studio.indexOf('export const STUDIO_STEPS = [')));
+    const stepLabels = studio.slice(studio.indexOf('export const STUDIO_STEP_LABEL'),
+      studio.indexOf('};', studio.indexOf('export const STUDIO_STEP_LABEL')));
+    // §1/§26: ONE continuous journey — create → pricing/discounts → initial inventory → publish.
+    check('§26 the Studio nav is exactly the canonical 9 steps, in order',
+      JSON.stringify([...stepIds.matchAll(/"(\w+)"/g)].map((m) => m[1]))
+        === JSON.stringify(['base', 'variant', 'media', 'cutout', 'price', 'specs', 'inventory', 'seo', 'review'])
+      && ['اطلاعات پایه', 'رنگ، سایز و واریانت', 'تصویر و ویدیو', 'تصویر استایل‌بیلدر', 'قیمت‌گذاری و تخفیف',
+        'مشخصات و راهنمای سایز', 'موجودی اولیه', 'سئو و کانال‌ها', 'بازبینی و انتشار']
+        .every((label) => stepLabels.includes(label)),
+      stepIds.replace(/\s+/g, ' ').slice(0, 220));
+    check('§6/§7/§18 the Studio embeds the canonical pricing + initial-inventory workspaces',
+      studio.includes('<ProductPricingPanel') && studio.includes('<InitialInventoryWorkspace')
+      && studio.includes('<ProductInventoryPanel')
+      && !studio.includes('onOpenPricing') && !studio.includes('ProductPricingWorkspace'),
+      'embedded canonical editors, no handoff/page');
+    check('§3 the sticky bar owns [ذخیره پیش‌نویس] + step navigation and the last step owns [انتشار محصول]',
+      studio.includes('const saveDraftAndStay =') && studio.includes('sticky bottom-0')
+      && studio.includes('{draftSaving ? "در حال ذخیره…" : "ذخیره پیش‌نویس"}')
+      && studio.includes('const isLastStep =') && studio.includes('onClick={() => goStep(STUDIO_STEPS[stepIndex + 1]!)}'));
     check('§9/§11 the merged step no longer binds a template or a category schema',
       !studio.includes('ProductSpecsEditor') && !studio.includes('قالب مشخصات')
       && !studio.includes('اتصال زنده') && !studio.includes('کپی ثابت'),
@@ -265,9 +280,11 @@ try {
     check('§6 retail section = cash price + installment enable + installment base + discount policy',
       both('قیمت نقدی پایه (تومان)', 'خرید چهارقسطه', 'قیمت پایه چهارقسطه (تومان)', 'سیاست اعمال تخفیف روی خرید چهارقسطه'),
       'retail pricing fields');
-    check('§7 discount/festival are read-only cards linking to the Promotion Center',
-      both('مدیریت تخفیف', 'مدیریت جشنواره') && !studio.includes('localFestivalDraft') && !studio.includes('discountDraftMetadata'),
-      'promotion center is the authority');
+    check('§7/§12 the embedded discount+festival editor is the canonical Promotion Engine surface',
+      studio.includes('<ProductPricingPanel') && studio.includes('onOpenPromotionCenter')
+      && !studio.includes('localFestivalDraft') && !studio.includes('discountDraftMetadata')
+      && !studio.includes('product.metadata') && !/productsApi\.update\([^)]*discount/.test(studio),
+      'promotion engine is the only discount authority');
     check('§12 the two tables persist through the existing metadata JSON column (no new authority)',
       studio.includes('tables: { specs: d.specsTable, sizeGuide: d.sizeGuideTable }')
       && studio.includes('normalizeTable((meta.tables as { specs?: unknown } | undefined)?.specs)'),
@@ -670,10 +687,10 @@ try {
     !productsHubSrc.includes('مالک محصول'));
   const studioSrc = readFileSync(join(repoRoot, 'src/portals/admin-product.tsx'), 'utf8');
   // §6: the canonical creation actions — no success page, no needs-setup queue.
-  check('Product Studio create actions are [ذخیره پیش‌نویس] / [ذخیره و ادامه] / [انصراف] with no success page',
-    ['ذخیره پیش‌نویس', 'ذخیره و ادامه', 'انصراف'].every((t) => studioSrc.includes(t)) &&
+  check('Product Studio actions are [ذخیره پیش‌نویس] / [مرحله بعد] / [انتشار محصول] / [انصراف] with no success page',
+    ['ذخیره پیش‌نویس', 'مرحله بعد', 'انتشار محصول', 'انصراف'].every((t) => studioSrc.includes(t)) &&
     !studioSrc.includes('ذخیره و انتشار') && !studioSrc.includes('createdSummary') &&
-    !userFacing(studioSrc).includes('نیازمند راه‌اندازی'));
+    !studioSrc.includes('ذخیره و ادامه') && !userFacing(studioSrc).includes('نیازمند راه‌اندازی'));
   // Prompt-1 correction (browser UAT defect): «افزودن محصول» must open the NEW PRODUCT studio
   // form directly — no intermediate/parallel product list, no second click, no duplicate product.
   const studioHubSlice = productsHubSrc.slice(productsHubSrc.indexOf('screen.k === "studio"'));
@@ -693,10 +710,11 @@ try {
     structureSlice.includes('<ProductStructurePanel') && structureSlice.includes('<SeriesTemplateManager') &&
     !structureSlice.includes('ProductStudio'));
   check('every studio exit path ([انصراف] / «بازگشت به فهرست» / «خروج بدون ذخیره») returns to «محصولات کلبه»',
-    (studioSrc.match(/onExit\?\.\(\)/g) ?? []).length >= 3 &&
+    (studioSrc.match(/onExit\?\.\(\)/g) ?? []).length >= 2 &&
     studioSrc.slice(studioSrc.indexOf('const closeStudio'), studioSrc.indexOf('const closeStudio') + 400).includes('onExit?.()') &&
     studioSrc.includes('onClick={onExit}') &&
-    /onExit=\{\(\) => \{ setScreen\(\{ k: "list" \}\); setResumeProductId\(null\); load\(\); \}\}/.test(productsHubSrc));
+    productsHubSrc.includes('onExit={closeStudio}') &&
+    /const closeStudio = \(\) => \{[\s\S]{0,320}?setScreen\(\{ k: "list" \}\);/.test(productsHubSrc));
   const setupSrc = readFileSync(join(repoRoot, 'src/components/initial-inventory-workspace.tsx'), 'utf8');
   check('ورود اولیه کالا is the single canonical initial-inventory workspace (Color×Size + Series, two domains)',
     setupSrc.includes('ورود اولیه کالا') && setupSrc.includes('initial-inventory-workspace') === false &&

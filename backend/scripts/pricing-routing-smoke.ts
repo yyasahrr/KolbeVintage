@@ -1,4 +1,4 @@
-/** PROMPT 1 — FINAL BROWSER UAT DELTA: routing / authority static gate (§1-§3, §6-§15, §20-§21).
+/** PROMPT 1 — UNIFIED PRODUCT STUDIO: routing / authority static gate (§5-§26, §32, §41).
  *
  *  Browser automation is unavailable in this environment (no Chromium binary, no package
  *  mirrors), so the §20-§26 browser acceptance is reported as PENDING. This gate does NOT
@@ -34,41 +34,53 @@ const count = (haystack: string, needle: string) => haystack.split(needle).lengt
 
 const hub = read('src/components/kolbe-products-hub.tsx');
 const studio = read('src/portals/admin-product.tsx');
-const pricing = read('src/components/discount-manager.tsx');
+const pricing = read('src/components/product-pricing-panel.tsx');
 const admin = read('src/portals/admin.tsx');
 const wms = read('src/portals/warehouse-hub.tsx');
 const structure = read('src/components/product-structure-panel.tsx');
+const readQuiet = (rel: string) => { try { return readFileSync(new URL(`../../${rel}`, import.meta.url).pathname, 'utf8'); } catch { return ''; } };
 
-/* ------------------------------ §1/§2/§16/§18 pricing is a full page ------------------------ */
-check('pricing workspace is one full-page component and the modal export is gone',
-  pricing.includes('export function ProductPricingWorkspace') && !/export function DiscountManager/.test(pricing));
-check('pricing route is stable and holds the productId in the hash',
-  hub.includes('const PRICING_HASH = "#/admin/products/pricing/"') && hub.includes('window.location.hash = `${PRICING_HASH}${row.id}`'));
-check('a refresh/bookmark reopens the same product (deep-link parse exists)',
-  /^#\/admin\/products\/pricing\//m.test(admin) || admin.includes('/^#\\/admin\\/products\\/pricing\\/([0-9a-f-]{36})/i'));
-check('the hub renders the workspace as a page, not inside a modal',
-  hub.includes('<ProductPricingWorkspace')
-  && !/WorkspaceModal[\s\S]{0,400}?<ProductPricingWorkspace/.test(hub.replace(/\/\*[\s\S]*?\*\//g, '')));
-check('every hub pricing entry passes the SAME productId', hub.includes('openPricing(row') && count(hub, 'openPricing(') >= 2);
-check('pricing deep-links into the canonical promotion center instead of owning promotions',
-  hub.includes('onOpenPromotionCenter={') && /onOpenPromo\?\.\(\{ productId: screen\.row\.id/.test(hub)
-  && pricing.includes('onOpenPromotionCenter?: (anchor?:') && pricing.includes('onOpenPromotionCenter("discount")'));
-check('admin routes the promotion deep-link to the canonical tab with the product context',
-  admin.includes('onOpenPromo={(focus) => { setPromoFocus(focus); go("promo"); }}') && admin.includes('<PromoPanel focus={promoFocus} />'));
-check('pricing header exposes the product facts the PO asked for',
-  pricing.includes('data-workspace="product-pricing"') && pricing.includes('sku') && pricing.includes('بازگشت'));
-
-/* ------------------------------ §3/§17 draft-first handoff --------------------------------- */
-check('Studio reaches pricing through a handoff prop (not a local pricing authority)',
-  studio.includes('onOpenPricing?:') && studio.includes('const handoff ='));
-check('handoff reuses the current/created draft instead of creating a second product',
-  studio.includes('editing?.id ?? createdDraftId') && studio.includes('createdDraftId'));
-check('handoff names the exact missing draft fields in Persian',
-  studio.includes('handoffMissing') && studio.includes('ابتدا این موارد را وارد کنید')
-  && studio.includes('ذخیره پیش‌نویس و رفتن به ${noun}'));
-check('Studio no longer mounts the pricing modal and points at the full management page',
-  !studio.includes('DiscountManager') && studio.includes('مدیریت کامل قیمت‌گذاری')
-  && !/<DiscountManager/.test(studio));
+/* ------------------- §1/§2/§6/§26 ONE unified Studio (no separate pricing page) --------------- */
+check('the discount/festival editor is embedded in the Studio as a canonical panel (no separate page)',
+  studio.includes('ProductPricingPanel') && studio.includes('from "../components/product-pricing-panel"')
+  && pricing.includes('data-panel="studio-pricing"'));
+check('one Studio route holds the productId + requested step, and the legacy pricing route redirects into it',
+  hub.includes('const STUDIO_HASH = "#/admin/products/studio/"')
+  && hub.includes('const LEGACY_PRICING_HASH = "#/admin/products/pricing/"')
+  && hub.includes('return { id: legacy[1]!, step: "price" };')
+  && hub.includes('window.history.replaceState(null, "", studioHash(id, "price"))'));
+check('every hub row action routes into the Studio at the right step (ویرایش/قیمت‌گذاری/موجودی/ادامه)',
+  ['openStudioAt(p, "base")', 'openStudioAt(p, "price")', 'openStudioAt(p, "inventory")']
+    .every((needle) => hub.includes(needle))
+  && hub.includes('openStudioAt(p, pending ? "inventory" : "price")'));
+check('the Studio exposes the step router (`?step=`) and a popstate listener so Back stays in-step',
+  studio.includes('window.history.replaceState(null, "", `${path}${suffix ? `?${suffix}` : ""}`)')
+  && studio.includes('window.addEventListener("popstate", onPop)')
+  && studio.includes('export const STUDIO_STEPS'));
+check('the Studio is draft-first: ONE canonical draft, reused by every later step',
+  studio.includes('const ensureDraft =') && studio.includes('const activeProductId = editing?.id ?? createdDraftId')
+  && studio.includes('if (createdDraftId) return createdDraftId;') && !studio.includes('onOpenPricing'));
+check('the sticky action bar always carries «ذخیره پیش‌نویس» and the final step carries «انتشار محصول»',
+  studio.includes('sticky bottom-0') && studio.includes('ذخیره پیش‌نویس') && studio.includes('مرحله بعد')
+  && studio.includes('انتشار محصول') && studio.includes('const isLastStep ='));
+check('initial inventory is embedded in the Studio and writes canonical WMS receipts only',
+  studio.includes('<InitialInventoryWorkspace') && studio.includes('<ProductInventoryPanel')
+  && !/productsApi\.update\([^)]*stock/.test(studio));
+check('discount writes go through the canonical promotion API — never a local/metadata authority',
+  ['promotionRulesApi.createRule', 'promotionRulesApi.updateRule', 'promotionRulesApi.setProductMode', 'promotionRulesApi.resolvePrices']
+    .every((needle) => pricing.includes(needle))
+  && !/metadata\s*[.:]/.test(pricing));
+check('the dead ON/OFF controls for standalone discount and central festival are gone',
+  !studio.includes('تخفیف مستقل محصول') && !studio.includes('جشنواره محصول از مرکز مرکزی'));
+check('the promotion deep link opens the canonical Promotion Center scoped to the product',
+  studio.includes('onOpenPromotionCenter({ productId: activeProductId, productName: d.name.trim() || "محصول"')
+  && hub.includes('onOpenPromotionCenter={(focus) => onOpenPromo?.(focus)}')
+  && admin.includes('onOpenPromo={(focus) => { setPromoFocus(focus); go("promo"); }}')
+  && admin.includes('<PromoPanel focus={promoFocus} />'));
+check('§41 the superseded pricing workspace, specs editor and second WMS panel are REMOVED',
+  ['src/components/discount-manager.tsx', 'src/components/product-specs-editor.tsx', 'src/portals/admin-wms-panel.tsx']
+    .every((rel) => readQuiet(rel) === ''),
+  'no parallel pricing/specs/WMS authority may be reintroduced');
 
 /* ------------------------------ §6/§8-§11 WMS operability ---------------------------------- */
 check('WMS shows inventory facts with inventory wording (no «قابل فروش», no «وضعیت فروش»)',
@@ -100,31 +112,6 @@ check('no raw identifiers are rendered in the structure UI (no UUID fields)',
   && !/\{(item|type|guide|attribute)\.(created_at|updated_at)\}/.test(structure));
 check('size definitions get a real management surface (types + sizes)',
   structure.includes('TypesSizesSection') && structure.includes('createSize') && structure.includes('deleteSize'));
-
-/* ------------------------ §5 (continuation): no silent dead code / parallel authority -------- */
-/* Two modules are superseded and currently have ZERO importers. They are retained (removal is an
-   open PO decision) but must never be reconnected silently: this check makes reconnection a
-   deliberate, reviewed act, and the file headers state the canonical replacements. */
-{
-  const readQuiet = (rel: string) => { try { return readFileSync(new URL(`../../${rel}`, import.meta.url).pathname, 'utf8'); } catch { return ''; } };
-  const deprecations = [
-    { rel: 'src/components/product-specs-editor.tsx', name: 'ProductSpecsEditor', reason: 'legacy superseded specs/size-guide editor (parallel authority)' },
-    { rel: 'src/portals/admin-wms-panel.tsx', name: 'AdminWmsPanel', reason: 'superseded second WMS surface' },
-  ];
-  const sources = ['src/App.tsx', 'src/main.tsx', ...['src/components', 'src/portals', 'src/data', 'src/utils'].flatMap((dir) => {
-    try {
-      return readdirSync(new URL(`../../${dir}`, import.meta.url).pathname)
-        .filter((name) => /\.tsx?$/.test(name)).map((name) => `${dir}/${name}`);
-    } catch { return []; }
-  })];
-  for (const entry of deprecations) {
-    const self = readQuiet(entry.rel);
-    check(`deprecated ${entry.name} is documented and not imported by any module`,
-      self.includes('DEPRECATED') && self.includes('no importers')
-      && sources.filter((rel) => rel !== entry.rel).every((rel) => !readQuiet(rel).includes(entry.name)),
-      entry.reason);
-  }
-}
 
 console.log(`pricing-routing smoke: ${checks.filter((entry) => !entry.startsWith('✗')).length}/${checks.length} checks passed`);
 for (const entry of checks) console.log(`  ${entry.startsWith('✗') ? entry : `✓ ${entry}`}`);

@@ -23,9 +23,9 @@ const FILES = [
   'src/portals/warehouse-hub.tsx',
   /* Prompt-1 final pass: the merged specs + size-guide step renders the shared table editor. */
   'src/components/dynamic-table-editor.tsx',
-  /* Browser-UAT delta: the full-page pricing workspace and the structure manager are new/rewritten
+  /* Unified Studio delta: the embedded discount/festival editor and the structure manager are
      heavy surfaces — they must not push the document wider than a 360px viewport either. */
-  'src/components/discount-manager.tsx',
+  'src/components/product-pricing-panel.tsx',
   'src/components/product-structure-panel.tsx',
   'src/components/product-series-editor.tsx',
 ];
