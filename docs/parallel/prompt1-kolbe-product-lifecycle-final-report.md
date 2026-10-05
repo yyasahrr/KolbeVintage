@@ -19,7 +19,15 @@ measured responsive sweep) because no Chromium/Chrome binary is obtainable here 
 
 ---
 
-## 2. WHAT CHANGED (8 atomic commits)
+## 2. WHAT CHANGED (10 atomic commits)
+
+> **Correction after browser UAT (commits `efea355`, `d74e7e5`):** UAT found that
+> «محصولات کلبه → افزودن محصول» landed on ProductStudio's own product list, requiring a second
+> click on «تعریف محصول جدید». That list was a parallel product-management surface.
+> `ProductStudio` now has an `embedded` mode: it mounts straight into the NEW PRODUCT form, hides
+> its own list, and returns to the hub through `onExit` from every exit path. Four contract checks
+> and two browser assertions pin the regression.
+
 
 | # | SHA | Commit | Scope |
 |---|-----|--------|-------|
@@ -58,6 +66,7 @@ of the existing Product Studio, catalog read model and WMS receipt path only.
 | 15 | No `inventory_setup` / `pending` / raw enums / UUID / snake_case in Admin UI | **DONE** | contract smoke + §38-style sweep in the UAT gate |
 | 16 | Responsive 360/390/768/1024/1280/1440, no horizontal overflow | **NOT EXECUTED** | static lint clean (§6) — no browser available |
 | 17 | No auto-publish on WMS receipt | **DONE** | §31: `inventory_setup='configured'` while `status` stays `draft` |
+| 18 | «افزودن محصول» opens Product Studio directly (UAT defect) | **FIXED** | `embedded` mode + `onExit`; contract checks + browser assertions |
 
 ---
 
@@ -67,7 +76,7 @@ of the existing Product Studio, catalog read model and WMS receipt path only.
 |-------|---------|--------|
 | Backend embedded (all) | `cd backend && npm run test:embedded` | **# tests 196 · # pass 196 · # fail 0 · # skipped 0 · # suites 21 · 132.5 s** |
 | New draft-lifecycle suite | `backend/src/product-draft-lifecycle.test.ts` | **8 / 8 pass** (included in the 196) |
-| Frontend contract smoke | `cd backend && npm run test:contract` | **108 / 108 checks passed** (was 84/86 with the suite aborting on `ENOENT catalog-hub.tsx`) |
+| Frontend contract smoke | `cd backend && npm run test:contract` | **112 / 112 checks passed** (was 84/86 with the suite aborting on `ENOENT catalog-hub.tsx`; +4 for the no-intermediate-list correction) |
 | Static responsive lint | `cd backend && node scripts/qa-responsive-static.mjs` | **1 / 1 pass** — 7 Prompt-1 surfaces, 23 fixed/min widths ≥ 320 px, all wrapped or clamped |
 | Frontend typecheck | `node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | **0 errors** |
 | Backend typecheck | `cd backend && npx tsc -p tsconfig.json --noEmit` | **0 errors** |
