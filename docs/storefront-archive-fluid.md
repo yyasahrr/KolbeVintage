@@ -141,3 +141,88 @@ blocked, so the layer has not been reviewed as rendered pixels and no screenshot
 Colour contrast figures in this document are computed from the hex pairs, not sampled from a
 rendered page; the responsive matrix and the glass/blur fallbacks are specified in CSS but were
 not visually confirmed.
+
+---
+
+# Phase 2 — product card refinement (inline purchase)
+
+## What changed on the card
+
+The card is now a framed miniature purchase surface instead of a photo with a
+floating quick-add button:
+
+- **Frame.** 1px hairline (`--kvaf-line`), soft shadow (`--kvaf-shadow-sm`,
+  `--kvaf-shadow-md` on hover/expand), 24px radius concentric with the 16px
+  photograph, 8px inner padding so the image still leads.
+- **Two zones.** Media on top, information below a hairline rule; the purchase
+  zone is separated by a quieter dashed rule. Collapsed cards carry the same
+  rule with a hint, so the grid rhythm never changes between states.
+- **Colour drives the media.** Choosing a swatch swaps the photograph to that
+  colourway's own media and starts the carousel on its first frame.
+- **Card carousel.** Two glass discs (`chevron`) plus a dot indicator, swipe on
+  touch (40px threshold, horizontal only, RTL-aware), no autoplay, no library.
+  Arrows are hidden until hover/focus for pointer users and lightly visible on
+  touch; they disable at both ends.
+- **Inline expansion, no overlay.** Colour → the card grows downward, sizes
+  appear under the swatches, the action sits below them. No popover, no bottom
+  sheet, nothing leaves the grid. One card is expanded at a time; tapping the
+  chosen swatch again (or "بستن") collapses it.
+- **Honest states.** No colour yet → "برای انتخاب سایز، یک رنگ را انتخاب کنید".
+  Colour, no size → disabled "سایز را انتخاب کنید". Ready → "افزودن به سبد".
+  Success → "به سبد اضافه شد" inline plus the existing toast and badge bump.
+  Rejected by the stock rule → inline notice, never a success message.
+  Sold out → the card cannot expand at all.
+
+`QuickAddPopover.tsx` and `QuickAddSheet.tsx` are deleted; `SizeRow` moved into
+`shared.tsx` because the PDP still uses it. The cart drawer, search overlay,
+filter sheet and account menu keep their overlay behaviour untouched.
+
+## Data extension (presentation only)
+
+`Product.colorMedia?: Record<string, string[]>` — colourway id → that product's
+photographs in that colour. Rules:
+
+- optional, so every existing product and every admin/supplier form keeps working;
+- every URL must already exist in that product's `images` (enforced by a test);
+- only colourways whose photograph is unambiguous are mapped — 8 entries across
+  the catalogue (p2 cream/olive, p3 black, p4 white, p5 burgundy, p6 sand,
+  p7 cream, p8 black);
+- unmapped colourways fall back to the same product gallery, rotated to a stable
+  frame per colour (`mediaForColor`) so switching colour still changes the
+  photograph without pretending a per-colour shoot exists.
+
+No new variant system, no pricing/stock/OMS change. When real per-colour studio
+photography arrives, only this table changes.
+
+Per-colour sizes are **derived**, not stored: `sizesForColor` reads the existing
+`SeriesDef.colorIds` ("رنگ‌های مجاز" in the admin/supplier UI), skips series the
+supplier switched off (`available: false`) and skips sizes with zero pieces.
+Where no series restricts a colour, every colour offers the same run — which is
+what the data says today.
+
+## Verification record (Phase 2)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Types | `node node_modules/typescript/bin/tsc --noEmit` | 0 errors |
+| Production build | `node node_modules/vite/bin/vite.js build` | ✓ `dist/index.html` 934,478 B (gzip 239 kB) |
+| Card + storefront flows, desktop | jsdom run over the real bundle | 57/57, 0 runtime errors |
+| Same, mobile profile | `(min-width: 1024px)` false | 57/57, 0 runtime errors |
+| Worst-case fixtures | 12 adversarial products | 29/29, 0 runtime errors |
+| Catalogue integrity | per-colour media map | 8 entries, 0 foreign URLs, 0 unknown colour ids |
+
+Covered: no overlay markup left on the card; collapsed card has no CTA and no
+sizes; arrows change the photograph, clamp at both ends and are named for AT;
+choosing a colour changes the photograph, expands the card and reveals sizes in
+reading order below the swatches; the CTA lives in the lower section, waits for a
+size, then runs the real `addToCart` and bumps the badge; the toast stays a
+polite live region with "مشاهده سبد"; opening a second card collapses the first;
+the PDP gallery now follows the colour too; focus stays trapped in the cart.
+Worst cases: one photo (no arrows/dots), one colour, no colour, one size
+(pre-chosen), sold out (cannot expand), no photo, no size run, eight colours
+(`+۴`), nine-digit price, colour-restricted size runs (`S,M` vs `L,XL`, and a
+deactivated series contributes nothing), rejected add reported inline.
+
+**Still not verified:** no browser in the sandbox, so the refined card has not
+been reviewed as rendered pixels; spacing, shadow weight and the reveal timing
+are specified in CSS but not visually confirmed.

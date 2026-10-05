@@ -568,22 +568,101 @@ html[data-surface="storefront"] body { background-color: transparent; }
 }
 
 /* ============================== PRODUCT CELL ============================== */
+/* A framed photograph above a quiet information block. The hairline border and
+   the soft shadow give the cell body without turning it into a boxed tile: the
+   image still bleeds to the card edge and the type stays editorial. */
+.kv-sf-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-self: start;            /* an expanded neighbour never stretches this card */
+  padding: 0.5rem 0.5rem 0.875rem;
+  border: 1px solid var(--kvaf-line);
+  /* concentric with the photograph: 24px - 8px padding = the 16px media radius */
+  border-radius: 24px;
+  background: var(--kvaf-surface);
+  box-shadow: var(--kvaf-shadow-sm);
+  transition: box-shadow var(--kvaf-t-base) var(--kvaf-ease-out), border-color var(--kvaf-t-base) var(--kvaf-ease-out);
+}
+.kv-sf-cell[data-expanded="true"] {
+  border-color: var(--kvaf-line-strong);
+  box-shadow: var(--kvaf-shadow-md);
+}
+@media (hover: hover) and (pointer: fine) {
+  .kv-sf-cell:hover { border-color: var(--kvaf-line-strong); box-shadow: var(--kvaf-shadow-md); }
+}
 
-.kv-sf-cell { position: relative; display: flex; flex-direction: column; }
 .kv-sf-cell-figure {
   position: relative;
+  isolation: isolate;
   aspect-ratio: 3 / 4;
   overflow: hidden;
   border-radius: var(--kvaf-r-md);
   background-color: var(--kvaf-sand);
 }
-.kv-sf-cell-figure > img {
-  width: 100%; height: 100%; object-fit: cover;
-  transition: transform var(--kvaf-t-slow) var(--kvaf-ease-out), opacity var(--kvaf-t-base) var(--kvaf-ease-out);
+.kv-sf-cell-shot { display: block; width: 100%; height: 100%; }
+.kv-sf-cell-img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  animation: kvaf-fade var(--kvaf-t-base) var(--kvaf-ease-out);
+  transition: transform var(--kvaf-t-slow) var(--kvaf-ease-out);
 }
 @media (hover: hover) and (pointer: fine) {
-  .kv-sf-cell:hover .kv-sf-cell-figure > img { transform: scale(1.045); }
+  .kv-sf-cell:hover .kv-sf-cell-img { transform: scale(1.035); }
 }
+.kv-sf-cell-noimg {
+  display: grid; place-items: center;
+  width: 100%; height: 100%;
+  padding: 1rem;
+  text-align: center;
+  font-size: 12px;
+  color: var(--kvaf-muted);
+}
+
+/* media navigation — small glass discs, they never compete with the photograph */
+.kv-sf-nav {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  color: var(--kvaf-ink);
+  background: color-mix(in srgb, var(--kvaf-surface) 74%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0.72;
+  transition: opacity var(--kvaf-t-fast) var(--kvaf-ease-out), background-color var(--kvaf-t-fast) var(--kvaf-ease-out), scale var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+.kv-sf-nav[data-side="start"] { inset-inline-start: 0.5rem; }
+.kv-sf-nav[data-side="end"] { inset-inline-end: 0.5rem; }
+.kv-sf-nav:active { scale: 0.9; }
+.kv-sf-nav:disabled { opacity: 0; pointer-events: none; }
+@media (hover: hover) and (pointer: fine) {
+  .kv-sf-nav { opacity: 0; }
+  .kv-sf-cell:hover .kv-sf-nav:not(:disabled),
+  .kv-sf-cell:focus-within .kv-sf-nav:not(:disabled) { opacity: 1; }
+  .kv-sf-nav:hover:not(:disabled) { background: color-mix(in srgb, var(--kvaf-surface) 94%, transparent); }
+}
+.kv-sf-dots {
+  position: absolute;
+  inset-block-end: 0.5rem;
+  inset-inline: 0;
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  pointer-events: none;
+}
+.kv-sf-dots i {
+  width: 5px; height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 1px rgba(28, 28, 25, 0.18);
+  transition: width var(--kvaf-t-base) var(--kvaf-ease-out), background-color var(--kvaf-t-base) var(--kvaf-ease-out);
+}
+.kv-sf-dots i[data-on="true"] { width: 14px; background: var(--kvaf-ink); box-shadow: none; }
+
 .kv-sf-cell-flag {
   position: absolute;
   inset-block-start: 0.625rem;
@@ -614,40 +693,104 @@ html[data-surface="storefront"] body { background-color: transparent; }
 }
 .kv-sf-wish[data-on="true"] { color: var(--kvaf-sienna); background: color-mix(in srgb, var(--kvaf-surface) 92%, transparent); }
 .kv-sf-wish:active { transform: scale(0.9); }
-
-/* Quick add sits over the image; always reachable, revealed on hover for pointer users. */
-.kv-sf-quickadd {
+.kv-sf-cell-sold {
   position: absolute;
-  inset-inline: 0.625rem;
-  inset-block-end: 0.625rem;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  border-radius: var(--kvaf-r-sm);
+  inset: 0;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--kvaf-bone) 58%, transparent);
+  backdrop-filter: blur(1.5px);
+  -webkit-backdrop-filter: blur(1.5px);
   font-size: 13px;
-  font-weight: 700;
-  transition: opacity var(--kvaf-t-base) var(--kvaf-ease-out), transform var(--kvaf-t-base) var(--kvaf-ease-out), background-color var(--kvaf-t-fast) var(--kvaf-ease-out), color var(--kvaf-t-fast) var(--kvaf-ease-out);
+  font-weight: 800;
+  color: var(--kvaf-charcoal);
+  pointer-events: none;
 }
-.kv-sf-quickadd:active { transform: scale(0.98); }
-.kv-sf-quickadd:disabled { opacity: 0.5; pointer-events: none; }
-/* confirmation state — the control itself reports the result */
-.kv-sf-quickadd[data-added="true"] {
-  background-image: none;
-  background-color: var(--kvaf-success);
-  border-color: transparent;
-  color: #fff;
-  opacity: 1;
+
+/* ---------- information block: separated from the media by a hairline ---------- */
+.kv-sf-cell-body {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.625rem;
+  padding: 0.75rem 0.375rem 0;
+  border-top: 1px solid var(--kvaf-line);
+}
+.kv-sf-cell-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.55;
+  color: var(--kvaf-ink);
+  overflow-wrap: anywhere;
+  transition: color var(--kvaf-t-fast) var(--kvaf-ease-out);
 }
 @media (hover: hover) and (pointer: fine) {
-  .kv-sf-quickadd { opacity: 0; transform: translateY(8px); }
-  .kv-sf-cell:hover .kv-sf-quickadd,
-  .kv-sf-cell:focus-within .kv-sf-quickadd,
-  .kv-sf-quickadd[data-open="true"] { opacity: 1; transform: none; }
+  .kv-sf-cell:hover .kv-sf-cell-name { color: var(--kvaf-brass-deep); }
+}
+.kv-sf-cell-cat { margin-top: 2px; font-size: 12px; color: var(--kvaf-muted); }
+.kv-sf-cell-price { margin-top: 0.5rem; font-size: 14.5px; font-weight: 800; color: var(--kvaf-ink); }
+
+.kv-sf-cell-variant { margin-top: 0.75rem; }
+.kv-sf-cell-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.kv-sf-cell-label { font-size: 12px; font-weight: 700; color: var(--kvaf-ink); }
+.kv-sf-cell-chosen { font-weight: 500; color: var(--kvaf-muted); }
+.kv-sf-cell-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--kvaf-muted);
+  transition: color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+.kv-sf-cell-collapse:hover { color: var(--kvaf-ink); }
+
+/* ---------- inline purchase area (no popover, no sheet) ---------- */
+.kv-sf-cell-purchase {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.875rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--kvaf-line);
+  overflow: hidden;
+  animation: kvaf-reveal var(--kvaf-t-sheet) var(--kvaf-ease-sheet);
+}
+/* the card grows downward; max-height only lives for the length of the reveal */
+@keyframes kvaf-reveal {
+  from { max-height: 0; opacity: 0; transform: translateY(-4px); }
+  to { max-height: 22rem; opacity: 1; transform: none; }
+}
+.kv-sf-cell-purchase .kv-sf-size { min-width: 40px; height: 38px; padding-inline: 0.5rem; font-size: 12.5px; }
+.kv-sf-cell-cta { width: 100%; height: 46px; margin-top: 0.125rem; font-size: 13.5px; }
+.kv-sf-cell-note { font-size: 12px; color: var(--kvaf-muted); }
+.kv-sf-cell-notice { font-size: 12px; font-weight: 600; color: var(--kvaf-danger); text-align: center; }
+
+/* collapsed cards keep the same rhythm, so the grid never looks ragged */
+.kv-sf-cell-hint {
+  margin-top: 0.875rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--kvaf-line);
+  font-size: 12px;
+  color: var(--kvaf-faint);
+  text-align: center;
 }
 
-/* swatches — small disc inside a 40px touch target */
+/* swatches — small disc inside a 38px touch target */
+/* the white hairline reads as glare on a light page; dark mode softens it */
+.dark .kv-storefront .kv-sf-nav,
+.dark .kv-storefront .kv-sf-wish,
+.dark .kv-storefront .kv-sf-cell-flag { border-color: rgba(244, 240, 230, 0.26); }
+
 .kv-sf-swatch {
   position: relative;
   width: 38px; height: 38px;
@@ -658,14 +801,17 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .kv-sf-swatch:active { transform: scale(0.92); }
 .kv-sf-swatch > i {
   display: block;
-  width: 20px; height: 20px;
+  width: 19px; height: 19px;
   border-radius: 50%;
   box-shadow: inset 0 0 0 1px rgba(28, 28, 25, 0.16);
+  transition: transform var(--kvaf-t-fast) var(--kvaf-ease-out);
 }
+/* selected: the disc lifts and a concentric ring carries the state (not colour alone) */
+.kv-sf-swatch[aria-pressed="true"] > i { transform: scale(1.08); }
 .kv-sf-swatch[aria-pressed="true"]::after {
   content: "";
   position: absolute;
-  inset: 5px;
+  inset: 4px;
   border-radius: 50%;
   border: 1.5px solid var(--kvaf-ink);
 }
@@ -677,6 +823,22 @@ html[data-surface="storefront"] body { background-color: transparent; }
   background: var(--kvaf-faint);
   rotate: -45deg;
 }
+/* 360px: four discs still have to fit one row inside a half-width cell */
+@media (max-width: 379px) {
+  .kv-sf-cell { padding: 0.375rem 0.375rem 0.75rem; }
+  .kv-sf-cell .kv-sf-swatch,
+  .kv-sf-cell .kv-sf-swatch-more { width: 31px; height: 31px; }
+  .kv-sf-cell .kv-sf-swatch > i { width: 16px; height: 16px; }
+  .kv-sf-cell-purchase .kv-sf-size { min-width: 36px; height: 36px; padding-inline: 0.375rem; }
+}
+
+/* inside a two-column mobile cell four discs must fit one row: 34px target */
+.kv-sf-cell .kv-sf-swatch,
+.kv-sf-cell .kv-sf-swatch-more { width: 34px; height: 34px; }
+.kv-sf-cell .kv-sf-swatch > i { width: 17px; height: 17px; }
+.kv-sf-cell .kv-sf-swatch[aria-pressed="true"]::after { inset: 3px; }
+.kv-sf-cell .kv-sf-swatch-more { font-size: 10.5px; }
+
 .kv-sf-swatch-more {
   width: 38px; height: 38px;
   display: grid; place-items: center;
@@ -805,17 +967,6 @@ html[data-surface="storefront"] body { background-color: transparent; }
   transform-origin: top center;
 }
 
-/* quick add popover (desktop): the panel is styled here, an anchor wrapper places it */
-.kv-sf-anchor { position: fixed; z-index: var(--kvaf-z-search); }
-.kv-sf-popover {
-  width: 100%;
-  border-radius: var(--kvaf-r-lg);
-  padding: 1rem;
-  animation: kvaf-pop var(--kvaf-t-base) var(--kvaf-ease-out);
-  transform-origin: bottom center;
-}
-.kv-sf-anchor[data-below="true"] .kv-sf-popover { transform-origin: top center; }
-
 /* ============================== TOAST ============================== */
 
 .kv-sf-toasts {
@@ -919,6 +1070,7 @@ html[data-surface="storefront"] body { background-color: transparent; }
   transition: background-color var(--kvaf-t-fast) var(--kvaf-ease-out), color var(--kvaf-t-fast) var(--kvaf-ease-out), border-color var(--kvaf-t-fast) var(--kvaf-ease-out);
 }
 .kv-sf-size[data-on="true"] { background: var(--kvaf-action); color: var(--kvaf-on-action); border-color: var(--kvaf-action); }
+.kv-sf-size:disabled { opacity: 0.4; text-decoration: line-through; pointer-events: none; }
 @media (hover: hover) and (pointer: fine) {
   .kv-sf-size:not([data-on="true"]):hover { border-color: var(--kvaf-line-strong); }
 }

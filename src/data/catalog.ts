@@ -37,6 +37,18 @@ export type Product = {
   reviews: number;
   colors: Colorway[];
   images: string[];
+  /**
+   * Presentation-only media map: colourway id -> the photographs of THIS product
+   * in that colour. Optional and fully backward compatible.
+   *
+   * Rules it follows:
+   *  - every URL must already exist in `images` (no invented media, no new URLs);
+   *  - only colourways whose photo is unambiguous are listed;
+   *  - when a colour has no entry the storefront falls back to the product
+   *    gallery (see `mediaForColor` in components/storefront/shared.tsx).
+   * Replace the entries with real per-colour studio shots without touching logic.
+   */
+  colorMedia?: Record<string, string[]>;
   series: SeriesDef[];
   seriesCount: number;
   moq: number;
@@ -192,6 +204,10 @@ export const PRODUCTS: Product[] = [
     reviews: 184,
     colors: [COLORS.orange, COLORS.black, COLORS.cream, COLORS.olive],
     images: [IMG.shirtRack, IMG.shirtsColor, IMG.greenShirt, IMG.whiteShirts],
+    colorMedia: {
+      cream: [IMG.whiteShirts, IMG.shirtsColor, IMG.shirtRack],
+      olive: [IMG.greenShirt, IMG.shirtRack, IMG.shirtsColor],
+    },
     series: [fullSeries(7400000), halfSeries(7400000), selectSeries(7400000)],
     seriesCount: 3,
     moq: 2,
@@ -214,6 +230,7 @@ export const PRODUCTS: Product[] = [
     reviews: 96,
     colors: [COLORS.sand, COLORS.navy, COLORS.black],
     images: [IMG.blazerDuo, IMG.checkedSuit, IMG.pastelBlazer, IMG.blackSuit],
+    colorMedia: { black: [IMG.blackSuit, IMG.blazerDuo, IMG.checkedSuit] },
     series: [fullSeries(12400000, 5), halfSeries(12400000)],
     seriesCount: 2,
     moq: 5,
@@ -235,6 +252,7 @@ export const PRODUCTS: Product[] = [
     reviews: 143,
     colors: [COLORS.white, COLORS.cream, COLORS.sand],
     images: [IMG.whiteShirts, IMG.blueShirt, IMG.neutralRack, IMG.shirtsColor],
+    colorMedia: { white: [IMG.whiteShirts, IMG.neutralRack, IMG.shirtsColor] },
     series: [fullSeries(6900000, 4), halfSeries(6900000)],
     seriesCount: 2,
     moq: 4,
@@ -257,6 +275,7 @@ export const PRODUCTS: Product[] = [
     reviews: 67,
     colors: [COLORS.burgundy, COLORS.black, COLORS.sand],
     images: [IMG.redCoat, IMG.burgundyCoat, IMG.lakeCoat, IMG.hijabCoat],
+    colorMedia: { burgundy: [IMG.burgundyCoat, IMG.redCoat, IMG.lakeCoat] },
     series: [fullSeries(14900000, 2), selectSeries(14900000)],
     seriesCount: 2,
     moq: 2,
@@ -279,6 +298,7 @@ export const PRODUCTS: Product[] = [
     reviews: 158,
     colors: [COLORS.sand, COLORS.black, COLORS.olive],
     images: [IMG.trenchWhite, IMG.trenchArch, IMG.trenchHero, IMG.trenchBack],
+    colorMedia: { sand: [IMG.trenchWhite, IMG.trenchArch, IMG.trenchHero] },
     series: [fullSeries(9900000), halfSeries(9900000)],
     seriesCount: 2,
     moq: 3,
@@ -300,6 +320,7 @@ export const PRODUCTS: Product[] = [
     reviews: 41,
     colors: [COLORS.cream, COLORS.olive, COLORS.navy],
     images: [IMG.pastelBlazer, IMG.blazerDuo, IMG.checkedSuit, IMG.trenchStreet],
+    colorMedia: { cream: [IMG.pastelBlazer, IMG.blazerDuo, IMG.trenchStreet] },
     series: [fullSeries(11400000, 3), halfSeries(11400000)],
     seriesCount: 2,
     moq: 3,
@@ -321,6 +342,7 @@ export const PRODUCTS: Product[] = [
     reviews: 203,
     colors: [COLORS.black, COLORS.navy, COLORS.cream],
     images: [IMG.blackSuit, IMG.shirtRack, IMG.greenShirt, IMG.neutralRack],
+    colorMedia: { black: [IMG.blackSuit, IMG.shirtRack, IMG.neutralRack] },
     series: [fullSeries(5300000, 6), halfSeries(5300000)],
     seriesCount: 2,
     moq: 6,

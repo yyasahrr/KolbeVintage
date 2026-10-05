@@ -1,18 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Heart, Plus } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Heart, ShoppingBag, X } from "lucide-react";
 import { fmtMoney, type Colorway, type Product } from "../../data/catalog";
-import QuickAddPopover from "./QuickAddPopover";
-import QuickAddSheet from "./QuickAddSheet";
 import { Swatches } from "./Swatches";
 import { useCartToast } from "./CartToast";
-import { preferredSize, sizesOf, useDismissOnOutside, useIsDesktopPointer } from "./shared";
+import { SizeRow, mediaForColor, sizesForColor } from "./shared";
 
-const POPOVER_W = 300;
-const ADDED_MS = 1800;
+const ADDED_MS = 2000;
+/** One card reveals its purchase controls at a time — keeps a grid of cards calm. */
+const EXPAND_EVENT = "kv-sf-card-expand";
 
 /**
- * Image-first product cell: the photograph is the card.
- * Price and stock always come from the product record — nothing is recomputed here.
+ * Image-first product cell: the photograph leads, the purchase controls live
+ * below it and reveal inline — no popover, no bottom sheet, nothing leaves the grid.
+ *
+ * Flow: pick a colour -> the photograph follows that colour, the card expands and
+ * shows the sizes that colour actually has -> pick a size -> the action enables ->
+ * the existing cart rules run and the toast/badge confirm.
+ * Price, stock and cart validation always come from the product record and the
+ * store state; nothing is recomputed here.
  */
 export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd }: {
   p: Product;
@@ -22,80 +27,149 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
   /** existing cart + stock rules; returns whether the line was accepted */
   onAdd: (size: string, color: string) => boolean;
 }) {
-  const sizes = useMemo(() => sizesOf(p), [p]);
-  const [color, setColor] = useState<Colorway | undefined>(p.colors[0]);
-  const [size, setSize] = useState(() => preferredSize(sizesOf(p)));
-  const [open, setOpen] = useState(false);
+  const [color, setColor] = useState<Colorway | undefined>(undefined);
+  const [expanded, setExpanded] = useState(false);
+  const [size, setSize] = useState("");
+  const [frame, setFrame] = useState(0);
   const [added, setAdded] = useState(false);
-  const [anchor, setAnchor] = useState<{ top: number; left: number; below: boolean } | null>(null);
-  const isDesktop = useIsDesktopPointer();
+  const [notice, setNotice] = useState("");
   const toast = useCartToast();
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const addedTimer = useRef<number | null>(null);
+  const swipe = useRef<{ x: number; y: number } | null>(null);
+  const rootRef = useRef<HTMLElement | null>(null);
 
-  const needsChoice = sizes.length > 1 || p.colors.length > 1;
+  const media = useMemo(() => mediaForColor(p, color?.id), [p, color?.id]);
+  const sizes = useMemo(() => sizesForColor(p, color?.id), [p, color?.id]);
   const soldOut = p.stock < 1;
+  const current = media[Math.min(frame, media.length - 1)] ?? "";
+  const ready = !soldOut && (!!color) && (sizes.length === 0 || !!size);
+  const frameLabel = `${(Math.min(frame, media.length - 1) + 1).toLocaleString("fa-IR")} از ${media.length.toLocaleString("fa-IR")}`;
 
   useEffect(() => () => { if (addedTimer.current) window.clearTimeout(addedTimer.current); }, []);
+  /* a new colour always starts on that colour's own first photograph */
+  useEffect(() => { setFrame(0); }, [color?.id]);
 
-  const dismissRef = useDismissOnOutside<HTMLElement>(open && isDesktop, () => setOpen(false));
-
+  /* collapse when another card in any grid opens its purchase area */
   useEffect(() => {
-    if (!open || !isDesktop) { setAnchor(null); return; }
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const width = Math.min(POPOVER_W, window.innerWidth - 32);
-    const rtl = document.documentElement.dir === "rtl";
-    const raw = rtl ? rect.left : rect.right - width;
-    const left = Math.max(16, Math.min(raw, window.innerWidth - width - 16));
-    setAnchor({ top: rect.top < 360 ? rect.bottom + 10 : rect.top - 10, left, below: rect.top < 360 });
-  }, [open, isDesktop]);
+    const onOther = (event: Event) => {
+      if ((event as CustomEvent).detail === p.id) return;
+      setExpanded(false);
+      /* if the keyboard was inside the purchase area, hand it back to the swatches
+         instead of letting focus fall to <body> when the controls unmount */
+      const active = document.activeElement;
+      if (active && rootRef.current?.contains(active)) {
+        rootRef.current.querySelector<HTMLButtonElement>('.kv-sf-swatch[aria-pressed="true"], .kv-sf-swatch')
+          ?.focus({ preventScroll: true });
+      }
+    };
+    window.addEventListener(EXPAND_EVENT, onOther);
+    return () => window.removeEventListener(EXPAND_EVENT, onOther);
+  }, [p.id]);
 
-  // a scrolling page would leave a fixed popover behind, so it steps aside
-  useEffect(() => {
-    if (!open || !isDesktop) return;
-    const close = () => setOpen(false);
-    window.addEventListener("scroll", close, { passive: true });
-    window.addEventListener("resize", close);
-    return () => { window.removeEventListener("scroll", close); window.removeEventListener("resize", close); };
-  }, [open, isDesktop]);
+  const collapse = () => { setExpanded(false); setColor(undefined); setSize(""); setNotice(""); };
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open]);
+  const chooseColor = (next: Colorway) => {
+    if (soldOut) return;
+    setNotice("");
+    if (color?.id === next.id) { collapse(); return; }   // tapping the chosen colour closes again
+    const nextSizes = sizesForColor(p, next.id);
+    setColor(next);
+    setSize(nextSizes.length === 1 ? nextSizes[0] : "");  // a single size needs no decision
+    setExpanded(true);
+    window.dispatchEvent(new CustomEvent(EXPAND_EVENT, { detail: p.id }));
+  };
 
-  const confirm = (chosenSize: string, chosenColor?: Colorway) => {
-    const accepted = onAdd(chosenSize, chosenColor?.name ?? "");
-    setOpen(false);
-    if (!accepted) return false;
+  const step = (direction: 1 | -1) => {
+    setFrame((index) => Math.min(media.length - 1, Math.max(0, index + direction)));
+  };
+
+  const confirm = () => {
+    if (!ready) return;
+    const accepted = onAdd(size, color?.name ?? "");
+    if (!accepted) {
+      setAdded(false);
+      setNotice("افزودن ممکن نشد — موجودی این محصول برای این تعداد کافی نیست.");
+      return;
+    }
+    setNotice("");
     setAdded(true);
     if (addedTimer.current) window.clearTimeout(addedTimer.current);
     addedTimer.current = window.setTimeout(() => setAdded(false), ADDED_MS);
-    toast({ image: p.images[0], name: p.name, meta: `${chosenColor?.name ?? ""}${chosenColor ? " · " : ""}سایز ${chosenSize}` });
-    return true;
+    toast({
+      image: current,
+      name: p.name,
+      meta: `${color?.name ?? ""}${color ? " · " : ""}${size ? `سایز ${size}` : "بدون سایزبندی"}`,
+    });
   };
 
-  const onTrigger = () => {
-    if (soldOut) return;
-    if (!needsChoice) { confirm(size, color); return; }
-    setOpen((value) => !value);
+  const onTouchStart = (event: React.TouchEvent) => {
+    const touch = event.touches[0];
+    swipe.current = { x: touch.clientX, y: touch.clientY };
+  };
+  const onTouchEnd = (event: React.TouchEvent) => {
+    const start = swipe.current;
+    swipe.current = null;
+    if (!start || media.length < 2) return;
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy)) return;  // a scroll, not a swipe
+    step(dx > 0 ? -1 : 1);                                          // RTL: swipe right = back
   };
 
   return (
-    <article className="kv-sf-cell group" ref={dismissRef}>
-      <div className="kv-sf-cell-figure">
-        <button onClick={onOpen} className="block h-full w-full text-start" aria-label={p.name}>
-          {p.images[0]
-            ? <img src={p.images[0]} alt="" loading="lazy" decoding="async" />
-            : <span className="grid h-full w-full place-items-center px-4 text-center text-[12px] text-[var(--kvaf-muted)]">تصویر این محصول در دسترس نیست</span>}
+    <article className="kv-sf-cell" ref={rootRef} data-expanded={expanded ? "true" : "false"}>
+      {/* ---------- media ---------- */}
+      <div className="kv-sf-cell-figure" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <button onClick={onOpen} className="kv-sf-cell-shot" aria-label={`${p.name} — دیدن جزئیات محصول`}>
+          {current
+            ? (
+              <img
+                key={current}
+                src={current}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                className="kv-sf-cell-img"
+              />
+            )
+            : <span className="kv-sf-cell-noimg">تصویر این محصول در دسترس نیست</span>}
         </button>
+
+        {media.length > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={() => step(-1)}
+              disabled={frame === 0}
+              data-side="start"
+              aria-label={`تصویر قبلی ${p.name} — ${frameLabel}`}
+              className="kv-sf-nav"
+            >
+              <ChevronRight size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={() => step(1)}
+              disabled={frame >= media.length - 1}
+              data-side="end"
+              aria-label={`تصویر بعدی ${p.name} — ${frameLabel}`}
+              className="kv-sf-nav"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <div className="kv-sf-dots" aria-hidden="true">
+              {media.map((image, index) => (
+                <i key={image + index} data-on={index === frame ? "true" : "false"} />
+              ))}
+            </div>
+          </>
+        )}
 
         {p.badge && <span className="kv-sf-cell-flag">{p.badge}</span>}
 
         <button
+          type="button"
           onClick={onWish}
           data-on={wished ? "true" : "false"}
           aria-pressed={wished}
@@ -105,64 +179,71 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
           <Heart size={17} fill={wished ? "currentColor" : "none"} />
         </button>
 
-        {soldOut && (
-          <span className="pointer-events-none absolute inset-0 grid place-items-center bg-[rgba(247,244,237,0.55)] text-[13px] font-extrabold text-[var(--kvaf-charcoal)]">
-            ناموجود
-          </span>
-        )}
-
-        <button
-          ref={triggerRef}
-          onClick={onTrigger}
-          disabled={soldOut}
-          data-open={open ? "true" : "false"}
-          aria-expanded={needsChoice && !soldOut ? open : undefined}
-          aria-haspopup={needsChoice && !soldOut ? "dialog" : undefined}
-          aria-label={`افزودن ${p.name} به سبد خرید`}
-          data-added={added ? "true" : undefined}
-          className="kv-sf-quickadd kv-liquid"
-        >
-          {added ? <><Check size={15} strokeWidth={3} />اضافه شد</> : <><Plus size={16} />افزودن سریع</>}
-        </button>
+        {soldOut && <span className="kv-sf-cell-sold" aria-hidden="true">ناموجود</span>}
       </div>
 
-      {open && isDesktop && anchor && (
-        <div
-          className="kv-sf-anchor"
-          data-below={anchor.below ? "true" : "false"}
-          style={{
-            top: anchor.top,
-            left: anchor.left,
-            width: Math.min(POPOVER_W, typeof window === "undefined" ? POPOVER_W : window.innerWidth - 32),
-            transform: anchor.below ? undefined : "translateY(-100%)",
-          }}
-        >
-          <QuickAddPopover
-            p={p} sizes={sizes} size={size} color={color} stock={p.stock}
-            onSize={setSize} onColor={setColor}
-            onConfirm={() => confirm(size, color)}
+      {/* ---------- information + inline purchase ---------- */}
+      <div className="kv-sf-cell-body">
+        <button onClick={onOpen} className="block w-full text-start">
+          <h3 className="kv-sf-cell-name">{p.name}</h3>
+        </button>
+        <p className="kv-sf-cell-cat">{p.category}</p>
+        <p className="kv-sf-cell-price kvaf-num">{fmtMoney(p.retailPrice)}</p>
+
+        <div className="kv-sf-cell-variant">
+          <div className="kv-sf-cell-row">
+            <p className="kv-sf-cell-label" id={`${p.id}-color-label`}>
+              رنگ{color ? <span className="kv-sf-cell-chosen"> — {color.name}</span> : null}
+            </p>
+            {expanded && (
+              <button type="button" onClick={collapse} className="kv-sf-cell-collapse" aria-label={`بستن انتخاب ${p.name}`}>
+                <X size={13} /> بستن
+              </button>
+            )}
+          </div>
+          <Swatches
+            colors={p.colors}
+            selectedId={color?.id}
+            onSelect={chooseColor}
+            productName={p.name}
+            labelledBy={`${p.id}-color-label`}
           />
         </div>
-      )}
 
-      <QuickAddSheet
-        open={open && !isDesktop} onClose={() => setOpen(false)}
-        p={p} sizes={sizes} size={size} color={color} stock={p.stock}
-        onSize={setSize} onColor={setColor}
-        onConfirm={() => confirm(size, color)}
-      />
+        {expanded ? (
+          <div className="kv-sf-cell-purchase">
+            {sizes.length ? (
+              <>
+                <p className="kv-sf-cell-label">سایز{size ? <span className="kv-sf-cell-chosen"> — {size}</span> : null}</p>
+                <SizeRow
+                  sizes={sizes} value={size} idPrefix={`cell-${p.id}`}
+                  onChange={(next) => { setSize(next); setNotice(""); }}
+                />
+              </>
+            ) : (
+              <p className="kv-sf-cell-note">این محصول سایزبندی ندارد.</p>
+            )}
 
-      <div className="pt-3">
-        <button onClick={onOpen} className="block w-full text-start">
-          <h3 className="line-clamp-2 text-[14px] font-bold leading-6 text-[var(--kvaf-ink)] transition-colors group-hover:text-[var(--kvaf-brass-deep)] [overflow-wrap:anywhere]">
-            {p.name}
-          </h3>
-        </button>
-        <p className="mt-0.5 text-[11.5px] text-[var(--kvaf-muted)]">{p.category}</p>
-        <p className="kvaf-num mt-1.5 text-[14.5px] font-extrabold text-[var(--kvaf-ink)]">{fmtMoney(p.retailPrice)}</p>
-        <div className="mt-2">
-          <Swatches colors={p.colors} selectedId={color?.id} onSelect={(next) => setColor(next)} productName={p.name} />
-        </div>
+            <button
+              type="button"
+              onClick={confirm}
+              disabled={!ready}
+              data-added={added ? "true" : undefined}
+              className="kv-sf-action kv-sf-cell-cta"
+            >
+              {added
+                ? <><Check size={16} strokeWidth={3} />به سبد اضافه شد</>
+                : ready
+                  ? <><ShoppingBag size={16} />افزودن به سبد</>
+                  : "سایز را انتخاب کنید"}
+            </button>
+            {notice && <p className="kv-sf-cell-notice" role="status">{notice}</p>}
+          </div>
+        ) : (
+          <p className="kv-sf-cell-hint">
+            {soldOut ? "این محصول ناموجود است" : "برای انتخاب سایز، یک رنگ را انتخاب کنید"}
+          </p>
+        )}
       </div>
     </article>
   );

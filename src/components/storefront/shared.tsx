@@ -149,7 +149,66 @@ export function sizesOf(p: Product): string[] {
   return Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
 }
 
+/**
+ * Sizes a buyer can actually choose for one colourway.
+ * Derived from the existing catalogue only — no new variant system:
+ *  - series the supplier switched off (`available: false`) contribute nothing;
+ *  - a size counts when at least one live series still has pieces of it;
+ *  - `SeriesDef.colorIds` (the admin/supplier "رنگ‌های مجاز" field) narrows the
+ *    run per colour when it is set; when it is absent every colour gets the run.
+ */
+export function sizesForColor(p: Product, colorId?: string): string[] {
+  const live = p.series.filter((series) => series.available
+    && (!colorId || !series.colorIds || series.colorIds.includes(colorId)));
+  return Array.from(new Set(
+    live.flatMap((series) => Object.entries(series.composition)
+      .filter(([, pieces]) => pieces > 0)
+      .map(([size]) => size)),
+  ));
+}
+
+/**
+ * Media shown for a colourway.
+ * 1. the product's own per-colour photos (`Product.colorMedia`) when they exist;
+ * 2. otherwise the same product gallery, started on a stable frame for that
+ *    colour so switching colour still changes the photograph instead of lying
+ *    about a per-colour shoot that does not exist.
+ * Never invents a URL: every result is an entry of `p.images`.
+ */
+export function mediaForColor(p: Product, colorId?: string): string[] {
+  const own = colorId ? p.colorMedia?.[colorId] : undefined;
+  if (own?.length) return own;
+  if (!colorId || p.images.length < 2) return p.images;
+  const index = Math.max(0, p.colors.findIndex((color) => color.id === colorId)) % p.images.length;
+  return index === 0 ? p.images : [...p.images.slice(index), ...p.images.slice(0, index)];
+}
+
 export const preferredSize = (sizes: string[]) => sizes.includes("M") ? "M" : sizes[0] ?? "";
+
+/** Size chips — shared by the product card's inline purchase area and the PDP. */
+export function SizeRow({ sizes, value, onChange, idPrefix, unavailable = [] }: {
+  sizes: string[]; value: string; onChange: (size: string) => void; idPrefix: string; unavailable?: string[];
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label="انتخاب سایز">
+      {sizes.map((size) => {
+        const blocked = unavailable.includes(size);
+        return (
+          <button
+            key={`${idPrefix}-${size}`} type="button"
+            onClick={() => !blocked && onChange(size)}
+            disabled={blocked}
+            data-on={value === size ? "true" : "false"}
+            aria-pressed={value === size}
+            className="kv-sf-size"
+          >
+            {size}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /** Crossfade helper: keeps the outgoing image mounted for one frame of the transition. */
 export function useCrossfadeKey(value: string) {

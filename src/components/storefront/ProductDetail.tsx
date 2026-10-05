@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronRight, Heart, Plus, RotateCcw, Ruler, ShieldCheck, Truck } from "lucide-react";
 import { fmtMoney, fmtNum, type Colorway, type Product } from "../../data/catalog";
-import { SizeRow } from "./QuickAddPopover";
 import { Swatches } from "./Swatches";
 import { useCartToast } from "./CartToast";
-import { preferredSize, sizesOf, useCrossfadeKey } from "./shared";
+import { SizeRow, mediaForColor, preferredSize, sizesForColor, useCrossfadeKey } from "./shared";
 import { cn } from "../../utils/cn";
 
 /**
@@ -19,16 +18,23 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack }: {
   onAdd: (size: string, color: string) => boolean;
   onBack: () => void;
 }) {
-  const sizes = useMemo(() => sizesOf(p), [p]);
   const [color, setColor] = useState<Colorway | undefined>(p.colors[0]);
-  const [size, setSize] = useState(() => preferredSize(sizesOf(p)));
+  const sizes = useMemo(() => sizesForColor(p, color?.id), [p, color?.id]);
+  /** the gallery follows the chosen colourway, exactly like the product card */
+  const media = useMemo(() => mediaForColor(p, color?.id), [p, color?.id]);
+  const [size, setSize] = useState(() => preferredSize(sizesForColor(p, p.colors[0]?.id)));
   const [shot, setShot] = useState(0);
   const [added, setAdded] = useState(false);
   const toast = useCartToast();
   const timer = useRef<number | null>(null);
-  const fade = useCrossfadeKey(p.images[shot] ?? "");
+  const fade = useCrossfadeKey(media[shot] ?? "");
 
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
+  /* another colour = another set of photographs and possibly another size run */
+  useEffect(() => {
+    setShot(0);
+    setSize((previous) => (sizes.includes(previous) ? previous : preferredSize(sizes)));
+  }, [color?.id, sizes]);
 
   const submit = () => {
     const accepted = onAdd(size, color?.name ?? "");
@@ -36,7 +42,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack }: {
     setAdded(true);
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setAdded(false), 1800);
-    toast({ image: p.images[0], name: p.name, meta: `${color?.name ?? ""}${color ? " · " : ""}سایز ${size}` });
+    toast({ image: media[0], name: p.name, meta: `${color?.name ?? ""}${color ? " · " : ""}سایز ${size}` });
   };
 
   return (
@@ -53,7 +59,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack }: {
         <div>
           {/* touch: swipeable strip · pointer: single frame with thumbnails */}
           <div className="kv-sf-scrollx lg:hidden">
-            {p.images.map((image, index) => (
+            {media.map((image, index) => (
               <img
                 key={image + index} src={image} alt={`${p.name} — نمای ${(index + 1).toLocaleString("fa-IR")}`}
                 className="aspect-[3/4] w-[78vw] max-w-[420px] shrink-0 rounded-[20px] object-cover"
@@ -64,7 +70,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack }: {
 
           <div className="hidden lg:flex lg:gap-4">
             <div className="flex w-[86px] shrink-0 flex-col gap-3">
-              {p.images.map((image, index) => (
+              {media.map((image, index) => (
                 <button
                   key={image + index} onClick={() => setShot(index)}
                   aria-label={`نمای ${(index + 1).toLocaleString("fa-IR")}`}
@@ -80,7 +86,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack }: {
             </div>
             <div className="relative flex-1 overflow-hidden rounded-[24px] bg-[var(--kvaf-sand)]">
               <img
-                key={fade.key} src={p.images[shot]} alt={p.name}
+                key={fade.key} src={media[shot]} alt={p.name}
                 className="aspect-[3/4] w-full object-cover animate-[kvaf-fade_320ms_var(--kvaf-ease-out)]"
               />
               {p.badge && <span className="kv-sf-cell-flag">{p.badge}</span>}

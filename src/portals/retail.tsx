@@ -42,7 +42,7 @@ const LinkToShop = ({ children, onClick }: { children: React.ReactNode; onClick:
 );
 
 const ProductGrid = ({ children }: { children: React.ReactNode }) => (
-  <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:gap-x-6 lg:grid-cols-3 xl:grid-cols-4">{children}</div>
+  <div className="grid grid-cols-2 items-start gap-x-3 gap-y-6 sm:gap-x-4 md:gap-x-5 md:gap-y-7 lg:grid-cols-3 xl:grid-cols-4">{children}</div>
 );
 
 /* ============ MAIN RETAIL ============ */
