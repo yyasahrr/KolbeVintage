@@ -317,6 +317,10 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
   const [mediaBusy, setMediaBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [sec, setSec] = useState<StudioStep>(isStudioStep(initialStep) ? initialStep : "base");
+  /** §29: the prices as the SERVER has them — a save reports «قبلی ← جدید» instead of a blind
+   *  «ذخیره شد», and the embedded pricing editor is refreshed after any base-price write. */
+  const [priceBaseline, setPriceBaseline] = useState<{ cash: string; installment: string } | null>(null);
+  const [pricingRefresh, setPricingRefresh] = useState(0);
   /** §37: snapshot of the draft at open-time — leaving with unsaved edits asks first. */
   const [openSnapshot, setOpenSnapshot] = useState("");
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -581,6 +585,7 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
         componentPrices: Object.fromEntries(t.items.map((i) => [i.size_label ?? "", Number(i.unit_price_rial ?? 0) / 10])),
       }));
       setD(loadedDraft);
+      setPriceBaseline({ cash: loadedDraft.retail, installment: loadedDraft.installment });
       setOpenSnapshot(JSON.stringify(loadedDraft));
       setEditing({ id: p.id, metadata: meta });
       setEditVariants(variants);
@@ -802,6 +807,7 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
     setCellOff({});
     setInventorySetup("");
     setCreatedDraftId(null);
+    setPriceBaseline(null);
     setPublicationState("");
     setReadiness(null);
     goStep(isStudioStep(initialStep) ? initialStep : "base");
@@ -944,7 +950,12 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
     if (createdDraftId) return createdDraftId;
     if (isDemo) { flash("در حالت نمایشی، پیش‌نویس روی سرور ذخیره نمی‌شود."); return null; }
     if (draftBlockers.length) { flash(`برای ذخیره پیش‌نویس لازم است: ${draftBlockers.join("، ")}`); return null; }
-    return createProduct();
+    const created = await createProduct();
+    if (created) {
+      setPriceBaseline({ cash: d.retail, installment: d.installment });
+      setPricingRefresh((n) => n + 1);
+    }
+    return created;
   };
 
   /** §12/§2: catalog metadata assembled once — shared by the create payload and the PATCH path. */
@@ -1027,12 +1038,28 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
     }
   };
 
+  /** §29: «قیمت قبلی ← قیمت جدید» for the base prices that changed in this save. */
+  const priceChangeNote = (): string => {
+    if (!priceBaseline) return "";
+    const money = (value: string) => value ? fmtMoney(Number(value)) : "تعیین‌نشده";
+    const changes: string[] = [];
+    if (priceBaseline.cash !== d.retail) changes.push(`قیمت نقدی پایه از ${money(priceBaseline.cash)} به ${money(d.retail)}`);
+    if (priceBaseline.installment !== d.installment) changes.push(`قیمت پایه چهارقسطه از ${money(priceBaseline.installment)} به ${money(d.installment)}`);
+    return changes.join(" · ");
+  };
+
   /** §3: sticky-bar [ذخیره پیش‌نویس] — saves without leaving the Studio and never duplicates. */
   const saveDraftAndStay = async () => {
     if (draftSaving) return;
     setDraftSaving(true);
     try {
-      if (activeProductId) { if (await pushDraft(activeProductId)) flash("پیش‌نویس ذخیره شد؛ ادامهٔ مراحل با همین شناسه ممکن است."); }
+      if (activeProductId) {
+        if (await pushDraft(activeProductId)) {
+          const note = priceChangeNote();
+          flash(note ? `پیش‌نویس ذخیره شد — ${note}.` : "پیش‌نویس ذخیره شد؛ ادامهٔ مراحل با همین شناسه ممکن است.");
+          if (note) { setPriceBaseline({ cash: d.retail, installment: d.installment }); setPricingRefresh((n) => n + 1); }
+        }
+      }
       else { const id = await ensureDraft(); if (id) { onDraftSaved?.(id); flash("پیش‌نویس ذخیره شد؛ ادامهٔ مراحل با همین شناسه ممکن است."); } }
     } finally { setDraftSaving(false); }
   };
@@ -1553,6 +1580,7 @@ export function ProductStudio({ flash, onDraftSaved, resumeProductId, onResumeHa
                     productId={activeProductId}
                     productName={d.name.trim() || "محصول"}
                     flash={flash}
+                    refreshToken={pricingRefresh}
                     onOpenPromotionCenter={onOpenPromotionCenter
                       ? (anchor) => onOpenPromotionCenter({ productId: activeProductId, productName: d.name.trim() || "محصول", ...(anchor ? { anchor } : {}) })
                       : undefined}

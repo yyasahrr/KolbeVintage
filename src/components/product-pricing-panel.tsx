@@ -23,7 +23,7 @@ type Festival = {
   starts_at: string | null; ends_at: string | null;
 };
 type Summary = Awaited<ReturnType<typeof promotionRulesApi.productSummary>>;
-type ResolverLine = {
+type ServerPriceLine = {
   variantId: string; sku: string; color: string | null; size: string | null;
   basePrice: string; discountAmount: string; finalPrice: string; source: "none" | "promotion_rule" | "festival";
   matchedRule: { id: string; name: string | null; promotionId: string | null } | null;
@@ -44,9 +44,12 @@ const CHANNEL_LABEL: Record<Channel, string> = { retail: "خرده", wholesale: 
  *  because the product's canonical sales mode enables them, and each section manages only its
  *  own channel's rules.
  */
-export function ProductPricingPanel({ productId, productName, flash, onOpenPromotionCenter }: {
+export function ProductPricingPanel({ productId, productName, flash, onOpenPromotionCenter, refreshToken }: {
   productId: string; productName: string;
   flash: (msg: string) => void;
+  /** §29: the owning Studio bumps this after a base-price save, so the preview reloads the
+   *  canonical resolution instead of showing a stale price next to fresh catalog columns. */
+  refreshToken?: number;
   /** Optional: jump to the central Promotion Center (cross-product campaigns stay there). */
   onOpenPromotionCenter?: (anchor?: "discount" | "festival") => void;
 }) {
@@ -65,7 +68,7 @@ export function ProductPricingPanel({ productId, productName, flash, onOpenPromo
   const [festivalValue, setFestivalValue] = useState("15");
   const [confirmFestivalExit, setConfirmFestivalExit] = useState(false);
   const [confirmFestivalMove, setConfirmFestivalMove] = useState(false);
-  const [previews, setPreviews] = useState<Record<Channel, ResolverLine[]>>({ retail: [], wholesale: [] });
+  const [previews, setPreviews] = useState<Record<Channel, ServerPriceLine[]>>({ retail: [], wholesale: [] });
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -107,7 +110,7 @@ export function ProductPricingPanel({ productId, productName, flash, onOpenPromo
       const message = error instanceof Error ? error.message : "بارگذاری فضای قیمت‌گذاری ناموفق بود.";
       setLoadError(message); flash(message);
     } finally { setLoading(false); }
-  }, [productId, flash]);
+  }, [productId, flash, refreshToken]);
   useEffect(() => { void reload(); }, [reload]);
 
   const hasRetail = detail?.retail_enabled !== false;
@@ -146,11 +149,11 @@ export function ProductPricingPanel({ productId, productName, flash, onOpenPromo
       orderType: channel,
       paymentMode: channel === "retail" ? paymentMode : "cash",
       items: activeVariants.slice(0, 100).map((variant) => ({ variantId: variant.id, quantity: 1 })),
-    }).then((result) => [channel, result.lines as unknown as ResolverLine[]] as const)
+    }).then((result) => [channel, result.lines as unknown as ServerPriceLine[]] as const)
       .catch((error) => { throw error; })))
       .then((pairs) => {
         if (!alive) return;
-        const next: Record<Channel, ResolverLine[]> = { retail: [], wholesale: [] };
+        const next: Record<Channel, ServerPriceLine[]> = { retail: [], wholesale: [] };
         for (const [channel, lines] of pairs) next[channel] = lines;
         setPreviews(next);
       })

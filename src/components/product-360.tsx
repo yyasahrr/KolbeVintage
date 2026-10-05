@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { authBlobUrl, catalogOpsApi, productsApi, promotionRulesApi, seriesTemplatesApi, sizeGuidesApi, specsApi } from "../data/api";
+import { authBlobUrl, catalogOpsApi, financeApi, productsApi, promotionRulesApi, seriesTemplatesApi, sizeGuidesApi, specsApi } from "../data/api";
 import { fmtToman, INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, normalizeSizeGuide, readProductSpecs } from "../data/contracts";
 import type { InstallmentPolicy, ProductSpecs, SizeGuide } from "../data/contracts";
 import { Btn, Card, Empty, ErrorState, LoadingState, SafeImg, Segmented, WorkspaceModal } from "./primitives";
@@ -21,6 +21,10 @@ type PricingLine = {
   matchedRule: { id: string; name: string | null; promotionId: string | null } | null;
 };
 type Product360Tab = "overview" | "variants" | "specs" | "size-guide" | "media" | "pricing" | "wholesale" | "inventory" | "seo" | "history";
+type PriceHistoryRow = {
+  id: string; createdAt: string; actorName: string | null;
+  changes: { label: string; from: string | null; to: string | null }[];
+};
 type Product360Data = {
   detail: Detail;
   series: Series[];
@@ -31,6 +35,9 @@ type Product360Data = {
   images: string[];
   videoUrl: string;
   pricing: { summary: PricingSummary | null; rules: PricingRule[]; preview: PricingLine[]; error: string | null };
+  /* §28: price history rides the existing audit trail — previous/new value, actor, timestamp. */
+  priceHistory: PriceHistoryRow[];
+  priceHistoryError: string | null;
 };
 const fa = (n: unknown) => String(n ?? "—").replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
 const noWarehouses: [] = [];
@@ -57,13 +64,15 @@ export function Product360({ product, onClose, onPricing }: {
   const load = useCallback(async () => {
     setError(null); setData(null);
     try {
-      const [detailResult, listResult, guideResult, specsResult, summaryResult, rulesResult] = await Promise.allSettled([
+      const [detailResult, listResult, guideResult, specsResult, summaryResult, rulesResult, priceAuditResult, seriesAuditResult] = await Promise.allSettled([
         productsApi.adminDetail(product.id),
         seriesTemplatesApi.list(product.id),
         sizeGuidesApi.productGuide(product.id),
         specsApi.productSpecs(product.id),
         promotionRulesApi.productSummary(product.id),
         promotionRulesApi.rulesByProduct(product.id),
+        financeApi.auditLogs({ resourceId: product.id, action: 'product.price_changed', limit: '20' }),
+        financeApi.auditLogs({ resourceType: 'series_template', limit: '20' }),
       ]);
       if (detailResult.status === "rejected") throw detailResult.reason;
       const detail = detailResult.value;
@@ -71,6 +80,45 @@ export function Product360({ product, onClose, onPricing }: {
       const guideLink = guideResult.status === "fulfilled" ? guideResult.value as { mode?: string; guide?: unknown } : null;
       const specs = specsResult.status === "fulfilled" ? readProductSpecs(specsResult.value) : null;
       const pricingSummary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
+      /* §28: the audit rows carry «label / previous / new» per changed column — rendered as-is,
+         with numbers converted from رial to تومان and never a raw identifier. */
+      const auditRow = (raw: unknown): { id: string; createdAt: string; actorName: string | null; oldValue: Record<string, { label?: string; value?: string | null }>; newValue: Record<string, { label?: string; value?: string | null }> } => {
+        const row = raw as Record<string, unknown>;
+        return {
+          id: String(row.id ?? ""), createdAt: String(row.created_at ?? ""), actorName: row.actor_name ? String(row.actor_name) : null,
+          oldValue: (row.old_value ?? {}) as Record<string, { label?: string; value?: string | null }>,
+          newValue: (row.new_value ?? {}) as Record<string, { label?: string; value?: string | null }>,
+        };
+      };
+      const priceHistory: PriceHistoryRow[] = [];
+      if (priceAuditResult.status === "fulfilled") {
+        for (const raw of priceAuditResult.value.items) {
+          const row = auditRow(raw);
+          const keys = new Set([...Object.keys(row.oldValue), ...Object.keys(row.newValue)]);
+          const changes = [...keys].map((key) => ({
+            label: row.newValue[key]?.label ?? row.oldValue[key]?.label ?? "قیمت",
+            from: row.oldValue[key]?.value ?? null, to: row.newValue[key]?.value ?? null,
+          }));
+          if (changes.length) priceHistory.push({ id: row.id, createdAt: row.createdAt, actorName: row.actorName, changes });
+        }
+      }
+      if (seriesAuditResult.status === "fulfilled") {
+        for (const raw of seriesAuditResult.value.items) {
+          const row = auditRow(raw);
+          const after = row.newValue as Record<string, unknown>;
+          const before = row.oldValue as Record<string, unknown>;
+          if (String(after.productId ?? before.productId ?? "") !== product.id) continue;
+          const changes: PriceHistoryRow["changes"] = [];
+          if (String(before.total_price_rial ?? "") !== String(after.total_price_rial ?? "")) {
+            changes.push({ label: `قیمت کل سری «${String(after.seriesName ?? before.seriesName ?? "")}»`, from: before.total_price_rial as string ?? null, to: after.total_price_rial as string ?? null });
+          }
+          if (JSON.stringify(before.componentPrices ?? null) !== JSON.stringify(after.componentPrices ?? null)) {
+            changes.push({ label: `قیمت اجزای سری «${String(after.seriesName ?? before.seriesName ?? "")}»`, from: null, to: null });
+          }
+          if (changes.length) priceHistory.push({ id: row.id, createdAt: row.createdAt, actorName: row.actorName, changes });
+        }
+      }
+      priceHistory.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
       const pricingRules = rulesResult.status === "fulfilled" ? rulesResult.value.items as unknown as PricingRule[] : [];
       const [schemaResult, series] = await Promise.all([
         catalogOpsApi.categorySchema(String(detail.category)).catch(() => null),
@@ -107,6 +155,10 @@ export function Product360({ product, onClose, onPricing }: {
         sizeGuide: normalizeSizeGuide(guideLink?.guide), sizeGuideMode: guideLink?.mode ?? null,
         images: images.filter(Boolean), videoUrl, specLabels,
         pricing: { summary: pricingSummary, rules: pricingRules, preview: pricingPreview, error: pricingError },
+        priceHistory,
+        priceHistoryError: priceAuditResult.status === "rejected"
+          ? "تاریخچهٔ قیمت در دسترس نیست؛ دسترسی گزارش رویدادها را بررسی کنید."
+          : seriesAuditResult.status === "rejected" ? "تاریخچهٔ قیمت سری‌ها در دسترس نیست." : null,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "خواندن اطلاعات محصول انجام نشد.");
@@ -243,6 +295,17 @@ export function Product360({ product, onClose, onPricing }: {
                 <div className="grid grid-cols-3 gap-1 text-[10px]"><div><span className="block text-[var(--kv-muted)]">پایه</span><b className="block break-words">{fmtToman(line.basePrice)}</b></div><div><span className="block text-[var(--kv-muted)]">تخفیف</span><b className="block break-words">{fmtToman(line.discountAmount)}</b></div><div><span className="block text-[var(--kv-muted)]">نهایی</span><b className="block break-words text-emerald-800">{fmtToman(line.finalPrice)}</b></div></div>
                 <p className="text-[10px] text-[var(--kv-muted)]">منبع: {line.source === "festival" ? "جشنواره" : line.source === "promotion_rule" ? "قانون تخفیف" : "بدون تخفیف"}{line.matchedRule?.name ? ` · ${line.matchedRule.name}` : ""}</p>
               </li>)}</ul> : <Empty title={data!.pricing.error ? "پیش‌نمایش در دسترس نیست" : "واریانت فعالی برای محاسبه نیست"} desc={data!.pricing.error ?? "پس از تعریف واریانت، نتیجهٔ نهایی سرور اینجا نمایش داده می‌شود."} />}
+          </Card>
+          {/* §28/§29: price history is READ from the shared audit trail — previous → new, actor, date. */}
+          <Card className="space-y-3 p-4">
+            <div><h4 className="font-bold">تاریخچهٔ تغییرات قیمت</h4><p className="mt-1 text-xs leading-5 text-[var(--kv-muted)]">هر تغییر قیمت پایه (خرده، چهارقسطه، عمده و سری‌ها) با مقدار قبلی، مقدار جدید، تغییردهنده و زمان ثبت می‌شود.</p></div>
+            {data!.priceHistoryError && <p role="status" className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{data!.priceHistoryError}</p>}
+            {data!.priceHistory.length ? <ol className="space-y-2">{data!.priceHistory.map((row) => <li key={row.id} className="rounded-lg border border-[var(--kv-line)] p-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[var(--kv-muted)]"><span>{row.actorName ?? "سیستم"}</span><span className="tabular-nums">{row.createdAt ? new Date(row.createdAt).toLocaleString("fa-IR") : "—"}</span></div>
+              <ul className="mt-1.5 space-y-0.5">{row.changes.map((change, index) => <li key={`${row.id}-${index}`} className="font-semibold text-[var(--kv-ink)]">
+                {change.label}: {change.from ? fmtToman(change.from) : "تعیین‌نشده"} ← {change.to ? fmtToman(change.to) : "تعیین‌نشده"}
+              </li>)}</ul>
+            </li>)}</ol> : !data!.priceHistoryError && <Empty title="تغییری در قیمت ثبت نشده" desc="با نخستین تغییر قیمت پایه، سطر تاریخچه همین‌جا ساخته می‌شود." />}
           </Card>
           <p className="px-1 text-xs leading-6 text-[var(--kv-muted)]">فضای کامل تنظیم قیمت، خرید چهارقسطه و قوانین تخفیف و جشنواره، در استودیوی محصول و همین نما مشترک است.</p>
         </div>}

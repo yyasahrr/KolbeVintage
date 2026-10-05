@@ -241,6 +241,12 @@ try {
   {
     const studio = await readFile(new URL('../../src/portals/admin-product.tsx', import.meta.url), 'utf8');
     const both = (...needles: string[]) => needles.every((needle) => studio.includes(needle));
+    /* §55 (Prompt 2): the pricing journey spans three surfaces — the Studio step, the wholesale
+       series editor and the embedded discount/festival editor — and ALL of them speak the
+       canonical Persian vocabulary (no Resolver/compareAt/pricing_mode/enum wording). */
+    const pricingSurfaces = studio
+      + await readFile(new URL('../../src/components/product-series-editor.tsx', import.meta.url), 'utf8')
+      + await readFile(new URL('../../src/components/product-pricing-panel.tsx', import.meta.url), 'utf8');
     // The nav is read straight out of the `secs` declaration so a renamed or re-added step fails here.
     const stepIds = studio.slice(studio.indexOf('export const STUDIO_STEPS = ['),
       studio.indexOf('] as const;', studio.indexOf('export const STUDIO_STEPS = [')));
@@ -280,6 +286,18 @@ try {
     check('§6 retail section = cash price + installment enable + installment base + discount policy',
       both('قیمت نقدی پایه (تومان)', 'خرید چهارقسطه', 'قیمت پایه چهارقسطه (تومان)', 'سیاست اعمال تخفیف روی خرید چهارقسطه'),
       'retail pricing fields');
+    /* §55/§19 (Prompt 2): the pricing surfaces speak the canonical Persian vocabulary and never leak
+       the retired English/enum terms to the operator. */
+    check('§55 pricing surfaces use the canonical Persian terms and leak no Resolver/enum wording',
+      ['قیمت نقدی پایه', 'خرید چهارقسطه', 'قیمت پایه چهارقسطه', 'سیاست اعمال تخفیف روی خرید چهارقسطه',
+        'فروش عمده', 'قیمت کل سری', 'محاسبه قیمت از اجزای سری', 'حداقل سفارش عمده', 'قیمت نهایی']
+        .every((needle) => pricingSurfaces.includes(needle))
+      /* A line that mixes Persian copy with an English/enum token IS a leak; pure code lines
+         (object keys, type names) are not user-facing text and must stay allowed. */
+      && !pricingSurfaces.split('\n')
+        .filter((line) => /[\u0600-\u06FF]/.test(line))
+        .some((line) => /compareAt|pricing_mode|Resolver|snake_case|installment_policy/.test(line)),
+      'canonical Persian pricing vocabulary');
     check('§7/§12 the embedded discount+festival editor is the canonical Promotion Engine surface',
       studio.includes('<ProductPricingPanel') && studio.includes('onOpenPromotionCenter')
       && !studio.includes('localFestivalDraft') && !studio.includes('discountDraftMetadata')
