@@ -34,6 +34,10 @@ type Product360Data = {
 };
 const fa = (n: unknown) => String(n ?? "—").replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
 const noWarehouses: [] = [];
+/** §23/§26: Product 360 shows the canonical publication state in Persian — raw enums never leak. */
+const PUBLICATION_FA: Record<string, string> = {
+  draft: "پیش‌نویس", published: "منتشرشده", pending: "در انتظار تأیید", rejected: "ردشده", archived: "آرشیوشده",
+};
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -151,7 +155,10 @@ export function Product360({ product, onClose, onPricing }: {
             ["نام", detail!.name], ["برند", detail!.brand], ["دسته", detail!.category],
             ["مالک محصول", detail!.owner_type === "supplier" ? "تأمین‌کننده" : "کلبه"],
             ["روش فروش", detail!.retail_enabled && detail!.wholesale_enabled ? "خرده و عمده" : detail!.retail_enabled ? "خرده" : "عمده"],
-            ["راه‌اندازی موجودی", detail!.inventory_setup === "pending" ? "نیازمند راه‌اندازی" : "راه‌اندازی‌شده"],
+            // §10/§23: the ONLY user-facing lifecycle state is the publication state.
+            // «inventory_setup» stays an internal technical invariant — «پیش‌نویس» already
+            // communicates «سفر ایجاد محصول کامل نشده است».
+            ["وضعیت انتشار", PUBLICATION_FA[String(detail!.status ?? "")] ?? "پیش‌نویس"],
           ].map(([label, value]) => <div key={String(label)}><dt className="text-xs text-[var(--kv-muted)]">{String(label)}</dt><dd className="mt-1 break-words font-bold">{String(value ?? "—")}</dd></div>)}</dl>
           <Card className="p-4"><h3 className="font-bold">توضیحات محصول</h3><p className="mt-2 whitespace-pre-wrap leading-7">{String(detail!.description ?? "توضیحی ثبت نشده است.")}</p></Card>
         </div>}

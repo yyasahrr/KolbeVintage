@@ -69,8 +69,12 @@ export const INSPECTION_RESULT_FA: Record<string, string> = { sellable: "قاب�
 
 export const RETURN_RESOLUTION_FA: Record<string, string> = { refund: "بازپرداخت", exchange: "تعویض", credit: "اعتبار" };
 
+/** §10/§14/§26: `inventory_setup` is an INTERNAL technical invariant only.
+ *  The final Product Owner decision removed «نیازمند راه‌اندازی» as a user-facing
+ *  Product lifecycle — the only unfinished state Admin ever sees is «پیش‌نویس».
+ *  These labels describe whether a WMS record exists for a domain, never a lifecycle. */
 export const INVENTORY_SETUP_FA: Record<string, string> = {
-  pending: "نیازمند راه‌اندازی", configured: "راه‌اندازی‌شده", legacy: "قدیمی",
+  pending: "موجودی ثبت‌نشده", configured: "دارای موجودی", legacy: "قدیمی",
 };
 
 export const PERSON_TYPE_FA: Record<string, string> = { real: "حقیقی", legal: "حقوقی" };
