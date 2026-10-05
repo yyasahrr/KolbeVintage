@@ -24,7 +24,7 @@ type TicketReply = { message: string; internal: boolean };
 type TicketUpdate = { status: string; department?: string; assigneeId?: string | null };
 type ProductCreate = {
   brand: string; name: string; category: string; description: string; cashPriceRial: string;
-  installmentPriceRial?: string; wholesalePriceRial?: string;
+  installmentEnabled?: boolean; installmentPriceRial?: string; wholesalePriceRial?: string;
   variants: { size?: string; color?: string; attributes: Record<string, string> }[];
   metadata: Record<string, unknown>;
 };
@@ -236,9 +236,11 @@ describe('frontend ↔ backend contracts', { skip: !process.env.TEST_DATABASE_UR
         stock: '12',
       });
       assert.deepEqual(Object.keys(payload).sort(),
-        ['brand', 'cashPriceRial', 'category', 'description', 'installmentPriceRial', 'metadata', 'name', 'variants', 'wholesalePriceRial']);
+        ['brand', 'cashPriceRial', 'category', 'description', 'installmentEnabled', 'installmentPriceRial', 'metadata', 'name', 'variants', 'wholesalePriceRial']);
       assert.equal(payload.cashPriceRial, '50000000');
       assert.equal(payload.installmentPriceRial, '52000000');
+      assert.equal(payload.installmentEnabled, true, 'the payload states the canonical four-installment enable flag');
+      assert.equal('compareAtPriceRial' in payload, false, 'a manual crossed-out price is not a pricing authority any more');
       assert.equal(payload.wholesalePriceRial, '40000000');
       assert.equal('sku' in payload, false, 'the client must never send a SKU');
 

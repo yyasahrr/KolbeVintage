@@ -148,6 +148,8 @@ describe('commerce: types, specs, shipping, marketplace, imports', { skip: !proc
   it('product creation validates sizes and gender/season taxonomies', async () => {
     const base = { brand: 'کلبه', category: 'تی‌شرت', cashPriceRial: '50000000', productTypeId: tshirtTypeId,
       genderCode: 'female', seasons: ['autumn', 'winter'], installmentPolicy: 'enabled',
+      // §7: installment sales need the explicit four-installment base — never the cash price.
+      installmentPriceRial: '55000000', installmentEnabled: true,
       variants: [{ size: 'M', color: 'کرم', weightGrams: 800 }] };
     const created = await app.inject({ method: 'POST', url: '/api/v1/products', headers: admin,
       payload: { ...base, name: `تی‌شرت تست ${suffix}` } });
@@ -158,6 +160,11 @@ describe('commerce: types, specs, shipping, marketplace, imports', { skip: !proc
     assert.match(skuP1, /^KV-/);
     await publish(productP1);
     await stockUp(variantP1, 10, 'p1');
+
+    // §7/§30: enabling installments without the explicit base is a business validation error.
+    const missingBase = await app.inject({ method: 'POST', url: '/api/v1/products', headers: admin,
+      payload: { ...base, name: `قسط بدون پایه ${suffix}`, installmentPriceRial: undefined, installmentEnabled: true } });
+    assert.equal(missingBase.statusCode, 400, missingBase.body);
 
     const badSize = await app.inject({ method: 'POST', url: '/api/v1/products', headers: admin,
       payload: { ...base, name: `سایز بد ${suffix}`, variants: [{ size: 'XXL-BAD' }] } });
@@ -316,17 +323,18 @@ describe('commerce: types, specs, shipping, marketplace, imports', { skip: !proc
   });
 
   it('installment eligibility is decided by the server', async () => {
-    const mk = async (name: string, policy: string) => {
+    const mk = async (name: string, policy: string, withInstallmentBase = false) => {
       const res = await app.inject({ method: 'POST', url: '/api/v1/products', headers: admin,
         payload: { brand: 'کلبه', name, category: 'کت', cashPriceRial: '60000000', wholesalePriceRial: '50000000',
-          installmentPolicy: policy, variants: [{ size: 'M' }] } });
+          installmentPolicy: policy, ...(withInstallmentBase ? { installmentEnabled: true, installmentPriceRial: '65000000' } : {}),
+          variants: [{ size: 'M' }] } });
       assert.equal(res.statusCode, 201, res.body);
       await publish(res.json().id as string);
       await stockUp(res.json().variants[0].id as string, 10, `inst-${policy}`);
       return res.json().variants[0].id as string;
     };
     const disabledVariant = await mk(`کت بدون قسط ${suffix}`, 'disabled');
-    const conditionalVariant = await mk(`کت مشروط ${suffix}`, 'disabled_when_discounted');
+    const conditionalVariant = await mk(`کت مشروط ${suffix}`, 'disabled_when_discounted', true);
 
     const blocked = await app.inject({ method: 'POST', url: '/api/v1/orders',
       headers: { ...buyerA, 'idempotency-key': `o-id-${suffix}` },

@@ -292,11 +292,16 @@ describe('Installment policy & recommendation scoring (Req 188-191, 239)', () =>
     vibes: ['old-money'], priceRial: '30000000', installmentPriceRial: null, perInstallmentRial: '7500000', compareAtRial: null, discountPercent: 0, installmentEnabled: true,
     installmentProviders: [], image: null, flatLay: null, available: 3, isNew: false, createdAt: '', rating: 0, reviewCount: 0, variants: [], installmentsCount: 4, installmentOffers: [], ...over });
   test('provider policy drives card numbers; no eligible provider means no instalment line', () => {
-    const [p] = applyInstallmentPolicy([product({})], [provider({ installments_count: 6 })]);
+    // §7: the four-installment maths runs on the explicit «قیمت پایه چهارقسطه» only.
+    const [p] = applyInstallmentPolicy([product({ installmentPriceRial: '30000000' })], [provider({ installments_count: 6 })]);
     assert.equal(p!.installmentsCount, 6); assert.equal(p!.perInstallmentRial, '5000000');
-    const [q] = applyInstallmentPolicy([product({ priceRial: '1000000' })], [provider({})]);
+    const [q] = applyInstallmentPolicy([product({ installmentPriceRial: '1000000' })], [provider({})]);
     assert.equal(q!.perInstallmentRial, null);
-    assert.equal(applyInstallmentPolicy([product({})], [])[0]!.installmentsCount, 4, 'no providers configured → legacy split');
+    // No explicit installment base → never derived from the cash price.
+    const [noBase] = applyInstallmentPolicy([product({ installmentPriceRial: null })], [provider({})]);
+    assert.equal(noBase!.perInstallmentRial, null);
+    assert.equal(noBase!.installmentsCount, null);
+    assert.equal(applyInstallmentPolicy([product({ installmentPriceRial: '30000000' })], [])[0]!.perInstallmentRial, null, 'no provider configured → no offer (pricing is not invented)');
   });
   test('similar products share vibe/category and stay near in price', () => {
     const anchor = product({});
@@ -636,7 +641,7 @@ test('Round 3: presets, installments, recommendations, saved cart, review photos
     assert.equal(put.statusCode, 200, put.body);
     assert.ok((await pool.query(`SELECT 1 FROM audit_logs WHERE action LIKE 'installment_provider.%' AND resource_id = 'snapppay'`)).rowCount);
     const product = await app.inject({ method: 'POST', url: '/api/v1/products', headers: admin.headers, payload: { brand: 'Kolbe', category: 'پیراهن', cashPriceRial: '60000000',
-      productTypeCode: 'shirt', name: `پیراهن R3 ${suffix}`, vibes: ['old-money'], seasons: ['autumn'], installmentEnabled: true, variants: [{ size: 'L', color: 'سفید' }], specifications: { material: 'کتان ۱۰۰٪', fit: 'Regular Fit' } } });
+      productTypeCode: 'shirt', name: `پیراهن R3 ${suffix}`, vibes: ['old-money'], seasons: ['autumn'], installmentEnabled: true, installmentPriceRial: '64000000', variants: [{ size: 'L', color: 'سفید' }], specifications: { material: 'کتان ۱۰۰٪', fit: 'Regular Fit' } } });
     assert.equal(product.statusCode, 201, product.body);
     const productId = product.json().id as string; const variantId = product.json().variants[0].id as string;
     await app.inject({ method: 'PATCH', url: `/api/v1/products/${productId}/status`, headers: admin.headers, payload: { status: 'published' } });
