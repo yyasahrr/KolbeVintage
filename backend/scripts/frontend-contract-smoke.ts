@@ -563,6 +563,29 @@ try {
     ['ذخیره پیش‌نویس', 'ذخیره و ادامه', 'انصراف'].every((t) => studioSrc.includes(t)) &&
     !studioSrc.includes('ذخیره و انتشار') && !studioSrc.includes('createdSummary') &&
     !userFacing(studioSrc).includes('نیازمند راه‌اندازی'));
+  // Prompt-1 correction (browser UAT defect): «افزودن محصول» must open the NEW PRODUCT studio
+  // form directly — no intermediate/parallel product list, no second click, no duplicate product.
+  const studioHubSlice = productsHubSrc.slice(productsHubSrc.indexOf('screen.k === "studio"'));
+  check('«افزودن محصول» mounts the Product Studio embedded — its own list stays hidden',
+    /<ProductStudio[\s\S]{0,400}?embedded/.test(studioHubSlice) &&
+    studioSrc.includes('{!open && !embedded && (<>') &&
+    studioSrc.includes('{!open && embedded && resumeProductId && ('));
+  const openCreateStart = studioSrc.indexOf('const openCreate = () => {');
+  const openCreateBody = studioSrc.slice(openCreateStart, studioSrc.indexOf('};', openCreateStart) + 2);
+  check('embedded studio auto-opens the NEW PRODUCT form exactly once and writes nothing on open',
+    openCreateBody.includes('setOpen(true)') &&
+    studioSrc.includes('const autoOpened = useRef(false)') &&
+    studioSrc.includes('if (!embedded || resumeProductId || open || autoOpened.current) return;') &&
+    !openCreateBody.includes('productsApi.create'));
+  const structureSlice = adminSrc.slice(adminSrc.indexOf('tab === "structure"'), adminSrc.indexOf('tab === "imports"'));
+  check('«ساختار محصولات و سری‌ها» stays structural/config-only — never a product-creation authority',
+    structureSlice.includes('<ProductStructurePanel') && structureSlice.includes('<SeriesTemplateManager') &&
+    !structureSlice.includes('ProductStudio'));
+  check('every studio exit path ([انصراف] / «بازگشت به فهرست» / «خروج بدون ذخیره») returns to «محصولات کلبه»',
+    (studioSrc.match(/onExit\?\.\(\)/g) ?? []).length >= 3 &&
+    studioSrc.slice(studioSrc.indexOf('const closeStudio'), studioSrc.indexOf('const closeStudio') + 400).includes('onExit?.()') &&
+    studioSrc.includes('onClick={onExit}') &&
+    /onExit=\{\(\) => \{ setScreen\(\{ k: "list" \}\); setResumeProductId\(null\); load\(\); \}\}/.test(productsHubSrc));
   const setupSrc = readFileSync(join(repoRoot, 'src/components/initial-inventory-workspace.tsx'), 'utf8');
   check('ورود اولیه کالا is the single canonical initial-inventory workspace (Color×Size + Series, two domains)',
     setupSrc.includes('ورود اولیه کالا') && setupSrc.includes('initial-inventory-workspace') === false &&

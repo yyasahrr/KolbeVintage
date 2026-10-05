@@ -203,6 +203,15 @@ try {
 
   await clickText('button', 'افزودن محصول');
   await sleep(1200);
+  /* §3 (Prompt-1 regression): [افزودن محصول] must land on the NEW PRODUCT form itself —
+     the studio's own product list («جست‌وجوی محصول یا SKU…» / «قالب‌های سری کلبه») is a
+     parallel product-management surface and must never appear as an intermediate step. */
+  const studioDirect = await text();
+  check('§12 [افزودن محصول] opens the NEW PRODUCT studio directly (no intermediate list)',
+    studioDirect.includes('تعریف محصول جدید')
+    && !studioDirect.includes('جست‌وجوی محصول یا SKU…')
+    && !studioDirect.includes('قالب‌های سری کلبه'),
+    studioDirect.includes('جست‌وجوی محصول یا SKU…') ? 'legacy studio list rendered instead of the form' : '');
   await shot('01-studio-open');
 
   /* ---------- §9/§4/§6: structure of the studio ---------- */

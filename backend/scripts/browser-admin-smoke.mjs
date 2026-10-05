@@ -601,8 +601,16 @@ try {
   };
   page.on('response', captureStudioCreate);
   const formOpened = await clickByText('افزودن محصول');
+  const studioBody = await text();
   check('«محصولات کلبه» opens the canonical Product Studio definition form',
-    formOpened && (await text()).includes('تعریف محصول جدید'));
+    formOpened && studioBody.includes('تعریف محصول جدید'));
+  /* Prompt-1 regression: the studio must open on the NEW PRODUCT form — its own product list
+     («جست‌وجوی محصول یا SKU…» / «قالب‌های سری کلبه») is a parallel product-management entry. */
+  check('[افزودن محصول] opens the NEW PRODUCT form directly, with no intermediate product list',
+    studioBody.includes('تعریف محصول جدید')
+      && !studioBody.includes('جست‌وجوی محصول یا SKU…')
+      && !studioBody.includes('قالب‌های سری کلبه'),
+    studioBody.includes('جست‌وجوی محصول یا SKU…') ? 'legacy studio list rendered instead of the form' : '');
   const retailOnly = await clickByText('فقط خرده');
   const named = await setInput('نام محصول', studioProductName);
   await clickByText('رنگ و سایز');
