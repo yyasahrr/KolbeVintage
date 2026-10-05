@@ -28,6 +28,11 @@ const FILES = [
   'src/components/product-pricing-panel.tsx',
   'src/components/product-structure-panel.tsx',
   'src/components/product-series-editor.tsx',
+  /* Prompt-4: the Wholesale Order Center (list + full-page detail workspace), the Orders Hub that
+     hosts it and the VIP buyer order surface are wide tables/grids — same 360px no-overflow rule. */
+  'src/portals/wholesale-order-center.tsx',
+  'src/portals/orders-hub.tsx',
+  'src/portals/vip.tsx',
 ];
 const LOOKBACK = 6;
 const MIN_PX = 320;
@@ -54,7 +59,7 @@ for (const rel of FILES) {
   });
 }
 
-console.log(`static responsive lint — ${FILES.length} Prompt-1 surfaces, ${scanned} fixed/min widths ≥ ${MIN_PX}px inspected`);
+console.log(`static responsive lint — ${FILES.length} Prompt-1/Prompt-4 surfaces, ${scanned} fixed/min widths ≥ ${MIN_PX}px inspected`);
 if (findings.length === 0) {
   console.log('PASS  every wide element is inside a horizontal scroll container or clamps with w-full/max-w');
 } else {

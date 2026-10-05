@@ -5,6 +5,7 @@ import { authBlobUrl, invoicesApi, manualSalesApi, omsApi, ordersApi, trackingAp
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { ManualOrderForm } from "../components/manual-order-form";
 import { TrackingCenter } from "../components/tracking-center";
+import { WholesaleOrderCenter } from "./wholesale-order-center";
 import { formatPersianDateTimeFull } from "../data/persian-date";
 import { cn } from "../utils/cn";
 
@@ -900,12 +901,13 @@ function MasterOrdersStrip() {
 }
 
 export function OrdersHub() {
-  const [tab, setTab] = useState<"retail" | "kolbe" | "supplier">("retail");
+  const [tab, setTab] = useState<"retail" | "masters" | "kolbe" | "supplier">("retail");
   const [trackingOpen, setTrackingOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [retailReload, setRetailReload] = useState(0);
   const tabs = useMemo(() => ([
     { v: "retail" as const, label: "سفارشات خرده" },
+    { v: "masters" as const, label: "مرکز سفارش‌های مادر VIP" },
     { v: "kolbe" as const, label: "سفارشات عمده کلبه" },
     { v: "supplier" as const, label: "سفارشات عمده تأمین‌کنندگان" },
   ]), []);
@@ -921,7 +923,9 @@ export function OrdersHub() {
         </div>
       </div>
       {tab === "retail" && <RetailTab key={retailReload} />}
-      {tab !== "retail" && <MasterOrdersStrip />}
+      {/* §21-§23: the canonical VIP Order Center is a full-page workspace inside مرکز سفارشات. */}
+      {tab === "masters" && <WholesaleOrderCenter />}
+      {tab !== "retail" && tab !== "masters" && <MasterOrdersStrip />}
       {tab === "kolbe" && <WholesaleTab scope="kolbe" key="kolbe" />}
       {tab === "supplier" && <WholesaleTab scope="supplier" key="supplier" />}
       {trackingOpen && (

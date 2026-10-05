@@ -1833,12 +1833,82 @@ export const supplierConsignmentApi = {
 /* ---------------------- VIP wholesale Master/Child OMS ---------------------- */
 
 /** Prompt-2 §17-§18: master order = grouping/consolidation shell; each CHILD order (one per seller) is the financial truth. */
+/** §24/§62: the small customer-facing lifecycle derived on the server from internal statuses. */
+export type MasterReadiness = "not_ready" | "partial" | "ready" | "shipped" | "delivered" | "cancelled";
+/** §21-§23/§56-§61: ONE list row — every coverage/readiness number is DERIVED server-side. */
 export type MasterOrderSummary = {
   id: string; reference: string; composition: string; status: string;
   shipping_estimate_rial: string | null; tracking_code: string | null; carrier: string | null;
   created_at: string; locked_at: string | null; shipped_at: string | null; delivered_at: string | null;
-  child_count: number; supplier_children: number; paid_children: number; ready_children: number;
-  included_children: number; total_rial: string;
+  buyer_name: string | null;
+  child_count: number; included_children: number; paid_children: number; supplier_children: number;
+  ready_children: number; progressed_children: number;
+  ordered_series: number; kolbe_series: number; supplier_at_kolbe_series: number;
+  supply_required_series: number; inbound_series: number;
+  total_rial: string; readiness: MasterReadiness; customer_status: string;
+};
+/** Always `{items, limit, sort, total}` — `total` is the count of rows matching the SAME filters. */
+export type MasterOrderPage = { items: MasterOrderSummary[]; limit: number; sort: "newest" | "oldest"; total: number };
+
+/** §49/§77: the STRICT buyer projection — order facts, items and derived lifecycle only. No supplier,
+ *  allocation, capacity, warehouse or internal-state field can ever appear here (enforced in the serializer). */
+export type BuyerMasterDetail = {
+  view: "buyer"; id: string; reference: string; composition: string; status: string;
+  createdAt: string; lockedAt: string | null; shippedAt: string | null; deliveredAt: string | null;
+  customerStatus: string; customerStatusLabel: string;
+  items: Array<{ productName: string; seriesName: string; colorLabel: string | null; seriesCount: number;
+    piecesPerSeries: number; pieces: number; unitSeriesPriceRial: string; lineTotalRial: string }>;
+  subOrders: Array<{ reference: string; totalRial: string; statusLabel: string; payable: boolean; cancelled: boolean }>;
+  totals: { subtotalRial: string; discountRial: string; shippingRial: string; totalRial: string };
+  shippingEstimateRial: string | null;
+  shipping: Record<string, string | null>;
+  actions: { payableChildIds: string[]; canPay: boolean; canDecide: boolean; canLock: boolean; canCancel: boolean };
+  timeline: Array<{ at: string; label: string }>;
+};
+
+/** Prompt-4 §21-§23/§56-§61: canonical admin projection of a master order (serializers, not UI masking). */
+export type OpsAllocation = {
+  id: string; source_type: "kolbe_stock" | "supplier_stock_at_kolbe" | "supplier_external";
+  quantity: number; status: string; owner_supplier_id: string | null; offer_id: string | null;
+  warehouse_id: string | null; received_series: number; qc_passed_series: number; qc_rejected_series: number;
+  reservation_expires_at: string | null;
+};
+/** §59-§61: the THREE allocatable buckets are always separate numbers, never one merged stock figure. */
+export type OpsLineSupply = {
+  line_id: string; kolbe_available: number; supplier_at_kolbe_available: number; offer_capacity_available: number;
+};
+export type OpsLine = {
+  id: string; product_id: string; product_name: string; series_template_id: string; series_name: string;
+  color_label: string | null; requested_series: number; confirmed_series: number | null;
+  pieces_per_series: number; unit_series_price_rial: string; line_total_rial: string; status: string;
+  supply: OpsLineSupply | null;
+  allocations: OpsAllocation[];
+};
+export type OpsChild = {
+  id: string; reference: string; seller_type: string; seller_id: string | null; status: string;
+  supply_status: string; payment_eligibility: string; payment_due_at: string | null; supplier_respond_by: string | null;
+  child_fulfillment: string | null; composition_state: string; subtotal_rial: string; discount_rial: string;
+  total_rial: string; created_at: string; allowedActions: string[]; lines: OpsLine[];
+};
+export type OpsCoverage = {
+  orderedSeries: number; kolbeSeries: number; supplierAtKolbeSeries: number;
+  capacitySeries: number; receivedSeries: number; qcPassedSeries: number;
+};
+export type OpsMasterDetail = {
+  view: "ops"; id: string; reference: string; buyer_id: string; composition: string; status: string;
+  created_at: string; locked_at: string | null; shipped_at: string | null; delivered_at: string | null;
+  carrier: string | null; tracking_code: string | null;
+  shipping_address: Record<string, string> | null; shipping_estimate_rial: string | null;
+  buyer: { id: string; name: string; email: string | null; membership_status: string | null } | null;
+  coverage: OpsCoverage; readiness: MasterReadiness;
+  customerStatus: string; customerStatusLabel: string;
+  totals: { subtotalRial: string; discountRial: string; shippingRial: string; totalRial: string };
+  children: OpsChild[];
+  exceptions: Array<{ id: string; child_order_id: string; exception_type: string; quantity: number | null;
+    status: string; resolution: string | null; note: string | null; created_at: string }>;
+  consolidation: { id: string; status: string; created_at: string; updated_at: string } | null;
+  timeline: Array<{ at: string; label: string; code: string }>;
+  allowedActions: string[];
 };
 export type MasterChildSummary = {
   id: string; reference: string; sellerType: "kolbe" | "supplier"; sellerId: string | null;
@@ -1867,8 +1937,21 @@ export const wholesaleOmsApi = {
     authFetch<{ id: string; reference: string; composition: string; status: string; subtotalRial: string; children: MasterChildSummary[] }>(
       "/wholesale/masters", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
   masters: (params?: Record<string, string | number>) =>
-    authFetch<{ items: MasterOrderSummary[] }>(`/wholesale/masters${query(params)}`),
-  master: (id: string) => authFetch<Record<string, unknown>>(`/wholesale/masters/${id}`),
+    authFetch<MasterOrderPage>(`/wholesale/masters${query(params)}`),
+  /** ONE canonical read model, TWO SERVER-SIDE projections (§64/§96): staff receive `ops`, the VIP owner
+   *  receives `buyer`. The projection is chosen by the server from the caller's role — a client cannot ask
+   *  for (or widen into) the operational view. */
+  master: (id: string) => authFetch<OpsMasterDetail | BuyerMasterDetail>(`/wholesale/masters/${id}`),
+  /** §30-§31: cancellation unwinds safe holds server-side; idempotent and audited. */
+  cancelMaster: (id: string, reason: string, key: string) =>
+    authFetch<{ id: string; reference: string; status: string; duplicate: boolean; cancelledChildren: number;
+      refundPendingChildren: number; released: { series: number; capacity: number; requirements: number } }>(
+      `/wholesale/masters/${id}/cancel`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify({ reason }) }),
+  /** §33: explicit, audited source reassignment (release A → assign B); demand is conserved. */
+  reassignAllocation: (allocationId: string, payload: { toOfferId?: string; toSource?: "supplier_external" | "supplier_stock_at_kolbe"; reason: string }) =>
+    authFetch<{ allocationId: string; replacementAllocationId: string; replacementStatus: string;
+      source: string; supplierChanged: boolean; quantity: number; supplierConfirmationRequired: boolean; history: number }>(
+      `/wholesale/allocations/${allocationId}/reassign`, { method: "POST", body: JSON.stringify(payload) }),
   lock: (id: string) => authFetch<Record<string, unknown>>(`/wholesale/masters/${id}/lock`, { method: "POST", body: "{}" }),
   removeChild: (childId: string) =>
     authFetch<Record<string, unknown>>(`/wholesale/children/${childId}/remove`, { method: "POST", body: "{}" }),

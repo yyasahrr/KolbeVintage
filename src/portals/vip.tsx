@@ -403,8 +403,9 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   const payReadyChildren = async (masterId: string) => {
     setPayingMaster(masterId);
     try {
-      const detail = await wholesaleOmsApi.master(masterId) as { children?: { id: string; payment_eligibility: string; composition_state: string }[] };
-      const ready = (detail.children ?? []).filter((c) => c.payment_eligibility === "ready" && c.composition_state === "included").map((c) => c.id);
+      const detail = await wholesaleOmsApi.master(masterId);
+      // §49: the buyer projection exposes the payable child ids as canonical server-derived actions (never internal state).
+      const ready = detail.view === "buyer" ? detail.actions.payableChildIds : [];
       if (ready.length === 0) { flash("زیرسفارش آماده پرداخت وجود ندارد — منتظر تأیید تأمین‌کننده بمانید."); return; }
       const intent = await wholesaleOmsApi.batchPaymentIntent(masterId, ready);
       flash(`درخواست پرداخت ${intent.reference} برای ${ready.length} زیرسفارش ثبت شد (${fmtMoney(rialToToman(intent.amountRial))})`);

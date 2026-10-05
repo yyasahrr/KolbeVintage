@@ -224,7 +224,16 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
      product inside «محصولات کلبه»; the hub itself parses the id and the step. */
   const [initialProductsRoute] = useState(() => typeof window !== "undefined"
     && /^#\/admin\/products\/(pricing|studio)\//i.test(window.location.hash));
-  const [tab, setTab] = useState(initialProductsRoute ? "products" : "tower"); // landing = نمای کلی (برج کنترل)
+  /* §50 (Prompt 4): a plain `#/admin/<tab>` deep link is honoured — used by the Wholesale Order Center
+     to open the canonical CRM for the order's VIP buyer without duplicating any CRM surface. */
+  const [initialHashTab] = useState(() => {
+    if (typeof window === "undefined") return null;
+    const match = window.location.hash.match(/^#\/admin\/([a-z-]+)$/i);
+    return match?.[1]?.toLowerCase() ?? null;
+  });
+  const [tab, setTab] = useState(initialProductsRoute ? "products"
+    : (initialHashTab && TAB_REDIRECT[initialHashTab] !== undefined || initialHashTab && ["crm", "server-orders", "wms", "settings", "finance", "products"].includes(initialHashTab)
+      ? (TAB_REDIRECT[initialHashTab] ?? initialHashTab) : "tower")); // landing = نمای کلی (برج کنترل)
   /* §2: a discount/festival deep link from the per-product pricing page carries that product into
      the canonical Promotion Center so the two surfaces are one authority, never two views. */
   const [promoFocus, setPromoFocus] = useState<{ productId: string; productName: string; anchor?: "discount" | "festival" } | null>(null);
@@ -239,6 +248,18 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     }
     setTab(hub!); setHubSub(sub ?? null);
   }, []);
+  // §50: respond to later hash deep links too (e.g. «پرونده CRM خریدار» from the Order Center).
+  useEffect(() => {
+    const onHashChange = () => {
+      const match = window.location.hash.match(/^#\/admin\/([a-z-]+)$/i);
+      const next = match?.[1]?.toLowerCase();
+      if (next && (TAB_REDIRECT[next] !== undefined || ["crm", "server-orders", "wms", "settings", "finance", "products", "tower"].includes(next))) {
+        go(TAB_REDIRECT[next] ?? next);
+      }
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [go]);
   const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
