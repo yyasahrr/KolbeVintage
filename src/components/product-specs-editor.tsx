@@ -1,3 +1,17 @@
+/* ⚠ DEPRECATED — RETAINED, NOT RENDERED (no importers anywhere in `src/`).
+ *
+ *  Superseded by the canonical surfaces and intentionally kept un-mounted:
+ *    - «مشخصات فنی» / «راهنمای سایز» of a product  → Product Studio step «مشخصات و راهنمای سایز»
+ *      (`src/portals/admin-product.tsx` + `src/components/dynamic-table-editor.tsx`),
+ *    - the spec-attribute/template/guide dictionaries → «ساختار محصولات» →
+ *      `src/components/product-structure-panel.tsx`.
+ *
+ *  This file is a former PARALLEL AUTHORITY (it reads/writes the legacy `product_spec_values`
+ *  and size-guide rows directly). Re-mounting it must be a deliberate, reviewed decision — the
+ *  `pricing-routing` gate fails if any module imports it again, so reconnection cannot happen
+ *  silently. Recorded as an open removal decision in
+ *  `docs/parallel/prompt1-browser-uat-delta-report.md`.
+ */
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { Btn, Card, Empty, Field, Input, LoadingState, Segmented, Select, Switch, Textarea } from "./primitives";

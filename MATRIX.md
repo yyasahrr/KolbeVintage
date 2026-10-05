@@ -20,7 +20,7 @@
 | Dashboard badges | ✅ | `GET /admin/dashboard/summary` (pendingProducts/activeOrders/pendingSupplierActions/pendingMemberships/openTickets/pendingReturns/pendingWithdrawals) + fallback محلی فقط در `?demo=1` |
 | CMS | ✅ سرور | `admin-cms.tsx` بازنویسی شد روی `GET/POST/PATCH/DELETE /admin/cms/*` + `GET /admin/cms/pages/:id/sections` (endpoint جدید) + `PUT /admin/site-settings/support-widget`؛ هیچ `b-${Date.now()}` برای محتوای منتشرشده |
 | CMS media | ✅ File Storage | `POST /files` (multipart، MIME/size allowlist)؛ payload فقط شناسهٔ فایل سرور را نگه می‌دارد |
-| WMS | ✅ تک‌کانونی | `AdminWmsPanel` (سرور) تنها UI؛ adjustment/receipt/transfer با `Idempotency-Key` |
+| WMS | ✅ تک‌کانونی | `WarehouseHub` (`src/portals/warehouse-hub.tsx`) تنها UI؛ adjustment/receipt/transfer با `Idempotency-Key`. (`admin-wms-panel.tsx` بازنشسته و بدون importer است — دوباره mount نشود.) |
 | Supplier Wallet | ✅ سرور | `GET /wallet` + `GET /wallet/entries` + `GET /wallet/withdrawals` + `POST /wallet/withdrawals` (Idempotency-Key) |
 | Membership admin | ✅ سرور | `GET /admin/memberships` + `PATCH /admin/memberships/:id` (pending_payment→active/cancelled با duration سرور) |
 | Cooperation admin | ✅ سرور | `GET /admin/cooperation-requests` + `POST /admin/cooperation-requests/:id/review` + `PUT /admin/cooperation-form` |

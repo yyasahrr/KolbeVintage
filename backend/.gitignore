@@ -4,3 +4,5 @@ dist/
 .local-admin.txt
 coverage/
 .pg-test/
+# local-only test harness (embedded PGlite runner); never part of the deliverable
+.scratch/

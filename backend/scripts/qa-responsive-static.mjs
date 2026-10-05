@@ -23,6 +23,10 @@ const FILES = [
   'src/portals/warehouse-hub.tsx',
   /* Prompt-1 final pass: the merged specs + size-guide step renders the shared table editor. */
   'src/components/dynamic-table-editor.tsx',
+  /* Browser-UAT delta: the full-page pricing workspace and the structure manager are new/rewritten
+     heavy surfaces — they must not push the document wider than a 360px viewport either. */
+  'src/components/discount-manager.tsx',
+  'src/components/product-structure-panel.tsx',
   'src/components/product-series-editor.tsx',
 ];
 const LOOKBACK = 6;

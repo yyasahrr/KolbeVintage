@@ -8,7 +8,7 @@
 ## خلاصهٔ ۲۸ مرحله (همگی ✅ Implemented)
 
 1. Audit MATRIX — همین `MATRIX.md`
-2. WMS کامل (available = on_hand - reserved - damaged) — `inventory.ts` + `admin-wms-panel` + `inventory.test.ts`
+2. WMS کامل (available = on_hand - reserved - damaged) — `inventory.ts` + `warehouse-hub.tsx` (پنل قدیمی `admin-wms-panel.tsx` بازنشسته است) + `inventory.test.ts`
 3. پنل تأمین‌کننده aggregations واقعی — `supplier-report.ts` + `supplier-stats-panel`
 4. جزئیات سفارش تأمین‌کننده با گذار معتبر — `suppliers.ts` + `supplier-orders-panel`
 5. فاکتور دامنه مشترک + history append-only + PDF RTL — `invoices.ts`
