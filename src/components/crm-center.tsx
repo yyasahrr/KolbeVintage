@@ -328,15 +328,14 @@ export function CrmCenter({ flash }: { flash: (message: string) => void }) {
           {!membersOpen?.items.length ? <Empty title="عضوی در این گروه نیست" desc="پس از به‌روزرسانی گروه دوباره بررسی کنید." /> : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] text-right text-[12.5px]">
-                <thead><tr className="text-[11px] text-[var(--kv-muted)]">{["مخاطب","موبایل","رفتار","ارزش","آخرین خرید","دلیل عضویت"].map((h)=><th key={h} className="pb-2">{h}</th>)}</tr></thead>
+                <thead><tr className="text-[11px] text-[var(--kv-muted)]">{["مخاطب","موبایل","تعداد خرید","ارزش خرید","زمان ورود به گروه"].map((h)=><th key={h} className="pb-2">{h}</th>)}</tr></thead>
                 <tbody className="divide-y divide-[var(--kv-line)]">
                   {membersOpen.items.map((row,index)=><tr key={String(row.user_id ?? index)}>
                     <td className="py-2.5 font-bold">{text(row.display_name ?? row.name,"بدون نام")}</td>
                     <td className="py-2.5 tabular-nums">{text(row.phone,"ثبت نشده")}</td>
-                    <td className="py-2.5">{text(row.behavior_label ?? row.behavior,"—")}</td>
-                    <td className="py-2.5">{text(row.total_spent_rial ?? row.total_spent,"—")}</td>
-                    <td className="py-2.5">{day(row.last_order_at)}</td>
-                    <td className="py-2.5 text-[11.5px] text-[var(--kv-muted)]">{text(row.match_reason ?? row.reason,"عضویت بر اساس قواعد گروه")}</td>
+                    <td className="py-2.5 tabular-nums">{fmtNum(Number(row.order_count ?? 0))}</td>
+                    <td className="py-2.5 tabular-nums">{fmtNum(Math.round(Number(String(row.total_rial ?? "0")) / 10))} تومان</td>
+                    <td className="py-2.5">{stamp(row.matched_at)}</td>
                   </tr>)}
                 </tbody>
               </table>
