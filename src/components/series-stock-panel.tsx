@@ -86,7 +86,7 @@ export function SeriesStockPanel({ flash }: { flash: F }) {
         {[
           { label: "سری موجود", value: kpi.onHand, cls: "text-[var(--kv-ink)]" },
           { label: "رزروشده", value: kpi.reserved, cls: "text-amber-700" },
-          { label: "قابل فروش", value: kpi.sellable, cls: "text-emerald-700" },
+          { label: "قابل تخصیص", value: kpi.sellable, cls: "text-emerald-700" },
           { label: "در راه", value: kpi.incoming, cls: "text-sky-700" },
         ].map((item) => (
           <Card key={item.label} className="p-3 text-center">
@@ -106,9 +106,9 @@ export function SeriesStockPanel({ flash }: { flash: F }) {
             value={filters.ownerType === "kolbe" ? "کلبه" : filters.ownerType === "supplier" ? "تأمین‌کننده (امانی)" : "همه مالکیت‌ها"}
             onChange={(v) => setFilters((f) => ({ ...f, ownerType: v === "کلبه" ? "kolbe" : v === "تأمین‌کننده (امانی)" ? "supplier" : "" }))} />
           <Input value={filters.color} onChange={(v) => setFilters((f) => ({ ...f, color: v }))} placeholder="رنگ…" />
-          <Select options={["همه وضعیت‌ها", "قابل فروش", "رزروشده", "در راه", "خالی"]}
-            value={filters.status === "available" ? "قابل فروش" : filters.status === "reserved" ? "رزروشده" : filters.status === "incoming" ? "در راه" : filters.status === "empty" ? "خالی" : "همه وضعیت‌ها"}
-            onChange={(v) => setFilters((f) => ({ ...f, status: v === "قابل فروش" ? "available" : v === "رزروشده" ? "reserved" : v === "در راه" ? "incoming" : v === "خالی" ? "empty" : "" }))} />
+          <Select options={["همه وضعیت‌ها", "قابل تخصیص", "رزروشده", "در راه", "خالی"]}
+            value={filters.status === "available" ? "قابل تخصیص" : filters.status === "reserved" ? "رزروشده" : filters.status === "incoming" ? "در راه" : filters.status === "empty" ? "خالی" : "همه وضعیت‌ها"}
+            onChange={(v) => setFilters((f) => ({ ...f, status: v === "قابل تخصیص" ? "available" : v === "رزروشده" ? "reserved" : v === "در راه" ? "incoming" : v === "خالی" ? "empty" : "" }))} />
         </div>
       </Card>
 
@@ -120,7 +120,7 @@ export function SeriesStockPanel({ flash }: { flash: F }) {
             <table className="kv-table min-w-[980px] text-[12.5px]">
               <thead><tr>
                 <th></th><th>محصول</th><th>رنگ</th><th>سری</th><th>مالکیت</th><th>انبار</th>
-                <th>سری موجود</th><th>رزروشده</th><th>قابل فروش</th><th>در راه</th><th>وضعیت</th><th>عملیات</th>
+                <th>سری موجود</th><th>رزروشده</th><th>قابل تخصیص</th><th>در راه</th><th>وضعیت</th><th>عملیات</th>
               </tr></thead>
               <tbody>
                 {rows.map((row) => {
@@ -365,7 +365,7 @@ export function SupplyWizard({ preset, flash, onClose, onDone }: {
                     productId === p.id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/5" : "border-[var(--kv-line)] hover:border-[var(--kv-accent)]/50")}
                     onClick={() => { setProductId(p.id); setTemplateId(""); setSourceWhId(""); }}>
                     <p className="text-[13px] font-bold">{p.name}</p>
-                    <p className="mt-1 text-[11px] text-[var(--kv-muted)]">قابل فروش: {fa(p.sellable)} سری</p>
+                    <p className="mt-1 text-[11px] text-[var(--kv-muted)]">قابل تخصیص: {fa(p.sellable)} سری</p>
                   </button>
                 ))}
               </div>
@@ -379,24 +379,24 @@ export function SupplyWizard({ preset, flash, onClose, onDone }: {
                     templateId === c.templateId ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/5" : "border-[var(--kv-line)] hover:border-[var(--kv-accent)]/50")}
                     onClick={() => { setTemplateId(c.templateId); setSourceWhId(""); }}>
                     <p className="text-[13px] font-bold">رنگ {c.color}</p>
-                    <p className="mt-1 text-[11px] text-[var(--kv-muted)]">{c.name} — {fa(c.pieces)} عدد در سری — قابل فروش {fa(c.sellable)} سری</p>
+                    <p className="mt-1 text-[11px] text-[var(--kv-muted)]">{c.name} — {fa(c.pieces)} عدد در سری — قابل تخصیص {fa(c.sellable)} سری</p>
                   </button>
                 ))}
               </div>
             )
           )}
           {step === 2 && (
-            sourceRows.length === 0 ? <Empty title="موجودی قابل فروش نیست" desc="در هیچ انبار عمده‌ای سری قابل فروش (کلبه‌ای) برای این رنگ نیست." /> : (
+            sourceRows.length === 0 ? <Empty title="موجودی قابل تخصیص نیست" desc="در هیچ انبار عمده‌ای سری قابل تخصیص (کلبه‌ای) برای این رنگ نیست." /> : (
               <div className="space-y-2">
                 {sourceRows.map((r) => (
                   <button key={r.warehouse_id} className={cn("flex w-full items-center justify-between rounded-[12px] border p-3 text-right transition-all",
                     sourceWhId === r.warehouse_id ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/5" : "border-[var(--kv-line)] hover:border-[var(--kv-accent)]/50")}
                     onClick={() => setSourceWhId(r.warehouse_id!)}>
                     <span className="text-[13px] font-bold">{r.warehouse_name}{bestSource?.warehouse_id === r.warehouse_id && <span className="mr-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">پیشنهاد (بیشترین موجودی)</span>}</span>
-                    <span className="text-[12px] tabular-nums">قابل فروش: <b className="text-emerald-700">{fa(r.sellable)}</b> سری{r.reserved > 0 ? ` (رزرو: ${fa(r.reserved)})` : ""}</span>
+                    <span className="text-[12px] tabular-nums">قابل تخصیص: <b className="text-emerald-700">{fa(r.sellable)}</b> سری{r.reserved > 0 ? ` (رزرو: ${fa(r.reserved)})` : ""}</span>
                   </button>
                 ))}
-                <p className="text-[11px] text-[var(--kv-muted)]">رزروشده و آسیب‌دیده از «قابل فروش» کم شده است؛ انتخاب مبدأ همیشه با شماست.</p>
+                <p className="text-[11px] text-[var(--kv-muted)]">رزروشده و آسیب‌دیده از «قابل تخصیص» کم شده است؛ انتخاب مبدأ همیشه با شماست.</p>
               </div>
             )
           )}
@@ -416,7 +416,7 @@ export function SupplyWizard({ preset, flash, onClose, onDone }: {
           )}
           {step === 4 && chosen && (
             <div className="space-y-3">
-              <Field label={`تعداد سری (قابل فروش در مبدأ: ${fa(chosen.sellable)})`}>
+              <Field label={`تعداد سری (قابل تخصیص در مبدأ: ${fa(chosen.sellable)})`}>
                 <Input value={count} onChange={setCount} placeholder="مثلاً ۲" />
               </Field>
               {validCount && (
@@ -562,7 +562,7 @@ export function SupplyOpsPanel({ flash, status }: { flash: F; status?: "" | "res
                     </>)}
                     {s.status === "dispatched" && (
                       <button className="text-[11.5px] font-bold text-emerald-600" disabled={busy}
-                        onClick={() => void act(() => retailSuppliesApi.receive(s.id), "عددها در انبار خرده دریافت و قابل فروش شدند.")}>دریافت در خرده</button>
+                        onClick={() => void act(() => retailSuppliesApi.receive(s.id), "عددها در انبار خرده دریافت و قابل تخصیص شدند.")}>دریافت در خرده</button>
                     )}
                     <button className="text-[11.5px] font-bold text-[var(--kv-muted)]" onClick={() => setTimelineFor(s.id)}>تایم‌لاین</button>
                   </td>

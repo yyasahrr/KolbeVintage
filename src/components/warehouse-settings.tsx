@@ -83,10 +83,10 @@ export function WarehouseSettings({ onReport }: { onReport: (rows: LowStock[]) =
     </section>}
     <section className="space-y-3 border-t border-[var(--kv-line)] pt-4">
       <h3 className="text-sm font-bold">قواعد موجودی</h3>
-      <p className="text-xs leading-6 text-[var(--kv-muted)]">آستانه هشدار «رو به اتمام» در کل سامانه ثابت و سمت سرور است (۵ عدد قابل فروش یا کمتر). وضعیت موجودی همیشه خودکار محاسبه می‌شود و قابل ویرایش دستی نیست.</p>
+      <p className="text-xs leading-6 text-[var(--kv-muted)]">آستانه هشدار «رو به اتمام» در کل سامانه ثابت و سمت سرور است (۵ عدد قابل تخصیص یا کمتر). وضعیت موجودی همیشه خودکار محاسبه می‌شود و قابل ویرایش دستی نیست.</p>
       <h4 className="text-xs font-bold">فیلتر گزارش موجودی کم — همه انبارها و دامنه‌ها</h4>
-      <p className="text-xs leading-6 text-[var(--kv-muted)]">این عدد ذخیره نمی‌شود؛ فقط اقلام با موجودی قابل فروش کمتر یا مساوی آن را در گزارش نشان می‌دهد و آستانه هشدار خودکار را تغییر نمی‌دهد.</p>
-      <Field label="حد موجودی قابل فروش برای گزارش"><Input type="number" value={threshold} onChange={(value) => { if (/^\d*$/.test(value)) setThreshold(value); }} /></Field>
+      <p className="text-xs leading-6 text-[var(--kv-muted)]">این عدد ذخیره نمی‌شود؛ فقط اقلام با موجودی قابل تخصیص کمتر یا مساوی آن را در گزارش نشان می‌دهد و آستانه هشدار خودکار را تغییر نمی‌دهد.</p>
+      <Field label="حد موجودی قابل تخصیص برای گزارش"><Input type="number" value={threshold} onChange={(value) => { if (/^\d*$/.test(value)) setThreshold(value); }} /></Field>
       <Btn size="sm" variant="soft" disabled={busy || !threshold || Number(threshold) > 100000} onClick={() => void run(async () => { onReport((await inventoryApi.lowStock(Number(threshold))).items as LowStock[]); })}>گزارش موجودی کم</Btn>
 
     </section>

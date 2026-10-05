@@ -102,10 +102,10 @@ export async function warehouseUxSmoke({ page, check, apiPort, clickByText, setI
   check('on-hand reflects both independent receipt confirmations', final.on_hand === 18 && final.incoming === 0);
   check('operations column uses compact native menu', await page.$eval(`select[aria-label="عملیات ${variant.sku}"]`, (select) => select.options[0].text.includes('عملیات') && ![...select.options].some((option) => option.value === 'receive')));
   // Sale toggle is now a SCOPE modal (variant/color/product + تأیید و اعمال) — drive it like an operator.
-  await action('sale'); await waitForText(`وضعیت فروش — ${productName}`);
-  check('sale modal locks scope to the entry variant with explicit preview', (await text()).includes('فقط همین تنوع') && (await text()).includes(`توقف فروش برای: فقط تنوع مشکی / 41 (${variant.sku})`));
+  await action('sale'); await waitForText(`عرضه در کاتالوگ — ${productName}`);
+  check('sale modal locks scope to the entry variant with explicit preview', (await text()).includes('فقط همین تنوع') && (await text()).includes(`توقف عرضه برای: فقط تنوع مشکی / 41 (${variant.sku})`));
   await clickByText('تأیید و اعمال');
-  // The operations entry is static («وضعیت فروش…») in the scope-modal design, so assert the
+  // The operations entry is static («وضعیت عرضه در کاتالوگ…») in the scope-modal design, so assert the
   // OUTCOME: the variant-level sale flag flips server-side (API/database truth).
   const saleFlag = async () => {
     const item = (await request(`/inventory?warehouseId=${warehouse.id}&inventoryDomain=retail`)).items.find((it) => it.variant_id === variant.id);
@@ -114,8 +114,8 @@ export async function warehouseUxSmoke({ page, check, apiPort, clickByText, setI
   let stopped = false;
   for (let i = 0; i < 24 && !stopped; i += 1) { await new Promise((resolve) => setTimeout(resolve, 400)); stopped = (await saleFlag()) === false; }
   check('variant-scope sale stop persists server-side', stopped);
-  await action('sale'); await waitForText(`وضعیت فروش — ${productName}`);
-  check('sale modal defaults to re-activation when the variant is stopped', (await text()).includes('فعال‌سازی فروش برای'));
+  await action('sale'); await waitForText(`عرضه در کاتالوگ — ${productName}`);
+  check('sale modal defaults to re-activation when the variant is stopped', (await text()).includes('شروع عرضه برای'));
   await clickByText('تأیید و اعمال');
   let active = false;
   for (let i = 0; i < 24 && !active; i += 1) { await new Promise((resolve) => setTimeout(resolve, 400)); active = (await saleFlag()) === true; }

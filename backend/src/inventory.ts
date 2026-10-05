@@ -216,6 +216,12 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       colorLabel: z.string().max(60).optional(),
       sizeLabel: z.string().max(60).optional(),
       category: z.string().max(60).optional(),
+      /* §8-§11 (browser-UAT delta): operational server-side ordering + the two filters the
+         Product Owner asked for (catalogue publication state and inventory ownership).
+         `sort` defaults to NEWEST — never the accidental DB row order. */
+      sort: z.enum(['newest', 'oldest', 'stock_desc', 'stock_asc', 'available_desc', 'available_asc', 'name_asc', 'name_desc']).default('newest'),
+      publicationStatus: z.enum(['draft', 'published', 'archived']).optional(),
+      owner: z.enum(['kolbe', 'supplier']).optional(),
       hasIncoming: z.coerce.number().int().min(0).max(1).optional(),
       hasReservation: z.coerce.number().int().min(0).max(1).optional(),
       withTotal: z.coerce.number().int().min(0).max(1).optional(),
@@ -224,6 +230,18 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       productId: z.uuid().optional(),
     }).parse(request.query);
     const privileged = user.permissions.includes('inventory:read');
+    /* §8: deterministic, server-side ordering. `newest` = newest PRODUCT first, then the most
+       recently touched balance, then a stable tiebreaker — never the DB's incidental row order. */
+    const sortSql: Record<typeof query.sort, string> = {
+      newest: 'product_created_at DESC, balance_updated_at DESC, sku ASC, warehouse_code ASC, inventory_domain ASC',
+      oldest: 'product_created_at ASC, balance_updated_at ASC, sku ASC, warehouse_code ASC, inventory_domain ASC',
+      stock_desc: 'on_hand DESC, product_created_at DESC, sku ASC, inventory_domain ASC',
+      stock_asc: 'on_hand ASC, product_created_at DESC, sku ASC, inventory_domain ASC',
+      available_desc: 'available DESC, product_created_at DESC, sku ASC, inventory_domain ASC',
+      available_asc: 'available ASC, product_created_at DESC, sku ASC, inventory_domain ASC',
+      name_asc: 'product_name ASC, sku ASC, inventory_domain ASC',
+      name_desc: 'product_name DESC, sku ASC, inventory_domain ASC',
+    };
     // D3: real search across product name / SKU / color / size; O1: stock_status is
     // auto-computed on the server and never admin-editable.
     const rows = await pool.query(
@@ -233,7 +251,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
               p.supplier_id, p.retail_enabled, v.retail_sale_enabled AS variant_sale_enabled,
               (p.status = 'published' AND p.retail_enabled AND v.retail_sale_enabled
                AND COALESCE(p.cash_price_rial, 0) > 0) AS effective_retail_sellable,
-              p.status AS product_status, p.category,
+              p.status AS product_status, p.category, p.created_at AS product_created_at, b.updated_at AS balance_updated_at,
               b.on_hand, b.reserved, b.incoming, b.damaged, (b.on_hand - b.reserved - b.damaged) AS available, b.version,
               CASE
                 WHEN b.on_hand - b.reserved - b.damaged > 0 AND b.on_hand - b.reserved - b.damaged <= ${LOW_STOCK_THRESHOLD} THEN 'low_stock'
@@ -264,16 +282,19 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
          AND ($14::integer IS NULL OR ($14 = 1 AND b.incoming > 0) OR ($14 = 0 AND b.incoming = 0))
          AND ($15::integer IS NULL OR ($15 = 1 AND b.reserved > 0) OR ($15 = 0 AND b.reserved = 0))
          AND ($18::uuid IS NULL OR p.id = $18)
+         AND ($19::text IS NULL OR p.status = $19)
+         AND ($20::text IS NULL OR p.owner_type = $20)
       )
       SELECT *, count(*) OVER()::int AS total_rows FROM base
       WHERE ($16::text IS NULL OR stock_status = $16)
         AND ($17::text IS NULL OR sale_status = $17)
-      ORDER BY available ASC, sku, inventory_domain LIMIT $7 OFFSET $10`,
+      ORDER BY ${sortSql[query.sort]} LIMIT $7 OFFSET $10`,
       [query.variantId ?? null, query.warehouseId ?? null, query.search ?? null,
         privileged, user.id, query.lowStock ?? null, query.limit, query.inventoryDomain ?? null,
         query.supplierId ?? null, query.offset, query.category ?? null, query.colorLabel ?? null,
         query.sizeLabel ?? null, query.hasIncoming ?? null, query.hasReservation ?? null,
-        query.stockStatus ?? null, query.saleStatus ?? null, query.productId ?? null]);
+        query.stockStatus ?? null, query.saleStatus ?? null, query.productId ?? null,
+        query.publicationStatus ?? null, query.owner ?? null]);
     const total = rows.rows.length ? Number(rows.rows[0].total_rows) : 0;
     const items = rows.rows.map(({ total_rows: _ignored, ...row }) => row);
     return query.withTotal === 1 ? { items, total, limit: query.limit, offset: query.offset } : { items, total };

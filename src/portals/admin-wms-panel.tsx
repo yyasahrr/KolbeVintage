@@ -1,3 +1,11 @@
+/* ⚠ DEPRECATED — RETAINED, NOT RENDERED (no importers anywhere in `src/`).
+ *
+ *  Superseded by the canonical warehouse operations hub: `src/portals/warehouse-hub.tsx`
+ *  (`WarehouseHub`) — retail inventory, transfers, wholesale inbound/QC and warehouse settings.
+ *  This older panel is a second WMS surface: it must not be re-mounted silently, because two
+ *  inventory surfaces would reintroduce exactly the terminology and sort/filter inconsistencies
+ *  the browser-UAT delta removed. The `pricing-routing` gate fails if anything imports it again.
+ */
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Boxes, History, MapPin, PackagePlus, RefreshCw, Scale, Truck } from "lucide-react";
 import { Btn, Card, Empty, ErrorState, Field, Input, LoadingState, SearchBox, Select } from "../components/primitives";
@@ -277,7 +285,7 @@ export function AdminWmsPanel() {
             {lowStockMode && <Btn variant="ghost" size="sm" onClick={() => { setLowStockMode(false); void loadBalances(); }}>همه اقلام</Btn>}
           </div>
           <p className="mt-3 text-[12px] leading-6 text-[var(--kv-muted)]">
-            {L.available} = {L.onHand} − {L.reserved} − {L.damaged}. موجودی «{L.incoming}» تا زم�ید {L.receipt} قابل فروش نیست.
+            {L.available} = {L.onHand} − {L.reserved} − {L.damaged}. موجودی «{L.incoming}» تا زم�ید {L.receipt} قابل تخصیص نیست.
           </p>
         </Card>
       </div>

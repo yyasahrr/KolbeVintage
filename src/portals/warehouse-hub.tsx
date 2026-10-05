@@ -8,6 +8,7 @@ import { AdminServerOrders } from "./admin-server-orders";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { SeriesStockPanel, SupplyOpsPanel, SupplyWizard } from "../components/series-stock-panel";
 import { WarehouseSettings, type LowStock } from "../components/warehouse-settings";
+import { siteApi } from "../data/experience-api";
 import { adjustmentPreview, pendingForRows } from "../data/warehouse-ux";
 import { formatPersianDateTimeFull } from "../data/persian-date";
 import { cn } from "../utils/cn";
@@ -23,6 +24,32 @@ const STOCK_BADGE: Record<string, { label: string; cls: string }> = {
   incoming: { label: "در راه", cls: "bg-amber-100 text-amber-800" },
   fully_reserved: { label: "تماماً رزرو", cls: "bg-amber-100 text-amber-800" },
 };
+/** §6 (browser-UAT delta): catalogue publication is its OWN fact. WMS shows it next to stock
+ *  and never infers it from availability — a persisted Draft with stock stays «پیش‌نویس». */
+const PUBLICATION_BADGE: Record<string, { label: string; cls: string }> = {
+  draft: { label: "پیش‌نویس", cls: "bg-gray-200 text-gray-700" },
+  published: { label: "منتشرشده", cls: "bg-sky-100 text-sky-800" },
+  archived: { label: "آرشیو", cls: "bg-gray-200 text-gray-600" },
+};
+/** §6: catalogue عرضه (sale flags) — renamed away from «فعال» so it can never be read as publication. */
+const OFFER_BADGE: Record<string, { label: string; cls: string }> = {
+  active: { label: "در حال عرضه", cls: "bg-emerald-100 text-emerald-800" },
+  variant_paused: { label: "این تنوع متوقف", cls: "bg-amber-100 text-amber-800" },
+  paused: { label: "عرضه متوقف (محصول)", cls: "bg-gray-200 text-gray-600" },
+  archived: { label: "آرشیو", cls: "bg-gray-200 text-gray-600" },
+};
+/** §9: every ordering option runs ON THE SERVER (params to GET /inventory) — the browser never
+ *  downloads the whole inventory to sort it. */
+const WMS_SORTS = [
+  { v: "newest", label: "جدیدترین" },
+  { v: "oldest", label: "قدیمی‌ترین" },
+  { v: "stock_desc", label: "بیشترین موجودی" },
+  { v: "stock_asc", label: "کمترین موجودی" },
+  { v: "available_desc", label: "بیشترین قابل تخصیص" },
+  { v: "available_asc", label: "کمترین قابل تخصیص" },
+  { v: "name_asc", label: "نام محصول: الف → ی" },
+  { v: "name_desc", label: "نام محصول: ی → الف" },
+] as const;
 const TRANSFER_BADGE: Record<string, { label: string; cls: string }> = {
   draft: { label: "پیش‌نویس", cls: "bg-gray-100 text-gray-600" },
   approved: { label: "تأییدشده", cls: "bg-amber-100 text-amber-800" },
@@ -53,6 +80,7 @@ type InvRow = {
   product_id: string; product_name: string; owner_type: string; supplier_id: string | null;
   retail_enabled: boolean; variant_sale_enabled?: boolean; effective_retail_sellable?: boolean;
   sale_status?: "active" | "paused" | "variant_paused" | "archived"; product_status: string;
+  product_category?: string | null;
   on_hand: number; reserved: number; incoming: number; damaged: number; available: number;
   stock_status: string;
 };
@@ -120,7 +148,7 @@ export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | 
           <WarehouseSettings onReport={(rows) => setLowStockReport(rows)} />
         </Card>
       )}
-      {lowStockReport && <Modal open title="گزارش موجودی کم — همه انبارها و دامنه‌ها" onClose={() => setLowStockReport(null)}><div className="overflow-x-auto p-4"><p className="text-xs text-[var(--kv-muted)]">حداکثر ۵۰ قلم با کمترین موجودی</p><table className="kv-table w-full text-xs"><thead><tr><th>کد کالا</th><th>انبار</th><th>دامنه</th><th>قابل فروش</th></tr></thead><tbody>{lowStockReport.map((item) => <tr key={`${item.variant_id}-${item.warehouse_id}-${item.inventory_domain}`}><td dir="ltr">{item.sku}</td><td>{item.warehouse_name}</td><td>{item.inventory_domain === "retail" ? "خرده" : "عمده"}</td><td>{fa(item.available)}</td></tr>)}</tbody></table>{!lowStockReport.length && <p className="text-sm">موجودی کم یافت نشد.</p>}</div></Modal>}
+      {lowStockReport && <Modal open title="گزارش موجودی کم — همه انبارها و دامنه‌ها" onClose={() => setLowStockReport(null)}><div className="overflow-x-auto p-4"><p className="text-xs text-[var(--kv-muted)]">حداکثر ۵۰ قلم با کمترین موجودی</p><table className="kv-table w-full text-xs"><thead><tr><th>کد کالا</th><th>انبار</th><th>دامنه</th><th>قابل تخصیص</th></tr></thead><tbody>{lowStockReport.map((item) => <tr key={`${item.variant_id}-${item.warehouse_id}-${item.inventory_domain}`}><td dir="ltr">{item.sku}</td><td>{item.warehouse_name}</td><td>{item.inventory_domain === "retail" ? "خرده" : "عمده"}</td><td>{fa(item.available)}</td></tr>)}</tbody></table>{!lowStockReport.length && <p className="text-sm">موجودی کم یافت نشد.</p>}</div></Modal>}
     </div>
   );
 }
@@ -215,8 +243,15 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState<{ on_hand: number; reserved: number; incoming: number; damaged: number; available: number } | null>(null);
   // §6: server-backed filters — every change goes back to the API, no client-side dataset filtering.
-  const [filters, setFilters] = useState({ warehouseId: "", stockStatus: "", saleStatus: "", color: "", size: "", hasIncoming: false, hasReservation: false });
+  const [filters, setFilters] = useState({
+    warehouseId: "", category: "", stockStatus: "", publicationStatus: "", saleStatus: "", owner: "",
+    color: "", size: "", hasIncoming: false, hasReservation: false,
+  });
+  // §8/§9: ordering is a server parameter too — default is NEWEST, never the accidental DB order.
+  const [sort, setSort] = useState<string>("newest");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [warehouses, setWarehouses] = useState<{ id: string; code: string; name: string }[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   // §10: selection keys = `${variant_id}|${warehouse_id}` so bulk ops stay variant-level.
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -224,18 +259,21 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
   const [bulkResults, setBulkResults] = useState<{ title: string; items: { label: string; ok: boolean; error?: string }[] } | null>(null);
 
   const serverParams = useCallback((limit: number, offset: number) => {
-    const params: Record<string, string | number> = { inventoryDomain: domain, limit, offset, withTotal: 1 };
+    const params: Record<string, string | number> = { inventoryDomain: domain, limit, offset, withTotal: 1, sort };
     if (search.trim()) params.search = search.trim();
     if (lowOnly) params.lowStock = 5;
     if (filters.warehouseId) params.warehouseId = filters.warehouseId;
+    if (filters.category) params.category = filters.category;
     if (filters.stockStatus) params.stockStatus = filters.stockStatus;
+    if (filters.publicationStatus) params.publicationStatus = filters.publicationStatus;
     if (filters.saleStatus) params.saleStatus = filters.saleStatus;
+    if (filters.owner) params.owner = filters.owner;
     if (filters.color.trim()) params.colorLabel = filters.color.trim();
     if (filters.size.trim()) params.sizeLabel = filters.size.trim();
     if (filters.hasIncoming) params.hasIncoming = 1;
     if (filters.hasReservation) params.hasReservation = 1;
     return params;
-  }, [domain, search, lowOnly, filters]);
+  }, [domain, search, lowOnly, filters, sort]);
 
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
@@ -255,10 +293,40 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
     } catch (e) { if (sequence === reloadSequence.current) setError(e instanceof Error ? e.message : "خطا در بارگذاری موجودی"); }
   }, [domain, serverParams]);
   useEffect(() => { void reload(); return () => { reloadSequence.current++; }; }, [reload]);
-  useEffect(() => { setSelectedKeys(new Set()); }, [domain, search, lowOnly, filters]);
+  useEffect(() => { setSelectedKeys(new Set()); }, [domain, search, lowOnly, filters, sort]);
   useEffect(() => {
     inventoryApi.warehouses().then((res) => setWarehouses(res.items)).catch(() => setWarehouses([]));
+    // §10: the canonical catalogue categories — the same list the Studio uses, never a local copy.
+    siteApi.categories()
+      .then((res) => setCategories(res.items.filter((item) => item.active !== false).map((item) => item.name)))
+      .catch(() => setCategories([]));
   }, []);
+
+  /* §11: filters as removable chips — the operator always sees what is narrowing the list, and one
+     button («پاک کردن فیلترها») returns to the default view. Sort is ordering, not a filter. */
+  const activeChips = useMemo(() => {
+    const chips: { key: string; label: string }[] = [];
+    if (search.trim()) chips.push({ key: "search", label: `جست‌وجو: ${search.trim()}` });
+    if (lowOnly) chips.push({ key: "lowOnly", label: "فقط موجودی کم" });
+    if (filters.warehouseId) chips.push({ key: "warehouseId", label: `انبار: ${warehouses.find((w) => w.id === filters.warehouseId)?.name ?? filters.warehouseId}` });
+    if (filters.category) chips.push({ key: "category", label: `دسته: ${filters.category}` });
+    if (filters.stockStatus) chips.push({ key: "stockStatus", label: `وضعیت موجودی: ${STOCK_BADGE[filters.stockStatus]?.label ?? filters.stockStatus}` });
+    if (filters.publicationStatus) chips.push({ key: "publicationStatus", label: `وضعیت انتشار: ${PUBLICATION_BADGE[filters.publicationStatus]?.label ?? filters.publicationStatus}` });
+    if (filters.saleStatus) chips.push({ key: "saleStatus", label: `وضعیت عرضه: ${OFFER_BADGE[filters.saleStatus]?.label ?? filters.saleStatus}` });
+    if (filters.owner) chips.push({ key: "owner", label: `مالکیت: ${filters.owner === "kolbe" ? "کلبه" : "تأمین‌کننده"}` });
+    if (filters.color.trim()) chips.push({ key: "color", label: `رنگ: ${filters.color.trim()}` });
+    if (filters.size.trim()) chips.push({ key: "size", label: `سایز: ${filters.size.trim()}` });
+    if (filters.hasIncoming) chips.push({ key: "hasIncoming", label: "دارای «در راه»" });
+    if (filters.hasReservation) chips.push({ key: "hasReservation", label: "دارای رزرو" });
+    return chips;
+  }, [search, lowOnly, filters, warehouses]);
+  const clearOne = (key: string) => {
+    if (key === "search") { setSearch(""); return; }
+    if (key === "lowOnly") { setLowOnly(false); return; }
+    setFilters((current) => ({ ...current, [key]: typeof current[key as keyof typeof current] === "boolean" ? false : "" }));
+  };
+  const clearAll = () => { setSearch(""); setLowOnly(false); setSort("newest"); setFilters({ warehouseId: "", category: "", stockStatus: "", publicationStatus: "", saleStatus: "", owner: "", color: "", size: "", hasIncoming: false, hasReservation: false }); };
+  const sortLabel = WMS_SORTS.find((option) => option.v === sort)?.label ?? "جدیدترین";
 
   const loadMore = async () => {
     if (!rows) return;
@@ -287,7 +355,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
     try {
       const res = await productsApi.bulkSaleStatus({ productIds, enabled: enable });
       setBulkResults({
-        title: enable ? "نتیجه فعال‌سازی فروش گروهی" : "نتیجه توقف فروش گروهی",
+        title: enable ? "نتیجه شروع عرضهٔ گروهی" : "نتیجه توقف عرضهٔ گروهی",
         items: res.results.map((item) => ({ label: item.name ?? item.productId, ok: item.ok, error: item.error })),
       });
       setSelectedKeys(new Set());
@@ -352,7 +420,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
             ["رزرو شده", summary.reserved, "text-amber-700"],
             ["در راه", summary.incoming, "text-sky-700"],
             ["آسیب‌دیده", summary.damaged, "text-red-700"],
-            ["قابل فروش", summary.available, "text-emerald-700"],
+            ["قابل تخصیص", summary.available, "text-emerald-700"],
           ] as const).map(([label, value, tone]) => (
             <div key={label} className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-3 py-2">
               <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
@@ -363,12 +431,36 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
       )}
       <div className="space-y-2 border-b border-[var(--kv-border)] p-3">
         <div className="flex flex-wrap items-center gap-2.5">
-          <div className="min-w-[220px] flex-1">
+          <div className="min-w-[200px] flex-1">
             <SearchBox value={search} onChange={setSearch} placeholder="جست‌وجو بر اساس نام، SKU، رنگ یا سایز…" />
           </div>
+          <label className="flex items-center gap-1.5 text-[11.5px]">
+            <span className="text-[var(--kv-muted)]">ترتیب</span>
+            <select aria-label="ترتیب نمایش" value={sort} onChange={(e) => setSort(e.target.value)}
+              className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] px-2 py-1.5">
+              {WMS_SORTS.map((option) => <option key={option.v} value={option.v}>{option.label}</option>)}
+            </select>
+          </label>
           <Checkbox checked={lowOnly} onChange={setLowOnly} label={<span className="text-[12px]">فقط موجودی کم</span>} />
+          {/* §11: on small screens the filter grid collapses behind this button. */}
+          <button type="button" className="rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 py-2 text-[11.5px] font-bold sm:hidden"
+            aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>
+            فیلترها{activeChips.length ? ` (${fa(activeChips.length)})` : ""} ▾
+          </button>
+          <span className="mr-auto text-[11px] text-[var(--kv-muted)]" aria-live="polite">
+            {fa(total)} ردیف مطابق فیلتر · مرتب‌سازی: {sortLabel}
+          </span>
         </div>
-        <div className="flex flex-wrap items-end gap-2 text-[11.5px]">
+        <p className="text-[11px] leading-5 text-[var(--kv-muted)]">
+          موجودی انبار و انتشار در کاتالوگ دو موضوع مستقل‌اند؛ این صفحه هرگز محصولی را منتشر یا پیش‌نویس نمی‌کند و «قابل تخصیص» فقط یک واقعیت انبار است.
+        </p>
+        <div className={cn("flex flex-wrap items-end gap-2 text-[11.5px]", !filtersOpen && "hidden sm:flex")}>
+          <label className="block">دسته‌بندی
+            <select aria-label="فیلتر دسته‌بندی" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} className="mt-1 block max-w-[160px] rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2">
+              <option value="">همه دسته‌ها</option>
+              {categories.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
           <label className="block">انبار
             <select aria-label="فیلتر انبار" value={filters.warehouseId} onChange={(e) => setFilters({ ...filters, warehouseId: e.target.value })} className="mt-1 block rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2">
               <option value="">همه انبارها</option>
@@ -381,10 +473,22 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
               <option value="out_of_stock">ناموجود</option><option value="incoming">در راه</option><option value="fully_reserved">کاملاً رزرو</option>
             </select>
           </label>
+          <label className="block">وضعیت انتشار
+            <select aria-label="فیلتر وضعیت انتشار" value={filters.publicationStatus} onChange={(e) => setFilters({ ...filters, publicationStatus: e.target.value })} className="mt-1 block rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2">
+              <option value="">همه</option><option value="draft">پیش‌نویس</option><option value="published">منتشرشده</option><option value="archived">آرشیو</option>
+            </select>
+          </label>
           {domain === "retail" && (
-            <label className="block">وضعیت فروش
-              <select aria-label="فیلتر وضعیت فروش" value={filters.saleStatus} onChange={(e) => setFilters({ ...filters, saleStatus: e.target.value })} className="mt-1 block rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2">
-                <option value="">همه</option><option value="active">فعال</option><option value="paused">فروش متوقف</option><option value="archived">آرشیو</option>
+            <label className="block">وضعیت عرضه
+              <select aria-label="فیلتر وضعیت عرضه" value={filters.saleStatus} onChange={(e) => setFilters({ ...filters, saleStatus: e.target.value })} className="mt-1 block rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2">
+                <option value="">همه</option><option value="active">در حال عرضه</option><option value="variant_paused">این تنوع متوقف</option><option value="paused">عرضه متوقف (محصول)</option><option value="archived">آرشیو</option>
+              </select>
+            </label>
+          )}
+          {domain === "wholesale" && (
+            <label className="block">مالکیت
+              <select aria-label="فیلتر مالکیت" value={filters.owner} onChange={(e) => setFilters({ ...filters, owner: e.target.value })} className="mt-1 block rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface)] p-2">
+                <option value="">همه</option><option value="kolbe">کلبه</option><option value="supplier">تأمین‌کننده</option>
               </select>
             </label>
           )}
@@ -396,14 +500,26 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
           </label>
           <Checkbox checked={filters.hasIncoming} onChange={(v) => setFilters({ ...filters, hasIncoming: v })} label={<span className="text-[11.5px]">دارای «در راه»</span>} />
           <Checkbox checked={filters.hasReservation} onChange={(v) => setFilters({ ...filters, hasReservation: v })} label={<span className="text-[11.5px]">دارای رزرو</span>} />
-          <span className="mr-auto text-[11px] text-[var(--kv-muted)]">{fa(total)} ردیف مطابق فیلتر (سمت سرور)</span>
         </div>
+        {activeChips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5" aria-label="فیلترهای فعال">
+            {activeChips.map((chip) => (
+              <span key={chip.key} className="inline-flex items-center gap-1 rounded-full border border-[var(--kv-accent)] bg-[var(--kv-accent)]/5 px-2.5 py-1 text-[11px] font-bold">
+                {chip.label}
+                <button type="button" aria-label={`حذف فیلتر ${chip.label}`} title={`حذف فیلتر ${chip.label}`}
+                  className="text-[var(--kv-muted)] hover:text-[var(--kv-danger)]" onClick={() => clearOne(chip.key)}>✕</button>
+              </span>
+            ))}
+            <button type="button" className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 text-[11px] font-bold hover:border-[var(--kv-danger)] hover:text-[var(--kv-danger)]"
+              onClick={clearAll}>پاک کردن فیلترها</button>
+          </div>
+        )}
       </div>
       {selectedKeys.size > 0 && (
         <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-[var(--kv-line)] bg-[var(--kv-surface)] p-2.5 shadow-sm" role="toolbar" aria-label="عملیات گروهی">
           <b className="text-[12.5px]">{fa(selectedKeys.size)} مورد انتخاب شده</b>
-          {domain === "retail" && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void runBulkSale(true)}>فعال‌سازی فروش</Btn>}
-          {domain === "retail" && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void runBulkSale(false)}>توقف فروش</Btn>}
+          {domain === "retail" && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void runBulkSale(true)}>شروع عرضه</Btn>}
+          {domain === "retail" && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void runBulkSale(false)}>توقف عرضه</Btn>}
           <Btn size="sm" variant="soft" disabled={busy} onClick={() => setBulkModal("adjust")}>اصلاح گروهی</Btn>
           <Btn size="sm" variant="soft" disabled={busy} onClick={() => setBulkModal("transfer")}>انتقال گروهی</Btn>
           {domain === "retail" && <Btn size="sm" variant="soft" className="text-[var(--kv-danger)]" disabled={busy} onClick={() => void runBulkArchive()}>آرشیو امن</Btn>}
@@ -421,9 +537,10 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
               </th>
               <th></th><th>محصول / تنوع</th><th>انبار</th>
               {domain === "wholesale" && <th>مالکیت</th>}
-              <th>موجودی فیزیکی</th><th>در راه</th><th>رزرو</th><th>قابل فروش</th>
+              <th>موجودی فیزیکی</th><th>در راه</th><th>رزروشده</th><th>قابل تخصیص</th>
               <th>وضعیت موجودی</th>
-              {domain === "retail" && <th>وضعیت فروش</th>}
+              <th>وضعیت انتشار</th>
+              {domain === "retail" && <th>وضعیت عرضه</th>}
               <th>عملیات</th>
             </tr></thead>
             <tbody>
@@ -455,12 +572,9 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                         <td className="tabular-nums">{fa(sum.reserved)}</td>
                         <td className="tabular-nums font-bold">{fa(sum.available)}</td>
                         <td><Badge map={STOCK_BADGE} value={sum.available <= 0 ? (sum.incoming > 0 ? "incoming" : "out_of_stock") : sum.available <= 5 ? "low_stock" : "in_stock"} /></td>
+                        <td><Badge map={PUBLICATION_BADGE} value={product.product_status} /></td>
                         {domain === "retail" && (
-                          <td>{product.product_status === "archived"
-                            ? <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10.5px] font-bold text-gray-600">آرشیو</span>
-                            : product.retail_enabled
-                              ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10.5px] font-bold text-emerald-800">فعال</span>
-                              : <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10.5px] font-bold text-gray-600">فروش متوقف</span>}</td>
+                          <td><Badge map={OFFER_BADGE} value={product.product_status === "archived" ? "archived" : product.retail_enabled ? "active" : "paused"} /></td>
                         )}
                         <td onClick={(e) => e.stopPropagation()}>
                           <div className="flex flex-wrap gap-2">
@@ -471,7 +585,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                               if (e.target.value === "archive") setArchiveFor(product);
                             }}>
                               <option value="">عملیات ▾</option><option value="details">مشاهده جزئیات</option>
-                              {domain === "retail" && product.product_status !== "archived" && <option value="sale">وضعیت فروش…</option>}
+                              {domain === "retail" && product.product_status !== "archived" && <option value="sale">وضعیت عرضه در کاتالوگ…</option>}
                               {domain === "retail" && product.product_status !== "archived" && <option value="archive">آرشیو محصول…</option>}
                             </select>
                           </div>
@@ -497,7 +611,8 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                         <td className="tabular-nums">{fa(row.reserved)}</td>
                         <td className="tabular-nums font-bold">{fa(Number(row.available))}</td>
                         <td><Badge map={STOCK_BADGE} value={row.stock_status} /></td>
-                        {domain === "retail" && <td><span className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-bold", row.sale_status === "active" ? "bg-emerald-100 text-emerald-800" : row.sale_status === "variant_paused" ? "bg-amber-100 text-amber-800" : "bg-gray-200 text-gray-600")}>{row.sale_status === "archived" || row.product_status === "archived" ? "آرشیو" : row.sale_status === "variant_paused" ? "توقف این تنوع" : row.sale_status === "paused" || !row.retail_enabled ? "فروش متوقف (محصول)" : "فعال"}</span></td>}
+                        <td className="text-[11px] text-[var(--kv-muted)]">—</td>
+                        {domain === "retail" && <td><Badge map={OFFER_BADGE} value={row.sale_status ?? "active"} /></td>}
                         <td>
                           <div className="flex flex-wrap gap-2">
                             {row.incoming > 0 && <Btn size="sm" variant="soft" disabled={busy} onClick={() => void openIncoming([row])}>دریافت کالا</Btn>}
@@ -515,7 +630,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
                               {domain === "retail" && <option value="manual">ثبت فروش دستی</option>}
                               <option value="adjust">اصلاح موجودی</option>
                               {row.incoming > 0 && pendingForRows(pendingReceipts, [row]).length > 0 && <option value="receive">دریافت کالای در راه</option>}
-                              {domain === "retail" && row.product_status !== "archived" && <option value="sale">وضعیت فروش…</option>}
+                              {domain === "retail" && row.product_status !== "archived" && <option value="sale">وضعیت عرضه در کاتالوگ…</option>}
                               {domain === "retail" && row.product_status !== "archived" && <option value="archive">آرشیو محصول…</option>}
                             </select>
                           </div>
@@ -564,7 +679,7 @@ function DomainInventory({ domain, flash }: { domain: "retail" | "wholesale"; fl
       )}
 
       {archiveFor && <Modal open title="آرشیو محصول" onClose={() => { if (!busy) setArchiveFor(null); }}><div className="space-y-3 p-4"><p className="text-sm leading-7">آرشیو «{archiveFor.product_name}» برای همه تنوع‌های این محصول اعمال می‌شود. موجودی و تاریخچه گردش حفظ می‌شوند.</p><div className="flex gap-2"><Btn size="sm" variant="soft" disabled={busy} onClick={() => setArchiveFor(null)}>انصراف</Btn><Btn size="sm" variant="soft" className="text-[var(--kv-danger)]" disabled={busy} onClick={async () => { setBusy(true); try { await productsApi.status(archiveFor.product_id, "archived"); setArchiveFor(null); flash("محصول آرشیو شد؛ موجودی و تاریخچه حفظ شدند."); await reload(); } catch (e) { flash(e instanceof Error ? e.message : "خطا در آرشیو محصول"); } finally { setBusy(false); } }}>آرشیو محصول</Btn></div></div></Modal>}
-      {detailFor && <Modal open title="جزئیات موجودی" onClose={() => setDetailFor(null)}><div className="space-y-2 p-4"><InventoryContext row={detailFor} /><p>موجودی: {fa(detailFor.on_hand)} · رزرو: {fa(detailFor.reserved)} · آسیب‌دیده: {fa(detailFor.damaged)} · قابل فروش: {fa(detailFor.available)}</p><Badge map={STOCK_BADGE} value={detailFor.stock_status} /></div></Modal>}
+      {detailFor && <Modal open title="جزئیات موجودی" onClose={() => setDetailFor(null)}><div className="space-y-2 p-4"><InventoryContext row={detailFor} /><p>موجودی: {fa(detailFor.on_hand)} · رزرو: {fa(detailFor.reserved)} · آسیب‌دیده: {fa(detailFor.damaged)} · قابل تخصیص: {fa(detailFor.available)}</p><Badge map={STOCK_BADGE} value={detailFor.stock_status} /></div></Modal>}
       {pendingSelection && <Modal open title="رسیدهای در انتظار" onClose={() => setPendingSelection(null)}>
         <div className="max-h-[75vh] space-y-2 overflow-y-auto p-4"><h3 className="text-base font-bold">رسیدهای در انتظار</h3><p className="text-sm text-[var(--kv-muted)]">یک رسید را برای دریافت انتخاب کنید.</p>
           {pendingSelection.receipts.map((receipt) => {
@@ -621,24 +736,24 @@ function SaleScopeModal({ target, onClose, onDone, flash }: {
             : { scope, enabled: enable, variantIds: [row.variant_id] });
       const failed = res.results.filter((r) => !r.ok);
       if (failed.length) flash(`ناموفق: ${failed.map((f) => `${f.label}: ${f.error ?? ""}`).join("؛ ")}`);
-      else flash(enable ? `فروش ${scopeLabel} فعال شد.` : `فروش ${scopeLabel} متوقف شد (موجودی دست‌نخورده می‌ماند).`);
+      else flash(enable ? `عرضه ${scopeLabel} آغاز شد (انتشار و موجودی دست‌نخورده ماندند).` : `عرضه ${scopeLabel} متوقف شد (انتشار و موجودی دست‌نخورده ماندند).`);
       onDone();
-    } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت فروش"); }
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در تغییر وضعیت عرضه"); }
     finally { setBusy(false); }
   };
   return (
-    <Modal open onClose={onClose} title="وضعیت فروش خرده">
-      <h3 className="mb-1 text-[15px] font-extrabold">وضعیت فروش — {row.product_name}</h3>
+    <Modal open onClose={onClose} title="وضعیت عرضه در کاتالوگ">
+      <h3 className="mb-1 text-[15px] font-extrabold">عرضه در کاتالوگ — {row.product_name}</h3>
       <p className="mb-3 text-[12px] leading-6 text-[var(--kv-muted)]">
         {locked === "product"
-          ? "این عملیات روی کل محصول اعمال می‌شود (همهٔ رنگ‌ها و سایزها). قابل فروش بودن نهایی را سرور محاسبه می‌کند."
-          : "این عملیات فقط روی همین تنوع اعمال می‌شود؛ توقف یک تنوع هرگز کل محصول را متوقف نمی‌کند. قابل فروش بودن نهایی را سرور محاسبه می‌کند."}
+          ? "این عملیات روی کل محصول اعمال می‌شود (همهٔ رنگ‌ها و سایزها) و فقط «عرضه» را تغییر می‌دهد؛ انتشار محصول و موجودی انبار دست‌نخورده می‌مانند."
+          : "این عملیات فقط روی همین تنوع اعمال می‌شود؛ توقف یک تنوع هرگز کل محصول را متوقف نمی‌کند و انتشار محصول تغییر نمی‌کند."}
       </p>
       <div className="space-y-2">
         {([
-          ...(locked === "variant" ? [["variant", `فقط همین تنوع — ${row.color_label ?? "—"} / ${row.size_label ?? "—"}`, `وضعیت فعلی: ${(row.variant_sale_enabled ?? true) ? "فعال" : "متوقف"}`] as const] : []),
+          ...(locked === "variant" ? [["variant", `فقط همین تنوع — ${row.color_label ?? "—"} / ${row.size_label ?? "—"}`, `وضعیت فعلی: ${(row.variant_sale_enabled ?? true) ? "در حال عرضه" : "متوقف"}`] as const] : []),
           ...(locked === "variant" && advanced ? [["color", `همهٔ تنوع‌های رنگ «${row.color_label ?? "—"}»`, "یک عملیات سروری برای همهٔ سایزهای این رنگ"] as const] : []),
-          ...(locked === "product" || advanced ? [["product", "کل محصول (کلید اصلی)", `وضعیت فعلی محصول: ${row.retail_enabled ? "فعال" : "متوقف"}`] as const] : []),
+          ...(locked === "product" || advanced ? [["product", "کل محصول (کلید اصلی)", `وضعیت فعلی محصول: ${row.retail_enabled ? "در حال عرضه" : "متوقف"}`] as const] : []),
         ] as readonly (readonly ["variant" | "color" | "product", string, string])[]).map(([value, label, hint]) => (
           <button key={value} className={cn("w-full rounded-[12px] border p-3 text-right",
             scope === value ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/5" : "border-[var(--kv-line)]")}
@@ -652,10 +767,10 @@ function SaleScopeModal({ target, onClose, onDone, flash }: {
             تغییر دامنه (پیشرفته): رنگ یا کل محصول…
           </button>
         )}
-        <Segmented options={[{ v: "stop", label: "توقف فروش" }, { v: "start", label: "فعال‌سازی فروش" }]}
+        <Segmented options={[{ v: "stop", label: "توقف عرضه" }, { v: "start", label: "شروع عرضه" }]}
           value={enable ? "start" : "stop"} onChange={(v) => setEnable(v === "start")} />
         <p className="rounded-[10px] bg-amber-50 px-3 py-2 text-[12px] font-bold leading-6 text-amber-800">
-          {enable ? "فعال‌سازی" : "توقف"} فروش برای: {scopeLabel}
+          {enable ? "شروع عرضه برای:" : "توقف عرضه برای:"} {scopeLabel}
         </p>
         <div className="flex gap-2">
           <Btn variant="accent" disabled={busy} onClick={() => void submit()}>تأیید و اعمال</Btn>
@@ -689,7 +804,7 @@ function BulkAdjustModal({ rows, domain, onClose, onDone, flash }: {
         </p>
         <div className="kv-scroll overflow-x-auto">
           <table className="kv-table w-full text-[12px]">
-            <thead><tr><th>تنوع</th><th>انبار</th><th>قابل فروش</th><th>نوع تغییر</th><th>تعداد</th></tr></thead>
+            <thead><tr><th>تنوع</th><th>انبار</th><th>قابل تخصیص</th><th>نوع تغییر</th><th>تعداد</th></tr></thead>
             <tbody>
               {entries.map((entry, index) => (
                 <tr key={`${entry.row.variant_id}-${entry.row.warehouse_id}`}>
@@ -758,7 +873,7 @@ function BulkTransferModal({ rows, domain, warehouses, onClose, onDone, flash }:
     if (destDomain === "retail" && row.owner_type === "supplier") {
       return { row, reason: "کالای متعلق به تأمین‌کننده بدون سند تملک کلبه قابل انتقال به خرده‌فروشی نیست." };
     }
-    if (Number(row.available) <= 0) return { row, reason: "موجودی قابل فروش برای انتقال صفر است." };
+    if (Number(row.available) <= 0) return { row, reason: "موجودی قابل تخصیص برای انتقال صفر است." };
     return null;
   }).filter((item): item is { row: InvRow; reason: string } => item !== null);
   const eligible = rows.filter((row) => !blocked.some((item) => item.row === row));
@@ -789,7 +904,7 @@ function BulkTransferModal({ rows, domain, warehouses, onClose, onDone, flash }:
         {eligible.length > 0 && (
           <div className="kv-scroll overflow-x-auto">
             <table className="kv-table w-full text-[12px]">
-              <thead><tr><th>تنوع</th><th>قابل فروش مبدأ</th><th>تعداد انتقال</th></tr></thead>
+              <thead><tr><th>تنوع</th><th>قابل تخصیص مبدأ</th><th>تعداد انتقال</th></tr></thead>
               <tbody>
                 {eligible.map((row) => (
                   <tr key={`${row.variant_id}-${row.warehouse_id}`}>
@@ -803,7 +918,7 @@ function BulkTransferModal({ rows, domain, warehouses, onClose, onDone, flash }:
           </div>
         )}
         <Checkbox checked={confirmFull} onChange={setConfirmFull}
-          label={<span className="text-[11.5px]">تأیید صریح: اگر ردیفی تمام موجودی قابل فروش مبدأ را جابه‌جا می‌کند، انجام شود.</span>} />
+          label={<span className="text-[11.5px]">تأیید صریح: اگر ردیفی تمام موجودی قابل تخصیص مبدأ را جابه‌جا می‌کند، انجام شود.</span>} />
         <div className="flex gap-2">
           <Btn size="sm" variant="accent" disabled={busy || !sameSource || !destWarehouseId} onClick={async () => {
             const lines = eligible
@@ -889,7 +1004,7 @@ function QuickManualSaleModal({ row, onClose, onDone, flash }: { row: InvRow; on
   return (
     <Modal open onClose={onClose} title="ثبت فروش دستی" max="max-w-[640px]">
       <div className="space-y-3 p-4">
-        <p className="text-[12.5px] text-[var(--kv-muted)]">«{row.product_name}» ({row.sku}) — قابل فروش فعلی: {fa(Number(row.available))} عدد.
+        <p className="text-[12.5px] text-[var(--kv-muted)]">«{row.product_name}» ({row.sku}) — قابل تخصیص فعلی: {fa(Number(row.available))} عدد.
           این عملیات یک فروش واقعی ثبت می‌کند (رکورد مالی + کسر موجودی + حسابرسی)، نه اصلاح موجودی.</p>
         <div className="grid grid-cols-2 gap-3">
           <Field label="کانال فروش"><Select options={channels.map(([, l]) => l)} value={channel} onChange={setChannel} /></Field>

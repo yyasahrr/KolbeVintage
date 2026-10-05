@@ -754,7 +754,7 @@ export const normalizeStockBalances = (raw: unknown): StockBalance[] =>
 
 /** Persian labels for the WMS columns — API/DB field names never change. */
 export const WMS_LABEL = {
-  onHand: "موجودی فیزیکی", reserved: "رزرو شده", damaged: "آسیب‌دیده", incoming: "در راه", available: "قابل فروش",
+  onHand: "موجودی فیزیکی", reserved: "رزرو شده", damaged: "آسیب‌دیده", incoming: "در راه", available: "قابل تخصیص",
   sku: "کد کالا (SKU)", product: "محصول", warehouse: "انبار", color: "رنگ", size: "سایز", initial: "موجودی اولیه",
   movementHistory: "تاریخچه گردش", receipt: "رسید ورودی", adjustment: "اصلاح موجودی", transfer: "انتقال بین انبارها",
   from: "مبدأ", to: "مقصد", qty: "تعداد", reason: "علت", reference: "شماره مرجع", lowStock: "موجودی کم", threshold: "آستانه",
