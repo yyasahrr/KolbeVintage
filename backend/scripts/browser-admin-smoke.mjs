@@ -794,7 +794,7 @@ try {
   check('Product 360 pricing tab shows canonical base/installment, promotion state, variant rules, Resolver and shared workspace',
     body.includes('خلاصهٔ قیمت‌گذاری محصول') && body.includes('قیمت پایهٔ نقدی') && body.includes('سیاست اقساط')
       && body.includes('Discount مستقل') && body.includes('Festival') && body.includes('تخفیف‌های مستقیم واریانت')
-      && body.includes('نتیجهٔ Pricing Resolver') && body.includes('مدیریت قیمت‌گذاری'));
+      && body.includes('نتیجهٔ نهایی سرور') && body.includes('مدیریت قیمت‌گذاری'));
   const pricingManagerOpened = await clickInDialogByText('مدیریت قیمت‌گذاری');
   const pricingWorkspaceReady = pricingScenarioReady && await waitForText(`قیمت‌گذاری محصول · ${pricingProductName}`, 60);
   check('Product 360 opens the same canonical product pricing workspace', pricingManagerOpened && pricingWorkspaceReady);
@@ -970,7 +970,7 @@ try {
     }, pricingProductName);
     await sleep(1800);
     const postReloadPricingTab = postReloadProduct360 && await clickInDialogByText('قیمت‌گذاری');
-    const postReloadSummaryReady = postReloadPricingTab && await waitForText('نتیجهٔ Pricing Resolver', 40);
+    const postReloadSummaryReady = postReloadPricingTab && await waitForText('نتیجهٔ نهایی سرور', 40);
     body = await text();
     check('reload + Product 360 confirms exact variant values and the canonical Resolver cross-surface',
       postReloadSummaryReady && body.includes('Black / M') && body.includes('Black / L') && body.includes('Cream / XL')

@@ -725,7 +725,8 @@ try {
     product360Src.includes('<WorkspaceModal') &&
     ['نمای کلی', 'واریانت‌ها', 'مشخصات فنی', 'راهنمای سایز', 'رسانه', 'قیمت‌گذاری', 'عمده و سری‌ها', 'موجودی', 'SEO', 'تاریخچه'].every((t) => product360Src.includes(t)) &&
     product360Src.includes('promotionRulesApi.productSummary(product.id)') && product360Src.includes('promotionRulesApi.resolvePrices') &&
-    product360Src.includes('مدیریت قیمت‌گذاری') && product360Src.includes('نتیجهٔ Pricing Resolver') &&
+    product360Src.includes('مدیریت قیمت‌گذاری') && product360Src.includes('نتیجهٔ نهایی سرور') &&
+    !product360Src.includes('Pricing Resolver') && !product360Src.includes('Resolver') &&
     product360Src.includes('view="inventory"') && product360Src.includes('view="history"'));
   const supplierChildPanelSrc = readFileSync(join(repoRoot, 'src/components/supplier-child-orders-panel.tsx'), 'utf8');
   check('supplier wholesale panel offers exactly the §71 actions (تأیید کامل/پیشنهاد کمتر/عدم امکان) + server-resolved dispatch',
