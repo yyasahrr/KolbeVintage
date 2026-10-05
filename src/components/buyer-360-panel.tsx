@@ -4,7 +4,7 @@ import { REVIEW_STATUS_FA, SMS_STATUS_FA, TICKET_STATUS_FA, faEvent, faLabel } f
 import { fmtNum } from "../data/catalog";
 import { fmtToman } from "../data/contracts";
 import { formatPersianDate, formatPersianDateTime } from "../data/persian-date";
-import { buyersApi, membershipLifecycleApi, type Buyer360Payload } from "../data/api";
+import { buyersApi, type Buyer360Payload } from "../data/api";
 import { Btn, Card, Checkbox, Empty, ErrorState, Field, Input, LoadingState, Modal, SearchBox, Segmented, Select, Status, Tag, Textarea, WorkspaceModal } from "./primitives";
 
 /** Rial values arrive as strings (money is never a JS float); admin displays تومان (rial ÷ ۱۰). */
@@ -68,8 +68,6 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
   const [noteForm, setNoteForm] = useState({ body: "", visibility: "internal" as "internal" | "support" });
   const [correction, setCorrection] = useState({ field: "city" as "firstName" | "lastName" | "birthday" | "city", newValue: "", reason: "" });
   const [document, setDocument] = useState({ open: false, docType: "trade_license", title: "", note: "" });
-  const [plan, setPlan] = useState({ open: false, planId: "", reason: "" });
-  const [plans, setPlans] = useState<Record<string, unknown>[]>([]);
 
   const PAGE = 25;
   const loadList = useCallback(async () => {
@@ -90,10 +88,6 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
   useEffect(() => { void loadList(); }, [loadList]);
   useEffect(() => { if (selected) void loadView(selected); }, [selected, loadView]);
   useEffect(() => { void buyersApi.list({ limit: 1 }).catch(() => undefined); }, []);
-  useEffect(() => {
-    // Wholesale plans power the "change membership" control; failures are non-fatal.
-    void import("../data/api").then(({ adminApi }) => adminApi.plans().then((r) => setPlans(r.items)).catch(() => setPlans([])));
-  }, []);
 
   const act = async (label: string, run: () => Promise<unknown>) => {
     try { await run(); flash(`${label} انجام شد`);
@@ -140,7 +134,7 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                         <span className="text-[11px] text-[var(--kv-muted)]">{text(row.business_name, "—")} · {text(row.city, "ثبت نشده")}</span>
                       </td>
                       <td className="py-2.5 tabular-nums">{text(row.phone, "ثبت نشده")}</td>
-                      <td className="py-2.5">{row.plan_code ? <Status value={String(row.plan_code)} /> : "بدون پلن"}</td>
+                      <td className="py-2.5">{row.plan_code ? <Status value="عضویت VIP" /> : "بدون پلن"}</td>
                       <td className="py-2.5 tabular-nums">{day(row.plan_ends_at)}</td>
                       <td className="py-2.5 tabular-nums">{fmtNum(Number(row.wholesale_order_count ?? 0))}</td>
                       <td className="py-2.5 tabular-nums">{fmtNum(Number(row.series_purchased ?? 0))}</td>
@@ -191,8 +185,8 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     {text(account.phone)} · {text(account.email)} · عضویت از {day(account.created_at)}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
-                    {membership ? <Status value={String(membership.status) === "active" ? "فعال" : String(membership.status)} /> : <Status value="بدون عضویت" />}
-                    {membership && <span className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1 text-[11.5px] font-bold">{text(membership.plan_title ?? membership.plan_code)} · سطح {fmtNum(Number(membership.plan_tier ?? 0))}</span>}
+                    {membership ? <Status value={String(membership.status) === "active" ? "فعال" : String(membership.status) === "suspended" ? "تعلیق‌شده" : String(membership.status) === "expired" ? "منقضی‌شده" : "غیرفعال"} /> : <Status value="بدون عضویت" />}
+                    {membership && <span className="rounded-full bg-[var(--kv-surface-2)] px-3 py-1 text-[11.5px] font-bold">{text(membership.plan_title, "پلن VIP")} · سطح {fmtNum(Number(membership.plan_tier ?? 0))}</span>}
                     {membership && <span className="text-[11.5px] text-[var(--kv-muted)]">تا {day(membership.ends_at)}</span>}
                     {account.blocked ? <Status value="مسدود" /> : null}
                     {account.vip_level && String(account.vip_level) !== "none" ? <Status value={`VIP ${account.vip_level}`} /> : null}
@@ -240,11 +234,8 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
                     ["تلفن ثابت", text(account.business_phone, "—")],
                     ["وب‌سایت", text(account.website, "—")],
                   ]} />
-                  <div className="flex flex-wrap items-center gap-2 border-t border-[var(--kv-line)] pt-4">
-                    <Btn variant="soft" size="sm" onClick={() => setPlan({ open: true, planId: String(plans[0]?.id ?? ""), reason: "" })}>تغییر پلن عضویت</Btn>
-                    {membership && <Btn variant="soft" size="sm" onClick={() => void act("تعلیق عضویت", () => membershipLifecycleApi.suspend(String(membership.id), "تعلیق مدیریتی"))}>تعلیق عضویت</Btn>}
-                    {membership && <Btn variant="soft" size="sm" onClick={() => void act("فعال‌سازی مجدد", () => membershipLifecycleApi.reactivate(String(membership.id)))}>فعال‌سازی مجدد</Btn>}
-                    {membership && <Btn variant="soft" size="sm" onClick={() => void act("ثبت مرجوعی عضویت", () => membershipLifecycleApi.refund(String(membership.id), "0"))}>بازگشت وجه</Btn>}
+                  <div className="border-t border-[var(--kv-line)] pt-4 text-[11.5px] text-[var(--kv-muted)]">
+                    وضعیت و تاریخچه عضویت در CRM فقط خواندنی است؛ تغییر پلن، تعلیق و بازپرداخت در دامنه اصلی عضویت انجام می‌شود.
                   </div>
                   <div>
                     <p className="mb-2 text-[12.5px] font-bold">تاریخچه عضویت</p>
@@ -428,17 +419,6 @@ export function Buyer360Panel({ flash }: { flash: (message: string) => void }) {
         </div>
       </Modal>
 
-      <Modal open={plan.open} onClose={() => setPlan({ ...plan, open: false })} title="تغییر پلن عضویت">
-        <div className="space-y-3">
-          <Field label="پلن هدف">
-            <Select options={plans.map((p) => String(p.code ?? p.id))} value={plan.planId}
-              onChange={(v) => { const found = plans.find((p) => String(p.code ?? p.id) === v); setPlan({ ...plan, planId: String(found?.id ?? v) }); }} />
-          </Field>
-          <Field label="دلیل (ثبت در حسابرسی)"><Input value={plan.reason} onChange={(v) => setPlan({ ...plan, reason: v })} /></Field>
-          <Btn variant="accent" className="w-full" disabled={!plan.planId || plan.reason.trim().length < 3}
-            onClick={() => void act("تغییر پلن", async () => { await membershipLifecycleApi.changePlan(String(membership?.id), plan.planId, plan.reason); setPlan({ open: false, planId: "", reason: "" }); })}>تغییر پلن</Btn>
-        </div>
-      </Modal>
     </div>
   );
 }
