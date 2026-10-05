@@ -17,6 +17,9 @@ export default defineConfig({
     },
   },
   server: {
+    // reachable from sandboxed preview hosts; dev server only
+    host: true,
+    allowedHosts: [".e2b.app"],
     proxy: { "/api": "http://127.0.0.1:4000" },
   },
 });

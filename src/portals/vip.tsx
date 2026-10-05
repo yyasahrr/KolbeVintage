@@ -31,15 +31,15 @@ function PriceLock({ compact }: { compact?: boolean }) {
 function VipCard({ p, canSee, onOpen }: { p: Product; canSee: boolean; onOpen: () => void }) {
   const kolbe = p.supplierId === KOLBE.id;
   return (
-    <article className="kv-card-hover flex flex-col overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
+    <article className="group flex flex-col">
       <button onClick={onOpen} className="relative block w-full text-right" aria-label={p.name}>
-        <div className="kv-img kv-img-zoom aspect-[4/3] overflow-hidden">
-          <img src={p.images[0]} alt={p.name} loading="lazy" className="h-full w-full object-cover" />
+        <div className="overflow-hidden rounded-[16px] bg-[var(--kvaf-sand)]">
+          <img src={p.images[0]} alt="" loading="lazy" className="aspect-[4/5] w-full object-cover transition-transform duration-[620ms] ease-[var(--kvaf-ease-out)] group-hover:scale-[1.04]" />
         </div>
         <span className="absolute right-3 top-3"><SupplierChip id={p.supplierId} name={p.supplier} /></span>
       </button>
-      <div className="flex flex-1 flex-col p-4">
-        <button onClick={onOpen} className="text-right text-[14.5px] font-bold leading-6 transition-colors hover:text-[var(--kv-accent)]">{p.name}</button>
+      <div className="flex flex-1 flex-col pt-3">
+        <button onClick={onOpen} className="text-right text-[14.5px] font-bold leading-6 transition-colors hover:text-[var(--kvaf-brass-deep)]">{p.name}</button>
         <p className="mt-1 text-xs text-[var(--kv-muted)]">{kolbe ? "تولید و تأمین مستقیم کلبه" : `تأمین‌کننده: ${p.supplier}`} · {p.sku}</p>
         <div className="mt-2.5 flex items-center gap-1.5">
           {p.colors.slice(0, 4).map((c) => <span key={c.id} title={c.name} className="h-4 w-4 rounded-full border border-black/15" style={{ background: c.hex }} />)}
@@ -315,9 +315,9 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
   };
 
   return (
-    <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-6 md:px-8">
-      {/* sub nav */}
-      <div className="kv-glass sticky top-[68px] z-30 -mx-1 mb-6 flex items-center gap-1.5 overflow-x-auto rounded-[16px] p-1.5 kv-no-scrollbar">
+    <div className="kv-sf-shell pb-24">
+      {/* sub nav — FROST rail, floating under the liquid header */}
+      <div className="kv-frost sticky top-[calc(var(--kvaf-header-space)+4px)] z-30 mb-7 flex items-center gap-1.5 overflow-x-auto rounded-[var(--kvaf-r-pill)] p-1.5 kv-no-scrollbar">
         {nav.map((n) => (
           <button key={n.v} onClick={() => { setTab(n.v); setSelectedId(null); }} className={cn("kv-press flex items-center gap-2 whitespace-nowrap rounded-[11px] px-4 py-2 text-[13.5px] font-bold transition-all", tab === n.v && !selected ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
             {n.icon}{n.label}
@@ -338,13 +338,13 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
         />
       ) : tab === "catalog" ? (
         <div className="animate-[fadeUp_0.4s_ease]">
-          <section className="relative overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
-            <img src={IMG.neutralRack} alt="" className="absolute inset-0 h-full w-full object-cover" />
-            <div className="absolute inset-0 bg-gradient-to-l from-[#0E1527]/88 via-[#0E1527]/62 to-[#0E1527]/20" />
-            <div className="relative p-8 md:p-12">
-              <p className="kv-latin text-[11px] text-[#E8D9C3]">KOLBE WHOLESALE</p>
-              <h1 className="kv-editorial-title mt-3 max-w-[22ch] text-[26px] text-[#FAF6EF] md:text-[36px]">بازارچه عمده کلبه — محصولات خودمان و تأمین‌کنندگان منتخب</h1>
-              <p className="mt-3 max-w-[56ch] text-sm leading-7 text-[#D8D2C2]">هر سفارش به تفکیک تأمین‌کننده ثبت می‌شود، تأمین‌کننده امکان تأمین را تأیید می‌کند و بعد پرداخت، آماده‌سازی و ارسال هر بخش جداگانه پیش می‌رود.</p>
+          <section className="relative overflow-hidden rounded-[24px] bg-[var(--kvaf-charcoal)]">
+            <img src={IMG.neutralRack} alt="" className="absolute inset-0 h-full w-full object-cover opacity-90" />
+            <div className="absolute inset-0 bg-gradient-to-l from-[rgba(20,20,15,0.88)] via-[rgba(20,20,15,0.6)] to-[rgba(20,20,15,0.18)]" />
+            <div className="relative p-8 md:p-14">
+              <p className="kvaf-rule max-w-[18rem] text-[rgba(247,244,237,0.7)]"><span className="shrink-0">Kolbe wholesale</span></p>
+              <h1 className="kvaf-h1 mt-4 max-w-[24ch] text-[var(--kvaf-bone)]">بازارچه عمده کلبه — محصولات خودمان و تأمین‌کنندگان منتخب</h1>
+              <p className="mt-3 max-w-[56ch] text-sm leading-8 text-[rgba(247,244,237,0.8)]">هر سفارش به تفکیک تأمین‌کننده ثبت می‌شود، تأمین‌کننده امکان تأمین را تأیید می‌کند و بعد پرداخت، آماده‌سازی و ارسال هر بخش جداگانه پیش می‌رود.</p>
               <div className="mt-5 flex flex-wrap gap-2">
                 {["سری‌بندی شفاف و حداقل سفارش مشخص", "تأیید مستقل هر تأمین‌کننده", "پرداخت امن از طریق کلبه"].map((t) => (
                   <span key={t} className="inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-white/10 px-3.5 py-1.5 text-xs font-bold text-white backdrop-blur-md"><Check size={13} />{t}</span>
@@ -569,8 +569,8 @@ export default function VipExperience({ role, buyer, accountId, selectedId, setS
       )}
 
       {toast && (
-        <div className="fixed bottom-6 right-1/2 z-[90] translate-x-1/2 animate-[scaleIn_0.25s_ease]">
-          <div className="kv-glass flex items-center gap-2.5 rounded-[14px] px-5 py-3.5 text-[13.5px] font-bold shadow-lg">
+        <div className="fixed right-1/2 z-[90] translate-x-1/2 animate-[scaleIn_0.25s_ease]" style={{ bottom: "calc(var(--kvaf-bottomnav-space, 0px) + env(safe-area-inset-bottom, 0px) + 16px)" }}>
+          <div className="kv-liquid flex items-center gap-2.5 rounded-[14px] px-5 py-3.5 text-[13.5px] font-bold">
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--kv-success)] text-white"><Check size={15} /></span>
             {toast}
           </div>

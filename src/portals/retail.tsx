@@ -1,242 +1,54 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft, BadgeCheck, Truck, RotateCcw, ShieldCheck, Heart, Star, ShoppingBag,
-  SlidersHorizontal, Eye, Sparkles, Ruler, Check, ChevronLeft, Minus, Plus, Trash2, CreditCard, MapPin,
+  ArrowLeft, Truck, Check, Minus, Plus, Trash2, CreditCard, MapPin, SlidersHorizontal,
 } from "lucide-react";
-import { COLLECTIONS, JOURNAL, IMG, fmtMoney, fmtNum, type Product } from "../data/catalog";
+import { IMG, JOURNAL, fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
 import type { Buyer } from "../data/platform";
 import { useStore } from "../data/store";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
-import { HeroRenderer, BlockRenderer, type NavTarget } from "../components/cms-render";
-void Hero; void TrustBar;
-import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input } from "../components/primitives";
+import { BlockRenderer, type NavTarget } from "../components/cms-render";
+import { Btn, Card, Empty, Field, Input, SearchBox, Select } from "../components/primitives";
+import EditorialHero from "../components/storefront/EditorialHero";
+import ProductDetail from "../components/storefront/ProductDetail";
+import StorefrontProductCard from "../components/storefront/StorefrontProductCard";
+import FilterSheet from "../components/storefront/FilterSheet";
+import { CategoryRail } from "../components/storefront/CategoryCircles";
 import { cn } from "../utils/cn";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
+/** Navigation seed handed down by the storefront shell (search / category medallions). */
+export type ShopSeed = { cat?: string; q?: string; nonce: number } | null;
 
-/* ============ Retail product card — image-first, 70% visual ============ */
-export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
-  p: Product; wished: boolean; onWish: () => void; onOpen: () => void; onAdd: (size: string, color: string) => boolean;
-}) {
-  const [colorId, setColorId] = useState(p.colors[0]?.id ?? "");
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
-  const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
-  const [message, setMessage] = useState("");
-  const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
-  const quickAdd = () => {
-    if (!chosenColor) { setMessage("رنگی برای این محصول تعریف نشده است"); return; }
-    const added = onAdd(size, chosenColor.name);
-    setMessage(added ? "به سبد اضافه شد" : "موجودی کافی نیست");
-    window.setTimeout(() => setMessage(""), 2200);
-  };
+/* Editorial section head — hairline rule + Latin index, no card chrome. */
+function Section({ title, latin, desc, action }: { title: string; latin?: string; desc?: string; action?: React.ReactNode }) {
   return (
-    <article className="group">
-      <div className="kv-img-zoom relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-        <button onClick={onOpen} className="block w-full text-right" aria-label={p.name}>
-          <div className="kv-img aspect-[3/4] w-full overflow-hidden">
-            <img src={p.images[0]} alt={p.name} loading="lazy" className="h-full w-full object-cover" />
-          </div>
-        </button>
-        {p.badge && (
-          <span className="absolute right-3 top-3 rounded-full bg-[var(--kv-glass)] px-3 py-1 text-[11.5px] font-bold backdrop-blur-md border border-white/40 shadow-sm">
-            {p.badge}
-          </span>
-        )}
-        <button
-          onClick={onWish} aria-label="علاقه‌مندی"
-          className={cn("kv-press absolute left-3 top-3 flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-md transition-all",
-            wished ? "bg-[var(--kv-accent)] border-[var(--kv-accent)] text-white" : "bg-[var(--kv-glass)] border-white/40 text-[var(--kv-ink)]")}
-        >
-          <Heart size={16} fill={wished ? "currentColor" : "none"} />
-        </button>
+    <div className="mb-8 flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+      <div className="min-w-0">
+        {latin && <p className="kvaf-rule max-w-[20rem]"><span className="shrink-0">{latin}</span></p>}
+        <h2 className="kvaf-h2 mt-3 text-[var(--kvaf-ink)]">{title}</h2>
+        {desc && <p className="kvaf-body mt-2.5 max-w-[58ch] text-[13.5px] text-[var(--kvaf-muted)]">{desc}</p>}
       </div>
-      <div className="px-1 pt-3">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <button onClick={onOpen} className="text-[14px] font-bold leading-6 hover:text-[var(--kv-accent)] transition-colors">{p.name}</button>
-            <p className="mt-0.5 text-xs text-[var(--kv-muted)]">{p.supplier} · {p.category}</p>
-          </div>
-          <span className="flex items-center gap-1 text-xs font-semibold text-[var(--kv-muted)]"><Star size={12} fill="#D6A94E" strokeWidth={0} />{p.rating.toLocaleString("fa-IR")}</span>
-        </div>
-        <p className="mt-2 text-[14.5px] font-extrabold tabular-nums">{fmtMoney(p.retailPrice)}</p>
-        <div className="mt-3 flex flex-wrap items-center gap-1" role="group" aria-label={`انتخاب رنگ ${p.name}`}>
-          {p.colors.map((color) => (
-            <button key={color.id} title={color.name} aria-label={`${p.name}، رنگ ${color.name}`} aria-pressed={color.id === colorId} onClick={() => setColorId(color.id)}
-              className={cn("kv-press flex h-10 w-10 items-center justify-center rounded-full border transition-all", color.id === colorId ? "border-[var(--kv-accent)]" : "border-transparent hover:border-[var(--kv-line-strong)]")}>
-              <span className="h-5 w-5 rounded-full border border-black/15" style={{ background: color.hex }} />
-            </button>
-          ))}
-          <span className="mr-1 text-[11px] text-[var(--kv-muted)]">{chosenColor?.name ?? "بدون رنگ"}</span>
-        </div>
-        <div className="mt-2 flex gap-2">
-          <label className="sr-only" htmlFor={`size-${p.id}`}>سایز {p.name}</label>
-          <select id={`size-${p.id}`} value={size} onChange={(event) => setSize(event.target.value)} className="h-10 w-[68px] shrink-0 rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-1 text-center text-[12px] font-bold text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]">
-            {sizes.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <button onClick={quickAdd} disabled={p.stock < 1 || !chosenColor} aria-label={`افزودن ${p.name} رنگ ${chosenColor?.name ?? ""} سایز ${size} به سبد خرید`} className="kv-press flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-[var(--kv-action)] px-2 text-[12px] font-semibold text-[var(--kv-bg)] disabled:opacity-40 dark:text-[#0E1527]">
-            <ShoppingBag size={15} className="shrink-0" /><span className="hidden sm:inline">افزودن</span>
-          </button>
-        </div>
-        <p role="status" aria-live="polite" className="h-5 pt-1 text-[11px] font-semibold text-[var(--kv-success)]">{message || (p.stock < 1 ? "ناموجود" : "")}</p>
-      </div>
-    </article>
-  );
-}
-
-/* ============ HERO ============ */
-function Hero({ onShop, onLook }: { onShop: () => void; onLook: () => void }) {
-  return (
-    <section className="relative overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
-      <div className="grid md:grid-cols-[1.05fr_1fr]">
-        <div className="relative flex flex-col justify-center bg-[var(--kv-surface)] p-8 md:p-14">
-          <div className="kv-latin text-[11px] text-[var(--kv-muted)]">KOLBE · AUTUMN 1404</div>
-          <h1 className="kv-editorial-title mt-4 text-[30px] leading-[1.35] md:text-[44px] md:leading-[1.3]">
-            سبک‌های ماندگار
-            <br />
-            برای امروز و فردا
-          </h1>
-          <p className="mt-4 max-w-[44ch] text-[14.5px] leading-8 text-[var(--kv-muted)]">
-            منتخب‌ترین پوشاک کلاسیک و مدرن از بهترین تأمین‌کنندگان؛ با ضمانت اصالت کالا،
-            برگشت آسان و ارسال سریع به سراسر کشور.
-          </p>
-          <div className="mt-7 flex flex-wrap gap-3">
-            <Btn variant="accent" size="lg" onClick={onShop} icon={<ArrowLeft size={17} />}>مشاهده کالکشن‌ها</Btn>
-            <Btn variant="soft" size="lg" onClick={onLook} icon={<Sparkles size={17} />}>استایل من</Btn>
-          </div>
-          <div className="mt-9 flex items-center gap-6 border-t border-[var(--kv-line)] pt-5">
-            {[
-              ["۱۲هزار+", "مشتری وفادار"],
-              ["۴.۹", "امتیاز فروشگاه"],
-              ["۴۸ ساعته", "ارسال سریع"],
-            ].map(([v, l]) => (
-              <div key={l}>
-                <p className="text-lg font-extrabold tabular-nums">{v}</p>
-                <p className="text-xs text-[var(--kv-muted)]">{l}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="kv-img relative min-h-[340px] md:min-h-[560px]">
-          <img src={IMG.trenchHero} alt="ترنچ‌کت شنی کلبه" className="absolute inset-0 h-full w-full object-cover" />
-          <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/35 to-transparent" />
-          <div className="kv-glass absolute bottom-5 right-5 left-5 flex items-center justify-between rounded-[14px] px-4 py-3">
-            <div>
-              <p className="text-[13px] font-bold">ترنچ‌کت شنی کلاسیک</p>
-              <p className="text-xs text-[var(--kv-muted)]">از {fmtMoney(9900000)}</p>
-            </div>
-            <Btn size="sm" variant="dark" onClick={onShop}>مشاهده</Btn>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function TrustBar() {
-  const items = [
-    { i: <Truck size={18} />, t: "ارسال سریع", d: "به سراسر کشور" },
-    { i: <ShieldCheck size={18} />, t: "ضمانت اصالت کالا", d: "۱۰۰٪ اورجینال" },
-    { i: <RotateCcw size={18} />, t: "برگشت آسان", d: "تا ۷ روز" },
-    { i: <BadgeCheck size={18} />, t: "پشتیبانی ۲۴ ساعته", d: "پاسخ‌گویی سریع" },
-  ];
-  return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-      {items.map((it) => (
-        <div key={it.t} className="flex items-center gap-3 rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3.5 kv-shadow-sm">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[var(--kv-surface-2)] text-[var(--kv-accent)]">{it.i}</span>
-          <div><p className="text-[13px] font-bold">{it.t}</p><p className="text-xs text-[var(--kv-muted)]">{it.d}</p></div>
-        </div>
-      ))}
+      {action}
     </div>
   );
 }
 
-/* ============ PDP (Retail) ============ */
-export function RetailPDP({ p, onBack, onAdd, wished, onWish }: {
-  p: Product; onBack: () => void; onAdd: (size: string, color: string) => void; wished: boolean; onWish: () => void;
-}) {
-  const [img, setImg] = useState(0);
-  const [color, setColor] = useState(p.colors[0]);
-  const sizes = Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
-  const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
-  return (
-    <div className="animate-[fadeUp_0.4s_ease]">
-      <button onClick={onBack} className="kv-press mb-5 inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]">
-        <ChevronLeft size={16} className="rotate-180" /> بازگشت به فروشگاه
-      </button>
-      <div className="grid gap-8 lg:grid-cols-[1.15fr_1fr]">
-        {/* gallery 55% */}
-        <div className="flex gap-3">
-          <div className="flex w-[76px] shrink-0 flex-col gap-2.5">
-            {p.images.map((im, i) => (
-              <button key={i} onClick={() => setImg(i)} className={cn("overflow-hidden rounded-[12px] border-2 transition-all", img === i ? "border-[var(--kv-accent)]" : "border-[var(--kv-line)] opacity-70 hover:opacity-100")}>
-                <img src={im} alt="" className="aspect-[3/4] w-full object-cover" />
-              </button>
-            ))}
-          </div>
-          <div className="kv-img relative flex-1 overflow-hidden rounded-[24px] border border-[var(--kv-line)] kv-shadow-md">
-            <img key={img} src={p.images[img]} alt={p.name} className="aspect-[3/4] w-full object-cover animate-[fadeIn_0.35s_ease]" />
-            {p.badge && <span className="absolute right-4 top-4"><Status value={p.badge} dot={false} /></span>}
-          </div>
-        </div>
-        {/* config 45% */}
-        <div className="lg:sticky lg:top-24 lg:self-start">
-          <p className="text-[13px] font-semibold text-[var(--kv-muted)]">{p.brand} · کد {p.sku}</p>
-          <h1 className="kv-editorial-title mt-2 text-[26px] md:text-[30px]">{p.name}</h1>
-          <div className="mt-2.5 flex items-center gap-3 text-[13px] text-[var(--kv-muted)]">
-            <span className="flex items-center gap-1 font-bold text-[var(--kv-ink)]"><Star size={14} fill="#D6A94E" strokeWidth={0} /> {p.rating.toLocaleString("fa-IR")}</span>
-            <span>({fmtNum(p.reviews)} دیدگاه)</span>
-            <span>·</span>
-            <span>فروشنده: {p.supplier}</span>
-          </div>
-          <p className="mt-4 text-[24px] font-extrabold tabular-nums">{fmtMoney(p.retailPrice)}</p>
-          <div className="mt-6">
-            <p className="mb-2.5 text-[13px] font-bold">انتخاب رنگ <span className="font-medium text-[var(--kv-muted)]">— {color.name}</span></p>
-            <div className="flex gap-2.5">{p.colors.map((c) => <Swatch key={c.id} hex={c.hex} name={c.name} selected={color.id === c.id} onSelect={() => setColor(c)} />)}</div>
-          </div>
-          <div className="mt-5">
-            <div className="mb-2.5 flex items-center justify-between">
-              <p className="text-[13px] font-bold">انتخاب سایز</p>
-              <button className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-accent)]"><Ruler size={13} /> راهنمای سایز</button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {sizes.map((s) => (
-                <button key={s} onClick={() => setSize(s)} className={cn("kv-press min-w-[52px] rounded-[11px] border px-3 py-2.5 text-sm font-bold transition-all", size === s ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]")}>{s}</button>
-              ))}
-            </div>
-          </div>
-          <div className="mt-5 flex items-center gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 px-4 py-3 text-[13px]">
-            <span className={cn("h-2 w-2 rounded-full", p.stock > 0 ? "bg-[var(--kv-success)]" : "bg-[var(--kv-danger)]")} />
-            <span className="font-semibold">{p.stock > 0 ? `موجود در انبار — ${fmtNum(p.stock)} عدد` : "ناموجود"}</span>
-            <span className="text-[var(--kv-muted)]">· ارسال از فردا</span>
-          </div>
-          <div className="sticky bottom-4 z-10 mt-4 flex gap-2.5 lg:static">
-            <Btn variant="accent" size="lg" className="flex-1 shadow-[var(--shadow-soft-lg)] lg:shadow-none" disabled={p.stock < 1} icon={<ShoppingBag size={17} />} onClick={() => onAdd(size, color.name)}>افزودن به سبد خرید</Btn>
-            <button onClick={onWish} aria-label="علاقه‌مندی" className={cn("kv-press flex w-[52px] items-center justify-center rounded-[11px] border transition-all", wished ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]")}>
-              <Heart size={19} fill={wished ? "currentColor" : "none"} />
-            </button>
-          </div>
-          <div className="mt-5 space-y-3 border-t border-[var(--kv-line)] pt-5 text-[13px] leading-7 text-[var(--kv-muted)]">
-            <p><span className="font-bold text-[var(--kv-ink)]">درباره این محصول — </span>{p.desc}</p>
-            <p><span className="font-bold text-[var(--kv-ink)]">جنس پارچه: </span>{p.fabric}</p>
-            <div className="flex flex-wrap gap-2 pt-1">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-semibold"><Truck size={13} /> ارسال رایگان بالای ۵ میلیون</span>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-semibold"><RotateCcw size={13} /> ۷ روز مهلت برگشت</span>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--kv-surface-2)] px-3 py-1.5 text-xs font-semibold"><ShieldCheck size={13} /> ضمانت اصالت</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+const LinkToShop = ({ children, onClick }: { children: React.ReactNode; onClick: () => void }) => (
+  <button onClick={onClick} className="kv-sf-press inline-flex items-center gap-1.5 whitespace-nowrap text-[13px] font-bold text-[var(--kvaf-ink)] hover:text-[var(--kvaf-brass-deep)]">
+    {children}<ArrowLeft size={15} />
+  </button>
+);
+
+const ProductGrid = ({ children }: { children: React.ReactNode }) => (
+  <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:gap-x-6 lg:grid-cols-3 xl:grid-cols-4">{children}</div>
+);
 
 /* ============ MAIN RETAIL ============ */
 export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success";
 
-export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin }: {
+export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [] }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
@@ -246,11 +58,20 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   account: CustomerAccount | null; buyer?: Buyer;
   accountTab: AccountTab; setAccountTab: (v: AccountTab) => void;
   onWholesale: () => void; onLogout: () => void; onLogin: () => void;
+  shopSeed?: ShopSeed;
+  categories?: { name: string; count: number; image: string }[];
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
+  /* the shell hands over a category or query picked from search / category medallions */
+  useEffect(() => {
+    if (!shopSeed) return;
+    if (shopSeed.cat !== undefined) setCat(shopSeed.cat);
+    if (shopSeed.q !== undefined) setQ(shopSeed.q);
+  }, [shopSeed]);
   const [cat, setCat] = useState("همه");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("پیشنهاد کلبه");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [checkStep, setCheckStep] = useState(0);
   const [checkoutAddressId, setCheckoutAddressId] = useState("");
   const [checkoutAddress, setCheckoutAddress] = useState<CustomerAddress>({ id: "", title: "خانه", recipient: "", phone: "", province: "", city: "", line: "", postalCode: "", isDefault: false });
@@ -356,21 +177,23 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
 
   /* ----- PDP overlay ----- */
   if (selected) {
+    const related = retailProducts.filter((p) => p.id !== selected.id && p.category === selected.category);
+    const relatedList = (related.length ? related : retailProducts.filter((p) => p.id !== selected.id)).slice(0, 4);
     return (
-      <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-6 md:px-8">
-        <RetailPDP
+      <div className="kv-sf-bottom pb-20">
+        <ProductDetail
           p={selected} wished={wishlist.includes(selected.id)}
           onWish={() => toggleWish(selected.id)}
           onBack={() => setSelectedId(null)}
-          onAdd={(size, color) => { if (addToCart(selected.id, size, color)) { setSelectedId(null); setView("shop"); } }}
+          onAdd={(size, color) => addToCart(selected.id, size, color)}
         />
-        <div className="mt-14">
-          <SectionHead title="شاید بپسندید" />
-          <div className="grid grid-cols-2 gap-5 md:grid-cols-4">
-            {retailProducts.filter((p) => p.id !== selected.id).slice(0, 4).map((p) => (
-              <RetailCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
+        <div className="kv-sf-shell mt-20">
+          <Section title="شاید بپسندید" latin="You may also like" />
+          <ProductGrid>
+            {relatedList.map((p) => (
+              <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
             ))}
-          </div>
+          </ProductGrid>
         </div>
       </div>
     );
@@ -501,10 +324,10 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   if (view === "wishlist") {
     const items = retailProducts.filter((p) => wishlist.includes(p.id));
     return (
-      <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-8 md:px-8">
-        <SectionHead title="علاقه‌مندی‌ها" desc="چیزهایی که چشم‌تان را گرفته؛ هر وقت آماده بودید به سبد اضافه کنید." />
+      <div className="kv-sf-shell pb-20">
+        <Section title="علاقه‌مندی‌ها" latin="Saved" desc="چیزهایی که چشم‌تان را گرفته؛ هر وقت آماده بودید به سبد اضافه کنید." />
         {items.length === 0 ? <Empty title="هنوز چیزی ذخیره نکرده‌اید" desc="روی قلب هر محصول بزنید تا اینجا ذخیره شود." action={<Btn variant="accent" size="sm" onClick={() => setView("shop")}>کشف محصولات</Btn>} /> : (
-          <div className="grid grid-cols-2 gap-5 md:grid-cols-4">{items.map((p) => <RetailCard key={p.id} p={p} wished onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />)}</div>
+          <ProductGrid>{items.map((p) => <StorefrontProductCard key={p.id} p={p} wished onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />)}</ProductGrid>
         )}
       </div>
     );
@@ -515,17 +338,19 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   }
   if (view === "journal") {
     return (
-      <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-8 md:px-8">
-        <SectionHead title="مجله کلبه" desc="درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
-        <div className="grid gap-5 md:grid-cols-3">
+      <div className="kv-sf-shell pb-20">
+        <Section title="مجله کلبه" latin="Journal" desc="درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
+        <div className="grid gap-x-6 gap-y-12 md:grid-cols-3">
           {JOURNAL.map((j) => (
-            <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-              <div className="kv-img aspect-[16/10] overflow-hidden"><img src={j.img} alt={j.title} className="h-full w-full object-cover" /></div>
-              <div className="p-5">
-                <p className="text-xs font-bold text-[var(--kv-accent)]">{j.cat} · {j.read}</p>
-                <h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3>
-                <button className="mt-3 inline-flex items-center gap-1 text-[13px] font-bold text-[var(--kv-ink)]">خواندن <ArrowLeft size={14} /></button>
+            <article key={j.id} className="group">
+              <div className="overflow-hidden rounded-[18px] bg-[var(--kvaf-sand)]">
+                <img src={j.img} alt={j.title} loading="lazy" className="aspect-[4/5] w-full object-cover transition-transform duration-[620ms] ease-[var(--kvaf-ease-out)] group-hover:scale-[1.04]" />
               </div>
+              <p className="mt-4 text-[11.5px] font-bold text-[var(--kvaf-muted)]">{j.cat} · {j.read}</p>
+              <h3 className="mt-1.5 text-[16px] font-bold leading-8 text-[var(--kvaf-ink)]">{j.title}</h3>
+              <button className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-bold text-[var(--kvaf-ink)]">
+                خواندن<ArrowLeft size={14} />
+              </button>
             </article>
           ))}
         </div>
@@ -535,119 +360,182 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
 
   /* ----- SHOP ----- */
   if (view === "shop") {
+    const sorts = ["پیشنهاد کلبه", "ارزان‌ترین", "گران‌ترین", "پربازدیدترین"];
     return (
-      <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-8 md:px-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="kv-sf-shell pb-24">
+        <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-5">
           <div>
-            <h1 className="kv-editorial-title text-[26px] md:text-[30px]">فروشگاه</h1>
-            <p className="mt-1.5 text-sm text-[var(--kv-muted)]">{fmtNum(filtered.length)} محصول · ارسال به سراسر کشور</p>
+            <p className="kvaf-rule max-w-[16rem]"><span className="shrink-0">Archive</span></p>
+            <h1 className="kvaf-h1 mt-3 text-[var(--kvaf-ink)]">فروشگاه</h1>
+            <p className="kvaf-num mt-2 text-[13px] text-[var(--kvaf-muted)]">
+              {fmtNum(filtered.length)} محصول{cat !== "همه" ? ` در ${cat}` : ""} · ارسال به سراسر کشور
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
-            <SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول، برند…" />
-            <Select options={["پیشنهاد کلبه", "ارزان‌ترین", "گران‌ترین", "پربازدیدترین"]} value={sort} onChange={setSort} className="w-44" />
+            <div className="hidden w-60 md:block">
+              <SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول، برند…" />
+            </div>
+            <div className="hidden w-44 md:block">
+              <Select options={sorts} value={sort} onChange={setSort} />
+            </div>
+            <button onClick={() => setFiltersOpen(true)} className="kv-sf-chip md:hidden">
+              <SlidersHorizontal size={14} /> فیلتر و مرتب‌سازی
+            </button>
           </div>
+        </header>
+
+        <div className="kv-sf-scrollx mt-7 hidden md:flex">
+          {cats.map((c) => (
+            <button key={c} onClick={() => setCat(c)} data-on={cat === c ? "true" : "false"} aria-pressed={cat === c} className="kv-sf-chip">
+              {c}
+            </button>
+          ))}
         </div>
-        <div className="kv-no-scrollbar mt-5 flex gap-2 overflow-x-auto pb-1">
-          {cats.map((c) => <Tag key={c} active={cat === c} onClick={() => setCat(c)}>{c}</Tag>)}
-          <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-2 text-[13px] font-medium"><SlidersHorizontal size={14} /> فیلتر پیشرفته</button>
-        </div>
+
         {filtered.length === 0 ? (
-          <div className="mt-8"><Empty title="محصولی پیدا نشد" desc="عبارت دیگری را امتحان کنید یا فیلترها را بردارید." action={<Btn variant="soft" size="sm" onClick={() => { setQ(""); setCat("همه"); }}>حذف فیلترها</Btn>} /></div>
+          <div className="mt-10">
+            <Empty
+              title="محصولی پیدا نشد" desc="عبارت دیگری را امتحان کنید یا فیلترها را بردارید."
+              action={<Btn variant="soft" size="sm" onClick={() => { setQ(""); setCat("همه"); }}>حذف فیلترها</Btn>}
+            />
+          </div>
         ) : (
-          <div className="mt-7 grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">
-            {filtered.map((p) => <RetailCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />)}
+          <div className="mt-10">
+            <ProductGrid>
+              {filtered.map((p) => (
+                <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
+              ))}
+            </ProductGrid>
           </div>
         )}
+
+        <FilterSheet
+          open={filtersOpen} onClose={() => setFiltersOpen(false)}
+          categories={cats} category={cat} onCategory={setCat}
+          sortOptions={sorts} sort={sort} onSort={setSort}
+          resultCount={filtered.length}
+          onReset={() => { setQ(""); setCat("همه"); setSort("پیشنهاد کلبه"); }}
+        />
       </div>
     );
   }
 
   /* ----- HOME ----- */
+  const latestDrop = [
+    ...retailProducts.filter((p) => p.badge === "جدید"),
+    ...retailProducts.filter((p) => p.badge !== "جدید"),
+  ].slice(0, 4);
+  const featured = retailProducts.filter((p) => !latestDrop.includes(p)).slice(0, 4);
+
   return (
-    <div className="mx-auto w-full max-w-[1400px] space-y-12 px-4 pb-20 pt-6 md:px-8">
-      <HeroRenderer h={ops.hero} onNav={cmsNav} />
-      {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").map((b) => <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />)}
+    <div>
+      <EditorialHero h={ops.hero} onNav={cmsNav} />
 
-      {/* curated collections */}
-      <section>
-        <SectionHead title="کالکشن‌های ویژه" desc="دسته‌بندی‌های منتخب فصل؛ هر کدام با وسواس از میان صدها مدل انتخاب شده‌اند." action={<Btn variant="ghost" size="sm" onClick={() => setView("shop")} icon={<ArrowLeft size={15} />}>همه محصولات</Btn>} />
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {COLLECTIONS.map((c) => (
-            <button key={c.name} onClick={() => { setCat(c.name === "بارانی و مانتو" ? "مانتو و بارانی" : c.name === "پیراهن‌ها" ? "پیراهن" : c.name === "کت و بلیزر" ? "کت و بلیزر" : "شومیز"); setView("shop"); }} className="kv-card-hover group relative overflow-hidden rounded-[18px] border border-[var(--kv-line)] text-right">
-              <div className="kv-img aspect-[4/5]"><img src={c.img} alt={c.name} loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" /></div>
-              <div className="absolute inset-0 bg-gradient-to-t from-[#0E1527]/70 via-transparent to-transparent" />
-              <div className="absolute inset-x-0 bottom-0 p-4 text-[#FAF6EF]">
-                <p className="text-[15px] font-extrabold">{c.name}</p>
-                <p className="mt-0.5 text-xs opacity-80">{fmtNum(c.count)} مدل</p>
-              </div>
-            </button>
+      {/* circular categories — real catalogue data, swipe rail on touch */}
+      <section className="kv-sf-shell pt-14 md:pt-20">
+        <Section title="از کدام قفسه شروع کنیم؟" latin="Categories" desc="هر دایره یک دسته از آرشیو کلبه است؛ تصویرها از خود محصولات انتخاب شده‌اند." />
+        <CategoryRail
+          items={categories}
+          onPick={(name) => { setCat(name); setView("shop"); window.scrollTo({ top: 0 }); }}
+        />
+      </section>
+
+      {/* latest drop */}
+      <section className="kv-sf-shell pt-16 md:pt-24">
+        <Section
+          title="تازه‌رسیده‌ها" latin="Latest drop"
+          desc="جدیدترین مدل‌هایی که همین هفته به آرشیو اضافه شدند."
+          action={<LinkToShop onClick={() => setView("shop")}>مشاهده همه</LinkToShop>}
+        />
+        <ProductGrid>
+          {latestDrop.map((p) => (
+            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
           ))}
-        </div>
+        </ProductGrid>
       </section>
 
-      {/* new arrivals */}
-      <section>
-        <SectionHead title="تازه‌رسیده‌ها" desc="جدیدترین مدل‌هایی که همین هفته به فروشگاه اضافه شدند." action={<Btn variant="ghost" size="sm" onClick={() => setView("shop")} icon={<ArrowLeft size={15} />}>مشاهده همه</Btn>} />
-        <div className="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-4">
-          {retailProducts.slice(0, 4).map((p) => <RetailCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />)}
-        </div>
-      </section>
+      {/* CMS-driven editorial content */}
+      {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").length > 0 && (
+        <section className="kv-sf-shell space-y-14 pt-16 md:pt-24">
+          {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").map((b) => (
+            <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />
+          ))}
+        </section>
+      )}
 
       {/* editorial story */}
-      <section className="grid overflow-hidden rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-md md:grid-cols-2">
-        <div className="kv-img relative min-h-[280px]"><img src={IMG.atelierCut} alt="کارگاه کلبه" className="absolute inset-0 h-full w-full object-cover" /></div>
-        <div className="flex flex-col justify-center p-8 md:p-12">
-          <p className="text-[13px] font-bold text-[var(--kv-accent)]">هنر ساخت</p>
-          <h2 className="kv-editorial-title mt-2 text-[24px] md:text-[30px]">از پارچه تا پوشاک، زیر یک سقف</h2>
-          <p className="mt-3 text-sm leading-8 text-[var(--kv-muted)]">هر لباس کلبه مسیر مشخصی را طی می‌کند: انتخاب پارچه از بافندگان معتبر، برش دقیق، دوخت تمیز و کنترل کیفیت سه‌مرحله‌ای. نتیجه، لباسی است که سال‌ها می‌ماند.</p>
-          <div className="mt-6 flex gap-3">
-            <Btn variant="dark" onClick={() => setView("journal")}>داستان ما</Btn>
-            <Btn variant="soft" onClick={() => onStudio("tryon")} icon={<Eye size={16} />}>پرو مجازی</Btn>
+      <section className="pt-16 md:pt-24">
+        <div className="grid gap-0 md:grid-cols-2">
+          <div className="relative min-h-[320px] overflow-hidden bg-[var(--kvaf-sand)] md:min-h-[560px]">
+            <img src={IMG.atelierCut} alt="کارگاه دوخت کلبه" loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
+          </div>
+          <div className="flex flex-col justify-center bg-[var(--kvaf-surface)] px-6 py-12 md:px-14 md:py-20">
+            <p className="kvaf-rule max-w-[16rem]"><span className="shrink-0">The making</span></p>
+            <h2 className="kvaf-h2 mt-4 text-[var(--kvaf-ink)]">از پارچه تا پوشاک، زیر یک سقف</h2>
+            <p className="kvaf-body mt-4 max-w-[46ch] text-[14px] text-[var(--kvaf-muted)]">
+              هر لباس کلبه مسیر مشخصی را طی می‌کند: انتخاب پارچه از بافندگان معتبر، برش دقیق،
+              دوخت تمیز و کنترل کیفیت سه‌مرحله‌ای. نتیجه، لباسی است که سال‌ها می‌ماند.
+            </p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <button onClick={() => setView("journal")} className="kv-sf-action">داستان ما</button>
+              <button onClick={() => onStudio("tryon")} className="kv-sf-action kv-sf-action-quiet">پرو مجازی</button>
+            </div>
           </div>
         </div>
       </section>
 
       {/* featured */}
-      <section>
-        <SectionHead title="منتخب هفته" action={<Btn variant="ghost" size="sm" onClick={() => setView("shop")} icon={<ArrowLeft size={15} />}>مشاهده همه</Btn>} />
-        <div className="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-4">
-          {retailProducts.slice(4, 8).map((p) => <RetailCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />)}
-        </div>
+      <section className="kv-sf-shell pt-16 md:pt-24">
+        <Section
+          title="منتخب هفته" latin="Selected"
+          action={<LinkToShop onClick={() => setView("shop")}>مشاهده همه</LinkToShop>}
+        />
+        <ProductGrid>
+          {featured.map((p) => (
+            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
+          ))}
+        </ProductGrid>
       </section>
 
-      {/* style inspiration */}
-      <section className="rounded-[24px] border border-[var(--kv-line)] bg-[#1B2A4A] p-8 text-[#F5EFE3] md:p-12 dark:bg-[#16203A]">
-        <div className="flex flex-wrap items-end justify-between gap-4">
+      {/* service information — from the live shipping configuration */}
+      <section className="kv-sf-shell pt-16 md:pt-24">
+        <div className="kv-sf-hairline grid gap-x-8 gap-y-6 pt-8 md:grid-cols-4">
+          {retailShipping.slice(0, 3).map((m) => (
+            <div key={m.id}>
+              <p className="text-[13.5px] font-extrabold text-[var(--kvaf-ink)]">{m.name}</p>
+              <p className="mt-1.5 text-[12.5px] leading-6 text-[var(--kvaf-muted)]">
+                {m.eta} · {m.zones}
+                {m.freeAbove !== null && ` · رایگان بالای ${fmtMoney(m.freeAbove)}`}
+              </p>
+            </div>
+          ))}
           <div>
-            <p className="text-[13px] font-bold text-[#E8D9C3]">استایل‌بیلدر کلبه</p>
-            <h2 className="kv-editorial-title mt-2 text-[24px] md:text-[30px]">ست خودت را بچین، بعد بخر</h2>
-            <p className="mt-2 max-w-[52ch] text-sm leading-7 text-[#B9C4D8]">محصولات را روی بوم بکش، ترکیب کن و استایل نهایی را ذخیره یا منتشر کن.</p>
+            <p className="text-[13.5px] font-extrabold text-[var(--kvaf-ink)]">ضمانت اصالت و برگشت</p>
+            <p className="mt-1.5 text-[12.5px] leading-6 text-[var(--kvaf-muted)]">
+              کنترل کیفیت سه‌مرحله‌ای و ۷ روز مهلت برگشت بدون قید و شرط.
+            </p>
           </div>
-          <Btn variant="accent" size="lg" onClick={() => onStudio("builder")} icon={<Sparkles size={17} />}>شروع استایل‌سازی</Btn>
-        </div>
-        <div className="mt-7 grid grid-cols-3 gap-3 md:gap-4">
-          {[IMG.trenchArch, IMG.blazerDuo, IMG.whiteShirts].map((im, i) => (
-            <div key={i} className="overflow-hidden rounded-[16px]"><img src={im} alt="" className="aspect-[4/3] w-full object-cover" /></div>
-          ))}
         </div>
       </section>
 
-      {/* journal preview */}
-      <section>
-        <SectionHead title="از مجله کلبه" action={<Btn variant="ghost" size="sm" onClick={() => setView("journal")} icon={<ArrowLeft size={15} />}>همه مطالب</Btn>} />
-        <div className="grid gap-5 md:grid-cols-3">
+      {/* journal */}
+      <section className="kv-sf-shell pt-16 pb-24 md:pt-24">
+        <Section
+          title="از مجله کلبه" latin="Journal"
+          action={<LinkToShop onClick={() => setView("journal")}>همه مطالب</LinkToShop>}
+        />
+        <div className="grid gap-x-6 gap-y-10 md:grid-cols-3">
           {JOURNAL.map((j) => (
-            <article key={j.id} className="kv-card-hover overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm">
-              <div className="kv-img aspect-[16/10] overflow-hidden"><img src={j.img} alt={j.title} loading="lazy" className="h-full w-full object-cover" /></div>
-              <div className="p-5">
-                <p className="text-xs font-bold text-[var(--kv-accent)]">{j.cat} · {j.read}</p>
-                <h3 className="mt-2 text-[15px] font-bold leading-7">{j.title}</h3>
+            <button key={j.id} onClick={() => setView("journal")} className="group text-start">
+              <div className="overflow-hidden rounded-[18px] bg-[var(--kvaf-sand)]">
+                <img src={j.img} alt={j.title} loading="lazy" className="aspect-[4/5] w-full object-cover transition-transform duration-[620ms] ease-[var(--kvaf-ease-out)] group-hover:scale-[1.04]" />
               </div>
-            </article>
+              <p className="mt-4 text-[11.5px] font-bold text-[var(--kvaf-muted)]">{j.cat} · {j.read}</p>
+              <h3 className="mt-1.5 text-[15.5px] font-bold leading-7 text-[var(--kvaf-ink)]">{j.title}</h3>
+            </button>
           ))}
         </div>
       </section>
-
     </div>
   );
 }
