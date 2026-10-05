@@ -139,11 +139,11 @@ const TAB_REDIRECT: Record<string, string> = {
   "promo-safety": "promo",
   series: "structure",           // series templates = product structure configuration
   // ---- CRM consolidation (master phase §1): one top-level «مرکز CRM» ----
-  users: "crm:customers",        // فهرست کاربران → CRM / مشتریان خرده
-  buyers: "crm:vip",             // خریداران عمده → CRM / خریداران VIP
-  suppliers: "crm:suppliers",    // تأمین‌کنندگان ۳۶۰° → CRM / تأمین‌کنندگان
+  users: "crm:contacts:customers", // فهرست کاربران → CRM / مخاطبان / مشتریان خرده
+  buyers: "crm:contacts:vip",      // خریداران عمده → CRM / مخاطبان / خریداران VIP
+  suppliers: "crm:contacts:suppliers", // تأمین‌کنندگان → CRM / مخاطبان / تأمین‌کنندگان
   sms: "integrations:sms",       // پنل پیامک → سیستم / یکپارچه‌سازی‌ها (پیکربندی ارسال)
-  "crm-center": "crm:marketing", buyers360: "crm:vip",
+  "crm-center": "crm:marketing", buyers360: "crm:contacts:vip",
   // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
   wproducts: "wms:wholesale-review",
   mreview: "wms:wholesale-review",
@@ -223,8 +223,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const [hubSub, setHubSub] = useState<string | null>(null);
   const go = useCallback((next: string) => {
     const target = TAB_REDIRECT[next] ?? next;
-    const [hub, sub] = target.split(":");
-    setTab(hub!); setHubSub(sub ?? null);
+    const [hub, ...rest] = target.split(":");
+    setTab(hub!); setHubSub(rest.length ? rest.join(":") : null);
   }, []);
   const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
   const [toast, setToast] = useState<string | null>(null);
@@ -468,9 +468,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "wms" && hubSub === "goods" && moduleBoundary("استودیو محصول", <CatalogHub flash={flash} />)}
           {tab === "wms" && hubSub !== "goods" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
           {/* CRM production IA: relationship-first. Core commerce remains outside CRM. */}
-          {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
+          {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub?.startsWith("contacts:") ? "contacts" : hubSub} tabs={[
             { v: "overview", label: "نمای کلی", node: <CrmRelationshipCenter mode="overview" flash={flash} /> },
-            { v: "contacts", label: "مخاطبان", node: <HubTabs tabs={[
+            { v: "contacts", label: "مخاطبان", node: <HubTabs initial={hubSub?.startsWith("contacts:") ? hubSub.split(":")[1] : undefined} tabs={[
               { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel /> },
               { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
               { v: "suppliers", label: "تأمین‌کنندگان", node: <CrmSuppliersHub flash={flash} /> },
