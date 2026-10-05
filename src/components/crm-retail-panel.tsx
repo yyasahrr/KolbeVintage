@@ -127,7 +127,7 @@ export function CrmRetailPanel() {
             <table className="w-full min-w-[980px] text-right text-[12.5px]">
               <thead>
                 <tr className="text-[11.5px] text-[var(--kv-muted)]">
-                  {["مشتری", "موبایل", "وضعیت حساب", "رفتار مشتری", "عضویت", "تعداد خرید", "ارزش کل", "آخرین فعالیت", "شهر", "عملیات"].map((h) => (
+                  {["مشتری", "موبایل", "وضعیت حساب", "رفتار مشتری", "تاریخ عضویت", "تعداد خرید", "ارزش کل", "آخرین فعالیت", "شهر", "عملیات"].map((h) => (
                     <th key={h} className="pb-2 font-semibold">{h}</th>
                   ))}
                 </tr>
