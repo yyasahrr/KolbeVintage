@@ -1,4 +1,5 @@
 import { ReactNode, useId } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronLeft, Minus, Plus, Search, X } from "lucide-react";
 import { cn } from "../utils/cn";
 import { useDialogFocus } from "./focus-trap";
@@ -254,7 +255,7 @@ export function WorkspaceModal({ open, onClose, title, subtitle, children, foote
 }) {
   const ref = useDialogFocus<HTMLDivElement>(open, onClose);
   if (!open) return null;
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[85] flex items-center justify-center sm:p-4">
       <div className="absolute inset-0 bg-[#0E1527]/55 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
       <div ref={ref} role="dialog" aria-modal="true" aria-label={title}
@@ -269,7 +270,7 @@ export function WorkspaceModal({ open, onClose, title, subtitle, children, foote
         <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
         {footer && <div className="shrink-0 border-t border-[var(--kv-line)] px-5 py-3">{footer}</div>}
       </div>
-    </div>
+    </div>, document.body
   );
 }
 

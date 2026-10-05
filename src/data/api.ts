@@ -641,6 +641,29 @@ export const crmApi = {
   suppliers: (params?: Record<string, string | number | undefined>) =>
     authFetch<{ total: number; limit: number; offset: number; items: Record<string, unknown>[] }>(`/admin/crm/suppliers${query(params)}`),
   user360: (userId: string) => authFetch<Record<string, unknown>>(`/admin/crm/users/${userId}/360`),
+  owners: () => authFetch<{ items: { id: string; display_name: string }[] }>("/admin/crm/owners"),
+  relationshipSummary: () => authFetch<{ kpis: Record<string, number> }>("/admin/crm/relationship-summary"),
+  actionCenter: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/action-center${query(params)}`),
+  globalSearch: (q: string, limit = 15, offset = 0) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/search${query({ q: q || undefined, limit, offset })}`),
+  relationship: (contactId: string) =>
+    authFetch<{ contact: Record<string, unknown>; tasks: Record<string, unknown>[]; interactions: Record<string, unknown>[]; notes: Record<string, unknown>[];labels:Record<string,unknown>[] }>(`/admin/crm/contacts/${contactId}/relationship`),
+  addContactLabel: (contactId:string,labelCode:string) => authFetch<unknown>(`/admin/crm/contacts/${contactId}/labels`,{method:"POST",body:JSON.stringify({labelCode})}),
+  userRelationship: (userId: string) =>
+    authFetch<{ contact: Record<string, unknown> }>(`/admin/crm/users/${userId}/relationship`),
+  createLead: (payload: { name: string; phone?: string | null; email?: string | null; organization?: string | null; ownerUserId?: string | null; priority?: string; nextFollowupAt?: string | null }) =>
+    authFetch<{ id: string }>("/admin/crm/leads", { method: "POST", body: JSON.stringify(payload) }),
+  linkLeadToUser: (contactId: string, userId: string) =>
+    authFetch<Record<string, unknown>>(`/admin/crm/contacts/${contactId}/link-user`, { method: "POST", body: JSON.stringify({ userId }) }),
+  updateRelationship: (contactId: string, payload: { ownerUserId?: string | null; lifecycleStage?: string; priority?: string; nextFollowupAt?: string | null }) =>
+    authFetch<Record<string, unknown>>(`/admin/crm/contacts/${contactId}/relationship`, { method: "PATCH", body: JSON.stringify(payload) }),
+  addTask: (contactId: string, payload: { title: string; description?: string; assignedTo?: string | null; dueAt?: string | null; priority?: string }) =>
+    authFetch<{ id: string }>(`/admin/crm/contacts/${contactId}/tasks`, { method: "POST", body: JSON.stringify(payload) }),
+  updateTask: (taskId: string, payload: { title?: string; description?: string; assignedTo?: string | null; dueAt?: string | null; priority?: string; status?: "open" | "done" | "cancelled" }) =>
+    authFetch<Record<string, unknown>>(`/admin/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  addInteraction: (contactId: string, payload: { channel: string; outcome: string; subject: string; body?: string; occurredAt?: string; nextFollowupAt?: string | null }) =>
+    authFetch<{ id: string }>(`/admin/crm/contacts/${contactId}/interactions`, { method: "POST", body: JSON.stringify(payload) }),
 };
 
 /* ---------------------------------- CMS ---------------------------------- */
@@ -1319,10 +1342,10 @@ export const buyersApi = {
     authFetch<unknown>(`/admin/buyers/${userId}/credit-limit`, { method: "POST", body: JSON.stringify(payload) }),
   block: (userId: string, payload: { blocked: boolean; reason: string }) =>
     authFetch<unknown>(`/admin/buyers/${userId}/block`, { method: "POST", body: JSON.stringify(payload) }),
-  addNote: (userId: string, payload: { body: string; visibility?: "internal" | "support" }) =>
+  addNote: (userId: string, payload: { body: string; visibility?: "internal" | "team" }) =>
     authFetch<unknown>(`/admin/buyers/${userId}/notes`, { method: "POST", body: JSON.stringify(payload) }),
   addLabel: (userId: string, payload: { labelCode: string; note?: string }) =>
-    authFetch<unknown>(`/admin/buyers/${userId}/labels`, { method: "POST", body: JSON.stringify(payload) }),
+    authFetch<unknown>(`/admin/buyers/${userId}/labels`, { method: "POST", body: JSON.stringify({labels:[payload.labelCode]}) }),
   removeLabel: (userId: string, labelCode: string) =>
     authFetch<unknown>(`/admin/buyers/${userId}/labels/${encodeURIComponent(labelCode)}`, { method: "DELETE" }),
   saveConsent: (userId: string, payload: { marketingSms?: boolean; transactionalSms?: boolean; emailMarketing?: boolean; doNotContact?: boolean; reason?: string }) =>
@@ -1350,7 +1373,7 @@ export const crmIntelApi = {
   createSegment: (payload: unknown) => authFetch<unknown>("/admin/crm/segments", { method: "POST", body: JSON.stringify(payload) }),
   updateSegment: (id: string, payload: unknown) => authFetch<unknown>(`/admin/crm/segments/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   refreshSegment: (id: string) => authFetch<{ members: number; totalCustomers: number }>(`/admin/crm/segments/${id}/refresh`, { method: "POST" }),
-  segmentMembers: (id: string) => authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/segments/${id}/members`),
+  segmentMembers: (id: string, offset = 0) => authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/segments/${id}/members${query({offset,limit:50})}`),
   contactNotes: (contactId: string) => authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/contacts/${contactId}/notes`),
   addNote: (contactId: string, payload: { body: string; visibility?: "internal" | "team" }) =>
     authFetch<unknown>(`/admin/crm/contacts/${contactId}/notes`, { method: "POST", body: JSON.stringify(payload) }),

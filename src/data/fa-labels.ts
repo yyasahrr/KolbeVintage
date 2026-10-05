@@ -55,6 +55,16 @@ export const PRIORITY_FA: Record<string, string> = {
   low: "کم", normal: "عادی", medium: "متوسط", high: "زیاد", urgent: "فوری", critical: "بحرانی",
 };
 
+export const CRM_PRIORITY_FA: Record<string, string> = { low: "کم", normal: "عادی", high: "مهم", urgent: "فوری" };
+export const CRM_LIFECYCLE_FA: Record<string, string> = {
+  lead: "سرنخ", prospect: "در حال ارزیابی", active: "فعال", loyal: "وفادار", at_risk: "در خطر",
+  dormant: "کم‌فعال", churned: "ریزش‌یافته", partner: "شریک",
+};
+export const CRM_DOCUMENT_TYPE_FA: Record<string,string> = {
+  trade_license:"پروانه کسب",business_card:"کارت کسب‌وکار",national_id:"مدرک هویتی",store_photo:"تصویر فروشگاه",other:"سایر",
+};
+export const CRM_DOCUMENT_STATUS_FA: Record<string,string> = {pending:"در انتظار بررسی",verified:"تأییدشده",rejected:"ردشده"};
+
 export const SETTLEMENT_STATUS_FA: Record<string, string> = {
   pending: "در انتظار", approved: "تأییدشده", processing: "در حال پردازش", paid: "پرداخت‌شده",
   reconciled: "مغایرت‌گیری‌شده", cancelled: "لغوشده", failed: "ناموفق",

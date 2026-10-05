@@ -18,6 +18,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import puppeteer from 'puppeteer-core';
 import { warehouseUxSmoke } from './warehouse-ux-browser.mjs';
+import { crmRelationshipBrowser } from './crm-relationship-browser.mjs';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const chromePath = process.env.KV_CHROME_PATH ?? '/tmp/chromium';
 const stopProcessTree = (child, signal = 'SIGTERM') => {
@@ -545,6 +546,7 @@ try {
     })));
     console.error('--- console errors ---\n' + consoleErrors.slice(-6).join('\n'));
   }
+  await crmRelationshipBrowser({page,check,openTab,adminApi,shot});
   await openTab('تنظیمات و دسترسی');
   body = await text();
   check('seeded shipping methods are listed with Persian types',

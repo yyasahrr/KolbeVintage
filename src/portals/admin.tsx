@@ -37,13 +37,14 @@ import { useDialogFocus } from "../components/focus-trap";
 import { ProductStructurePanel } from "../components/product-structure-panel";
 import { CatalogHub } from "../components/catalog-hub";
 import { ImportCenterPanel } from "../components/import-center-panel";
-import { Supplier360Workspace } from "../components/supplier-360";
+import { SupplierCrmWorkspace } from "../components/supplier-crm-workspace";
 import { InvoiceDocumentsPanel } from "../components/invoice-docs";
 import { FinanceOpsPanel } from "../components/finance-ops";
 import { ReceiptText, Coins } from "lucide-react";
 import { CashbackCenter } from "../components/cashback-center";
 import { Buyer360Panel } from "../components/buyer-360-panel";
 import { CrmCenter } from "../components/crm-center";
+import { CrmRelationshipCenter } from "../components/crm-relationship-center";
 import { AutomationCenter } from "../components/automation-center";
 import { ReviewsCenter } from "../components/reviews-center";
 import { RecommendationsPanel } from "../components/recommendations-panel";
@@ -138,11 +139,11 @@ const TAB_REDIRECT: Record<string, string> = {
   "promo-safety": "promo",
   series: "structure",           // series templates = product structure configuration
   // ---- CRM consolidation (master phase §1): one top-level «مرکز CRM» ----
-  users: "crm:customers",        // فهرست کاربران → CRM / مشتریان خرده
-  buyers: "crm:vip",             // خریداران عمده → CRM / خریداران VIP
-  suppliers: "crm:suppliers",    // تأمین‌کنندگان ۳۶۰° → CRM / تأمین‌کنندگان
+  users: "crm:contacts:customers", // فهرست کاربران → CRM / مخاطبان / مشتریان خرده
+  buyers: "crm:contacts:vip",      // خریداران عمده → CRM / مخاطبان / خریداران VIP
+  suppliers: "crm:contacts:suppliers", // تأمین‌کنندگان → CRM / مخاطبان / تأمین‌کنندگان
   sms: "integrations:sms",       // پنل پیامک → سیستم / یکپارچه‌سازی‌ها (پیکربندی ارسال)
-  "crm-center": "crm:marketing", buyers360: "crm:vip",
+  "crm-center": "crm:marketing", buyers360: "crm:contacts:vip",
   // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
   wproducts: "wms:wholesale-review",
   mreview: "wms:wholesale-review",
@@ -222,8 +223,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   const [hubSub, setHubSub] = useState<string | null>(null);
   const go = useCallback((next: string) => {
     const target = TAB_REDIRECT[next] ?? next;
-    const [hub, sub] = target.split(":");
-    setTab(hub!); setHubSub(sub ?? null);
+    const [hub, ...rest] = target.split(":");
+    setTab(hub!); setHubSub(rest.length ? rest.join(":") : null);
   }, []);
   const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
   const [toast, setToast] = useState<string | null>(null);
@@ -466,45 +467,16 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {tab === "imports" && moduleBoundary("مرکز ورود داده", <ImportCenterPanel flash={flash} />)}
           {tab === "wms" && hubSub === "goods" && moduleBoundary("استودیو محصول", <CatalogHub flash={flash} />)}
           {tab === "wms" && hubSub !== "goods" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
-          {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
-          {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
-            // §109: legacy CrmPanel removed (contacts/notes/360 live in بازاریابی→CrmCenter; old
-            // simple automations superseded by CRM rules + مرکز اتوماسیون). UsersDirectory moved
-            // to تنظیمات — user administration is not CRM. Backend APIs untouched.
-            { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel /> },
-            { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} /> },
-            // §68/§87 (corrective): the ۳۶۰° file opens from EVERY supplier row (WorkspaceModal);
-            // the old collapsed «پروفایل ۳۶۰° و مدیریت» block was a duplicate surface and is gone.
-            // ADM-SUP-005: the supplier journey is scattered across 8 modules; this strip narrates it
-            // in order and deep-links each stage (hub + link pattern — backend untouched).
-            { v: "suppliers", label: "تأمین‌کنندگان", node: (
-              <div className="space-y-4">
-                <Card className="p-4">
-                  <p className="text-[12.5px] font-bold">سفر تأمین‌کننده — از درخواست تا تسویه</p>
-                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11.5px]">
-                    {([
-                      ["درخواست همکاری", "applications"],
-                      ["پرونده ۳۶۰ (همین صفحه)", ""],
-                      ["بازبینی محصول", "wproducts"],
-                      ["ورودی امانی و QC", "wms"],
-                      ["تسویه مالی", "finance"],
-                      ["اسناد و صورت‌حساب", "supplier-docs"],
-                      ["محدودیت‌ها", "restrictions"],
-                    ] as [string, string][]).map(([label, target], i, arr) => (
-                      <span key={label} className="flex items-center gap-1.5">
-                        {target
-                          ? <button onClick={() => go(target)} className="kv-press rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 py-1.5 font-semibold hover:border-[var(--kv-line-strong)]">{label}</button>
-                          : <span className="rounded-full bg-[var(--kv-action)] px-3 py-1.5 font-bold text-[var(--kv-bg)] dark:text-[#0E1527]">{label}</span>}
-                        {i < arr.length - 1 && <span className="text-[var(--kv-faint)]">←</span>}
-                      </span>
-                    ))}
-                  </div>
-                </Card>
-                <CrmSuppliersHub flash={flash} />
-              </div>
-            ) },
-            // SMS provider config lives in سیستم → یکپارچه‌سازی‌ها (ADM audit: duplicate SMS surfaces);
-            // marketing keeps the CRM growth center only.
+          {/* CRM production IA: relationship-first. Core commerce remains outside CRM. */}
+          {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub?.startsWith("contacts:") ? "contacts" : hubSub} tabs={[
+            { v: "overview", label: "نمای کلی", node: <CrmRelationshipCenter mode="overview" flash={flash} /> },
+            { v: "contacts", label: "مخاطبان", node: <HubTabs initial={hubSub?.startsWith("contacts:") ? hubSub.split(":")[1] : undefined} tabs={[
+              { v: "all", label: "همه", node: <CrmRelationshipCenter mode="contacts" flash={flash} /> },
+              { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel onNavigate={go} /> },
+              { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} onNavigate={go} /> },
+              { v: "suppliers", label: "تأمین‌کنندگان", node: <CrmSuppliersHub flash={flash} onNavigate={go} /> },
+            ]} /> },
+            { v: "followups", label: "پیگیری‌ها", node: <CrmRelationshipCenter mode="followups" flash={flash} /> },
             { v: "marketing", label: "بازاریابی", node: <CrmCenter flash={flash} /> },
           ]} />)}
           {tab === "automation" && moduleBoundary("اتوماسیون و n8n", <AutomationCenter flash={flash} />)}
@@ -608,7 +580,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
 /** §68 (corrective): CRM suppliers tab — list with an always-available «پروفایل ۳۶۰°» per row
  *  (centered WorkspaceModal) + the unique change-request review capability, no duplicate panels. */
-function CrmSuppliersHub({ flash }: { flash: (message: string) => void }) {
+function CrmSuppliersHub({ flash,onNavigate }: { flash: (message: string) => void; onNavigate:(domain:string)=>void }) {
   const [open360, setOpen360] = useState<string | null>(null);
   return (
     <div className="space-y-5">
@@ -618,8 +590,7 @@ function CrmSuppliersHub({ flash }: { flash: (message: string) => void }) {
         <SupplierChangeReview flash={flash} />
       </section>
       {open360 && (
-        <Supplier360Workspace supplierId={open360} onClose={() => setOpen360(null)}
-          onChanged={() => flash("وضعیت تأمین‌کننده بروزرسانی شد")} />
+        <SupplierCrmWorkspace onNavigate={onNavigate} supplierId={open360} onClose={() => setOpen360(null)} />
       )}
     </div>
   );
