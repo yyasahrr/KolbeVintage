@@ -648,13 +648,13 @@ export const crmApi = {
   globalSearch: (q: string, limit = 15) =>
     authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/search${query({ q, limit })}`),
   relationship: (contactId: string) =>
-    authFetch<{ contact: Record<string, unknown>; tasks: Record<string, unknown>[]; interactions: Record<string, unknown>[] }>(`/admin/crm/contacts/${contactId}/relationship`),
+    authFetch<{ contact: Record<string, unknown>; tasks: Record<string, unknown>[]; interactions: Record<string, unknown>[]; notes: Record<string, unknown>[] }>(`/admin/crm/contacts/${contactId}/relationship`),
   userRelationship: (userId: string) =>
     authFetch<{ contact: Record<string, unknown> }>(`/admin/crm/users/${userId}/relationship`),
   createLead: (payload: { name: string; phone?: string | null; email?: string | null; organization?: string | null; ownerUserId?: string | null; priority?: string; nextFollowupAt?: string | null }) =>
     authFetch<{ id: string }>("/admin/crm/leads", { method: "POST", body: JSON.stringify(payload) }),
   linkLeadToUser: (contactId: string, userId: string) =>
-    authFetch<unknown>(`/admin/crm/contacts/${contactId}/link-user`, { method: "POST", body: JSON.stringify({ userId }) }),
+    authFetch<Record<string, unknown>>(`/admin/crm/contacts/${contactId}/link-user`, { method: "POST", body: JSON.stringify({ userId }) }),
   updateRelationship: (contactId: string, payload: { ownerUserId?: string | null; lifecycleStage?: string; priority?: string; nextFollowupAt?: string | null }) =>
     authFetch<Record<string, unknown>>(`/admin/crm/contacts/${contactId}/relationship`, { method: "PATCH", body: JSON.stringify(payload) }),
   addTask: (contactId: string, payload: { title: string; description?: string; assignedTo?: string | null; dueAt?: string | null; priority?: string }) =>
