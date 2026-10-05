@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { principal, requirePermission } from './auth.js';
-import { one, transaction, type DbPool } from './db.js';
+import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
 
@@ -148,6 +148,76 @@ async function fullGuide(pool: DbPool, guideId: string) {
     `SELECT m.id, m.kind, m.caption, m.position, m.file_id, f.original_name, f.mime_type, f.size_bytes
      FROM size_guide_media m JOIN files f ON f.id = m.file_id WHERE m.guide_id = $1 ORDER BY m.position`, [guideId])).rows;
   return { ...guide, columns, rows, media };
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * §9-§12 (final Product Studio remediation): dynamic 2D tables
+ *
+ * «مشخصات فنی» and «راهنمای سایز» are arbitrary Admin-defined 2D tables (columns × rows).
+ * The existing relational models (`product_spec_values` keyed by a global `spec_attributes`
+ * catalogue, `size_guides` shared by many products) CANNOT express arbitrary per-product
+ * columns — attribute codes are constrained to `[a-z0-9_-]` and Persian column labels are
+ * legitimate here.
+ *
+ * Representation chosen to avoid a schema migration and to keep every legacy record readable:
+ *   products.metadata.tables = { specs?: DataTable, sizeGuide?: DataTable }
+ * `metadata` is already the product's own JSON domain storage, so no new table and no
+ * TechnicalSpecsV2/SizeGuideV2 parallel authority is created (§12/§16).
+ *
+ * Backward compatibility: nothing is deleted. Products without a table keep answering from
+ * `product_spec_values` / `product_size_guides` exactly as before, and the public read
+ * endpoints project the new tables into the same `values` / `guide` shapes the storefront
+ * already renders (§12).
+ * ------------------------------------------------------------------------------------------ */
+const dataTableColumn = z.object({
+  id: z.string().trim().min(1).max(60),
+  label: z.string().trim().min(1).max(120),
+}).strict();
+const dataTableRow = z.object({
+  id: z.string().trim().min(1).max(60),
+  values: z.record(z.string().max(60), z.string().max(500)),
+}).strict();
+const dataTable = z.object({
+  columns: z.array(dataTableColumn).max(24),
+  rows: z.array(dataTableRow).max(400),
+}).strict();
+export type DataTable = z.infer<typeof dataTable>;
+
+type ProductMetadataRow = { metadata: Record<string, unknown> | null };
+
+/** Reads the two dynamic tables of a product (absent ⇒ `{}`). */
+async function readTables(db: DbPool | DbClient, productId: string): Promise<Record<string, DataTable>> {
+  const row = await one<ProductMetadataRow>(db, 'SELECT metadata FROM products WHERE id = $1', [productId]);
+  const tables = (row?.metadata ?? {}) as { tables?: unknown };
+  return (tables.tables && typeof tables.tables === 'object' ? tables.tables : {}) as Record<string, DataTable>;
+}
+
+/** Read-modify-write inside a transaction — never clobbers the rest of `metadata`. */
+async function writeTable(
+  db: DbPool | DbClient, productId: string, key: 'specs' | 'sizeGuide', table: DataTable | null,
+): Promise<Record<string, DataTable>> {
+  const row = await one<ProductMetadataRow>(db, 'SELECT metadata FROM products WHERE id = $1 FOR UPDATE', [productId]);
+  if (!row) throw notFound('محصول پیدا نشد.');
+  const metadata: Record<string, unknown> = { ...(row.metadata ?? {}) };
+  const tables: Record<string, DataTable> = { ...(readTablesSync(metadata)) };
+  if (table) tables[key] = table; else delete tables[key];
+  metadata.tables = tables;
+  await db.query('UPDATE products SET metadata = $2, updated_at = now() WHERE id = $1', [productId, JSON.stringify(metadata)]);
+  return tables;
+}
+
+function readTablesSync(metadata: Record<string, unknown>): Record<string, DataTable> {
+  const tables = metadata.tables;
+  return (tables && typeof tables === 'object' ? tables : {}) as Record<string, DataTable>;
+}
+
+/** §12: project a dynamic table onto the legacy `values` shape the storefront/360 already read. */
+function tableAsSpecValues(table: DataTable) {
+  return table.rows.map((row) => {
+    const cells = table.columns.map((column) => String(row.values?.[column.id] ?? '').trim());
+    const [label = '', ...rest] = cells;
+    return { id: row.id, label, unit: null, value: rest.filter(Boolean).join(' · '), variant_id: null, scope: 'product' };
+  });
 }
 
 export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
@@ -427,7 +497,16 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
               v.value_text, v.value_number, v.value_boolean, v.value_json
        FROM product_spec_values v JOIN spec_attributes a ON a.id = v.attribute_id
        WHERE v.product_id = $1 ORDER BY a.position, a.label`, [id]);
-    return { productId: id, template, values: rows.rows.map((row) => ({ ...row, value: fromStored(row) })) };
+    const legacyValues = rows.rows.map((row) => ({ ...row, value: fromStored(row) }));
+    // §12: the new dynamic table is authoritative when present; legacy rows stay readable.
+    const tables = await readTables(pool, id);
+    const table = tables.specs ?? null;
+    return {
+      productId: id,
+      template,
+      values: table ? tableAsSpecValues(table) : legacyValues,
+      table,
+    };
   });
 
   app.put('/api/v1/products/:id/specs', async (request) => {
@@ -440,8 +519,23 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
       }).strict()).max(300).default([]),
       // Item 127: also attach the used attributes to the product-type template (admins only).
       addToTemplate: z.boolean().default(false),
+      /** §10/§22: the dynamic «مشخصات فنی» table (arbitrary Admin-defined columns × rows). */
+      table: dataTable.nullable().optional(),
     }).strict().parse(request.body);
     if (body.addToTemplate) requirePermission(user, 'catalog:structure');
+    if (body.table !== undefined) {
+      return transaction(pool, async (client) => {
+        const owner = await one<{ id: string; supplier_id: string | null }>(client,
+          'SELECT id, supplier_id FROM products WHERE id = $1 FOR UPDATE', [id]);
+        if (!owner) throw notFound();
+        const isOwner = owner.supplier_id === user.id && user.roles.includes('supplier');
+        if (!isOwner) requirePermission(user, 'products:write');
+        const tables = await writeTable(client, id, 'specs', body.table ?? null);
+        await audit(client, user.id, 'product.specs_table_saved', 'product', id, undefined,
+          { columns: body.table?.columns.length ?? 0, rows: body.table?.rows.length ?? 0 }, request.ip);
+        return { productId: id, table: tables.specs ?? null };
+      });
+    }
     return transaction(pool, async (client) => {
       const product = await one<{ id: string; supplier_id: string | null; product_type_id: string | null }>(client,
         'SELECT id, supplier_id, product_type_id FROM products WHERE id = $1 FOR UPDATE', [id]);
@@ -733,6 +827,21 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const link = await one<{ guide_id: string; mode: string; detached_snapshot: unknown }>(pool,
       'SELECT guide_id, mode, detached_snapshot FROM product_size_guides WHERE product_id = $1', [id]);
+    /* §10: the Admin-defined dynamic table (when present) is the product's size guide. Returned
+       in the SAME shape as a linked guide so the storefront modal and Product 360 need no change. */
+    const tables = await readTables(pool, id);
+    if (tables.sizeGuide) {
+      return {
+        productId: id,
+        mode: 'table',
+        guide: {
+          id: `table:${id}`, code: 'product-table', name: 'راهنمای سایز این محصول', description: '', version: 1,
+          columns: tables.sizeGuide.columns.map((column, index) => ({ id: column.id, code: column.id, label: column.label, unit: null, position: index })),
+          rows: tables.sizeGuide.rows.map((row, index) => ({ id: row.id, values: row.values ?? {}, position: index })),
+          media: [],
+        },
+      };
+    }
     if (!link) return { productId: id, guide: null };
     if (link.mode === 'detached') return { productId: id, mode: 'detached', guide: link.detached_snapshot };
     const guide = await fullGuide(pool, link.guide_id);
@@ -741,7 +850,24 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
   app.put('/api/v1/products/:id/size-guide', async (request) => {
     const user = await principal(request, pool, config);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = z.object({ guideId: z.uuid(), mode: z.enum(['link', 'detached']) }).strict().parse(request.body);
+    const body = z.union([
+      z.object({ guideId: z.uuid(), mode: z.enum(['link', 'detached']) }).strict(),
+      /** §10/§22: save the Admin-defined dynamic size-guide table (no template, no binding). */
+      z.object({ table: dataTable.nullable() }).strict(),
+    ]).parse(request.body);
+    if (!('guideId' in body)) {
+      return transaction(pool, async (client) => {
+        const owner = await one<{ id: string; supplier_id: string | null }>(client,
+          'SELECT id, supplier_id FROM products WHERE id = $1 FOR UPDATE', [id]);
+        if (!owner) throw notFound();
+        const isOwner = owner.supplier_id === user.id && user.roles.includes('supplier');
+        if (!isOwner) requirePermission(user, 'products:write');
+        const tables = await writeTable(client, id, 'sizeGuide', body.table ?? null);
+        await audit(client, user.id, 'product.size_guide_table_saved', 'product', id, undefined,
+          { columns: body.table?.columns.length ?? 0, rows: body.table?.rows.length ?? 0 }, request.ip);
+        return { productId: id, mode: 'table', table: tables.sizeGuide ?? null };
+      });
+    }
     return transaction(pool, async (client) => {
       const product = await one<{ id: string; supplier_id: string | null }>(client, 'SELECT id, supplier_id FROM products WHERE id = $1', [id]);
       if (!product) throw notFound();
