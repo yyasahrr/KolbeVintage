@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Clock3, Plus, RefreshCw, UserRoundCheck } from "lucide-react";
-import { crmApi } from "../data/api";
+import { crmApi, crmIntelApi } from "../data/api";
 import { formatPersianDateTime } from "../data/persian-date";
 import { Btn, Card, Empty, ErrorState, LoadingState, SearchBox, Segmented, Status, WorkspaceModal } from "./primitives";
 
@@ -30,12 +30,15 @@ export function CrmRelationshipCenter({ mode, flash }: { mode: "overview" | "fol
   const [searchRows,setSearchRows]=useState<Row[]>([]);
   const [searching,setSearching]=useState(false);
   const [selected,setSelected]=useState<string|null>(null);
-  const [detail,setDetail]=useState<{contact:Row;tasks:Row[];interactions:Row[]}|null>(null);
+  const [detail,setDetail]=useState<{contact:Row;tasks:Row[];interactions:Row[];notes:Row[]}|null>(null);
   const [error,setError]=useState<string|null>(null);
   const [leadOpen,setLeadOpen]=useState(false);
   const [lead,setLead]=useState({name:"",phone:"",email:"",organization:"",ownerUserId:"",priority:"normal",nextFollowupAt:""});
   const [task,setTask]=useState({title:"",description:"",assignedTo:"",dueAt:"",priority:"normal"});
   const [interaction,setInteraction]=useState({channel:"call",outcome:"successful",subject:"",body:"",nextFollowupAt:""});
+  const [note,setNote]=useState("");
+  const [linkSearch,setLinkSearch]=useState("");
+  const [linkRows,setLinkRows]=useState<Row[]>([]);
 
   const load=useCallback(async()=>{
     try{
@@ -59,6 +62,15 @@ export function CrmRelationshipCenter({ mode, flash }: { mode: "overview" | "fol
     },250);
     return()=>window.clearTimeout(timer);
   },[search]);
+
+  useEffect(()=>{
+    if(linkSearch.trim().length<2){setLinkRows([]);return;}
+    const timer=window.setTimeout(async()=>{
+      try{const r=await crmApi.globalSearch(linkSearch.trim(),12);setLinkRows(r.items.filter((row)=>!!row.user_id));}
+      catch{setLinkRows([]);}
+    },250);
+    return()=>window.clearTimeout(timer);
+  },[linkSearch]);
 
   const openDetail=async(id:string)=>{
     setSelected(id); setDetail(null);
@@ -109,6 +121,22 @@ export function CrmRelationshipCenter({ mode, flash }: { mode: "overview" | "fol
       setInteraction({channel:"call",outcome:"successful",subject:"",body:"",nextFollowupAt:""});
       flash("تعامل ثبت شد");await Promise.all([reloadDetail(),load()]);
     }catch(e){flash(e instanceof Error?e.message:"ثبت تعامل ناموفق بود");}
+  };
+
+  const addNote=async()=>{
+    if(!selected||note.trim().length<2)return;
+    try{await crmIntelApi.addNote(selected,{body:note.trim(),visibility:"internal"});setNote("");flash("یادداشت ثبت شد");await reloadDetail();}
+    catch(e){flash(e instanceof Error?e.message:"ثبت یادداشت ناموفق بود");}
+  };
+
+  const linkLead=async(userId:string)=>{
+    if(!selected)return;
+    try{
+      const merged=await crmApi.linkLeadToUser(selected,userId);
+      const nextId=String(merged.id??selected);
+      setLinkSearch("");setLinkRows([]);flash("سرنخ به حساب واقعی متصل شد");
+      setSelected(nextId);setDetail(await crmApi.relationship(nextId));await load();
+    }catch(e){flash(e instanceof Error?e.message:"اتصال سرنخ ناموفق بود");}
   };
 
   const kpis=useMemo(()=>[
@@ -182,6 +210,17 @@ export function CrmRelationshipCenter({ mode, flash }: { mode: "overview" | "fol
               <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">{text(detail.contact.phone,"بدون شماره")} · {text(detail.contact.email,"بدون ایمیل")}</p></div>
             <div className="flex flex-wrap gap-2"><Status value={LIFECYCLE_FA[String(detail.contact.lifecycle_stage)]??"فعال"}/><Status value={PRIORITY_FA[String(detail.contact.priority)]??"عادی"}/></div>
           </div>
+          {!detail.contact.user_id && String(detail.contact.lifecycle_stage)==="lead" && <div className="mt-4 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 p-3">
+            <p className="text-[12.5px] font-extrabold">تبدیل سرنخ به حساب واقعی</p>
+            <p className="mt-1 text-[11px] text-[var(--kv-muted)]">پس از ثبت‌نام مخاطب، حساب او را پیدا کنید؛ یادداشت‌ها، پیگیری‌ها، تعاملات و برچسب‌ها حفظ و Merge می‌شوند.</p>
+            <div className="mt-2"><SearchBox value={linkSearch} onChange={setLinkSearch} placeholder="نام، موبایل یا ایمیل حساب…"/></div>
+            {linkRows.length>0&&<div className="mt-2 divide-y divide-[var(--kv-line)] rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)]">
+              {linkRows.map(row=><button key={String(row.user_id)} className="flex w-full items-center justify-between px-3 py-2.5 text-right hover:bg-[var(--kv-surface-2)]" onClick={()=>void linkLead(String(row.user_id))}>
+                <span><b className="block text-[12px]">{text(row.display_name,"بدون نام")}</b><span className="text-[11px] text-[var(--kv-muted)]">{text(row.phone,"—")} · {text(row.email,"—")}</span></span>
+                <span className="text-[11px] font-bold">اتصال</span>
+              </button>)}
+            </div>}
+          </div>}
           <div className="mt-4 grid gap-3 md:grid-cols-3">
             <label className="text-[11.5px]">مسئول ارتباط<select className="mt-1 h-10 w-full rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-2"
               value={String(detail.contact.owner_user_id??"")} onChange={async e=>{await crmApi.updateRelationship(String(detail.contact.id),{ownerUserId:e.target.value||null});await reloadDetail();await load();}}>
@@ -228,6 +267,12 @@ export function CrmRelationshipCenter({ mode, flash }: { mode: "overview" | "fol
           <div className="mt-3 space-y-2">{detail.interactions.length===0?<p className="text-[12px] text-[var(--kv-muted)]">تعاملی ثبت نشده است.</p>:detail.interactions.map(row=><div key={String(row.id)} className="rounded-[10px] border border-[var(--kv-line)] p-3">
             <div className="flex justify-between gap-3"><b className="text-[12.5px]">{text(row.subject)}</b><span className="text-[11px] text-[var(--kv-muted)]">{dt(row.occurred_at)}</span></div>
             <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">{text(row.body,"بدون توضیح")}</p></div>)}</div>
+        </Card>
+        <Card className="p-4"><div className="flex items-center justify-between gap-3"><p className="font-extrabold">یادداشت‌های داخلی</p><span className="text-[11px] text-[var(--kv-muted)]">فقط تیم داخلی</span></div>
+          <div className="mt-3 flex gap-2"><input className="h-10 flex-1 rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[12.5px]" placeholder="یادداشت کوتاه…" value={note} onChange={e=>setNote(e.target.value)}/><Btn variant="accent" size="sm" onClick={()=>void addNote()}>ثبت</Btn></div>
+          <div className="mt-3 space-y-2">{detail.notes.length===0?<p className="text-[12px] text-[var(--kv-muted)]">یادداشتی ثبت نشده است.</p>:detail.notes.map(row=><div key={String(row.id)} className="rounded-[10px] border border-[var(--kv-line)] p-3">
+            <p className="text-[12px]">{text(row.body)}</p><span className="mt-1 block text-[10.5px] text-[var(--kv-muted)]">{text(row.author_name,"تیم CRM")} · {dt(row.created_at)}</span>
+          </div>)}</div>
         </Card>
       </div>}
     </WorkspaceModal>
