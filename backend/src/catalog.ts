@@ -5,7 +5,7 @@ import type { Config } from './config.js';
 import { one, transaction, type DbPool } from './db.js';
 import { principal, requirePermission } from './auth.js';
 import { asRial, rial } from './money.js';
-import { audit, outbox } from './operations.js';
+import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
 import { validateSpecifications, type SpecField } from './profile.js';
 import { categoryProfileFor, validateCategoryRequirements } from './product-lifecycle.js';
@@ -35,7 +35,20 @@ const saleTermsSchema = z.object({
   returnableWithinDays: 7,
   fulfillmentPolicy: 'kolbe_central_qc',
 });
+/** §6-§9 (final PO decision): the create endpoint serves BOTH canonical actions of the
+ *  Product Studio — [ذخیره پیش‌نویس] (`draft`) and [ذخیره و ادامه] (`continue`).
+ *
+ *  `draft`    — Save Draft: partially completed but structurally valid data is allowed.
+ *               No price, no variant and no required spec is mandatory. The product still
+ *               receives its canonical Product ID and stays «پیش‌نویس» with ZERO stock.
+ *  `continue` — Save & Continue: the full publish-grade validation of the catalog step
+ *               runs before the WMS handoff (unchanged legacy behaviour / default).
+ */
+const saveIntent = z.enum(['draft', 'continue']).default('continue');
+
 const productBody = z.object({
+  /** §6: which canonical studio action produced this payload. */
+  saveIntent: saveIntent,
   brand: z.string().trim().min(1).max(120),
   name: z.string().trim().min(2).max(240),
   category: z.string().trim().min(1).max(120),
@@ -43,7 +56,7 @@ const productBody = z.object({
   cashPriceRial: z.string().regex(/^\d+$/),
   installmentPriceRial: z.string().regex(/^\d+$/).optional(),
   wholesalePriceRial: z.string().regex(/^\d+$/).optional(),
-  variants: z.array(variantInput).min(1).max(100),
+  variants: z.array(variantInput).max(100).default([]),
   metadata: z.record(z.string(), z.unknown()).default({}),
   productTypeCode: z.string().regex(/^[a-z0-9_-]{2,40}$/).optional(),
   specifications: z.record(z.string(), z.unknown()).default({}),
@@ -483,10 +496,14 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const isSupplierOnly = user.roles.includes('supplier') && !user.permissions.includes('products:write');
     if (!user.roles.includes('supplier')) requirePermission(user, 'products:write');
     const body = productBody.parse(request.body);
+    /** §7/§8: Save Draft allows an incomplete (but structurally valid) product. */
+    const isDraftSave = body.saveIntent === 'draft';
     const cash = rial(body.cashPriceRial);
     const installment = body.installmentPriceRial === undefined ? null : rial(body.installmentPriceRial);
     const wholesale = body.wholesalePriceRial === undefined ? null : rial(body.wholesalePriceRial);
-    if (cash === 0n && (!wholesale || wholesale === 0n)) throw badRequest('دست‌کم یک قیمت معتبر لازم است.');
+    // §8: publication-grade requirements do not block a Draft; §11: Save & Continue keeps them.
+    if (!isDraftSave && cash === 0n && (!wholesale || wholesale === 0n)) throw badRequest('دست‌کم یک قیمت معتبر لازم است.');
+    if (!isDraftSave && !body.variants.length) throw badRequest('دست‌کم یک واریانت برای ادامه لازم است.');
 
     const isSupplier = user.roles.includes('supplier');
     if (isSupplierOnly) {
@@ -507,9 +524,19 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     if (!categoryProfile && body.productTypeId) await assertTypeSizes(pool, body.productTypeId, body.variants.map((v) => v.size ?? undefined));
     // §8: Category is the source of truth for the NEW flow — allowed sizes + required specs
     // come from the category profile (product_type stays only as deprecated legacy data).
-    await validateCategoryRequirements(pool, body.category, body.specifications, body.variants.map((v) => v.size));
+    // §8 (final PO decision): a Draft only needs to be STRUCTURALLY valid — supplied sizes
+    // must still belong to the category, but required spec attributes wait for publication.
+    await validateCategoryRequirements(pool, body.category, body.specifications, body.variants.map((v) => v.size),
+      { enforceRequiredSpecs: !isDraftSave });
     if (body.genderCode) await assertTaxonomy(pool, 'gender', body.genderCode);
     for (const season of new Set(body.seasons)) await assertTaxonomy(pool, 'season', season);
+
+    /* §39: a browser retry / double click on [ذخیره پیش‌نویس] or [ذخیره و ادامه] must
+       never create a second Product identity. When the client sends an Idempotency-Key
+       the whole create (product + variants + series) is claimed server-side. */
+    const idempotencyKey = request.headers['idempotency-key'];
+    const idemKey = typeof idempotencyKey === 'string' && idempotencyKey.length >= 8 && idempotencyKey.length <= 120
+      ? idempotencyKey : null;
 
     const productId = randomUUID();
     const { specifications } = categoryProfile ? { specifications: body.specifications }
@@ -536,6 +563,10 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const seasons = [...new Set(body.seasons)];
 
     const result = await transaction(pool, async (client) => {
+      if (idemKey) {
+        const claim = await claimIdempotency(client, user.id, 'product.create', idemKey, requestHash({ body, isSupplierOnly }));
+        if (claim.previous) return claim.previous;
+      }
       await normalizeCatalogMedia(client, body.metadata, user.id, user.permissions.includes('products:write'));
       await client.query(
         `INSERT INTO products(id,supplier_id,brand,name,category,description,status,cash_price_rial,installment_price_rial,wholesale_price_rial,metadata,
@@ -597,10 +628,13 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         variants.push({ id, sku, color: variant.color ?? null, size: variant.size ?? null, weightGrams: variant.weightGrams ?? null });
       }
       if (body.wholesaleSeries) await saveProductSeries(client, productId, body.wholesaleSeries, user.id);
-      await audit(client, user.id, 'product.created', 'product', productId, undefined, { name: body.name, ownerType, variants }, request.ip);
-      await outbox(client, 'product.created', 'product', productId, { productId });
+      // §41: the lifecycle event records WHICH canonical studio action created the draft,
+      // so «پیش‌نویس ایجاد شد» and «ادامهٔ تکمیل محصول» stay auditable and distinguishable.
+      await audit(client, user.id, 'product.created', 'product', productId, undefined,
+        { name: body.name, ownerType, variants, saveIntent: body.saveIntent, status: isSupplierOnly ? 'pending' : 'draft' }, request.ip);
+      await outbox(client, 'product.created', 'product', productId, { productId, saveIntent: body.saveIntent });
       await outbox(client, 'product.style_analysis_requested', 'product', productId, { productId, reason: 'product.created' });
-      return {
+      const response = {
         id: productId,
         status: isSupplierOnly ? 'pending' : 'draft',
         ownerType,
@@ -608,6 +642,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
         wholesaleEnabled,
         variants,
       };
+      if (idemKey) await completeIdempotency(client, user.id, 'product.create', idemKey, response);
+      return response;
     });
     return reply.code(201).send(result);
   });
@@ -702,6 +738,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       genderCode: z.string().trim().max(40).nullable().optional(),
       seasons: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
       wholesaleSeries: productSeriesSchema.optional(),
+      /** §8/§9: [ذخیره پیش‌نویس] on a resumed draft keeps the lenient draft validation. */
+      saveIntent: saveIntent.optional(),
     }).strict().parse(request.body);
     const owned = await one<{ supplier_id: string | null }>(pool, 'SELECT supplier_id FROM products WHERE id = $1', [id]);
     if (!owned) throw notFound();
@@ -722,7 +760,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       if (body.category !== undefined || body.specifications !== undefined) {
         const variants = await client.query<{ size_label: string | null }>(
           'SELECT size_label FROM product_variants WHERE product_id = $1 AND active', [id]);
-        await validateCategoryRequirements(client, category, body.specifications ?? before.specifications ?? {}, variants.rows.map((v) => v.size_label));
+        // §9: re-saving a Draft must not demand publication-grade completeness.
+        await validateCategoryRequirements(client, category, body.specifications ?? before.specifications ?? {},
+          variants.rows.map((v) => v.size_label), { enforceRequiredSpecs: body.saveIntent !== 'draft' });
       }
       const isSupplierOwner = before.supplier_id === user.id && user.roles.includes('supplier');
       if (!isSupplierOwner) requirePermission(user, 'products:write');

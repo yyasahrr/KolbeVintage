@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BadgePercent, Boxes, Check, Film, Image as ImageIcon, Loader2, Pencil, Plus, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
+import { ArrowLeft, BadgePercent, Boxes, Check, Film, Image as ImageIcon, Loader2, Pencil, Plus, Save, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
 import { COLORS, IMG, fmtMoney, fmtNum, nextSku, type Colorway, type Product, type SeriesDef } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE } from "../data/platform";
@@ -9,7 +9,7 @@ import { authBlobUrl, filesApi, integrationsApi, inventoryApi, productColorsApi,
 import {
   INSTALLMENT_POLICIES, INSTALLMENT_POLICY_LABEL, buildProductCreatePayload, normalizeProductTypes, normalizeTaxonomies, normalizeWarehouses,
   productVariantSkus, readProductCreateResponse, rialFromToman, variantKey, variantMatrix,
-  type InstallmentPolicy, type ProductCreateResponse, type ProductType as StructureProductType, type Taxonomy, type Warehouse,
+  type InstallmentPolicy, type ProductType as StructureProductType, type Taxonomy, type Warehouse,
 } from "../data/contracts";
 import { ProductSpecsEditor } from "../components/product-specs-editor";
 import { ProductInventoryDrawer } from "../components/product-inventory";
@@ -211,7 +211,21 @@ function VariantAdvancedEditor({ color, size, variant, onClose, onCreate, onTogg
   );
 }
 
-export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: (productId: string) => void }) {
+/** §6/§9/§13: the canonical Product Studio.
+ *
+ *  `onContinueToInventory` — [ذخیره و ادامه]: receives the canonical productId and the
+ *    caller opens the canonical initial-inventory workspace with the product preselected.
+ *  `onDraftSaved` — [ذخیره پیش‌نویس]: the draft is persisted; the caller returns to
+ *    the «محصولات کلبه → پیش‌نویس‌ها» list.
+ *  `resumeProductId` — reopening a draft loads the SAME canonical studio form (§9).
+ */
+export function ProductStudio({ flash, onContinueToInventory, onDraftSaved, resumeProductId, onResumeHandled }: {
+  flash: F;
+  onContinueToInventory?: (productId: string) => void;
+  onDraftSaved?: (productId: string) => void;
+  resumeProductId?: string | null;
+  onResumeHandled?: () => void;
+}) {
   const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
   const { products, addProduct, setStatus, updateProduct, reload } = useStore();
   const [mediaBusy, setMediaBusy] = useState(false);
@@ -227,7 +241,6 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
   const [newColor, setNewColor] = useState({ name: "", hex: "#8A6A4F" });
   // Inventory step: warehouse + per (color,size) initial quantity. Persisted through WMS receipts.
   const [warehouses, setWarehouses] = useState<Warehouse[] | null>(null);
-  const [createdSummary, setCreatedSummary] = useState<{ product: ProductCreateResponse; colors: number; series: number } | null>(null);
   const [inventoryFor, setInventoryFor] = useState<Product | null>(null);
   const [discountFor, setDiscountFor] = useState<Product | null>(null);
   const [types, setTypes] = useState<ProductType[]>([]);
@@ -635,6 +648,28 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
     ...missingRequiredSpecs(selectedType, d.specs).map((label) => ({ label: `مشخصه «${label}»`, sec: "base" })),
   ].filter(Boolean) as { label: string; sec: string }[];
   const issues = issueItems.map((item) => item.label);
+  /** §8: Save Draft ≠ Publish. A Draft only has to be STRUCTURALLY valid — identity and
+   *  category are mandatory, everything else may be completed later (§9). */
+  const draftBlockers = [
+    !d.name.trim() ? "نام محصول" : null,
+    !d.category.trim() ? "دسته‌بندی" : null,
+  ].filter(Boolean) as string[];
+  /** §39: one idempotency key per create session — a retried save reuses the same identity. */
+  const [createIdemKey, setCreateIdemKey] = useState(() => `create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+
+  /** §6: [انصراف] / «بازگشت به فهرست» — always asks first when edits are unsaved (§37). */
+  const closeStudio = () => {
+    if (JSON.stringify(d) !== openSnapshot) { setConfirmLeave(true); return; }
+    setOpen(false); setEditing(null); setD(blank());
+  };
+
+  /** §9/§13: reopening a Draft loads the SAME canonical studio with all data restored. */
+  useEffect(() => {
+    if (!resumeProductId) return;
+    void openEdit({ id: resumeProductId } as unknown as Product)
+      .finally(() => onResumeHandled?.());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeProductId]);
 
   /** Uploads a product image; the persisted value is the server file id, the preview stays local. */
   const uploadImage = async (file: File): Promise<DraftImage> => {
@@ -654,8 +689,12 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
     finally { setMediaBusy(false); }
   };
 
-  const save = async () => {
-    if (issues.length) return;
+  /** §6/§11: ONE canonical create path, two canonical actions.
+   *  `draft`    → [ذخیره پیش‌نویس] — lenient validation, no stock, product stays پیش‌نویس.
+   *  `continue` → [ذخیره و ادامه]   — full catalog validation, then the WMS handoff. */
+  const save = async (intent: "draft" | "continue" = "continue") => {
+    if (intent === "continue" && issues.length) { flash(`برای ادامه تکمیل کنید: ${issues.join("، ")}`); return; }
+    if (intent === "draft" && draftBlockers.length) { flash(`برای ذخیره پیش‌نویس لازم است: ${draftBlockers.join("، ")}`); return; }
     if (isDemo) {
       const offered = d.series.filter((s) => s.available);
       const p: Product = {
@@ -699,23 +738,36 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       // filter it out of the canonical payload instead of creating it with zero stock.
       const enabledVariants = payload.variants.filter((variant) =>
         !cellOff[variantKey((variant as { color?: string | null }).color ?? null, (variant as { size?: string | null }).size ?? null)]);
-      if (!enabledVariants.length) { flash("دست‌کم یک خانه فعال در ماتریس رنگ×سایز لازم است."); return; }
+      // §8: a Draft may legitimately have no variant yet; Save & Continue needs at least one.
+      if (intent === "continue" && !enabledVariants.length) { flash("دست‌کم یک خانه فعال در ماتریس رنگ×سایز لازم است."); return; }
       // Adaptive form data (Req 325-326): the server validates specs against the type template.
       // §10: category-driven specs ALWAYS travel with the create payload (the server validates
       // required attributes of the category profile against exactly this object).
-      const adaptivePayload = { ...payload, wholesalePriceRial: d.wholesaleOn && d.series.length ? rialFromToman(Math.max(1, Math.floor(Math.min(...d.series.map((series) => series.pricePerSeries / Math.max(1, series.pieces)))))) : undefined, wholesaleSeries: d.wholesaleOn ? productSeriesPayload(d.series, d.colors) : [], variants: enabledVariants, specifications: d.specs, ...(d.typeCode ? { productTypeCode: d.typeCode } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
-      const res = readProductCreateResponse(await productsApi.create(adaptivePayload));
+      const adaptivePayload = { ...payload, saveIntent: intent, wholesalePriceRial: d.wholesaleOn && d.series.length ? rialFromToman(Math.max(1, Math.floor(Math.min(...d.series.map((series) => series.pricePerSeries / Math.max(1, series.pieces)))))) : undefined, wholesaleSeries: d.wholesaleOn ? productSeriesPayload(d.series, d.colors) : [], variants: enabledVariants, specifications: d.specs, ...(d.typeCode ? { productTypeCode: d.typeCode } : {}), gender: d.gender, seasons: d.seasons, vibes: d.vibes };
+      // §39: the idempotency key makes a double click / retry reuse the SAME product identity.
+      const res = readProductCreateResponse(await productsApi.create(adaptivePayload, createIdemKey));
       const skus = productVariantSkus(res);
 
-      // §4 (corrective): Product Definition = catalog ONLY. No receipt, no movement, no
-      // balance mutation here — the product lands in «نیازمند راه‌اندازی» and opening stock
-      // is registered there through the audited WMS document (inventory-setup).
-      setCreatedSummary({ product: res, colors: d.colors.length, series: d.wholesaleOn ? d.series.filter((s) => s.available).length : 0 });
-      flash(`«${d.name}» با موفقیت تعریف شد — ${skus.length.toLocaleString("fa-IR")} واریانت؛ وضعیت موجودی: نیازمند راه‌اندازی`);
+      // §4/§15: Product Definition = catalog ONLY. No receipt, no movement, no balance
+      // mutation here — the product stays «پیش‌نویس» and opening stock is registered only
+      // through the audited WMS document in «ورود اولیه کالا».
       setOpen(false); setD(blank());
       await reload();
+      if (intent === "draft") {
+        // §7: the draft keeps its canonical Product/Variant/Series ids, creates ZERO stock
+        // and appears under «محصولات کلبه → پیش‌نویس‌ها».
+        flash(`پیش‌نویس «${d.name}» ذخیره شد — ${skus.length.toLocaleString("fa-IR")} واریانت؛ بدون هیچ موجودی فیزیکی`);
+        setCreateIdemKey(`create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+        onDraftSaved?.(res.id);
+        return;
+      }
+      // §11: continuous handoff — no success page, no «نیازمند راه‌اندازی» queue.
+      flash(`«${d.name}» ذخیره شد — ${skus.length.toLocaleString("fa-IR")} واریانت؛ ورود اولیه کالا آماده است`);
+      setCreateIdemKey(`create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+      // §40: the product is already persisted — if the handoff fails it simply stays a draft.
+      onContinueToInventory?.(res.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : "خطا در انتشار");
+      flash(e instanceof Error ? e.message : (intent === "draft" ? "خطا در ذخیره پیش‌نویس" : "خطا در ذخیره و ادامه"));
     }
   };
 
@@ -784,9 +836,9 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
       {open && (
       <div>
         <div className="mb-4 flex flex-wrap items-center gap-2.5">
-          <Btn variant="soft" size="sm" onClick={() => { if (JSON.stringify(d) !== openSnapshot) { setConfirmLeave(true); return; } setOpen(false); setEditing(null); }} icon={<X size={14} />}>بازگشت به فهرست</Btn>
+          <Btn variant="soft" size="sm" onClick={closeStudio} icon={<X size={14} />}>بازگشت به فهرست</Btn>
           <h2 className="text-[17px] font-extrabold">{editing ? `ویرایش محصول · ${d.name || "…"}` : "تعریف محصول جدید"}</h2>
-          <span className="text-[11.5px] text-[var(--kv-muted)]">{editing ? "داده‌ها از سرور بارگذاری شده‌اند؛ تغییرات با ذخیره روی همان محصول اعمال می‌شود." : "تمام بخش‌های محصول را در همین صفحه تکمیل کنید و در پایان ذخیره و انتشار بزنید."}</span>
+          <span className="text-[11.5px] text-[var(--kv-muted)]">{editing ? "داده‌ها از سرور بارگذاری شده‌اند؛ تغییرات با ذخیره روی همان محصول اعمال می‌شود." : "تمام بخش‌های محصول را در همین صفحه تکمیل کنید؛ با «ذخیره پیش‌نویس» هر زمان ادامه دهید یا با «ذخیره و ادامه» موجودی اولیه را ثبت کنید."}</span>
         </div>
         <Card className="p-4 md:p-6">
         <div className="grid gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
@@ -1094,13 +1146,14 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
               {d.wholesaleOn && <Field label="حداقل سفارش عمده (عدد)" hint="سرور در ثبت سفارش عمده همین کف را برای مجموع واریانت‌های این محصول اعمال می‌کند"><Input value={d.wholesaleMoq} onChange={(v) => setD({ ...d, wholesaleMoq: v.replace(/\D/g, "") })} placeholder="مثلاً ۱۲" /></Field>}
               {d.wholesaleOn && <ProductSeriesEditor colors={d.colors} sizes={d.sizes} value={d.series} onChange={(series) => setD({ ...d, series })} />}
             </>}
-            {/* §4 (corrective): the «موجودی اولیه» step was removed from Product Definition.
-                Opening stock lives ONLY in کالاها → نیازمند راه‌اندازی (audited WMS document).
+            {/* §4/§15 (corrective): the «موجودی اولیه» step was removed from Product Definition.
+                Opening stock lives ONLY in the canonical «ورود اولیه کالا» WMS document,
+                reached through [ذخیره و ادامه] or «ادامه تکمیل محصول» — never from this form.
                 Variant weight (catalog data) stays here, next to the matrix result. */}
             {sec === "variant" && !editing && d.colors.length > 0 && d.sizes.length > 0 && (
               <div className="rounded-[12px] border border-[var(--kv-line)] p-3">
                 <p className="mb-1 text-[12.5px] font-bold">وزن واریانت‌ها (گرم — اختیاری)</p>
-                <p className="mb-2 text-[11.5px] text-[var(--kv-muted)]">داده کاتالوگی واریانت است و ربطی به موجودی ندارد؛ موجودی اولیه فقط از «نیازمند راه‌اندازی» ثبت می‌شود.</p>
+                <p className="mb-2 text-[11.5px] text-[var(--kv-muted)]">داده کاتالوگی واریانت است و ربطی به موجودی ندارد؛ موجودی اولیه فقط از «ورود اولیه کالا» و با سند انبار ثبت می‌شود.</p>
                 <div className="overflow-x-auto">
                   <table className="kv-table min-w-[420px] text-xs">
                     <thead><tr><th>رنگ</th><th>سایز</th><th>وزن (گرم)</th></tr></thead>
@@ -1181,7 +1234,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                 ) : (
                   <Empty
                     title="مشخصات ساختاریافته و راهنمای سایز پس از ذخیره"
-                    desc="ویرایشگر مشخصات فنی (بر اساس ساختار دسته‌بندی) و اتصال راهنمای سایز به شناسه محصول روی سرور نیاز دارند؛ بعد از «ذخیره و انتشار»، از دکمه «ویرایش» همین بخش فعال می‌شود."
+                    desc="ویرایشگر مشخصات فنی (بر اساس ساختار دسته‌بندی) و اتصال راهنمای سایز به شناسه محصول روی سرور نیاز دارند؛ بعد از «ذخیره پیش‌نویس» یا «ذخیره و ادامه»، از دکمه «ویرایش» همین بخش فعال می‌شود."
                   />
                 )}
               </div>
@@ -1223,7 +1276,7 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                 )}
                 {!editing && issueItems.length === 0 && (
                   <p className="rounded-[12px] border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-[12.5px] font-bold text-emerald-800">
-                    همه بخش‌ها کامل است — می‌توانید «ذخیره و انتشار» بزنید.
+                    همه بخش‌ها کامل است — می‌توانید «ذخیره و ادامه» را بزنید و موجودی اولیه را ثبت کنید.
                   </p>
                 )}
                 <div>
@@ -1250,14 +1303,30 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
                     ))}
                   </div>
                 </div>
+                {/* §6/§15: the honest next step — definition writes no stock at all. */}
                 <p className="rounded-[10px] bg-[var(--kv-surface-2)] px-3 py-2 text-[11.5px] leading-6 text-[var(--kv-muted)]">
-                  با ذخیره، فقط «تعریف» محصول ثبت می‌شود؛ موجودی اولیه بعداً از «کالاها ← نیازمند راه‌اندازی» با سند انبار ثبت می‌شود.
+                  «ذخیره پیش‌نویس» محصول را با شناسهٔ قطعی و بدون هیچ موجودی ذخیره می‌کند تا بعداً ادامه‌اش بدهید؛
+                  «ذخیره و ادامه» بلافاصله «ورود اولیه کالا» را با همین محصول باز می‌کند و موجودی فقط با سند انبار ثبت می‌شود.
                 </p>
               </div>
             )}
+            {/* §6: the canonical creation actions — continuous workflow, no success page. */}
             <div className="space-y-2 border-t border-[var(--kv-line)] pt-4">
-              {!editing && issues.length > 0 && <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">برای انتشار تکمیل کنید: {issues.join("، ")}</p>}
-              <Btn variant="accent" disabled={editing ? !d.name.trim() : issues.length > 0} onClick={editing ? saveEdit : save} icon={<Check size={14} />}>{editing ? "ذخیره تغییرات" : "ذخیره و انتشار"}</Btn>
+              {!editing && issues.length > 0 && <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">برای ادامه تکمیل کنید: {issues.join("، ")}</p>}
+              <div className="flex flex-wrap justify-end gap-2">
+                {editing ? (
+                  <>
+                    <Btn variant="ghost" onClick={closeStudio} icon={<X size={14} />}>انصراف</Btn>
+                    <Btn variant="accent" disabled={!d.name.trim()} onClick={() => void saveEdit()} icon={<Check size={14} />}>ذخیره تغییرات</Btn>
+                  </>
+                ) : (
+                  <>
+                    <Btn variant="ghost" onClick={closeStudio} icon={<X size={14} />}>انصراف</Btn>
+                    <Btn variant="soft" disabled={draftBlockers.length > 0} onClick={() => void save("draft")} icon={<Save size={14} />}>ذخیره پیش‌نویس</Btn>
+                    <Btn variant="accent" disabled={issues.length > 0} onClick={() => void save("continue")} icon={<ArrowLeft size={14} />}>ذخیره و ادامه</Btn>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1287,53 +1356,9 @@ export function ProductStudio({ flash, onGoToSetup }: { flash: F; onGoToSetup?: 
         }}
         flash={flash}
       />}
-      {/* §44 (corrective): post-create summary — catalog facts + honest inventory state. */}
-      <Modal open={!!createdSummary} onClose={() => setCreatedSummary(null)} title="محصول با موفقیت تعریف شد">
-        {createdSummary && (
-          <div className="space-y-3">
-            <h3 className="text-[15px] font-extrabold">محصول با موفقیت تعریف شد.</h3>
-            <div className="grid grid-cols-3 gap-2 text-center">
-              {([["واریانت‌ها", createdSummary.product.variants.length], ["رنگ‌ها", createdSummary.colors], ["سری عمده", createdSummary.series]] as [string, number][]).map(([label, value]) => (
-                <div key={label} className="rounded-[12px] bg-[var(--kv-surface-2)]/70 px-3 py-2.5">
-                  <p className="text-[15px] font-extrabold tabular-nums">{value.toLocaleString("fa-IR")}</p>
-                  <p className="text-[10.5px] text-[var(--kv-muted)]">{label}</p>
-                </div>
-              ))}
-            </div>
-            <p className="rounded-[12px] border border-amber-300 bg-amber-50 px-3 py-2.5 text-[12.5px] font-bold text-amber-800">
-              وضعیت موجودی: نیازمند راه‌اندازی — موجودی اولیه فقط از «کالاها ← نیازمند راه‌اندازی» و با سند انبار ثبت می‌شود.
-            </p>
-            <Card className="overflow-hidden">
-              <div className="kv-scroll max-h-56 overflow-auto">
-                <table className="kv-table min-w-[420px] text-xs">
-                  <thead><tr><th>رنگ</th><th>سایز</th><th>SKU</th></tr></thead>
-                  <tbody>
-                    {createdSummary.product.variants.map((variant) => (
-                      <tr key={variant.id}><td>{variant.color ?? "—"}</td><td>{variant.size ?? "—"}</td><td className="font-mono" dir="ltr">{variant.sku}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-            {/* §32 (final gate): the three canonical next steps after a definition. */}
-            <div className="flex flex-wrap justify-end gap-2">
-              <Btn variant="soft" size="sm" onClick={() => setCreatedSummary(null)}>بعداً</Btn>
-              <Btn variant="soft" size="sm" onClick={() => {
-                const created = createdSummary.product;
-                setCreatedSummary(null);
-                void openEdit({ id: created.id } as unknown as Product);
-              }}>مشاهده محصول</Btn>
-              <Btn variant="soft" size="sm" onClick={() => {
-                setCreatedSummary(null);
-                const fresh = blank();
-                setD(fresh); setOpenSnapshot(JSON.stringify(fresh));
-                setEditing(null); setEditVariants([]); setCellOff({}); setSec("base"); setOpen(true);
-              }}>تعریف محصول بعدی</Btn>
-              {onGoToSetup && <Btn variant="accent" size="sm" onClick={() => { const productId = createdSummary.product.id; setCreatedSummary(null); onGoToSetup(productId); }}>رفتن به راه‌اندازی موجودی</Btn>}
-            </div>
-          </div>
-        )}
-      </Modal>
+      {/* §6 (final PO decision): the post-create «محصول با موفقیت تعریف شد» success page was
+          REMOVED — the creation journey is continuous. [ذخیره پیش‌نویس] returns to
+          «پیش‌نویس‌ها» and [ذخیره و ادامه] goes straight into «ورود اولیه کالا». */}
       {/* §37 (final gate): leaving the studio with unsaved edits always asks first. */}
       <Modal open={confirmLeave} onClose={() => setConfirmLeave(false)} title="تغییرات ذخیره‌نشده">
         <div className="space-y-3">
