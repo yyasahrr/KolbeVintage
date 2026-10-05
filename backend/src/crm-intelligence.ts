@@ -567,11 +567,11 @@ export function registerCrmIntelligenceRoutes(app: FastifyInstance, pool: DbPool
       .strict().parse(request.body);
     const noteId = randomUUID();
     return transaction(pool, async (client) => {
-      const contact = await one<{ id: string; user_id: string }>(client, 'SELECT id,user_id FROM crm_contacts WHERE id = $1', [id]);
+      const contact = await one<{ id: string; user_id: string | null }>(client, 'SELECT id,user_id FROM crm_contacts WHERE id = $1', [id]);
       if (!contact) throw notFound();
       await client.query('INSERT INTO crm_notes(id,contact_id,author_id,body,visibility) VALUES ($1,$2,$3,$4,$5)',
         [noteId, id, user.id, body.body, body.visibility]);
-      await recordTimeline(client, { userId: contact.user_id, eventType: 'crm.note', title: 'یادداشت داخلی CRM',
+      if (contact.user_id) await recordTimeline(client, { userId: contact.user_id, eventType: 'crm.note', title: 'یادداشت داخلی CRM',
         description: body.body.slice(0, 200), refType: 'crm_note', refId: noteId, actorId: user.id, source: 'crm' });
       await audit(client, user.id, 'crm.note_added', 'crm_contact', id, undefined, { noteId, visibility: body.visibility }, request.ip);
       return reply.code(201).send({ id: noteId, ...body });
