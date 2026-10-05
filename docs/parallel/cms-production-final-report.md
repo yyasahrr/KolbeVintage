@@ -1,10 +1,10 @@
 # CMS production remediation — 2026-10-05
 
-CURRENT_BRANCH: `arena/cms-production-final`  
-START_SHA: `c89ff119c9ecc6f0b02a7310c5ffa5ef523ce7c0`  
-END_SHA: `cedeb6d6040fcc264cd069a34aa0b4f669bf50ca` (tested implementation). The final handoff commit is its report-only child; use branch HEAD for the final delivered SHA. A report cannot embed its own commit hash without changing that hash.  
-COMMITS_CREATED: `cedeb6d6040fcc264cd069a34aa0b4f669bf50ca` — `feat(cms): consolidate workspace and isolate draft publication`; one report-only child — `docs(cms): record production remediation evidence`.  
-FILES_CHANGED: 35 files total: 34 implementation/test/build/screenshot files plus this report. See the manifest below.  
+CURRENT_BRANCH: `arena/cms-production-final`
+START_SHA: `c89ff119c9ecc6f0b02a7310c5ffa5ef523ce7c0`
+END_SHA: `cedeb6d6040fcc264cd069a34aa0b4f669bf50ca` (tested implementation). Final handoff commits are report-only descendants; use branch HEAD for the final delivered SHA. A report cannot embed its own commit hash without changing that hash.
+COMMITS_CREATED: `cedeb6d6040fcc264cd069a34aa0b4f669bf50ca` — `feat(cms): consolidate workspace and isolate draft publication`; two report-only descendants — `010ae1d` / `docs(cms): record production remediation evidence` and `docs(cms): finalize audit traceability and validation`.
+FILES_CHANGED: 35 files total: 34 implementation/test/build/screenshot files plus this report. See the manifest below.
 MIGRATIONS_CREATED: `backend/src/migrations/073_cms_draft_publication.sql`
 
 ## 1. Initial state
@@ -194,3 +194,35 @@ Final local logs: cms-embedded-final.log, cms-focused-final.log, cms-contract-fi
 - `src/portals/cms-page-workspace.tsx`
 - `src/portals/cms-pages.tsx`
 - `src/portals/content-media.tsx`
+
+## Source-of-truth and verification traceability
+
+Product authority for this remediation: owner's attached explicit request, then docs/product/KOLBE_DOMAIN_RULES.md and KOLBE_SOURCE_OF_TRUTH.md; all ten mandated documents were read. No product knowledge documents were edited to normalize old implementation defects.
+
+| Data | Canonical owner | CMS writer / reader boundary |
+|---|---|---|
+| Page working copy | cms_pages / cms_sections, existing registry schemas | Canonical draft endpoint; legacy compatible writes invalidate revision |
+| Public page/version | cms_page_versions | Explicit publisher writes; public APIs and renderer read eligible snapshot |
+| Journal working/public content | editorial_posts and editorial_live view | Journal API writes; frozen snapshot view reads, no browser business store |
+| Global presentation | Existing CMS layout/announcement configuration | Explicit immediate Save and Apply through existing APIs |
+| Uploaded media | cms_assets / files | Media Center owns uploads; CMS references existing files |
+| SEO metadata | Existing SEO entries/pages | SEO Center remains owner; public derived defaults use frozen publication |
+| Product, inventory and price | Existing commerce/catalog/WMS/resolver | CMS reads references; no quantity, price or fulfillment writes |
+| CRM/form submissions | Existing CRM entities and submission APIs | CMS configures content; no independent lead/customer records |
+
+| Verified journey | UI evidence | API / persisted-state evidence |
+|---|---|---|
+| New page | Create form and draft list | Draft status, no versions, public 404 |
+| Autosave | Save state, failure/retry and publish disabled | Revision advances only on persisted changes; latest generation retained |
+| Explicit publication | Readiness/diff confirmation | Version snapshot and actor audit; public content equals saved draft |
+| Draft/live separation | Edit after publish | Draft title/path/content differ while public API/SEO/sitemap retain snapshot |
+| Scheduling | Publish controls available at all widths | Start eligibility and end hide behavior asserted without resurrecting old version |
+| Concurrency | Stale-save error and server reload | Canonical stale revision/publication return 409; legacy edit invalidates revision |
+| Reference safety | Readiness errors | Missing and existing unpublished page targets block publication |
+| Version restore | Preview iframe and restore action | Historical content returns to draft; no new publication and live unchanged |
+| Duplicate/archive | Canonical row actions | New identities/no history or windows; archive restore remains draft |
+| Journal failure/publication | Aborted request, editor retained, retry and confirmation | No localStorage fallback; server draft and frozen public content; version/slug conflicts |
+| Global content | Save and Apply | Storefront layout reads newly persisted header |
+| Responsive/keyboard | Six committed viewport screenshots, focus/Escape assertions | Measured document/dialog/content bounds and focus restoration |
+
+Final report whitespace validation removed Markdown hard-break trailing spaces. The first implementation and report commits remain intact; this traceability update is an additional report-only commit. No history rewrite or force push was used.
