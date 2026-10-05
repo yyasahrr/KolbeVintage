@@ -41,6 +41,13 @@ export function registerCrmRelationshipRoutes(app: FastifyInstance, pool: DbPool
       priority: priority.default('normal'),
       nextFollowupAt: z.iso.datetime().nullable().optional(),
     }).strict().parse(request.body);
+    const duplicate = await one<{ id: string }>(pool, `
+      SELECT c.id FROM crm_contacts c
+      LEFT JOIN users u ON u.id=c.user_id
+      WHERE ($1::text IS NOT NULL AND lower(COALESCE(u.email,c.lead_email,''))=lower($1))
+         OR ($2::text IS NOT NULL AND regexp_replace(COALESCE(u.phone,c.lead_phone,''),'\\D','','g')=regexp_replace($2,'\\D','','g'))
+      LIMIT 1`, [body.email ?? null, body.phone ?? null]);
+    if (duplicate) throw conflict('برای این ایمیل یا شماره تماس از قبل پرونده CRM وجود دارد.');
     const id = randomUUID();
     await transaction(pool, async (client) => {
       await client.query(
@@ -226,6 +233,14 @@ export function registerCrmRelationshipRoutes(app: FastifyInstance, pool: DbPool
         WHERE id=$1 RETURNING *`,
         [id,body.title ?? null,body.description ?? null,Object.prototype.hasOwnProperty.call(body,'assignedTo'),body.assignedTo ?? null,
          Object.prototype.hasOwnProperty.call(body,'dueAt'),body.dueAt ?? null,body.priority ?? null,body.status ?? null]);
+      const contactId = String((row ?? before).contact_id);
+      if (body.status !== undefined || Object.prototype.hasOwnProperty.call(body,'dueAt')) {
+        const next = await one<{ due_at: string | null }>(client,
+          `SELECT min(due_at)::text AS due_at FROM crm_tasks WHERE contact_id=$1 AND status='open' AND due_at IS NOT NULL`,
+          [contactId]);
+        await client.query('UPDATE crm_contacts SET next_followup_at=$2,updated_at=now() WHERE id=$1',
+          [contactId, next?.due_at ?? null]);
+      }
       await audit(client,actor.id,'crm.task_updated','crm_task',id,before,body,request.ip);
       return row;
     });
@@ -248,6 +263,12 @@ export function registerCrmRelationshipRoutes(app: FastifyInstance, pool: DbPool
       await client.query(`UPDATE crm_contacts SET last_interaction_at=COALESCE($2,now()),
         next_followup_at=CASE WHEN $3::timestamptz IS NOT NULL THEN $3 ELSE next_followup_at END,updated_at=now() WHERE id=$1`,
         [id,body.occurredAt ?? null,body.nextFollowupAt ?? null]);
+      if (body.nextFollowupAt) {
+        const owner = await one<{ owner_user_id: string | null }>(client,'SELECT owner_user_id FROM crm_contacts WHERE id=$1',[id]);
+        await client.query(`INSERT INTO crm_tasks(id,contact_id,title,description,assigned_to,due_at,priority,created_by)
+          VALUES($1,$2,$3,$4,$5,$6,'normal',$7)`,
+          [randomUUID(),id,`پیگیری: ${body.subject}`,body.body,owner?.owner_user_id ?? null,body.nextFollowupAt,actor.id]);
+      }
       if(contact.user_id) await recordTimeline(client,{userId:contact.user_id,eventType:'crm.interaction',title:body.subject,
         description:body.body,source:'crm',refType:'crm_interaction',refId:interactionId,actorId:actor.id,metadata:{channel:body.channel,outcome:body.outcome},
         occurredAt:body.occurredAt?new Date(body.occurredAt):undefined});
