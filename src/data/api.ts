@@ -641,6 +641,28 @@ export const crmApi = {
   suppliers: (params?: Record<string, string | number | undefined>) =>
     authFetch<{ total: number; limit: number; offset: number; items: Record<string, unknown>[] }>(`/admin/crm/suppliers${query(params)}`),
   user360: (userId: string) => authFetch<Record<string, unknown>>(`/admin/crm/users/${userId}/360`),
+  owners: () => authFetch<{ items: { id: string; display_name: string }[] }>("/admin/crm/owners"),
+  relationshipSummary: () => authFetch<{ kpis: Record<string, number> }>("/admin/crm/relationship-summary"),
+  actionCenter: (params?: Record<string, string | number | undefined>) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/action-center${query(params)}`),
+  globalSearch: (q: string, limit = 15) =>
+    authFetch<{ items: Record<string, unknown>[] }>(`/admin/crm/search${query({ q, limit })}`),
+  relationship: (contactId: string) =>
+    authFetch<{ contact: Record<string, unknown>; tasks: Record<string, unknown>[]; interactions: Record<string, unknown>[] }>(`/admin/crm/contacts/${contactId}/relationship`),
+  userRelationship: (userId: string) =>
+    authFetch<{ contact: Record<string, unknown> }>(`/admin/crm/users/${userId}/relationship`),
+  createLead: (payload: { name: string; phone?: string | null; email?: string | null; organization?: string | null; ownerUserId?: string | null; priority?: string; nextFollowupAt?: string | null }) =>
+    authFetch<{ id: string }>("/admin/crm/leads", { method: "POST", body: JSON.stringify(payload) }),
+  linkLeadToUser: (contactId: string, userId: string) =>
+    authFetch<unknown>(`/admin/crm/contacts/${contactId}/link-user`, { method: "POST", body: JSON.stringify({ userId }) }),
+  updateRelationship: (contactId: string, payload: { ownerUserId?: string | null; lifecycleStage?: string; priority?: string; nextFollowupAt?: string | null }) =>
+    authFetch<Record<string, unknown>>(`/admin/crm/contacts/${contactId}/relationship`, { method: "PATCH", body: JSON.stringify(payload) }),
+  addTask: (contactId: string, payload: { title: string; description?: string; assignedTo?: string | null; dueAt?: string | null; priority?: string }) =>
+    authFetch<{ id: string }>(`/admin/crm/contacts/${contactId}/tasks`, { method: "POST", body: JSON.stringify(payload) }),
+  updateTask: (taskId: string, payload: { title?: string; description?: string; assignedTo?: string | null; dueAt?: string | null; priority?: string; status?: "open" | "done" | "cancelled" }) =>
+    authFetch<Record<string, unknown>>(`/admin/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  addInteraction: (contactId: string, payload: { channel: string; outcome: string; subject: string; body?: string; occurredAt?: string; nextFollowupAt?: string | null }) =>
+    authFetch<{ id: string }>(`/admin/crm/contacts/${contactId}/interactions`, { method: "POST", body: JSON.stringify(payload) }),
 };
 
 /* ---------------------------------- CMS ---------------------------------- */
