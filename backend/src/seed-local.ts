@@ -305,6 +305,7 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     step(`نمونهٔ قیمت‌گذاری: ${mode === 'series_total' ? 'قیمت کل سری' : 'محاسبه از اجزای سری'} برای «${name}» ثبت شد.`);
   }
 
+  const supplierUatSeries: Array<{ id: string; mode: string; owner: string }> = [];
   let wholesaleWarehouse = await pool.query("SELECT id FROM warehouses WHERE code='SEED-WHOLESALE'");
   if (!wholesaleWarehouse.rows[0]) {
     const created = await call(app, 'POST', '/api/v1/warehouses', { token: adminToken, payload: { code: 'SEED-WHOLESALE', name: 'انبار مرکزی عمده نمونه' } });
@@ -348,6 +349,7 @@ async function seed(app: FastifyInstance, pool: DbPool) {
       if (created.status !== 201) throw new Error(`supplier series: ${JSON.stringify(created)}`);
       template = { rows: [{ id: created.body.id }] } as typeof template;
     }
+    supplierUatSeries.push({ id: template.rows[0].id, mode: entry.mode, owner: entry.account.id });
     const offer = await call(app, 'POST', '/api/v1/supplier/offers', { token: entry.account.token, payload: {
       productId: row.rows[0].id, seriesTemplateId: template.rows[0].id, colorLabel: entry.color,
       fulfillmentMode: entry.mode, wholesalePriceRial: seriesPrice, minOrderSeries: 1, maxOrderSeries: 20, safetyBuffer: 0, leadTimeDays: 3,
@@ -417,6 +419,66 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     });
     if (approve.status !== 200) throw new Error(`membership approve: ${approve.status} ${JSON.stringify(approve.body)}`);
     step('عضویت عمده برای مشتری نمونه فعال شد.');
+  }
+
+  /* ---------------------- §110 Prompt-4 UAT: three source types ----------------------
+     One idempotent VIP master that exercises the WHOLE Order Center in a seeded database:
+     Kolbe-owned physical series, supplier-owned physical series at Kolbe (consignment already
+     received + QC'd above) and supplier CAPACITY (a supply requirement, never stock).
+     Re-running the seed is a no-op: the master is detected by its marker note. */
+  const uatSeries = await pool.query("SELECT id FROM series_templates WHERE name = 'سری شلوار پارچه‌ای'");
+  const uatKolbeTemplate = uatSeries.rows[0]?.id as string | undefined;
+  if (uatKolbeTemplate && supplierUatSeries.length && wholesaleWarehouse.rows[0]) {
+    const warehouseId = wholesaleWarehouse.rows[0].id as string;
+    const piecesPerSeries = (await pool.query(
+      'SELECT COALESCE(SUM(quantity_per_series),0)::int AS n FROM series_template_items WHERE series_template_id = $1',
+      [uatKolbeTemplate])).rows[0].n as number;
+    // piece stock for the Kolbe series must physically exist in the WHOLESALE warehouse before banding.
+    const uatVariantsRows = await pool.query(
+      'SELECT variant_id FROM series_template_items WHERE series_template_id = $1', [uatKolbeTemplate]);
+    for (const variant of uatVariantsRows.rows) {
+      const covered = await pool.query(
+        `SELECT on_hand - reserved FROM stock_balances
+          WHERE variant_id = $1 AND warehouse_id = $2 AND inventory_domain = 'wholesale'`, [variant.variant_id, warehouseId]);
+      if (Number(covered.rows[0]?.on_hand ?? 0) - Number(covered.rows[0]?.reserved ?? 0) >= piecesPerSeries * 4) continue;
+      const receipt = await call(app, 'POST', '/api/v1/inventory/receipts', { token: adminToken,
+        key: `seed-uat-series-${variant.variant_id}`,
+        payload: { warehouseId, variantId: variant.variant_id, quantity: piecesPerSeries * 4,
+          inventoryDomain: 'wholesale', reference: `SEED-UAT-${variant.variant_id.slice(0, 8)}` } });
+      if (receipt.status !== 201 && receipt.status !== 409) throw new Error(`uat series receipt: ${JSON.stringify(receipt.body)}`);
+      if (receipt.status === 201) {
+        // §UAT: received through the canonical WMS flow (kept in stock; banding happens below).
+        const receive = await call(app, 'POST', `/api/v1/inventory/receipts/${receipt.body.id}/receive`, { token: adminToken });
+        if (receive.status !== 200) throw new Error(`uat series receive: ${JSON.stringify(receive.body)}`);
+      }
+    }
+    const banded = await pool.query(
+      `SELECT on_hand FROM series_stock_balances WHERE series_template_id = $1 AND warehouse_id = $2 AND owner_type = 'kolbe'`,
+      [uatKolbeTemplate, warehouseId]);
+    if (Number(banded.rows[0]?.on_hand ?? 0) < 4) {
+      const stocktake = await call(app, 'POST', '/api/v1/inventory/series/stocktake', { token: adminToken,
+        key: `seed-uat-series-band-${uatKolbeTemplate}`,
+        payload: { seriesTemplateId: uatKolbeTemplate, warehouseId, ownerType: 'kolbe', countedSeries: 4, note: 'موجودی نمونهٔ کلبه برای پروندهٔ سفارش مادر' } });
+      if (stocktake.status !== 201 && stocktake.status !== 200) throw new Error(`uat series banding: ${JSON.stringify(stocktake.body)}`);
+      step('موجودی فیزیکی سری کلبه در انبار عمده ثبت شد (سه نوع منبع برای UAT).');
+    }
+
+    const atKolbe = supplierUatSeries.find((row) => row.mode === 'stock_at_kolbe');
+    const capacity = supplierUatSeries.find((row) => row.mode === 'order_driven');
+    if (atKolbe && capacity) {
+      const existingUat = await pool.query(
+        "SELECT reference FROM master_orders WHERE buyer_id = $1 AND note LIKE '%[seed-oms]%' ORDER BY created_at LIMIT 1", [customer.id]);
+      if (!existingUat.rows[0]) {
+        const master = await call(app, 'POST', '/api/v1/wholesale/masters', { token: customerToken, key: `seed-oms-master-${customer.id}`,
+          payload: { items: [
+            { seriesTemplateId: uatKolbeTemplate, count: 2 },
+            { seriesTemplateId: atKolbe.id, count: 2 },
+            { seriesTemplateId: capacity.id, count: 2 },
+          ], note: '[seed-oms] پروندهٔ نمونهٔ مرکز سفارش مادر (سه نوع منبع)' } });
+        if (master.status !== 201) throw new Error(`seed oms master: ${master.status} ${JSON.stringify(master.body)}`);
+        step(`سفارش مادر نمونه ${master.body.reference} با هر سه نوع منبع ثبت شد (تأمین چندگانه).`);
+      }
+    }
   }
 
   /* --------------------------------- orders -------------------------------- */
