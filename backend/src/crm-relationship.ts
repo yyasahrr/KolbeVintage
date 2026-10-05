@@ -64,14 +64,44 @@ export function registerCrmRelationshipRoutes(app: FastifyInstance, pool: DbPool
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const { userId } = z.object({ userId: z.uuid() }).strict().parse(request.body);
     return transaction(pool, async (client) => {
-      const existing = await one<{ id: string }>(client, 'SELECT id FROM crm_contacts WHERE user_id = $1', [userId]);
-      if (existing && existing.id !== id) throw conflict('برای این کاربر از قبل پرونده CRM وجود دارد.');
+      const targetUser = await one<{ id: string; actor_type: string }>(client,`
+        SELECT u.id,CASE WHEN EXISTS(SELECT 1 FROM supplier_profiles WHERE user_id=u.id) THEN 'supplier'
+                         WHEN EXISTS(SELECT 1 FROM buyer_profiles WHERE user_id=u.id) THEN 'wholesale_buyer'
+                         ELSE 'customer' END AS actor_type
+        FROM users u WHERE u.id=$1 FOR UPDATE`,[userId]);
+      if (!targetUser) throw notFound('حساب مقصد پیدا نشد.');
       const before = await one<Record<string, unknown>>(client, 'SELECT * FROM crm_contacts WHERE id = $1 FOR UPDATE', [id]);
       if (!before) throw notFound();
+      if (before.user_id) throw conflict('این پرونده از قبل به یک حساب متصل است.');
+
+      const existing = await one<Record<string, unknown>>(client, 'SELECT * FROM crm_contacts WHERE user_id = $1 FOR UPDATE', [userId]);
+      if (existing && String(existing.id) !== id) {
+        await client.query('UPDATE crm_notes SET contact_id=$2 WHERE contact_id=$1',[id,existing.id]);
+        await client.query('UPDATE crm_tasks SET contact_id=$2 WHERE contact_id=$1',[id,existing.id]);
+        await client.query('UPDATE crm_interactions SET contact_id=$2 WHERE contact_id=$1',[id,existing.id]);
+        await client.query('UPDATE crm_activities SET contact_id=$2 WHERE contact_id=$1',[id,existing.id]);
+        await client.query(`
+          INSERT INTO crm_contact_labels(contact_id,label_code,source,rule_id,assigned_by,assigned_at,expires_at)
+          SELECT $2,label_code,source,rule_id,assigned_by,assigned_at,expires_at FROM crm_contact_labels WHERE contact_id=$1
+          ON CONFLICT (contact_id,label_code) DO NOTHING`,[id,existing.id]);
+        await client.query('DELETE FROM crm_contact_labels WHERE contact_id=$1',[id]);
+        await client.query(`
+          UPDATE crm_contacts SET
+            owner_user_id=COALESCE(owner_user_id,$2::uuid),
+            priority=CASE WHEN priority='normal' THEN $3 ELSE priority END,
+            next_followup_at=LEAST(next_followup_at,$4::timestamptz),
+            lifecycle_stage=CASE WHEN lifecycle_stage='active' THEN 'active' ELSE lifecycle_stage END,
+            updated_at=now()
+          WHERE id=$1`,[existing.id,before.owner_user_id ?? null,before.priority ?? 'normal',before.next_followup_at ?? null]);
+        await client.query('DELETE FROM crm_contacts WHERE id=$1',[id]);
+        await audit(client, actor.id, 'crm.lead_merged_to_user', 'crm_contact', String(existing.id), before, { userId, mergedFromContactId:id }, request.ip);
+        return one(client,'SELECT * FROM crm_contacts WHERE id=$1',[existing.id]);
+      }
+
       const result = await client.query(
-        `UPDATE crm_contacts SET user_id=$2, actor_type='customer', lifecycle_stage='active',
+        `UPDATE crm_contacts SET user_id=$2, actor_type=$3, lifecycle_stage='active',
            lead_name=NULL, lead_phone=NULL, lead_email=NULL, updated_at=now()
-         WHERE id=$1 RETURNING *`, [id, userId]);
+         WHERE id=$1 RETURNING *`, [id, userId, targetUser.actor_type]);
       await audit(client, actor.id, 'crm.lead_linked_to_user', 'crm_contact', id, before, { userId }, request.ip);
       return result.rows[0];
     });
