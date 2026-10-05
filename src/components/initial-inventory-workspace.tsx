@@ -48,8 +48,13 @@ type TemplateLite = {
   items?: { size_label: string | null; quantity_per_series: number }[];
 };
 
-export function InitialInventoryWorkspace({ product, flash, onClose, onDone }: {
+export function InitialInventoryWorkspace({ product, flash, onClose, onDone, embedded = false, onContinue }: {
   product: InitialInventoryProduct; flash: F; onClose: () => void; onDone: () => void;
+  /** §18/§19 (final UX): rendered INSIDE the Product Studio step instead of as a modal —
+   *  same component, same canonical WMS receipt API, only the chrome differs. */
+  embedded?: boolean;
+  /** Present in embedded mode: «مرحله بعد» after a successful receipt. */
+  onContinue?: () => void;
 }) {
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; purpose?: string }[]>([]);
   const [variants, setVariants] = useState<VariantLite[] | null>(null);
@@ -69,6 +74,9 @@ export function InitialInventoryWorkspace({ product, flash, onClose, onDone }: {
   const [seriesCount, setSeriesCount] = useState("0");
   // §39: one idempotency key per opened workspace — a double click replays, never duplicates.
   const [idemKey] = useState(() => newKey(`setup-${product.id.slice(0, 8)}`));
+  /* §22: an explicit, non-optional receipt confirmation — the step must never look like it
+     silently did nothing, and it must never imply publication. */
+  const [receipt, setReceipt] = useState<{ retail: number; series: number; pieces: number } | null>(null);
 
   useEffect(() => {
     inventoryApi.warehouses().then((r) => setWarehouses(r.items)).catch(() => setWarehouses([]));
@@ -152,28 +160,41 @@ export function InitialInventoryWorkspace({ product, flash, onClose, onDone }: {
         } : {}),
         ...(wholesaleOn ? { wholesale: { warehouseId: wholesaleWh, seriesTemplateId: templateId, seriesCount: seriesCountValue } } : {}),
       }, idemKey);
-      flash("موجودی اولیه با سند انبار ثبت شد و تکمیل محصول ادامه یافت.");
-      onDone();
+      setReceipt({ retail: retailOn ? retailTotal : 0, series: wholesaleOn ? seriesCountValue : 0, pieces: wholesaleOn ? wholesalePieces : 0 });
+      flash("موجودی اولیه ثبت شد.");
+      if (!embedded) onDone();
     } catch (e) { flash(e instanceof Error ? e.message : "خطا در ثبت موجودی اولیه"); } finally { setBusy(false); }
   };
 
   const salesMode = product.retail_enabled && product.wholesale_enabled ? "خرده + عمده"
     : product.retail_enabled ? "خرده" : product.wholesale_enabled ? "عمده" : "تعیین‌نشده";
 
-  return (
-    <WorkspaceModal open onClose={onClose} title={`ورود اولیه کالا — ${product.name}`}
-      subtitle="موجودی اولیه فقط از این‌جا و از طریق سند رسید انبار (قابل‌حسابرسی) ثبت می‌شود؛ تعریف محصول هیچ عملیات موجودی ندارد."
-      footer={
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
-            پیش‌نمایش: خرده {fa(retailTotal)} عدد{wholesaleOn ? ` · عمده ${fa(seriesCountValue)} سری (${fa(wholesalePieces)} عدد)` : ""} — پس از تأیید، همین مقادیر با سند ثبت می‌شوند.
-          </p>
-          <div className="flex gap-2">
-            <Btn variant="ghost" onClick={onClose}>انصراف</Btn>
-            <Btn variant="accent" disabled={busy} onClick={() => void submit()}>{busy ? "در حال ثبت..." : "تأیید و ثبت سند افتتاحیه"}</Btn>
-          </div>
+  /* §22: the receipt summary is part of the step, with «مرحله بعد» — no auto-publish, no exit. */
+  if (receipt) {
+    const summary = (
+      <Card className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11.5px] font-bold text-emerald-800">موجودی اولیه ثبت شد</span>
+          <p className="text-[12px] text-[var(--kv-muted)]">سند انبار ثبت و قابل حسابرسی است؛ محصول همچنان «پیش‌نویس» می‌ماند تا وقتی «انتشار محصول» را بزنید.</p>
         </div>
-      }>
+        <ul className="grid gap-2 text-[12px] sm:grid-cols-3">
+          <li className="rounded-[10px] border border-[var(--kv-line)] px-3 py-2">انبار خرده: <b>{fa(receipt.retail)} عدد</b></li>
+          <li className="rounded-[10px] border border-[var(--kv-line)] px-3 py-2">انبار عمده: <b>{fa(receipt.series)} سری</b></li>
+          <li className="rounded-[10px] border border-[var(--kv-line)] px-3 py-2">ترکیب فیزیکی عمده: <b>{fa(receipt.pieces)} عدد</b></li>
+        </ul>
+        <div className="flex flex-wrap gap-2">
+          {embedded && onContinue && <Btn variant="accent" onClick={onContinue}>مرحله بعد</Btn>}
+          <Btn variant="soft" onClick={onDone}>به‌روزرسانی فهرست</Btn>
+        </div>
+      </Card>
+    );
+    return embedded ? summary : (
+      <WorkspaceModal open onClose={onClose} title={`ورود اولیه کالا — ${product.name}`}>{summary}</WorkspaceModal>
+    );
+  }
+
+  const body = (
+    <>
       {/* §12: the workspace knows the product — no search, no re-selection. */}
       <div className="grid gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 p-3 text-[11.5px] sm:grid-cols-2 lg:grid-cols-4">
         <div><span className="text-[var(--kv-muted)]">محصول</span><p className="font-bold">{product.name}</p></div>
@@ -320,8 +341,40 @@ export function InitialInventoryWorkspace({ product, flash, onClose, onDone }: {
       </div>
       <p className="flex items-start gap-2 text-[11px] leading-6 text-[var(--kv-muted)]">
         <PackagePlus size={14} className="mt-1 shrink-0" />
-        اگر بدون تأیید خارج شوید، محصول در وضعیت «پیش‌نویس» باقی می‌ماند و هیچ موجودی فیزیکی ثبت نمی‌شود؛ می‌توانید بعداً از «محصولات کلبه ← پیش‌نویس‌ها» با «ادامه تکمیل محصول» به همین صفحه برگردید.
+        اگر بدون تأیید خارج شوید، محصول در وضعیت «پیش‌نویس» باقی می‌ماند و هیچ موجودی فیزیکی ثبت نمی‌شود؛ می‌توانید بعداً از «محصولات کلبه ← پیش‌نویس‌ها» با «ادامه تکمیل محصول» به همین بخش برگردید.
       </p>
+    </>
+  );
+  /* §19 (final UX): embedded inside the Product Studio step — same canonical receipt API,
+     same controls, no modal chrome. */
+  if (embedded) {
+    return (
+      <div className="space-y-4">
+        {body}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 px-3 py-3">
+          <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
+            پیش‌نمایش: خرده {fa(retailTotal)} عدد{wholesaleOn ? ` · عمده ${fa(seriesCountValue)} سری (${fa(wholesalePieces)} عدد)` : ""} — پس از تأیید، همین مقادیر با سند انبار ثبت می‌شوند و محصول منتشر نمی‌شود.
+          </p>
+          <Btn variant="accent" disabled={busy} onClick={() => void submit()}>{busy ? "در حال ثبت..." : "ثبت موجودی اولیه"}</Btn>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <WorkspaceModal open onClose={onClose} title={`ورود اولیه کالا — ${product.name}`}
+      subtitle="موجودی اولیه فقط از این‌جا و از طریق سند رسید انبار (قابل‌حسابرسی) ثبت می‌شود؛ تعریف محصول هیچ عملیات موجودی ندارد."
+      footer={
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">
+            پیش‌نمایش: خرده {fa(retailTotal)} عدد{wholesaleOn ? ` · عمده ${fa(seriesCountValue)} سری (${fa(wholesalePieces)} عدد)` : ""} — پس از تأیید، همین مقادیر با سند ثبت می‌شوند.
+          </p>
+          <div className="flex gap-2">
+            <Btn variant="ghost" onClick={onClose}>انصراف</Btn>
+            <Btn variant="accent" disabled={busy} onClick={() => void submit()}>{busy ? "در حال ثبت..." : "تأیید و ثبت سند افتتاحیه"}</Btn>
+          </div>
+        </div>
+      }>
+      {body}
     </WorkspaceModal>
   );
 }

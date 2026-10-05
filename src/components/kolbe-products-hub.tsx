@@ -11,21 +11,19 @@
  *  «نیازمند راه‌اندازی» queue and no second Product lifecycle — `inventory_setup`
  *  remains an internal technical invariant only.
  *
- *  Reused canonical surfaces: ProductStudio (create/edit), Product360 (read),
- *  DiscountManager/ProductPricingWorkspace (pricing), InitialInventoryWorkspace (WMS).
+ *  Reused canonical surfaces: ProductStudio (create/edit/pricing/initial-inventory — the ONE
+ *  product workflow), Product360 (read), the canonical Promotion Center (discounts/festivals).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BadgePercent, Boxes, PackagePlus, PartyPopper, Pencil, Plus, RefreshCw, ScanEye, Warehouse,
+  BadgePercent, PackagePlus, PartyPopper, Pencil, Plus, RefreshCw, ScanEye, Warehouse,
 } from "lucide-react";
 import {
-  Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, SafeImg, SearchBox, Segmented, WorkspaceModal,
+  Btn, Card, Empty, ErrorState, Field, Input, LoadingState, Modal, SafeImg, SearchBox, Segmented,
 } from "./primitives";
-import { ProductPricingWorkspace } from "./discount-manager";
 import { Product360 } from "./product-360";
-import { InitialInventoryWorkspace } from "./initial-inventory-workspace";
-import { ProductStudio } from "../portals/admin-product";
-import { inventoryApi, promotionRulesApi, productsApi, catalogOpsApi, type AdminProductRow, type ProductCenterView } from "../data/api";
+import { ProductStudio, STUDIO_STEPS, type StudioStep } from "../portals/admin-product";
+import { promotionRulesApi, productsApi, catalogOpsApi, type AdminProductRow, type ProductCenterView } from "../data/api";
 import { fmtToman } from "../data/contracts";
 import { cn } from "../utils/cn";
 
@@ -67,31 +65,36 @@ const StockCell = ({ pending, value, unit }: { pending: boolean; value: number; 
 
 type Screen =
   | { k: "list" }
-  | { k: "studio" }
-  /** §1/§16 (browser-UAT delta): the canonical pricing workspace is a FULL PAGE here — never a
-   *  modal. `from` decides where «بازگشت» lands: the list, or the same draft in the Studio. */
-  | { k: "pricing"; row: AdminProductRow; from: "list" | "studio"; anchor?: "discount" | "festival" }
-  /** §12/§16: canonical initial receipt (interrupted or fresh «ذخیره و ادامه»). */
-  | { k: "inventory"; row: AdminProductRow }
-  /** §24: ongoing WMS operations for a product whose initial inventory is already done. */
-  | { k: "wms"; row: AdminProductRow }
+  /** §26 (unified Studio): create AND every product task (edit / pricing / inventory / …) happen
+   *  inside the ONE canonical Product Studio, opened directly at the relevant step. */
+  | { k: "studio"; step: StudioStep; resumeId: string | null }
   | { k: "view360"; row: AdminProductRow };
 
-/** The canonical pricing route lives in the hash so a refresh/reopen keeps the workspace. */
-const PRICING_HASH = "#/admin/products/pricing/";
+/** §26: the Studio route lives in the hash (with the requested step) so refresh/Back keep it. */
+const STUDIO_HASH = "#/admin/products/studio/";
+/** §6: the superseded full-page pricing route now REDIRECTS to the Studio pricing step. */
+const LEGACY_PRICING_HASH = "#/admin/products/pricing/";
+const parseStudioHash = (hash: string): { id: string; step: StudioStep } | null => {
+  const legacy = new RegExp(`^${LEGACY_PRICING_HASH}([0-9a-f-]{36})`, "i").exec(hash);
+  if (legacy) return { id: legacy[1]!, step: "price" };
+  const hit = new RegExp(`^${STUDIO_HASH}(new|[0-9a-f-]{36})(?:\\?step=([a-z]+))?`, "i").exec(hash);
+  if (!hit) return null;
+  const step = (STUDIO_STEPS as readonly string[]).includes(hit[2] ?? "") ? hit[2] as StudioStep : "base";
+  return { id: hit[1]!, step };
+};
+const studioHash = (id: string, step: StudioStep) =>
+  `${STUDIO_HASH}${id}${step === "base" ? "" : `?step=${step}`}`;
 const rowFromDetail = (detail: Record<string, unknown>, id: string, fallbackName = ""): AdminProductRow => ({
   id, name: String(detail.name ?? fallbackName),
   retail_enabled: detail.retail_enabled !== false, wholesale_enabled: detail.wholesale_enabled !== false,
   owner_type: String(detail.owner_type ?? "kolbe"), sku: null, category: String(detail.category ?? ""),
 } as AdminProductRow);
 
-export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo, initialPricingProductId }: {
+export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo }: {
   flash: F; initialView?: ProductCenterView; onOpenWms?: () => void;
   /** §2/§17: the canonical Promotion Center is a different tab — the pricing workspace links to it
    *  WITH the product context so the two surfaces stay one authority, never two views. */
   onOpenPromo?: (focus: { productId: string; productName: string; anchor?: "discount" | "festival" }) => void;
-  /** §16: `#/admin/products/pricing/<id>` deep-link (refresh-safe). */
-  initialPricingProductId?: string | null;
 }) {
   const [view, setView] = useState<ProductCenterView>(initialView ?? "all");
   useEffect(() => { if (initialView) setView(initialView); }, [initialView]);
@@ -100,9 +103,12 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo, i
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
-  const [screen, setScreen] = useState<Screen>({ k: "list" });
-  /** §9/§13: resuming a Draft reopens the SAME canonical studio with the product loaded. */
-  const [resumeProductId, setResumeProductId] = useState<string | null>(null);
+  /** §26: the hash decides the initial screen — a bookmarked Studio/pricing URL reopens the SAME
+   *  draft at the SAME step (the legacy pricing route is redirected to step «قیمت‌گذاری»). */
+  const initial = typeof window === "undefined" ? null : parseStudioHash(window.location.hash);
+  const [screen, setScreen] = useState<Screen>(() => initial
+    ? { k: "studio", step: initial.step, resumeId: initial.id === "new" ? null : initial.id }
+    : { k: "list" });
   // RULE-BULK-001 (§21): bulk festival assignment stays available in the product list.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [festivalModal, setFestivalModal] = useState(false);
@@ -124,117 +130,67 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo, i
     drafts: rows?.filter((r) => r.status === "draft").length ?? 0,
   }), [rows]);
 
-  const openStudio = () => { setResumeProductId(null); setScreen({ k: "studio" }); };
-  const resumeDraft = (id: string) => { setResumeProductId(id); setScreen({ k: "studio" }); };
   /** §16: the hub keeps its view/search/filters/scroll and returns to exactly this state. */
   const listScroll = useRef(0);
-  const [pendingPricingId, setPendingPricingId] = useState<string | null>(initialPricingProductId ?? null);
-
-  const openPricing = (row: AdminProductRow, opts?: { from?: "list" | "studio"; anchor?: "discount" | "festival" }) => {
-    if (!opts?.from || opts.from === "list") listScroll.current = window.scrollY;
-    const next = { k: "pricing" as const, row, from: opts?.from ?? ("list" as const), ...(opts?.anchor ? { anchor: opts.anchor } : {}) };
-    setScreen(next);
-    if (typeof window !== "undefined") window.location.hash = `${PRICING_HASH}${row.id}`;
+  const openStudio = () => {
+    listScroll.current = window.scrollY;
+    setScreen({ k: "studio", step: "base", resumeId: null });
+    if (typeof window !== "undefined") window.location.hash = studioHash("new", "base");
   };
-  const closePricing = (row: AdminProductRow, from: "list" | "studio") => {
-    if (typeof window !== "undefined" && window.location.hash.startsWith(PRICING_HASH)) window.location.hash = "#/admin";
-    if (from === "studio") { resumeDraft(row.id); return; }
+  /** §5/§26: every row action opens the SAME Studio, at the step that action refers to. */
+  const openStudioAt = (row: AdminProductRow, step: StudioStep) => {
+    listScroll.current = window.scrollY;
+    setScreen({ k: "studio", step, resumeId: row.id });
+    if (typeof window !== "undefined") window.location.hash = studioHash(row.id, step);
+  };
+  const closeStudio = () => {
+    if (typeof window !== "undefined" && (window.location.hash.startsWith(STUDIO_HASH) || window.location.hash.startsWith(LEGACY_PRICING_HASH)))
+      window.location.hash = "#/admin";
     setScreen({ k: "list" });
     load();
     window.requestAnimationFrame(() => window.scrollTo({ top: listScroll.current, behavior: "auto" }));
   };
 
-  /* §16: a bookmarked/reloaded pricing URL reopens the SAME product in the workspace. */
+  /* §6: `#/admin/products/pricing/<id>` (old bookmarks) redirects into the Studio pricing step. */
   useEffect(() => {
-    if (!pendingPricingId) return;
-    const id = pendingPricingId;
-    setPendingPricingId(null);
+    if (typeof window === "undefined" || !window.location.hash.startsWith(LEGACY_PRICING_HASH)) return;
+    const id = new RegExp(`^${LEGACY_PRICING_HASH}([0-9a-f-]{36})`, "i").exec(window.location.hash)?.[1];
+    if (!id) return;
+    window.history.replaceState(null, "", studioHash(id, "price"));
     productsApi.adminDetail(id)
-      .then((detail) => setScreen({ k: "pricing", row: rowFromDetail(detail, id), from: "list" }))
+      .then((detail) => openStudioAt(rowFromDetail(detail, id), "price"))
       .catch(() => flash("محصول موردنظر برای قیمت‌گذاری یافت نشد."));
-  }, [pendingPricingId, flash]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (screen.k === "studio") return (
     <div className="space-y-3">
-      {/* §3: [افزودن محصول] opens the canonical Product Studio form directly — the hub owns the
-          list, so the studio is embedded and never shows a second product-management list. */}
+      {/* §26: [افزودن محصول] and every row action open the canonical Product Studio form directly at
+          the requested step — the hub owns the list, the Studio owns the product workflow. */}
       <ProductStudio
         flash={flash}
         embedded
-        onExit={() => { setScreen({ k: "list" }); setResumeProductId(null); load(); }}
-        resumeProductId={resumeProductId}
-        onResumeHandled={() => setResumeProductId(null)}
-        /** §11: Save & Continue hands the canonical productId straight to the WMS workspace. */
-        onContinueToInventory={(productId) => {
-          productsApi.adminDetail(productId)
-            .then((detail) => {
-              setScreen({ k: "inventory", row: {
-                id: productId, name: String(detail.name ?? ""),
-                retail_enabled: detail.retail_enabled !== false, wholesale_enabled: detail.wholesale_enabled !== false,
-                owner_type: String(detail.owner_type ?? "kolbe"), sku: null, category: String(detail.category ?? ""),
-              } as AdminProductRow });
-            })
-            .catch(() => flash("محصول ذخیره شد؛ برای ادامه، آن را از فهرست پیش‌نویس‌ها باز کنید."));
-        }}
-        onDraftSaved={() => { setScreen({ k: "list" }); load(); }}
+        initialStep={screen.step}
+        onExit={closeStudio}
+        resumeProductId={screen.resumeId}
+        onResumeHandled={() => setScreen((current) => current.k === "studio" ? { ...current, resumeId: null } : current)}
+        onDraftSaved={() => { load(); }}
         /** §2/§5: an explicit publish reloads the hub list so the row, the status badge and the
             «منتشرشده» / «پیش‌نویس‌ها» filters all reflect the server in the same click. */
-        onPublished={(productId) => { void productsApi.adminDetail(productId); load(); }}
-        /** §3/§17: Draft-first handoff — the Studio persists/reuses ONE draft and this hub opens
-            the canonical full-page pricing workspace for exactly that product. */
-        onOpenPricing={(target, productId) => {
-          productsApi.adminDetail(productId)
-            .then((detail) => openPricing(rowFromDetail(detail, productId), {
-              from: "studio",
-              ...(target === "discount" || target === "festival" ? { anchor: target } : {}),
-            }))
-            .catch(() => flash("محصول ذخیره شد؛ برای قیمت‌گذاری آن را از فهرست «پیش‌نویس‌ها» باز کنید."));
-        }}
+        onPublished={() => { load(); }}
+        /** §23: advanced WMS work stays in the WMS hub — the Studio never becomes a stock authority. */
+        onOpenWms={onOpenWms}
+        /** §32: cross-product promotion admin stays in the canonical Promotion Center. */
+        onOpenPromotionCenter={(focus) => onOpenPromo?.(focus)}
       />
     </div>
-  );
-
-  if (screen.k === "inventory") return (
-    <InitialInventoryWorkspace
-      product={screen.row}
-      flash={flash}
-      onClose={() => { setScreen({ k: "list" }); load(); }}
-      onDone={() => { setScreen({ k: "list" }); load(); }}
-    />
-  );
-
-  // §24: a product that already completed initial creation goes to REAL WMS operations,
-  // never back into the initial-receipt workspace (which would fabricate a second opening).
-  if (screen.k === "wms") return (
-    <ManageInventoryPanel
-      product={screen.row}
-      onClose={() => { setScreen({ k: "list" }); load(); }}
-      onOpenWms={onOpenWms}
-    />
-  );
-
-  /* §1/§16/§18 (browser-UAT delta): the pricing action opens ONE canonical FULL-PAGE workspace
-     (no WorkspaceModal, no modal-over-page flow). Browser Back / «بازگشت به محصول» return to the
-     hub with the previous view, search, filters and scroll position — or to the same draft in the
-     Studio when the workspace was reached during product creation (§3). */
-  if (screen.k === "pricing") return (
-    <ProductPricingWorkspace
-      productId={screen.row.id}
-      productName={screen.row.name}
-      sku={screen.row.sku ?? undefined}
-      anchor={screen.anchor}
-      backLabel={screen.from === "studio" ? "بازگشت به پیش‌نویس در حال تکمیل" : "بازگشت به محصولات کلبه"}
-      onClose={() => closePricing(screen.row, screen.from)}
-      onOpenPromotionCenter={(anchor) => onOpenPromo?.({ productId: screen.row.id, productName: screen.row.name, ...(anchor ? { anchor } : {}) })}
-      flash={flash}
-    />
   );
 
   if (screen.k === "view360") return (
     <Product360
       product={screen.row}
       onClose={() => setScreen({ k: "list" })}
-      onPricing={() => openPricing(screen.row, { from: "list" })}
+      onPricing={() => openStudioAt(screen.row, "price")}
     />
   );
 
@@ -322,21 +278,17 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo, i
                       <td><Pill value={p.status} /></td>
                       <td>
                         <div className="flex flex-wrap items-center gap-1">
-                          {/* §13: an interrupted draft offers the canonical continuation action. */}
+                          {/* §5/§26: every action opens the SAME Studio at the right step. */}
                           {draft && (
-                            <Btn size="sm" variant="accent" onClick={() => resumeDraft(p.id)}>
+                            <Btn size="sm" variant="accent"
+                              onClick={() => openStudioAt(p, pending ? "inventory" : "price")}>
                               <PackagePlus size={13} />ادامه تکمیل محصول
                             </Btn>
                           )}
-                          <Btn size="sm" variant="ghost" onClick={() => resumeDraft(p.id)}><Pencil size={13} />ویرایش</Btn>
+                          <Btn size="sm" variant="ghost" onClick={() => openStudioAt(p, "base")}><Pencil size={13} />ویرایش</Btn>
+                          <Btn size="sm" variant="ghost" onClick={() => openStudioAt(p, "price")}><BadgePercent size={13} />قیمت‌گذاری</Btn>
+                          <Btn size="sm" variant="ghost" onClick={() => openStudioAt(p, "inventory")}><Warehouse size={13} />{pending ? "ورود اولیه کالا" : "مدیریت موجودی"}</Btn>
                           <Btn size="sm" variant="ghost" onClick={() => setScreen({ k: "view360", row: p })}><ScanEye size={13} />۳۶۰°</Btn>
-                          <Btn size="sm" variant="ghost" onClick={() => openPricing(p, { from: "list" })}><BadgePercent size={13} />قیمت‌گذاری</Btn>
-                          {/* §24: an interrupted draft continues the canonical initial receipt;
-                              a completed product opens real WMS operations. */}
-                          <Btn size="sm" variant="ghost"
-                            onClick={() => setScreen({ k: pending ? "inventory" : "wms", row: p })}>
-                            {pending ? <Warehouse size={13} /> : <Boxes size={13} />}{pending ? "ورود اولیه کالا" : "مدیریت موجودی"}
-                          </Btn>
                         </div>
                       </td>
                     </tr>
@@ -392,110 +344,6 @@ export function KolbeProductsHub({ flash, initialView, onOpenWms, onOpenPromo, i
           : "تعداد پیش‌نویس‌های این صفحه: " + fa(counts.drafts)}
       </p>
     </div>
-  );
-}
-
-/* ------------------------------ §24: «مدیریت موجودی» → real WMS operations ------------------------------ */
-
-type BalanceRow = {
-  variant_id: string; warehouse_id: string; inventory_domain: string; warehouse_name: string; sku: string;
-  size_label: string | null; color_label: string | null; on_hand: number; reserved: number; damaged: number; available: number;
-};
-type MovementRow = {
-  id: string; sku: string | null; warehouse_name: string | null; inventory_domain: string | null;
-  on_hand_delta: number | null; reason: string | null; reference_type: string | null; created_at: string;
-};
-
-/** Read-only WMS surface scoped to ONE product (server-filtered), with a direct route into
- *  the WMS hub for the operations themselves. It never edits a balance from here. */
-function ManageInventoryPanel({ product, onClose, onOpenWms }: {
-  product: AdminProductRow; onClose: () => void; onOpenWms?: () => void;
-}) {
-  const [rows, setRows] = useState<BalanceRow[] | null>(null);
-  const [movements, setMovements] = useState<MovementRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(() => {
-    setError(null);
-    Promise.all([
-      inventoryApi.balances({ productId: product.id, limit: 100 }),
-      inventoryApi.productMovements(product.id),
-    ])
-      .then(([balances, moves]) => {
-        setRows(balances.items as BalanceRow[]);
-        setMovements((moves.items ?? []) as unknown as MovementRow[]);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "خطا در دریافت موجودی"));
-  }, [product.id]);
-  useEffect(load, [load]);
-
-  const domainFa = (domain: string | null) => domain === "wholesale" ? "عمده" : "خرده";
-
-  return (
-    <WorkspaceModal open onClose={onClose} title={`مدیریت موجودی — ${product.name}`}
-      subtitle="این فقط نمای موجودی واقعیِ همین محصول است؛ عملیات موجودی (رسید، اصلاح، انتقال، فروش) در «انبار و موجودی (WMS)» و با سند انجام می‌شود."
-      footer={
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">هر تغییر فیزیکی فقط با سند انبار و ثبت حرکت انجام می‌شود؛ این صفحه موجودی را دستکاری نمی‌کند.</p>
-          <div className="flex gap-2">
-            {onOpenWms && <Btn variant="soft" onClick={onOpenWms}><Boxes size={14} />رفتن به انبار و موجودی (WMS)</Btn>}
-            <Btn variant="ghost" onClick={onClose}>بستن</Btn>
-          </div>
-        </div>
-      }>
-      {error && <ErrorState message={error} onRetry={load} />}
-      {!error && !rows && <LoadingState label="در حال دریافت موجودی..." />}
-      {!error && rows && !rows.length && (
-        <Empty title="ردیف موجودی برای این محصول ثبت نشده است"
-          desc="موجودی اولیه این محصول هنوز ثبت نشده یا از بین رفته است؛ برای ثبت از «ورود اولیه کالا» استفاده کنید." />
-      )}
-      {!error && !!rows?.length && (
-        <Card className="p-0">
-          <div className="kv-scroll kv-scroll-x">
-            <table className="kv-table min-w-[760px] w-full text-xs">
-              <thead><tr>
-                <th>کد کالا</th><th>رنگ / سایز</th><th>انبار</th><th>دامنه</th>
-                <th>موجودی</th><th>رزرو</th><th>آسیب‌دیده</th><th>قابل تخصیص</th>
-              </tr></thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={`${row.variant_id}-${row.warehouse_id}-${row.inventory_domain}`}>
-                    <td dir="ltr" className="font-mono">{row.sku}</td>
-                    <td className="whitespace-nowrap">{row.color_label ?? "—"} / {row.size_label ?? "—"}</td>
-                    <td className="whitespace-nowrap">{row.warehouse_name}</td>
-                    <td className="whitespace-nowrap">{domainFa(row.inventory_domain)}</td>
-                    <td className="font-bold tabular-nums">{fa(row.on_hand)}</td>
-                    <td className="tabular-nums">{fa(row.reserved)}</td>
-                    <td className="tabular-nums">{fa(row.damaged)}</td>
-                    <td className="font-bold tabular-nums">{fa(row.available)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
-      {!!movements.length && (
-        <Card className="p-4">
-          <h3 className="mb-2 text-sm font-bold">آخرین حرکت‌های انبار</h3>
-          <ul className="space-y-2">
-            {movements.slice(0, 12).map((m) => (
-              <li key={m.id} className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2 text-[11.5px]">
-                <span className="min-w-0">
-                  <b dir="ltr" className="font-mono">{m.sku ?? "—"}</b>
-                  <span className="ms-2 text-[var(--kv-muted)]">{m.warehouse_name ?? "—"} · {domainFa(m.inventory_domain)}</span>
-                </span>
-                <span className="whitespace-nowrap">
-                  <b className={cn("tabular-nums", Number(m.on_hand_delta ?? 0) >= 0 ? "text-emerald-700" : "text-red-700")}>
-                    {Number(m.on_hand_delta ?? 0) >= 0 ? "+" : ""}{fa(m.on_hand_delta ?? 0)}
-                  </b>
-                  <span className="ms-2 text-[var(--kv-muted)]">{m.reason ?? "—"}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-    </WorkspaceModal>
   );
 }
 

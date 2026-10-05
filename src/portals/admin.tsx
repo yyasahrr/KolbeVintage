@@ -220,12 +220,11 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     return value || undefined;
   };
 
-  /* §16: a refresh/bookmark of the pricing route reopens the SAME product in the workspace. */
-  const [initialPricingProductId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    return /^#\/admin\/products\/pricing\/([0-9a-f-]{36})/i.exec(window.location.hash)?.[1] ?? null;
-  });
-  const [tab, setTab] = useState(initialPricingProductId ? "products" : "tower"); // landing = نمای کلی (برج کنترل)
+  /* §16/§26: a refresh/bookmark of the Studio (or the legacy pricing) route reopens the SAME
+     product inside «محصولات کلبه»; the hub itself parses the id and the step. */
+  const [initialProductsRoute] = useState(() => typeof window !== "undefined"
+    && /^#\/admin\/products\/(pricing|studio)\//i.test(window.location.hash));
+  const [tab, setTab] = useState(initialProductsRoute ? "products" : "tower"); // landing = نمای کلی (برج کنترل)
   /* §2: a discount/festival deep link from the per-product pricing page carries that product into
      the canonical Promotion Center so the two surfaces are one authority, never two views. */
   const [promoFocus, setPromoFocus] = useState<{ productId: string; productName: string; anchor?: "discount" | "festival" } | null>(null);
@@ -235,7 +234,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     const target = TAB_REDIRECT[next] ?? next;
     const [hub, sub] = target.split(":");
     // leaving the pricing workspace clears its deep-link so a later refresh is not surprising
-    if (typeof window !== "undefined" && /^#\/admin\/products\/pricing\//.test(window.location.hash) && hub !== "products") {
+    if (typeof window !== "undefined" && /^#\/admin\/products\/(pricing|studio)\//.test(window.location.hash) && hub !== "products") {
       window.location.hash = "#/admin";
     }
     setTab(hub!); setHubSub(sub ?? null);
@@ -487,8 +486,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                the hub and is deep-linkable as `#/admin/products/pricing/<productId>`. */
             <KolbeProductsHub flash={flash} initialView={hubSub === "drafts" ? "drafts" : undefined}
               onOpenWms={() => go("wms")}
-              onOpenPromo={(focus) => { setPromoFocus(focus); go("promo"); }}
-              initialPricingProductId={initialPricingProductId} />)}
+              onOpenPromo={(focus) => { setPromoFocus(focus); go("promo"); }} />)}
           {tab === "wms" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
           {/* §4: CRM has EXACTLY four primary tabs — retail / VIP / suppliers / marketing. */}
           {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub} tabs={[
