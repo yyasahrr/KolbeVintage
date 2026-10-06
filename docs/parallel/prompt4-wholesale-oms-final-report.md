@@ -15,7 +15,7 @@ Baseline for this prompt: Prompt-3 HEAD `1ff2268` · starting SHA of the P4 work
 | --- | --- |
 | Session branch (all work committed here) | `arena/01a10ace-kolbevintage` |
 | Starting SHA (Prompt-3 close, verified ancestor) | `1ff2268` |
-| Final SHA (code + tests, second pass) | `5c951ae` — the docs-pin commit that records this SHA is the branch tip |
+| Final SHA (code + tests, second pass) | `5c951ae` (code/tests) — the docs-pin commit that records this SHA is the branch tip |
 | Merge-base with `origin/main` | `3cd9dace97e00e3131af018fb5b696f8c18d67fc` — `main` untouched, never merged/reset |
 | Working tree | clean (no `dist/`, `node_modules/`, `.scratch/` or browser artifacts committed) |
 | Migration count | **52** (`071_wholesale_child_cancellation.sql` is the only Prompt-4 migration, additive) |
