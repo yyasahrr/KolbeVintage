@@ -38,15 +38,19 @@ export type Product = {
   colors: Colorway[];
   images: string[];
   /**
-   * Presentation-only media map: colourway id -> the photographs of THIS product
-   * in that colour. Optional and fully backward compatible.
+   * Presentation-only media map: colourway id -> photographs of THIS product in
+   * that colour. Optional and backward compatible.
    *
    * Rules it follows:
    *  - every URL must already exist in `images` (no invented media, no new URLs);
-   *  - only colourways whose photo is unambiguous are listed;
-   *  - when a colour has no entry the storefront falls back to the product
-   *    gallery (see `mediaForColor` in components/storefront/shared.tsx).
-   * Replace the entries with real per-colour studio shots without touching logic.
+   *  - only colourways whose photograph is unambiguous are listed;
+   *  - a colour with no entry keeps the plain product gallery: the storefront
+   *    never reorders gallery photos to imply they belong to that colour.
+   *
+   * LONG TERM: colour-to-media assignment belongs to the real Product/CMS media
+   * contract (backend `product_variants` already carries `color_label`), not to
+   * hand-maintained storefront data. When that contract exposes per-variant
+   * media, this field becomes a compatibility shim and should be dropped.
    */
   colorMedia?: Record<string, string[]>;
   series: SeriesDef[];

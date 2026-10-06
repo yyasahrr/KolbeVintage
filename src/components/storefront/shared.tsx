@@ -144,68 +144,54 @@ export function Sheet({ open, onClose, title, description, children, footer, lab
 
 /* ---------- product helpers (presentation only, no pricing logic) ---------- */
 
-/** Sizes offered to retail buyers, derived from the existing wholesale series composition. */
+/**
+ * Sizes offered to retail buyers — the storefront's existing size list.
+ *
+ * NOTE for Core Commerce: this is a size *list*, not an availability signal.
+ * Retail colour×size availability must come from the variant contract described
+ * in docs/storefront-archive-fluid.md ("Required contract: retailVariants"),
+ * not from wholesale series data. Until that contract exists every colour of a
+ * product offers the same sizes, which is what the data can honestly support.
+ */
 export function sizesOf(p: Product): string[] {
   return Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition))));
 }
 
 /**
- * Sizes a buyer can actually choose for one colourway.
- * Derived from the existing catalogue only — no new variant system:
- *  - series the supplier switched off (`available: false`) contribute nothing;
- *  - a size counts when at least one live series still has pieces of it;
- *  - `SeriesDef.colorIds` (the admin/supplier "رنگ‌های مجاز" field) narrows the
- *    run per colour when it is set; when it is absent every colour gets the run.
- */
-export function sizesForColor(p: Product, colorId?: string): string[] {
-  const live = p.series.filter((series) => series.available
-    && (!colorId || !series.colorIds || series.colorIds.includes(colorId)));
-  return Array.from(new Set(
-    live.flatMap((series) => Object.entries(series.composition)
-      .filter(([, pieces]) => pieces > 0)
-      .map(([size]) => size)),
-  ));
-}
-
-/**
  * Media shown for a colourway.
- * 1. the product's own per-colour photos (`Product.colorMedia`) when they exist;
- * 2. otherwise the same product gallery, started on a stable frame for that
- *    colour so switching colour still changes the photograph instead of lying
- *    about a per-colour shoot that does not exist.
- * Never invents a URL: every result is an entry of `p.images`.
+ * Only `Product.colorMedia` — photographs actually captured for that colour —
+ * may change the image. When a colour has no dedicated media the product
+ * gallery is returned unchanged: an unrelated photograph is never presented as
+ * that colour, and the gallery is never reordered to fake a change.
  */
 export function mediaForColor(p: Product, colorId?: string): string[] {
   const own = colorId ? p.colorMedia?.[colorId] : undefined;
-  if (own?.length) return own;
-  if (!colorId || p.images.length < 2) return p.images;
-  const index = Math.max(0, p.colors.findIndex((color) => color.id === colorId)) % p.images.length;
-  return index === 0 ? p.images : [...p.images.slice(index), ...p.images.slice(0, index)];
+  return own?.length ? own : p.images;
 }
+
+/** True when this colourway has photographs of its own. */
+export const hasOwnMedia = (p: Product, colorId?: string): boolean =>
+  !!colorId && !!p.colorMedia?.[colorId]?.length;
 
 export const preferredSize = (sizes: string[]) => sizes.includes("M") ? "M" : sizes[0] ?? "";
 
 /** Size chips — shared by the product card's inline purchase area and the PDP. */
-export function SizeRow({ sizes, value, onChange, idPrefix, unavailable = [] }: {
-  sizes: string[]; value: string; onChange: (size: string) => void; idPrefix: string; unavailable?: string[];
+export function SizeRow({ sizes, value, onChange, idPrefix }: {
+  sizes: string[]; value: string; onChange: (size: string) => void; idPrefix: string;
 }) {
   return (
     <div className="flex flex-wrap gap-1.5" role="group" aria-label="انتخاب سایز">
-      {sizes.map((size) => {
-        const blocked = unavailable.includes(size);
-        return (
-          <button
-            key={`${idPrefix}-${size}`} type="button"
-            onClick={() => !blocked && onChange(size)}
-            disabled={blocked}
-            data-on={value === size ? "true" : "false"}
-            aria-pressed={value === size}
-            className="kv-sf-size"
-          >
-            {size}
-          </button>
-        );
-      })}
+      {sizes.map((size) => (
+        <button
+          key={`${idPrefix}-${size}`} type="button"
+          onClick={() => onChange(size)}
+          data-on={value === size ? "true" : "false"}
+          aria-pressed={value === size}
+          className="kv-sf-size"
+        >
+          {size}
+        </button>
+      ))}
     </div>
   );
 }

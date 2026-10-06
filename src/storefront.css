@@ -1070,7 +1070,6 @@ html[data-surface="storefront"] body { background-color: transparent; }
   transition: background-color var(--kvaf-t-fast) var(--kvaf-ease-out), color var(--kvaf-t-fast) var(--kvaf-ease-out), border-color var(--kvaf-t-fast) var(--kvaf-ease-out);
 }
 .kv-sf-size[data-on="true"] { background: var(--kvaf-action); color: var(--kvaf-on-action); border-color: var(--kvaf-action); }
-.kv-sf-size:disabled { opacity: 0.4; text-decoration: line-through; pointer-events: none; }
 @media (hover: hover) and (pointer: fine) {
   .kv-sf-size:not([data-on="true"]):hover { border-color: var(--kvaf-line-strong); }
 }

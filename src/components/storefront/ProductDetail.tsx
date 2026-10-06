@@ -3,7 +3,7 @@ import { Check, ChevronRight, Heart, Plus, RotateCcw, Ruler, ShieldCheck, Truck 
 import { fmtMoney, fmtNum, type Colorway, type Product } from "../../data/catalog";
 import { Swatches } from "./Swatches";
 import { useCartToast } from "./CartToast";
-import { SizeRow, mediaForColor, preferredSize, sizesForColor, useCrossfadeKey } from "./shared";
+import { SizeRow, hasOwnMedia, mediaForColor, preferredSize, sizesOf, useCrossfadeKey } from "./shared";
 import { cn } from "../../utils/cn";
 
 /**
@@ -19,10 +19,10 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack }: {
   onBack: () => void;
 }) {
   const [color, setColor] = useState<Colorway | undefined>(p.colors[0]);
-  const sizes = useMemo(() => sizesForColor(p, color?.id), [p, color?.id]);
-  /** the gallery follows the chosen colourway, exactly like the product card */
+  const sizes = useMemo(() => sizesOf(p), [p]);
+  /** the gallery follows the chosen colourway only when that colour was photographed */
   const media = useMemo(() => mediaForColor(p, color?.id), [p, color?.id]);
-  const [size, setSize] = useState(() => preferredSize(sizesForColor(p, p.colors[0]?.id)));
+  const [size, setSize] = useState(() => preferredSize(sizesOf(p)));
   const [shot, setShot] = useState(0);
   const [added, setAdded] = useState(false);
   const toast = useCartToast();
@@ -30,11 +30,9 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack }: {
   const fade = useCrossfadeKey(media[shot] ?? "");
 
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
-  /* another colour = another set of photographs and possibly another size run */
-  useEffect(() => {
-    setShot(0);
-    setSize((previous) => (sizes.includes(previous) ? previous : preferredSize(sizes)));
-  }, [color?.id, sizes]);
+  /* a colour with its own photographs starts on its first frame; a colour without
+     them leaves the gallery untouched */
+  useEffect(() => { if (hasOwnMedia(p, color?.id)) setShot(0); }, [p, color?.id]);
 
   const submit = () => {
     const accepted = onAdd(size, color?.name ?? "");

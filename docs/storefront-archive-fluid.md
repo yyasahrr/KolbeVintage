@@ -226,3 +226,102 @@ deactivated series contributes nothing), rejected add reported inline.
 **Still not verified:** no browser in the sandbox, so the refined card has not
 been reviewed as rendered pixels; spacing, shadow weight and the reveal timing
 are specified in CSS but not visually confirmed.
+
+---
+
+# Phase 2.1 — correctness fix (variant data source + media honesty)
+
+## What was wrong in Phase 2
+
+`sizesForColor()` derived retail colour×size availability from wholesale series
+data (`SeriesDef.colorIds`, `series.available`, `series.composition`), and
+`mediaForColor()` rotated the plain product gallery per colour so the photograph
+would appear to change. Both were wrong: wholesale series describe how a product
+is *packed for bulk buyers*, not what a retail customer can buy, and a gallery
+photo of another shoot must never be presented as a colourway.
+
+Both are removed. `sizesForColor` is deleted, `mediaForColor` returns
+`colorMedia[colorId]` when it exists and `p.images` **unchanged** otherwise, and
+the card/PDP only reset their frame when the colour genuinely has its own
+photographs (`hasOwnMedia`). A colour without dedicated media still selects
+visibly, expands the card and allows size selection — it just does not claim any
+photograph as its own.
+
+## Repository inspection: is there a retail variant contract today?
+
+| Layer | What exists | Retail-usable? |
+| --- | --- | --- |
+| `backend/src/migrations/001_core.sql` | `product_variants(id, product_id, sku, size_label, color_label, attributes, active)` and `stock_balances(variant_id, warehouse_id, on_hand, reserved, incoming, damaged)` with `CHECK (reserved + damaged <= on_hand)` | Domain model only — not exposed as retail availability |
+| `backend/src/catalog.ts` → `GET /api/v1/products` | Public, unauthenticated. Returns `variants: [{ id, sku, size, color }]` for `active` variants of published products | Variant identity yes, **availability/stock no** |
+| `backend/src/inventory.ts` → `GET /api/v1/inventory` | Per-warehouse `on_hand / reserved / damaged` and `available = on_hand - reserved - damaged` | No — requires `inventory:read` or supplier ownership, and is warehouse/supplier scoped |
+| `src/data/admin-api.ts` | The only frontend API client; consumed by `src/portals/admin.tsx` and `admin-server-orders.tsx` | Admin only |
+| `src/data/catalog.ts` + `src/data/store.tsx` | The storefront's actual source of truth (`PRODUCTS` via `useStore()`) — product-level `stock` only | What the storefront uses today |
+
+**Conclusion:** no reliable retail colour×size availability contract exists, so
+none was invented. Retail size behaviour is preserved exactly as before Phase 2
+(`sizesOf()` = the union of `series.composition` keys — a size *list*, documented
+in code as not an availability signal), and availability remains the single
+product-level `stock` that `addToCart` already enforces.
+
+## Required contract for Core Commerce
+
+The storefront will consume this as soon as it exists; the field names follow the
+repository's own domain model (`product_variants` / `stock_balances`):
+
+```ts
+type RetailVariant = {
+  variantId: string;    // product_variants.id
+  sku: string;          // product_variants.sku
+  colorId: string;      // stable id, see note below
+  size: string;         // product_variants.size_label
+  available: boolean;   // product_variants.active && sellable stock > 0
+  stock?: number;       // optional; aggregated over retail-eligible warehouses
+};
+
+// on the retail product payload (GET /api/v1/products):
+retailVariants: RetailVariant[];
+```
+
+Open points Core Commerce needs to settle:
+
+1. **`color_label` is free text today.** The storefront keys colourways by
+   `Colorway.id` (`orange`, `black`, …), so a stable `colorId` needs either a
+   colour dictionary table or a normalisation rule agreed with the CMS.
+2. **Warehouse scoping.** `stock_balances` is per warehouse and the existing
+   inventory endpoint is supplier-scoped; retail availability needs an explicit
+   "retail-eligible warehouse" rule and a single aggregated number.
+3. **Reserved stock.** `available` should keep meaning `on_hand - reserved -
+   damaged` so the storefront never offers a size that checkout cannot honour.
+4. **Publication rule.** Variants of unpublished/rejected products must not
+   leak; the existing `v.active` + `p.status = 'published'` filter is the right
+   starting point.
+
+Until then, every colour of a product offers the same sizes and the card never
+states per-colour availability.
+
+## Media, long term
+
+`Product.colorMedia` stays as a backward-compatible presentation shim (8 entries,
+each URL already present in that product's `images`). Colour-to-media assignment
+properly belongs to the Product/CMS media contract — `product_variants` already
+carries `color_label`, so per-variant media should come from there. When it does,
+this field should be deleted rather than maintained by hand.
+
+## Verification record (Phase 2.1)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Types | `node node_modules/typescript/bin/tsc --noEmit` | 0 errors |
+| Production build | `node node_modules/vite/bin/vite.js build` | ✓ `dist/index.html` 936,349 B |
+| Storefront flows, desktop | jsdom run over the real bundle | 55/55, 0 runtime errors |
+| Same, mobile profile | `(min-width: 1024px)` false | 55/55, 0 runtime errors |
+| Worst-case fixtures | 13 adversarial products | 33/33, 0 runtime errors |
+| Catalogue integrity | per-colour media map | 8 entries, 0 foreign URLs, 0 unknown colour ids |
+
+New assertions: a colour without dedicated media keeps both the photograph and
+the carousel frame, still selects, still expands and still offers sizes; a
+photographed colour swaps the media and shows its own carousel; an unphotographed
+colour restores the untouched gallery; wholesale colour restrictions and
+deactivated series do not shrink the retail size run; the PDP does not fake a
+photo for an unphotographed colour. `addToCart` is byte-identical to the base
+commit and `backend/` is untouched.

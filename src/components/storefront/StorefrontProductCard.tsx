@@ -3,7 +3,7 @@ import { Check, ChevronLeft, ChevronRight, Heart, ShoppingBag, X } from "lucide-
 import { fmtMoney, type Colorway, type Product } from "../../data/catalog";
 import { Swatches } from "./Swatches";
 import { useCartToast } from "./CartToast";
-import { SizeRow, mediaForColor, sizesForColor } from "./shared";
+import { SizeRow, hasOwnMedia, mediaForColor, sizesOf } from "./shared";
 
 const ADDED_MS = 2000;
 /** One card reveals its purchase controls at a time — keeps a grid of cards calm. */
@@ -39,15 +39,18 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
   const rootRef = useRef<HTMLElement | null>(null);
 
   const media = useMemo(() => mediaForColor(p, color?.id), [p, color?.id]);
-  const sizes = useMemo(() => sizesForColor(p, color?.id), [p, color?.id]);
+  /* one retail size list per product: availability per colour is not part of the
+     data yet, so no colour claims sizes another colour does not have */
+  const sizes = useMemo(() => sizesOf(p), [p]);
   const soldOut = p.stock < 1;
   const current = media[Math.min(frame, media.length - 1)] ?? "";
   const ready = !soldOut && (!!color) && (sizes.length === 0 || !!size);
   const frameLabel = `${(Math.min(frame, media.length - 1) + 1).toLocaleString("fa-IR")} از ${media.length.toLocaleString("fa-IR")}`;
 
   useEffect(() => () => { if (addedTimer.current) window.clearTimeout(addedTimer.current); }, []);
-  /* a new colour always starts on that colour's own first photograph */
-  useEffect(() => { setFrame(0); }, [color?.id]);
+  /* only a colour with photographs of its own moves the gallery — otherwise the
+     product gallery stays exactly where the shopper left it */
+  useEffect(() => { if (hasOwnMedia(p, color?.id)) setFrame(0); }, [p, color?.id]);
 
   /* collapse when another card in any grid opens its purchase area */
   useEffect(() => {
@@ -72,9 +75,8 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
     if (soldOut) return;
     setNotice("");
     if (color?.id === next.id) { collapse(); return; }   // tapping the chosen colour closes again
-    const nextSizes = sizesForColor(p, next.id);
     setColor(next);
-    setSize(nextSizes.length === 1 ? nextSizes[0] : "");  // a single size needs no decision
+    setSize(sizes.length === 1 ? sizes[0] : "");  // a single size needs no decision
     setExpanded(true);
     window.dispatchEvent(new CustomEvent(EXPAND_EVENT, { detail: p.id }));
   };
