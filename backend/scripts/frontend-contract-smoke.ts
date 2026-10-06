@@ -869,6 +869,26 @@ try {
   check('the ops workspace flags every open exception and names the Prompt-6 boundary in the UI',
     orderCenterSrc.includes('ورود کالا، کنترل کیفیت و ثبت رسید در انبار کلبه انجام می‌شود'));
 
+  // ============ Retail variant availability + colour media: static locks ============
+  // Wholesale series data must never decide retail sizing/availability again, and colour media
+  // must never be faked by rotating the normal gallery.
+  const retailSrc = readFileSync(join(repoRoot, 'src/portals/retail.tsx'), 'utf8');
+  const retailVariantsSrc = readFileSync(join(repoRoot, 'src/data/retail-variants.ts'), 'utf8');
+  check('retail sizes/filters never derive from wholesale series composition',
+    !/p\.series\.(flatMap|some)\([^)]*composition/.test(retailSrc) &&
+    !retailSrc.includes('Object.keys(s.composition)') &&
+    retailSrc.includes('retailSizes(p'));
+  check('retail size source: variant contract first, demo-only legacy fallback, counters never invented',
+    retailVariantsSrc.includes('if (hasRetailVariants(p))') &&
+    retailVariantsSrc.includes('legacyDemoSizes') &&
+    retailVariantsSrc.includes('if (typeof stock !== "number") return undefined'));
+  check('colour media: explicit colorMedia → colour-scoped videos → unchanged normal gallery (no rotation)',
+    retailVariantsSrc.includes('if (explicit?.length) return { images: explicit, videos: [] }') &&
+    retailVariantsSrc.includes('scopedVideos') &&
+    retailVariantsSrc.includes('return undefined;') &&
+    /const gallery[^=]*=\s*colorMedia\s*\?/.test(retailSrc) &&
+    retailSrc.includes('mediaForColor(p'));
+
   setAccessToken(null);
 } catch (error) {
   console.error('SMOKE ERROR:', error instanceof Error ? error.message : error);

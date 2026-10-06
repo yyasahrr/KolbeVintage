@@ -125,3 +125,51 @@ extended: `components/shipping-admin.tsx`, `data/api.ts` (+167), `data/contracts
    from **variant sizes** via the hydration mapper — display stays correct.
 3. **Vibe** (201–203) intentionally untouched — belongs to the style agent.
 4. `dist/` is a build artifact of this branch; the integration build regenerates it.
+
+## 8. Retail variant availability + colour media — required contract (corrective pass)
+
+**Rule (enforced in the storefront now):** retail colour/size availability MUST come from the
+product **variant** contract. `SeriesDef.colorIds`, `series.available` and `series.composition`
+are wholesale/commercial definitions and are **no longer** a source of retail sizing, retail size
+filters or retail availability (`src/data/retail-variants.ts` is the one helper; the offline demo
+seed keeps its previous fallback and nothing else does).
+
+**What already exists server-side** (`backend/src/catalog.ts`, product read model) — consume it,
+do not invent a parallel shape:
+
+```
+variants[]: { id, sku, size, color, attributes,
+              available, reserved, incoming, damaged, retailAvailableStock }   // WMS-derived
+```
+
+**Status: the contract exists end-to-end and the storefront now consumes it.** `GET /api/v1/products`
+(the payload `data/store.tsx` hydrates from) ships, per variant: `available`, `reserved`, `incoming`,
+`damaged`, `retailAvailableStock` plus the resolved per-variant pricing block. `retailAvailableStock`
+is the pure retail-domain availability (retail inventory at Kolbe warehouses — wholesale-owned
+stock excluded) and is what the storefront now uses to decide whether a size is selectable for a
+colour; nothing in the storefront computes stock itself.
+
+**Naming for the Core Commerce agent:** the proposed shape maps 1:1 onto the existing model — no
+parallel contract needed:
+
+```ts
+retailVariants: { colorId: string; size: string; available: boolean; stock?: number }[]
+//   = variants[]: color → colorId, size → size, available → (retailAvailableStock > 0),
+//                 stock → retailAvailableStock
+```
+
+Two honest gaps worth knowing: (a) `GET /api/v1/search` returns variants in the lighter identity shape
+(`{id, sku, size, color, attributes}`) — fine today because the storefront uses that route only for
+result ids, but any future per-variant UI on that route needs the counters; (b) there is no
+product-level `retailAvailableStock` on the list item today (only `available`/`retailAvailableStock`
+aggregates) — consumers must sum variants or read the aggregate, never invent one.
+
+**Colour media.** Image-level colour scoping does not exist in the media contract today:
+`metadata.images[]` carries `{fileId, url, alt?}` only; the only colour-scoped media is
+`ProductVideo.colorId` (CMS media panel). Contract required from Product/CMS media:
+`colorMedia: Record<colorId, string[]>` (per-colour image refs) — served with the product, never
+hand-maintained in storefront demo data. Storefront behaviour meanwhile: if `Product.colorMedia`
+(or colour-scoped videos) exists, the PDP shows exactly that media for the selected colour; if it
+does not, the PDP returns the **normal product gallery unchanged** — unrelated photographs are
+never rotated/reordered to imply a colour photo. A colour without dedicated media still selects
+(swatch, expanded workspace, valid size selection) and simply shows the standard gallery.

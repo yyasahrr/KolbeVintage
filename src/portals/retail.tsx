@@ -23,6 +23,7 @@ import { isAuthenticated } from "../data/api";
 void Hero; void TrustBar;
 import { Btn, Card, SectionHead, Status, Tag, SearchBox, Select, Swatch, Empty, Field, Input, Modal } from "../components/primitives";
 import { cn } from "../utils/cn";
+import { mediaForColor, retailSizes, retailVariantAvailability } from "../data/retail-variants";
 
 import { ProductReviewsBlock, ProductVideo, RecommendationStrip } from "../components/product-social";
 import { recordSearchEvent } from "../data/search-analytics";
@@ -31,8 +32,10 @@ export type CartLine = { id: string; qty: number; size: string; color: string };
 type JournalPost = { id: string; slug?: string; kind: "article" | "video"; status: "published"; title: string; description: string; image: string; url: string; category: string; author: string; duration: string; publishDate: string };
 function getPublishedPosts(kind: JournalPost["kind"]): JournalPost[] { try { const raw = JSON.parse(localStorage.getItem("kolbe-editorial-media-v1") || "[]"); return Array.isArray(raw) ? raw.filter((p): p is JournalPost => p?.kind === kind && p?.status === "published" && typeof p.title === "string") : []; } catch { return []; } }
 
-/** Retail sizes come from real server variants; legacy demo products fall back to series composition. */
-export const productSizes = (p: Product) => (p.sizes?.length ? p.sizes : Array.from(new Set(p.series.flatMap((series) => Object.keys(series.composition ?? {})))));
+/** Retail sizes come from the retail variant contract only; the offline demo seed keeps its
+ *  previous fallback. Wholesale series composition is NEVER the source of retail sizing.
+ *  (One implementation for the whole storefront: src/data/retail-variants.ts) */
+export const productSizes = (p: Product, colorIdOrName?: string) => retailSizes(p, colorIdOrName);
 
 const TARGET_BADGE: Record<string, string> = {
   variant: "تخفیف واریانت دقیق",
@@ -48,12 +51,18 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
 }) {
   const ops = useOps();
   const [colorId, setColorId] = useState(p.colors[0]?.id ?? "");
-  const sizes = productSizes(p);
+  const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
+  /** Retail sizes for the selected colour — retail variant contract, demo seed keeps its fallback. */
+  const sizes = productSizes(p, chosenColor?.id ?? chosenColor?.name);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
+  const selectColor = (id: string, name?: string) => {
+    setColorId(id);
+    const next = productSizes(p, id || name);
+    if (next.length && !next.includes(size)) setSize(next.includes("M") ? "M" : next[0]!);
+  };
   const [message, setMessage] = useState("");
   const [added, setAdded] = useState(false);
   const toast = useToast();
-  const chosenColor = p.colors.find((color) => color.id === colorId) ?? p.colors[0];
   const resolved = resolveDisplayPrice(p, chosenColor?.id ?? chosenColor?.name, size, ops.promotionRules, ops.festivals);
   const quickAdd = () => {
     if (!chosenColor) { setMessage("رنگی برای این محصول تعریف نشده است"); return; }
@@ -105,7 +114,7 @@ export function RetailCard({ p, wished, onWish, onOpen, onAdd }: {
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-1" role="group" aria-label={`انتخاب رنگ ${p.name}`}>
           {p.colors.map((color) => (
-            <button key={color.id} title={color.name} aria-label={`${p.name}، رنگ ${color.name}`} aria-pressed={color.id === colorId} onClick={() => setColorId(color.id)}
+            <button key={color.id} title={color.name} aria-label={`${p.name}، رنگ ${color.name}`} aria-pressed={color.id === colorId} onClick={() => selectColor(color.id, color.name)}
               className={cn("kv-press flex h-10 w-10 items-center justify-center rounded-full border transition-all", color.id === colorId ? "border-[var(--kv-accent)]" : "border-transparent hover:border-[var(--kv-line-strong)]")}>
               <span className="h-5 w-5 rounded-full border border-black/15" style={{ background: color.hex }} />
             </button>
@@ -202,12 +211,29 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
 }) {
   const ops = useOps();
   const [img, setImg] = useState(0);
-  const gallery: { kind: "image" | "video"; src: string; title: string; thumbnail?: string }[] = [...p.images.map((src, i) => ({ kind: "image" as const, src, title: p.imageMeta?.[i]?.alt || p.name })), ...(p.videos ?? []).map((video) => ({ kind: "video" as const, src: video.src, title: video.title || p.name, thumbnail: video.thumbnail })), ...(!p.videos?.length && p.video ? [{ kind: "video" as const, src: p.video, title: `${p.name} · ویدیو`, thumbnail: undefined }] : [])];
-  const selectedMedia = gallery[img] ?? gallery[0];
   const [color, setColor] = useState(p.colors[0]);
-  const sizes = productSizes(p);
+  /** Colour-scoped media, ONLY when the product actually carries it (Product.colorMedia or CMS
+   *  colour-scoped videos). Otherwise `undefined` → the normal product gallery, unchanged:
+   *  unrelated photographs are never rotated to imply a colour photo. */
+  const colorMedia = mediaForColor(p, color?.id ?? color?.name);
+  const gallery: { kind: "image" | "video"; src: string; title: string; thumbnail?: string }[] = colorMedia
+    ? [
+      ...colorMedia.images.map((src) => ({ kind: "image" as const, src, title: `${p.name} — ${color?.name ?? ""}`.trim() })),
+      ...colorMedia.videos.map((video) => ({ kind: "video" as const, src: video.src, title: video.title || p.name, thumbnail: video.thumbnail })),
+    ]
+    : [...p.images.map((src, i) => ({ kind: "image" as const, src, title: p.imageMeta?.[i]?.alt || p.name })), ...(p.videos ?? []).map((video) => ({ kind: "video" as const, src: video.src, title: video.title || p.name, thumbnail: video.thumbnail })), ...(!p.videos?.length && p.video ? [{ kind: "video" as const, src: p.video, title: `${p.name} · ویدیو`, thumbnail: undefined }] : [])];
+  const selectedMedia = gallery[img] ?? gallery[0];
+  const sizes = productSizes(p, color?.id ?? color?.name);
   useEffect(() => { if (isAuthenticated()) accountApi.view(p.id); }, [p.id]);
+  useEffect(() => { setImg(0); }, [color?.id]);
   const [size, setSize] = useState(sizes.includes("M") ? "M" : sizes[0] ?? "M");
+  /** Colour change keeps a VALID size selected; a colour with no dedicated photo still selects,
+   *  expands the workspace and offers its real sizes — it just never fakes the gallery. */
+  const selectColor = (next: typeof color) => {
+    setColor(next);
+    const nextSizes = productSizes(p, next?.id ?? next?.name);
+    if (nextSizes.length && !nextSizes.includes(size)) setSize(nextSizes.includes("M") ? "M" : nextSizes[0]!);
+  };
   const resolved = resolveDisplayPrice(p, color?.id ?? color?.name, size, ops.promotionRules, ops.festivals);
   // QA2-PDP-008: size guide + structured specs come from the canonical public endpoints.
   const isServerProduct = /^[0-9a-f-]{36}$/i.test(p.id);
@@ -281,7 +307,7 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
           </div>
           <div className="mt-6">
             <p className="mb-2.5 text-[13px] font-bold">انتخاب رنگ <span className="font-medium text-[var(--kv-muted)]">— {color.name}</span></p>
-            <div className="flex gap-2.5">{p.colors.map((c) => <Swatch key={c.id} hex={c.hex} name={c.name} selected={color.id === c.id} onSelect={() => setColor(c)} />)}</div>
+            <div className="flex gap-2.5">{p.colors.map((c) => <Swatch key={c.id} hex={c.hex} name={c.name} selected={color.id === c.id} onSelect={() => selectColor(c)} />)}</div>
           </div>
           <div className="mt-5">
             <div className="mb-2.5 flex items-center justify-between">
@@ -291,9 +317,17 @@ export function RetailPDP({ p, onBack, onAdd, wished, onWish, taxonomyLabel }: {
               )}
             </div>
             <div className="flex flex-wrap gap-2">
-              {sizes.map((s) => (
-                <button key={s} onClick={() => setSize(s)} className={cn("kv-press min-w-[52px] rounded-[11px] border px-3 py-2.5 text-sm font-bold transition-all", size === s ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]")}>{s}</button>
-              ))}
+              {sizes.map((s) => {
+                // Availability is claimed ONLY from the retail variant contract; rows without
+                // counters keep every listed size selectable exactly as before.
+                const availability = retailVariantAvailability(p, color?.id ?? color?.name, s);
+                const soldOut = availability ? !availability.available : false;
+                return (
+                  <button key={s} onClick={() => setSize(s)} disabled={soldOut} aria-disabled={soldOut}
+                    title={soldOut ? `سایز ${s} برای رنگ ${color?.name ?? ""} موجود نیست` : undefined}
+                    className={cn("kv-press min-w-[52px] rounded-[11px] border px-3 py-2.5 text-sm font-bold transition-all disabled:cursor-not-allowed disabled:opacity-40 disabled:line-through", size === s && !soldOut ? "border-[var(--kv-ink)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]")}>{s}</button>
+                );
+              })}
             </div>
           </div>
           <div className="mt-5 flex items-center gap-2 rounded-[12px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 px-4 py-3 text-[13px]">
@@ -550,13 +584,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     if (ratingFilter) list = list.filter((p) => p.rating >= Number(ratingFilter));
     if (discountOnly) list = list.filter((p) => (p.discountPercent ?? 0) > 0);
     if (colorFilter) list = list.filter((p) => p.colors.some((c) => c.id === colorFilter || c.name === colorFilter));
-    if (sizeFilter) list = list.filter((p) => p.series.some((s) => Object.keys(s.composition).includes(sizeFilter)));
+    if (sizeFilter) list = list.filter((p) => productSizes(p).includes(sizeFilter));
     if (stockOnly) list = list.filter((p) => p.stock > 0);
     if (installmentOnly) list = list.filter((p) => p.installmentPrice != null);
     if (maxPrice && Number(maxPrice) > 0) list = list.filter((p) => p.retailPrice <= Number(maxPrice));
     const query = normalizeSearch(q.trim());
     if (query) list = list.filter((p) => {
-      const fields = [p.name, p.sku, p.brand, p.category, p.supplier, p.desc, p.fabric, ...p.colors.map((c) => c.name), ...(p.seasons ?? []), ...(p.vibes ?? []), ...Object.entries(p.attributes ?? {}).flatMap(([k, v]) => [k, ...(Array.isArray(v) ? v : [v])]), ...p.series.flatMap((s) => Object.keys(s.composition))];
+      const fields = [p.name, p.sku, p.brand, p.category, p.supplier, p.desc, p.fabric, ...p.colors.map((c) => c.name), ...(p.seasons ?? []), ...(p.vibes ?? []), ...Object.entries(p.attributes ?? {}).flatMap(([k, v]) => [k, ...(Array.isArray(v) ? v : [v])]), ...productSizes(p)];
       return fields.some((field) => normalizeSearch(field).includes(query) || fuzzyMatch(query, normalizeSearch(field)));
     });
     if (filterGender) list = list.filter((p) => (p.genderCode ?? "") === filterGender);
@@ -635,7 +669,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const vibes = Array.from(new Set(retailProducts.flatMap((p) => p.vibes ?? [])));
   const attributes = Array.from(new Set(retailProducts.flatMap((p) => Object.entries(p.attributes ?? {}).flatMap(([key, value]) => (Array.isArray(value) ? value : [value]).map((v) => `${key}:${v}`)))));
   const filterColors = Array.from(new Map(retailProducts.flatMap((p) => p.colors).map((c) => [c.id, c])).values());
-  const filterSizes = Array.from(new Set(retailProducts.flatMap((p) => p.series.flatMap((s) => Object.keys(s.composition)))));
+  const filterSizes = Array.from(new Set(retailProducts.flatMap((p) => productSizes(p))));
   useEffect(() => {
     if (view !== "shop") return;
     const params = new URLSearchParams();
@@ -1052,7 +1086,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
             {attributes.length > 0 && <label className="text-xs font-bold">ویژگی پویا<Select className="mt-1.5 w-full" options={["همه ویژگی‌ها", ...attributes]} value={attributeFilter || "همه ویژگی‌ها"} onChange={(v) => setAttributeFilter(v === "همه ویژگی‌ها" ? "" : v)}/></label>}
             <label className="text-xs font-bold">حداقل امتیاز<Select className="mt-1.5 w-full" options={["هر امتیازی", "3.5", "4", "4.5"]} value={ratingFilter || "هر امتیازی"} onChange={(v) => setRatingFilter(v === "هر امتیازی" ? "" : v)}/></label>
             <label className="text-xs font-bold">رنگ<Select className="mt-1.5 w-full" options={["همه رنگ‌ها", ...filterColors.map((c) => `${c.name} (${fmtNum(retailProducts.filter((p) => p.colors.some((x) => x.id === c.id)).length)})`)]} value={filterColors.find((c) => c.id === colorFilter)?.name ? `${filterColors.find((c) => c.id === colorFilter)!.name} (${fmtNum(retailProducts.filter((p) => p.colors.some((x) => x.id === colorFilter)).length)})` : "همه رنگ‌ها"} onChange={(v) => setColorFilter(filterColors.find((c) => v.startsWith(c.name))?.id ?? "")}/></label>
-            <label className="text-xs font-bold">سایز<Select className="mt-1.5 w-full" options={["همه سایزها", ...filterSizes.map((s) => `${s} (${fmtNum(retailProducts.filter((p) => p.series.some((x) => Object.keys(x.composition).includes(s))).length)})`)]} value={sizeFilter ? `${sizeFilter} (${fmtNum(retailProducts.filter((p) => p.series.some((x) => Object.keys(x.composition).includes(sizeFilter))).length)})` : "همه سایزها"} onChange={(v) => setSizeFilter(filterSizes.find((s) => v.startsWith(`${s} (`) || v === s) ?? "")}/></label>
+            <label className="text-xs font-bold">سایز<Select className="mt-1.5 w-full" options={["همه سایزها", ...filterSizes.map((s) => `${s} (${fmtNum(retailProducts.filter((p) => productSizes(p).includes(s)).length)})`)]} value={sizeFilter ? `${sizeFilter} (${fmtNum(retailProducts.filter((p) => productSizes(p).includes(sizeFilter)).length)})` : "همه سایزها"} onChange={(v) => setSizeFilter(filterSizes.find((s) => v.startsWith(`${s} (`) || v === s) ?? "")}/></label>
             <label className="text-xs font-bold">حداکثر قیمت (تومان)<input inputMode="numeric" type="number" min="0" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="بدون محدودیت" className="mt-1.5 w-full rounded-lg border border-[var(--kv-line)] bg-[var(--kv-bg)] px-3 py-2.5 text-sm"/></label>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={stockOnly} onChange={(e) => setStockOnly(e.target.checked)} className="accent-[#1B2A4A]"/>فقط موجود</label>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={discountOnly} onChange={(e) => setDiscountOnly(e.target.checked)} className="accent-[#1B2A4A]"/>فقط تخفیف‌دار</label>

@@ -19,7 +19,7 @@ type CatalogRow = {
   id: string; brand: string; name: string; category: string; description?: string; cashPriceRial: string; installmentPriceRial: string | null;
   wholesalePriceRial?: string | null; wholesaleMoq?: number | null; ownerType?: string;
   genderCode?: string | null; gender?: string | null; seasons?: string[];
-  metadata?: Record<string, unknown>; variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number }[];
+  metadata?: Record<string, unknown>; variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number; retailAvailableStock?: number; reserved?: number; incoming?: number; damaged?: number }[];
   available?: number; supplierId?: string | null; discountPercent?: number; installmentEnabled?: boolean;
   pricing?: ProductPricing;
   series?: { id: string; name: string; colorLabel: string | null; pieces: number; composition: Record<string, number>; minOrderSeries: number; pricePerSeriesRial: string | null; availableSeries: number }[];
@@ -39,6 +39,16 @@ export function adaptCatalogProduct(row: CatalogRow): Product & { variants: NonN
   // Wholesale channel data (items 245-247): series definitions, MOQ and audience/season codes ride the server row.
   const wholesaleFrom = rialToToman(row.wholesalePriceRial);
   const sizeCodes = [...new Set(variants.map((v) => v.size).filter((s): s is string => Boolean(s)))];
+  // Colour-scoped media comes from the CMS-owned metadata (`metadata.colorMedia`) when it exists —
+  // we only pass it through, we never hand-maintain demo colour→photo mappings here.
+  const colorMedia = (() => {
+    const raw = meta.colorMedia;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const entries = Object.entries(raw as Record<string, unknown>)
+      .map(([key, value]) => [key, Array.isArray(value) ? value.filter((u): u is string => typeof u === "string" && Boolean(u)) : []])
+      .filter(([, urls]) => (urls as string[]).length);
+    return entries.length ? Object.fromEntries(entries) as Record<string, string[]> : undefined;
+  })();
   const series: Product["series"] = (row.series ?? []).map((entry) => ({
     id: entry.id, name: entry.name, pieces: entry.pieces, composition: entry.composition,
     moqSeries: entry.minOrderSeries, pricePerSeries: rialToToman(entry.pricePerSeriesRial),
@@ -60,5 +70,6 @@ export function adaptCatalogProduct(row: CatalogRow): Product & { variants: NonN
     genderCode: row.genderCode ?? GENDER_BRIDGE[row.gender ?? ""] ?? null,
     seasons: Array.isArray(row.seasons) ? row.seasons : [],
     variants, sizes: sizeCodes, installmentEnabled: row.installmentEnabled,
+    ...(colorMedia ? { colorMedia } : {}),
   };
 }

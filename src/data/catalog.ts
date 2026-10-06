@@ -75,8 +75,15 @@ export type Product = {
   sizes?: string[];
   /** Items 245-247: audience taxonomy codes ride the server catalog rows (absent in demo seed). */
   genderCode?: string | null;
-  /** Server variant rows (hydrated catalog only) — checkout resolves the exact variant. */
-  variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number }[];
+  /** Server variant rows (hydrated catalog only) — checkout resolves the exact variant.
+   *  The counters mirror the canonical product read model (backend/src/catalog.ts): they are
+   *  WMS-derived and are only present when the row that hydrated this product carries them. */
+  variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number; retailAvailableStock?: number; reserved?: number; incoming?: number; damaged?: number }[];
+  /** Colour-scoped media owned by the Product/CMS media contract (`metadata.colorMedia`).
+   *  Optional and backward-compatible: when a colour has no entry the storefront shows the
+   *  normal product gallery unchanged — it never rotates unrelated images. Long-term this belongs
+   *  to the Product/CMS media model (see docs/parallel/agent-a-contracts.md §8). */
+  colorMedia?: Record<string, string[]>;
   /** Canonical server resolution (absent only in the offline demo seed). */
   pricing?: ProductPricing;
 };
