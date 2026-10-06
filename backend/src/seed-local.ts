@@ -195,6 +195,22 @@ async function seed(app: FastifyInstance, pool: DbPool) {
   /* ------------------------------- supplier ------------------------------- */
   const supplier = await ensureSupplierAccount(app, pool, adminToken, { email: supplierEmail, password: supplierPassword,
     displayName: 'کارگاه نیلگون', phone: '09120000002', brand: 'نیلگون', city: 'اصفهان' });
+  /* Idempotent PENDING applicant (§52 + §22): a live cooperation request that must NOT become an
+     operational supplier. Its number/email exist only inside the request payload, so signing in
+     with them returns the REAL application state instead of a generic "not found". */
+  const pendingApplicant = await call(app, 'GET', '/api/v1/admin/cooperation-requests', { token: adminToken });
+  const pendingExists = (pendingApplicant.body?.items ?? []).some((row: { payload?: Record<string, string>; status: string }) =>
+    row.payload?.mobile === '09990000009' && (row.status === 'new' || row.status === 'reviewing'));
+  if (!pendingExists) {
+    const requested = await call(app, 'POST', '/api/v1/cooperation-requests', { payload: { payload: {
+      brand_name: 'برند در انتظار تأیید', legal_name: 'شرکت در انتظار تأیید', person_type: 'legal',
+      national_id: '1111111111', phone: '02111111111', mobile: '09990000009', email: 'pending.supplier@example.test',
+      office_address: 'تهران، نشانی آزمایشی درخواست در انتظار', bank_name: 'بانک آزمایشی',
+      iban: 'IR111111111111111111111111', account_holder: 'شرکت در انتظار تأیید', product_categories: 'پوشاک',
+    } } });
+    if (requested.status !== 201) throw new Error(`pending applicant: ${requested.status} ${JSON.stringify(requested.body)}`);
+    step('درخواست عضویت تأمین‌کنندهٔ در انتظار بررسی ثبت شد (نمونهٔ UAT).');
+  }
   const secondSupplier = await ensureSupplierAccount(app, pool, adminToken, { email: 'demo.farasu@example.test', password: 'Demo-Farasu-123456',
     displayName: 'کارگاه فراسو', phone: '09120000003', brand: 'فراسو', city: 'تهران' });
 
