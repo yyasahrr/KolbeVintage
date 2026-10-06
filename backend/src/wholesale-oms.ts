@@ -1104,6 +1104,13 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       customerStatus: z.enum(['processing', 'awaiting_payment', 'needs_decision', 'preparing',
         'ready_to_ship', 'shipped', 'delivered', 'cancelled']).optional(),
       supplyRequired: z.coerce.number().int().min(0).max(1).optional(),
+      /*
+       * PRODUCT-OWNER IA DECISION: source type is NOT an order type. A Master Order may hold Kolbe
+       * physical stock, supplier physical stock at Kolbe and supplier capacity AT THE SAME TIME, so
+       * source visibility is a FILTER on the one canonical Master Order list — never a separate
+       * order center. `mixed` = more than one source bucket is actually present on the order.
+       */
+      coverage: z.enum(['all', 'kolbe', 'supplier_at_kolbe', 'supply_required', 'mixed']).optional(),
       dateFrom: z.string().datetime({ offset: true }).optional(),
       dateTo: z.string().datetime({ offset: true }).optional(),
       sort: z.enum(['newest', 'oldest']).default('newest'),
@@ -1192,11 +1199,17 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         WHERE ($7::text IS NULL OR rows.readiness = $7)
           AND ($8::int IS NULL OR ($8 = 1 AND rows.supply_required_series > 0) OR ($8 = 0 AND rows.supply_required_series = 0))
           AND ($10::text IS NULL OR rows.customer_status = $10)
+          AND ($11::text IS NULL OR $11::text = 'all'
+               OR ($11 = 'kolbe' AND rows.kolbe_series > 0)
+               OR ($11 = 'supplier_at_kolbe' AND rows.supplier_at_kolbe_series > 0)
+               OR ($11 = 'supply_required' AND rows.supply_required_series > 0)
+               OR ($11 = 'mixed' AND ((rows.kolbe_series > 0)::int + (rows.supplier_at_kolbe_series > 0)::int
+                                     + (rows.supply_required_series > 0)::int) > 1))
         ORDER BY rows.created_at {order}, rows.id DESC
         LIMIT $9 OFFSET 0`.replace('{order}', query.sort === 'oldest' ? 'ASC' : 'DESC'),
       [buyerId, query.before ?? null, query.search ?? null, query.status ?? null, query.dateFrom ?? null,
         query.dateTo ?? null, query.readiness ?? null, query.supplyRequired ?? null, query.limit,
-        query.customerStatus ?? null]);
+        query.customerStatus ?? null, query.coverage ?? null]);
     const items = rows.rows.map((row: Record<string, unknown> & { total_rows: number; included_children: number }) => {
       const { total_rows: totalRows, ...rest } = row;
       void totalRows;

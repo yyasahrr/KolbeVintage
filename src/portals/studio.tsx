@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Sparkles, Check, RotateCcw, Save, Share2, Layers, Trash2,
-  Lock, User, Store, ShieldCheck, ChevronLeft,
+  User, Store, ShieldCheck, ChevronLeft,
 } from "lucide-react";
 import { PRODUCTS, fmtMoney } from "../data/catalog";
 import { digitsOnly } from "../data/customer";
@@ -134,79 +134,395 @@ export function StyleBuilder({ accountId, onLogin }: { accountId?: string; onLog
 }
 
 /* ================= AUTH ================= */
-export function AuthScreens({ portal, onDone }: { portal: string; onDone: (phone: string) => void }) {
-  const [mode, setMode] = useState<"login" | "otp" | "activate">("login");
-  const [phone, setPhone] = useState("");
-  const [code, setCode] = useState("");
+/*
+ * ================= AUTH (locked remediation) =================
+ *
+ * ONE account/auth system for CUSTOMER and VIP:
+ *   • موبایل + کد یکبارمصرف  → POST /auth/otp/request + /auth/otp/verify (real, server-issued, hashed)
+ *   • ایمیل + رمز عبور        → POST /auth/login (same user row, same session model; 2FA honoured)
+ *   • ثبت‌نام واقعی مشتری      → POST /auth/register
+ * VIP is NOT a separate login or account: it is the canonical active membership on this same
+ * account (the entitlement is exposed by GET /auth/me and gated server-side by the order endpoints).
+ *
+ * ADMIN and SUPPLIER keep SEPARATE logins (this component renders login-only for them — no public
+ * admin registration; suppliers apply through «درخواست عضویت تأمین‌کننده» and are provisioned after
+ * review). The production demo shortcuts are gone: no fixed code, no client-side session.
+ */
+export function AuthScreens({ portal, onDone }: { portal: string; onDone: (identity?: string) => void | Promise<void> }) {
+  const isRetail = portal === "retail";
+  const isAdmin = portal === "admin";
+  const [mode, setMode] = useState<"login" | "register" | "recover" | "activate">("login");
+  /** §5: only ONE mode's inputs are active at a time. */
+  const [loginMethod, setLoginMethod] = useState<"otp" | "password">("otp");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [activate, setActivate] = useState({ token: "", password: "", confirm: "" });
-  const [activating, setActivating] = useState(false);
-  const [activated, setActivated] = useState(false);
+  const [notice, setNotice] = useState("");
 
-  const submitActivation = async () => {
-    if (!activate.token.trim()) { setError("توکن فعال‌سازی را وارد کنید."); return; }
-    if (activate.password.length < 8) { setError("گذرواژه دست‌کم ۸ نویسه باشد."); return; }
-    if (activate.password !== activate.confirm) { setError("تکرار گذرواژه مطابقت ندارد."); return; }
-    setActivating(true); setError("");
-    try {
-      await authApi.setPassword({ token: activate.token.trim(), newPassword: activate.password });
-      setActivated(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "فعال‌سازی ناموفق بود.");
-    } finally { setActivating(false); }
+  /* ---- login by EMAIL + PASSWORD (same account, same session model) ---- */
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [twoFactor, setTwoFactor] = useState<{ challengeId: string; devCode?: string; code: string } | null>(null);
+
+  /* ---- login / signup by MOBILE + one-time code ---- */
+  const [phone, setPhone] = useState("");
+  const [challenge, setChallenge] = useState<{ id: string; masked: string; devCode?: string } | null>(null);
+  const [code, setCode] = useState("");
+
+  /* ---- registration (mobile-first; the number is verified BEFORE the account exists) ---- */
+  const [signupPhone, setSignupPhone] = useState("");
+  const [signupChallenge, setSignupChallenge] = useState<{ id: string; masked: string; devCode?: string } | null>(null);
+  const [signupCode, setSignupCode] = useState("");
+  const [signupName, setSignupName] = useState("");
+  const [signupFamily, setSignupFamily] = useState("");
+  const [signupEmail, setSignupEmail] = useState("");
+  const [signupPassword, setSignupPassword] = useState("");
+
+  /* ---- password recovery (canonical one-time token → set-password) ---- */
+  const [recover, setRecover] = useState({ identity: "", token: "", password: "", confirm: "" });
+
+  /* ---- legacy/migrated account activation (secondary; operator-issued token) ---- */
+  const [activate, setActivate] = useState({ token: "", password: "", confirm: "" });
+
+  const title = isAdmin ? "ورود مدیریت" : isRetail ? "ورود یا ثبت‌نام" : "ورود تأمین‌کنندگان";
+  const subtitle = isAdmin
+    ? "دسترسی امن کارکنان کلبه به کنسول عملیات. حساب مدیریت از طریق ثبت‌نام عمومی ساخته نمی‌شود."
+    : isRetail
+      ? "با شماره موبایل و کد یکبارمصرف، یا با ایمیل و رمز عبور وارد شوید. عضویت VIP روی همین حساب فعال می‌شود."
+      : "ورود تأمین‌کنندگان تأییدشده. برای همکاری جدید از «درخواست عضویت تأمین‌کننده» استفاده کنید.";
+
+  const finish = async () => { await onDone(); };
+
+  /** §23: technical failures never reach the customer as raw codes. */
+  const friendly = (err: unknown) => {
+    const message = err instanceof Error ? err.message : "";
+    if (!message) return "ارتباط با سرور برقرار نشد؛ دوباره تلاش کنید.";
+    if (/^\s*\{/.test(message) || /INTERNAL_ERROR|ECONN|Failed to fetch/.test(message)) return "خطای موقت در سرور رخ داد؛ کمی بعد دوباره تلاش کنید.";
+    if (/^[A-Z][A-Z_]{3,}$/.test(message)) return "انجام این عملیات ممکن نشد؛ دوباره تلاش کنید.";
+    return message;
   };
-  const conf: Record<string, { t: string; d: string; icon: React.ReactNode; tone: string }> = {
-    retail: { t: "ورود به حساب کلبه", d: "یک حساب برای خرید خرده، عضویت عمده و استایل‌های شما.", icon: <User size={20} />, tone: "bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]" },
-    supplier: { t: "ورود تأمین‌کننده", d: "مدیریت محصولات، سفارش‌ها و تسویه.", icon: <Store size={20} />, tone: "bg-[var(--kv-surface-2)] text-[var(--kv-ink)]" },
-    admin: { t: "ورود مدیریت", d: "دسترسی امن به کنسول عملیات کلبه.", icon: <ShieldCheck size={20} />, tone: "bg-[#1B2A4A] text-white" },
+  const run = async (task: () => Promise<void>) => {
+    setBusy(true); setError(""); setNotice("");
+    try { await task(); } catch (err) { setError(friendly(err)); } finally { setBusy(false); }
   };
-  const c = conf[portal] ?? conf.retail;
+
+  /* ---------------- mobile + code: sign-in ---------------- */
+  const requestLoginCode = () => run(async () => {
+    if (!/^09\d{9}$/.test(digitsOnly(phone))) throw new Error("شماره موبایل نامعتبر است؛ نمونهٔ درست: ۰۹۱۲۳۴۵۶۷۸۹.");
+    const res = await authApi.requestOtp({ phone: digitsOnly(phone) });
+    setChallenge({ id: res.challengeId, masked: res.phoneMasked, ...(res.devCode ? { devCode: res.devCode } : {}) });
+    setCode("");
+    setNotice(`کد ورود به شماره ${res.phoneMasked} پیامک شد.`);
+  });
+  const verifyLoginCode = () => run(async () => {
+    if (!challenge) throw new Error("ابتدا کد ورود را دریافت کنید.");
+    if (digitsOnly(code).length !== 6) throw new Error("کد واردشده باید ۶ رقم باشد.");
+    await authApi.verifyOtp({ challengeId: challenge.id, code: digitsOnly(code) });
+    await finish();
+  });
+
+  /* ---------------- email + password: sign-in ---------------- */
+  const passwordLogin = () => run(async () => {
+    if (email.trim().length < 5) throw new Error("ایمیل یا شماره موبایل را کامل وارد کنید.");
+    if (!password) throw new Error("رمز عبور را وارد کنید.");
+    const res = await authApi.login({ identity: email.trim().toLowerCase(), password });
+    if (res.twoFactorRequired && res.challengeId) {
+      setTwoFactor({ challengeId: res.challengeId, code: "", ...(res.devCode ? { devCode: res.devCode } : {}) });
+      setNotice("برای ادامه، کد تأیید پیامک‌شده را وارد کنید.");
+      return;
+    }
+    await finish();
+  });
+  const verifyTwoFactor = () => run(async () => {
+    if (!twoFactor) return;
+    if (digitsOnly(twoFactor.code).length !== 6) throw new Error("کد واردشده باید ۶ رقم باشد.");
+    await authApi.loginTwoFactor(twoFactor.challengeId, digitsOnly(twoFactor.code));
+    await finish();
+  });
+
+  /* ---------------- registration: mobile → code → account ---------------- */
+  const requestSignupCode = () => run(async () => {
+    if (!/^09\d{9}$/.test(digitsOnly(signupPhone))) throw new Error("شماره موبایل نامعتبر است؛ نمونهٔ درست: ۰۹۱۲۳۴۵۶۷۸۹.");
+    const res = await authApi.requestOtp({ phone: digitsOnly(signupPhone), purpose: "signup" });
+    setSignupChallenge({ id: res.challengeId, masked: res.phoneMasked, ...(res.devCode ? { devCode: res.devCode } : {}) });
+    setSignupCode("");
+    setNotice(`کد تأیید به شماره ${res.phoneMasked} پیامک شد.`);
+  });
+  const submitRegistration = () => run(async () => {
+    if (!signupChallenge) throw new Error("ابتدا کد تأیید را دریافت کنید.");
+    const displayName = `${signupName} ${signupFamily}`.trim();
+    if (displayName.length < 3) throw new Error("نام و نام خانوادگی را کامل وارد کنید.");
+    if (digitsOnly(signupCode).length !== 6) throw new Error("کد واردشده باید ۶ رقم باشد.");
+    if (signupPassword && signupPassword.length < 12) throw new Error("رمز عبور باید دست‌کم ۱۲ نویسه باشد.");
+    await authApi.register({
+      displayName,
+      phone: digitsOnly(signupPhone),
+      code: digitsOnly(signupCode),
+      ...(signupEmail.trim() ? { email: signupEmail.trim().toLowerCase() } : {}),
+      ...(signupPassword ? { password: signupPassword } : {}),
+    });
+    await finish();
+  });
+
+  /* ---------------- recovery ---------------- */
+  const requestRecovery = () => run(async () => {
+    if (recover.identity.trim().length < 5) throw new Error("شماره موبایل یا ایمیل حساب را وارد کنید.");
+    const res = await authApi.forgotPassword(recover.identity.trim().toLowerCase());
+    setRecover({ ...recover, token: res.devToken ?? "" });
+    setNotice(res.devToken
+      ? "لینک بازیابی برای شما ثبت شد. در محیط توسعه، کد بازیابی به‌صورت خودکار تکمیل شده است."
+      : "اگر این شناسه به حسابی متعلق باشد، لینک بازیابی برای شما ارسال می‌شود.");
+  });
+  const submitRecovery = () => run(async () => {
+    if (recover.token.trim().length < 20) throw new Error("کد بازیابی معتبر نیست.");
+    if (recover.password.length < 12) throw new Error("گذرواژه جدید باید دست‌کم ۱۲ نویسه باشد.");
+    if (recover.password !== recover.confirm) throw new Error("تکرار گذرواژه با گذرواژه جدید یکسان نیست.");
+    await authApi.setPassword({ token: recover.token.trim(), newPassword: recover.password });
+    const res = await authApi.login({ identity: recover.identity.trim().toLowerCase(), password: recover.password });
+    if (res.twoFactorRequired && res.challengeId) {
+      setMode("login"); setEmail(recover.identity.trim().toLowerCase()); setPassword(recover.password);
+      setTwoFactor({ challengeId: res.challengeId, code: "", ...(res.devCode ? { devCode: res.devCode } : {}) });
+      setNotice("گذرواژه جدید ثبت شد؛ کد تأیید پیامک‌شده را وارد کنید.");
+      return;
+    }
+    await finish();
+  });
+
+  /* ---------------- legacy activation (secondary) ---------------- */
+  const submitActivation = () => run(async () => {
+    if (activate.token.trim().length < 20) throw new Error("کد فعال‌سازی معتبر نیست.");
+    if (activate.password.length < 12) throw new Error("گذرواژه جدید باید دست‌کم ۱۲ نویسه باشد.");
+    if (activate.password !== activate.confirm) throw new Error("تکرار گذرواژه با گذرواژه جدید یکسان نیست.");
+    await authApi.setPassword({ token: activate.token.trim(), newPassword: activate.password });
+    setNotice("حساب فعال شد؛ حالا با ایمیل یا موبایل خود وارد شوید.");
+    setMode("login");
+    setActivate({ token: "", password: "", confirm: "" });
+  });
+
+  const tab = (value: typeof mode, label: string) => (
+    <button key={value} onClick={() => { setMode(value); setError(""); setNotice(""); }} aria-pressed={mode === value}
+      className={cn("min-h-10 flex-1 rounded-full px-3 text-[13px] font-bold transition-colors", mode === value ? "bg-[var(--kv-surface)] text-[var(--kv-ink)] shadow-[var(--shadow-soft-sm)]" : "text-[var(--kv-muted)] hover:text-[var(--kv-ink)]")}>
+      {label}
+    </button>
+  );
+
   return (
-    <div className="mx-auto flex min-h-[70vh] w-full max-w-[440px] flex-col justify-center px-4 py-14">
-      <div className="text-center">
-        <p className="kv-latin text-[13px]">KOLBE VINTAGE</p>
-        <div className={cn("mx-auto mt-5 flex h-14 w-14 items-center justify-center rounded-2xl", c.tone)}>{c.icon}</div>
-        <h1 className="kv-editorial-title mt-4 text-[24px]">{c.t}</h1>
-        <p className="mt-2 text-sm text-[var(--kv-muted)]">{c.d}</p>
-      </div>
-      <Card className="mt-7 p-6">
-        {mode === "login" ? (
-          <div className="space-y-4">
-            <Field label="شماره موبایل"><Input placeholder="۰۹۱۲ ۳۴۵ ۶۷۸۹" value={phone} onChange={(v) => { setPhone(v); setError(""); }} /></Field>
-            {error && <p role="alert" className="text-[12px] text-[var(--kv-danger)]">{error}</p>}
-            <Btn variant={portal === "admin" ? "dark" : "accent"} className="w-full" size="lg" onClick={() => { if (!/^09\d{9}$/.test(digitsOnly(phone))) { setError("شماره همراه ۱۱ رقمی معتبر وارد کنید."); return; } setMode("otp"); setError(""); }}>ادامه با شماره همراه</Btn>
-            <button onClick={() => { setMode("activate"); setError(""); setActivated(false); }} className="w-full text-center text-[12.5px] font-bold text-[var(--kv-accent)] hover:underline">حساب منتقل‌شده از فروشگاه قبلی دارم (فعال‌سازی با توکن)</button>
-            <p className="flex items-center justify-center gap-1.5 text-xs text-[var(--kv-muted)]"><Lock size={12} />نسخه آزمایشی: پیامک واقعی ارسال نمی‌شود.</p>
+    <div className="mx-auto w-full max-w-[460px] px-4 pb-16 pt-6">
+      <Card className="p-6">
+        <div className="flex items-center gap-3">
+          <span className="flex h-11 w-11 items-center justify-center rounded-[13px] bg-[var(--kv-accent)] text-white">
+            {isAdmin ? <ShieldCheck size={20} /> : isRetail ? <User size={20} /> : <Store size={20} />}
+          </span>
+          <div>
+            <h1 className="text-[17px] font-extrabold">{title}</h1>
+            <p className="text-[12.5px] text-[var(--kv-muted)]">حساب واحد کلبه — بدون حساب جداگانه برای VIP</p>
           </div>
-        ) : mode === "activate" ? (
-          <div className="space-y-4">
-            <p className="text-center text-[13px] leading-7 text-[var(--kv-muted)]">توکن یک‌بارمصرفی که پس از مهاجرت حساب دریافت کرده‌اید وارد کنید و گذرواژه جدید بسازید.</p>
-            {activated ? (
-              <p role="status" className="rounded-[10px] bg-emerald-500/10 px-4 py-3 text-center text-[13px] font-bold text-emerald-700 dark:text-emerald-400">حساب شما فعال شد — حالا با شماره همراه وارد شوید.</p>
+        </div>
+        <p className="mt-4 text-[13px] leading-7 text-[var(--kv-muted)]">{subtitle}</p>
+
+        {isRetail && (
+          <div className="mt-5 flex gap-1 rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/70 p-1" role="tablist">
+            {tab("login", "ورود")}
+            {tab("register", "ثبت‌نام")}
+          </div>
+        )}
+
+        {error && <p role="alert" className="mt-4 rounded-[11px] bg-[#FBEDEC] px-3.5 py-2.5 text-[12.5px] font-semibold text-[#8C2F23]">{error}</p>}
+        {notice && !error && <p aria-live="polite" className="mt-4 rounded-[11px] bg-[var(--kv-surface-2)] px-3.5 py-2.5 text-[12.5px] text-[var(--kv-muted)]">{notice}</p>}
+
+        {/* ============ LOGIN ============ */}
+        {mode === "login" && (!isAdmin) && (
+          <div className="mt-5 space-y-4">
+            {isRetail && (
+              <div className="flex gap-1 rounded-[11px] bg-[var(--kv-surface-2)]/70 p-1 text-[12.5px] font-bold" role="tablist">
+                {(["otp", "password"] as const).map((m) => (
+                  <button key={m} role="tab" aria-selected={loginMethod === m} onClick={() => { setLoginMethod(m); setError(""); }}
+                    className={cn("min-h-9 flex-1 rounded-[9px]", loginMethod === m ? "bg-[var(--kv-surface)] shadow-[var(--shadow-soft-sm)]" : "text-[var(--kv-muted)]")}>
+                    {m === "otp" ? "شماره موبایل و کد یکبارمصرف" : "ایمیل و رمز عبور"}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {(!isRetail || loginMethod === "otp") ? (
+              <>
+                <Field label="شماره موبایل"><Input value={phone} onChange={(v) => { setPhone(v); setError(""); }} placeholder="09123456789"
+                  inputMode="tel" autoComplete="tel" ariaLabel="شماره موبایل" /></Field>
+                {!challenge ? (
+                  <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void requestLoginCode()}>
+                    {busy ? "در حال ارسال کد…" : "ارسال کد ورود"}
+                  </Btn>
+                ) : (
+                  <>
+                    <Field label="کد یکبارمصرف" hint={`کد به ${challenge.masked} پیامک شد.`}>
+                      <Input value={code} onChange={(v) => { setCode(digitsOnly(v).slice(0, 6)); setError(""); }} placeholder="------"
+                        inputMode="numeric" autoComplete="one-time-code" ariaLabel="کد یکبارمصرف" dir="ltr" />
+                    </Field>
+                    {challenge.devCode && <p className="rounded-[11px] bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه — کد: <b dir="ltr">{challenge.devCode}</b></p>}
+                    <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void verifyLoginCode()}>
+                      {busy ? "در حال بررسی…" : "ورود به حساب"}
+                    </Btn>
+                    <button onClick={() => void requestLoginCode()} className="w-full text-[12.5px] font-semibold text-[var(--kv-accent)] hover:underline">ارسال دوبارهٔ کد</button>
+                    <button onClick={() => { setChallenge(null); setCode(""); }} className="w-full text-[12.5px] text-[var(--kv-muted)] hover:underline">تغییر شماره موبایل</button>
+                  </>
+                )}
+              </>
             ) : (
               <>
-                <Field label="توکن فعال‌سازی"><Input placeholder="مثلاً ۹f3a…" value={activate.token} onChange={(v) => { setActivate({ ...activate, token: v }); setError(""); }} /></Field>
-                <Field label="گذرواژه جدید (دست‌کم ۸ نویسه)"><Input type="password" value={activate.password} onChange={(v) => { setActivate({ ...activate, password: v }); setError(""); }} /></Field>
-                <Field label="تکرار گذرواژه جدید"><Input type="password" value={activate.confirm} onChange={(v) => { setActivate({ ...activate, confirm: v }); setError(""); }} /></Field>
-                {error && <p role="alert" className="text-[12px] text-[var(--kv-danger)]">{error}</p>}
-                <Btn variant={portal === "admin" ? "dark" : "accent"} className="w-full" size="lg" disabled={activating} onClick={() => void submitActivation()}>{activating ? "در حال فعال‌سازی…" : "فعال‌سازی حساب"}</Btn>
+                <Field label={isAdmin ? "ایمیل کارکنان" : "ایمیل یا شماره موبایل"}>
+                  <Input value={email} onChange={(v) => { setEmail(v); setError(""); }} placeholder={isAdmin ? "name@kolbe.ir" : "you@example.com"}
+                    inputMode={isAdmin ? "email" : "text"} autoComplete="username" ariaLabel="ایمیل یا شماره موبایل" dir="ltr" />
+                </Field>
+                <Field label="رمز عبور">
+                  <Input type="password" value={password} onChange={(v) => { setPassword(v); setError(""); }}
+                    autoComplete="current-password" ariaLabel="رمز عبور" dir="ltr" />
+                </Field>
+                {twoFactor ? (
+                  <>
+                    <Field label="کد تأیید دومرحله‌ای">
+                      <Input value={twoFactor.code} onChange={(v) => setTwoFactor({ ...twoFactor, code: digitsOnly(v).slice(0, 6) })}
+                        inputMode="numeric" autoComplete="one-time-code" ariaLabel="کد تأیید دومرحله‌ای" dir="ltr" />
+                    </Field>
+                    {twoFactor.devCode && <p className="rounded-[11px] bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه — کد: <b dir="ltr">{twoFactor.devCode}</b></p>}
+                    <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void verifyTwoFactor()}>
+                      {busy ? "در حال بررسی…" : "تأیید و ورود"}
+                    </Btn>
+                  </>
+                ) : (
+                  <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void passwordLogin()}>
+                    {busy ? "در حال ورود…" : "ورود"}
+                  </Btn>
+                )}
+                <button onClick={() => { setMode("recover"); setRecover({ identity: email, token: "", password: "", confirm: "" }); setError(""); setNotice(""); }}
+                  className="w-full text-[12.5px] font-semibold text-[var(--kv-accent)] hover:underline">رمز عبور را فراموش کرده‌ام</button>
+                {isAdmin && <p className="text-center text-[12px] text-[var(--kv-muted)]">ورود مدیریت فقط با حساب کارکنان کلبه. ثبت‌نام عمومی ندارد.</p>}
               </>
             )}
-            {!activated && error === "" && null}
-            <button onClick={() => { setMode("login"); setError(""); }} className="flex w-full items-center justify-center gap-1 text-[13px] font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]"><ChevronLeft size={14} className="rotate-180" />بازگشت به ورود</button>
           </div>
-          ) : (
-          <div className="space-y-4">
-            <p className="text-center text-[13px] text-[var(--kv-muted)]">شماره همراه: <b className="text-[var(--kv-ink)] tabular-nums" dir="ltr">{digitsOnly(phone)}</b></p>
-            <Field label="کد آزمایشی (۱۲۳۴۵)"><input inputMode="numeric" autoComplete="one-time-code" maxLength={5} value={code} onChange={(e) => { setCode(digitsOnly(e.target.value)); setError(""); }} className="h-12 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 text-center text-lg font-bold tracking-[0.3em] text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" dir="ltr" /></Field>
-            {error && <p role="alert" className="text-[12px] text-[var(--kv-danger)]">{error}</p>}
-            <Btn variant={portal === "admin" ? "dark" : "accent"} className="w-full" size="lg" onClick={() => { if (code !== "12345") { setError("کد آزمایشی ۱۲۳۴۵ است."); return; } onDone(digitsOnly(phone)); }}>ورود به حساب</Btn>
-            <button onClick={() => setMode("login")} className="flex w-full items-center justify-center gap-1 text-[13px] font-semibold text-[var(--kv-muted)] hover:text-[var(--kv-ink)]"><ChevronLeft size={14} className="rotate-180" />تغییر شماره</button>
+        )}
+
+        {/* ============ ADMIN LOGIN (no public registration) ============ */}
+        {mode === "login" && isAdmin && (
+          <div className="mt-5 space-y-4">
+            <Field label="ایمیل کارکنان">
+              <Input value={email} onChange={(v) => { setEmail(v); setError(""); }} placeholder="name@kolbe.ir" inputMode="email" autoComplete="username" ariaLabel="ایمیل کارکنان" dir="ltr" />
+            </Field>
+            <Field label="رمز عبور">
+              <Input type="password" value={password} onChange={(v) => { setPassword(v); setError(""); }} autoComplete="current-password" ariaLabel="رمز عبور" dir="ltr" />
+            </Field>
+            {twoFactor ? (
+              <>
+                <Field label="کد تأیید دومرحله‌ای">
+                  <Input value={twoFactor.code} onChange={(v) => setTwoFactor({ ...twoFactor, code: digitsOnly(v).slice(0, 6) })} inputMode="numeric" autoComplete="one-time-code" ariaLabel="کد تأیید دومرحله‌ای" dir="ltr" />
+                </Field>
+                {twoFactor.devCode && <p className="rounded-[11px] bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه — کد: <b dir="ltr">{twoFactor.devCode}</b></p>}
+                <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void verifyTwoFactor()}>{busy ? "در حال بررسی…" : "تأیید و ورود"}</Btn>
+              </>
+            ) : (
+              <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void passwordLogin()}>{busy ? "در حال ورود…" : "ورود"}</Btn>
+            )}
+            <p className="text-center text-[12px] text-[var(--kv-muted)]">دسترسی مدیریت از طریق RBAC سرور تعیین می‌شود و ثبت‌نام عمومی ندارد.</p>
           </div>
-          )
-        }
+        )}
+
+        {/* ============ REGISTRATION ============ */}
+        {mode === "register" && (
+          <div className="mt-5 space-y-4">
+            <Field label="شماره موبایل" hint="ثبت‌نام با تأیید شماره موبایل انجام می‌شود.">
+              <Input value={signupPhone} onChange={(v) => { setSignupPhone(v); setError(""); }} placeholder="09123456789" inputMode="tel" autoComplete="tel" ariaLabel="شماره موبایل" />
+            </Field>
+            {!signupChallenge ? (
+              <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void requestSignupCode()}>
+                {busy ? "در حال ارسال کد…" : "ارسال کد تأیید"}
+              </Btn>
+            ) : (
+              <>
+                <Field label="کد تأیید" hint={`کد به ${signupChallenge.masked} پیامک شد.`}>
+                  <Input value={signupCode} onChange={(v) => { setSignupCode(digitsOnly(v).slice(0, 6)); setError(""); }} placeholder="------" inputMode="numeric" autoComplete="one-time-code" ariaLabel="کد تأیید" dir="ltr" />
+                </Field>
+                {signupChallenge.devCode && <p className="rounded-[11px] bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه — کد: <b dir="ltr">{signupChallenge.devCode}</b></p>}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Field label="نام"><Input value={signupName} onChange={(v) => { setSignupName(v); setError(""); }} autoComplete="given-name" ariaLabel="نام" /></Field>
+                  <Field label="نام خانوادگی"><Input value={signupFamily} onChange={(v) => { setSignupFamily(v); setError(""); }} autoComplete="family-name" ariaLabel="نام خانوادگی" /></Field>
+                </div>
+                <Field label="ایمیل (اختیاری)" hint="برای ورود با ایمیل و رمز عبور در آینده.">
+                  <Input value={signupEmail} onChange={(v) => { setSignupEmail(v); setError(""); }} autoComplete="email" inputMode="email" ariaLabel="ایمیل" dir="ltr" />
+                </Field>
+                <Field label="رمز عبور (اختیاری)" hint="دست‌کم ۱۲ نویسه. اگر خالی بماند، همیشه با کد پیامکی وارد می‌شوید.">
+                  <Input type="password" value={signupPassword} onChange={(v) => { setSignupPassword(v); setError(""); }} autoComplete="new-password" ariaLabel="رمز عبور" dir="ltr" />
+                </Field>
+                <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void submitRegistration()}>
+                  {busy ? "در حال ساخت حساب…" : "ساخت حساب"}
+                </Btn>
+                <button onClick={() => void requestSignupCode()} className="w-full text-[12.5px] font-semibold text-[var(--kv-accent)] hover:underline">ارسال دوبارهٔ کد</button>
+              </>
+            )}
+            <p className="text-[12px] leading-6 text-[var(--kv-muted)]">
+              عضویت VIP/عمده روی همین حساب فعال می‌شود و ورود جداگانه ندارد. تأمین‌کنندگان از مسیر «درخواست عضویت تأمین‌کننده» ثبت‌نام می‌کنند.
+            </p>
+          </div>
+        )}
+
+        {/* ============ PASSWORD RECOVERY ============ */}
+        {mode === "recover" && (
+          <div className="mt-5 space-y-4">
+            <Field label="ایمیل یا شماره موبایل حساب">
+              <Input value={recover.identity} onChange={(v) => setRecover({ ...recover, identity: v })} autoComplete="username" ariaLabel="ایمیل یا شماره موبایل" dir="ltr" />
+            </Field>
+            {!recover.token ? (
+              <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void requestRecovery()}>{busy ? "در حال ارسال…" : "ارسال لینک بازیابی"}</Btn>
+            ) : (
+              <>
+                <Field label="کد بازیابی" hint="کد یکبارمصرف بازیابی؛ فقط یک بار قابل استفاده است.">
+                  <Input value={recover.token} onChange={(v) => setRecover({ ...recover, token: v })} ariaLabel="کد بازیابی" dir="ltr" />
+                </Field>
+                <Field label="گذرواژه جدید"><Input type="password" value={recover.password} onChange={(v) => setRecover({ ...recover, password: v })} autoComplete="new-password" ariaLabel="گذرواژه جدید" dir="ltr" /></Field>
+                <Field label="تکرار گذرواژه جدید"><Input type="password" value={recover.confirm} onChange={(v) => setRecover({ ...recover, confirm: v })} autoComplete="new-password" ariaLabel="تکرار گذرواژه جدید" dir="ltr" /></Field>
+                <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void submitRecovery()}>{busy ? "در حال ثبت…" : "تعیین گذرواژه و ورود"}</Btn>
+              </>
+            )}
+            <button onClick={() => { setMode("login"); setError(""); setNotice(""); }} className="flex w-full items-center justify-center gap-1 text-[12.5px] font-semibold text-[var(--kv-muted)] hover:underline">
+              <ChevronLeft size={14} /> بازگشت به ورود
+            </button>
+          </div>
+        )}
+
+        {/* ============ LEGACY ACTIVATION (secondary) ============ */}
+        {mode === "activate" && (
+          <div className="mt-5 space-y-4">
+            <p className="rounded-[11px] bg-[var(--kv-surface-2)] px-3.5 py-2.5 text-[12.5px] leading-6 text-[var(--kv-muted)]">
+              اگر حساب شما در انتقال‌های قبلی کلبه ایجاد شده و کد فعال‌سازی دریافت کرده‌اید، از این بخش گذرواژه تعیین کنید.
+            </p>
+            <Field label="کد فعال‌سازی"><Input value={activate.token} onChange={(v) => setActivate({ ...activate, token: v })} autoComplete="one-time-code" ariaLabel="کد فعال‌سازی" dir="ltr" /></Field>
+            <Field label="گذرواژه جدید"><Input type="password" value={activate.password} onChange={(v) => setActivate({ ...activate, password: v })} autoComplete="new-password" ariaLabel="گذرواژه جدید" dir="ltr" /></Field>
+            <Field label="تکرار گذرواژه جدید"><Input type="password" value={activate.confirm} onChange={(v) => setActivate({ ...activate, confirm: v })} autoComplete="new-password" ariaLabel="تکرار گذرواژه جدید" dir="ltr" /></Field>
+            <Btn variant="accent" size="lg" className="w-full" disabled={busy} onClick={() => void submitActivation()}>{busy ? "در حال فعال‌سازی…" : "فعال‌سازی حساب"}</Btn>
+            <button onClick={() => { setMode("login"); setError(""); }} className="flex w-full items-center justify-center gap-1 text-[12.5px] font-semibold text-[var(--kv-muted)] hover:underline">
+              <ChevronLeft size={14} /> بازگشت به ورود
+            </button>
+          </div>
+        )}
+
+        {(mode === "login" || mode === "register") && (
+          <div className="mt-6 border-t border-[var(--kv-line)] pt-4 text-center">
+            {isRetail && mode === "login" && (
+              <p className="text-[12.5px] text-[var(--kv-muted)]">
+                حساب ندارید؟ <button onClick={() => { setMode("register"); setError(""); setNotice(""); }} className="font-bold text-[var(--kv-accent)] hover:underline">ثبت‌نام کنید</button>
+              </p>
+            )}
+            <button onClick={() => { setMode("activate"); setError(""); setNotice(""); }} className="mt-2 text-[12px] text-[var(--kv-muted)] hover:underline">
+              فعال‌سازی حساب‌های قدیمی (کد فعال‌سازی)
+            </button>
+          </div>
+        )}
+        {isAdmin && (
+          <p className="mt-5 text-center text-[12px] text-[var(--kv-muted)]">ثبت‌نام ادمین وجود ندارد؛ حساب کارکنان فقط توسط تیم کلبه ساخته می‌شود.</p>
+        )}
+        {!isRetail && !isAdmin && (
+          <p className="mt-5 text-center text-[12.5px] leading-6 text-[var(--kv-muted)]">
+            تأمین‌کنندهٔ تأییدشده نیستید؟ از دکمهٔ «درخواست عضویت تأمین‌کننده» استفاده کنید — درخواست شما بررسی می‌شود و پس از تأیید دسترسی عملیاتی فعال خواهد شد.
+          </p>
+        )}
       </Card>
-      <p className="mt-5 text-center text-xs leading-6 text-[var(--kv-muted)]">با ورود، <b>قوانین استفاده</b> و <b>حریم خصوصی</b> کلبه را می‌پذیرید.</p>
     </div>
   );
 }

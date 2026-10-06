@@ -12,8 +12,9 @@ const SupplierApp = lazy(() => import("./portals/supplier"));
 const AdminApp = lazy(() => import("./portals/admin"));
 import { Btn, Drawer, Modal } from "./components/primitives";
 import { fmtMoney, fmtNum } from "./data/catalog";
-import { digitsOnly } from "./data/customer";
 import { StoreProvider, useStore } from "./data/store";
+/** Offline demo gate (same rule as data/store): `?demo=1`. Only here may a local demo record be consulted. */
+const DEMO_MODE = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
 import { authApi } from "./data/api";
 import { OpsProvider, useOps } from "./data/ops";
 import { AnnouncementBar, type NavTarget } from "./components/cms-render";
@@ -79,7 +80,9 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const ops = useOps();
   // Real authentication: JWT accessToken in localStorage (kolbe-access-token) + httpOnly refresh cookie.
   // No kolbe-session business identity. Guest cart is kept in local state; authenticated state comes from /auth/me.
-  const [authUser, setAuthUser] = useState<{ id: string; displayName: string; roles: string[]; phone?: string } | null>(null);
+  const [authUser, setAuthUser] = useState<{ id: string; displayName: string; roles: string[]; phone?: string | null;
+    /** Canonical VIP authority: server-derived active membership (same gate the order endpoints use). */
+    isWholesaleMember?: boolean; membership?: { status: string; planTitle: string; tier: string | null } | null } | null>(null);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -95,7 +98,13 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const { accounts, buyers, updateAccount } = useStore();
   const account = authUser ? (accounts.find((a) => a.id === authUser.id) ?? { id: authUser.id, name: authUser.displayName, phone: authUser.phone ?? "", addresses: [], wishlist: [], cart: [], preferences: { orderUpdates:true, offers:false, sms:true, email:false }, savedStyles: [], tickets: [] } as unknown as typeof accounts[number]) : null;
   const buyer = authUser ? buyers.find((b) => b.accountId === authUser.id) : null;
-  const role = !authUser ? "guest" : buyer?.status === "فعال" ? "vip" : authUser.roles.includes("vip") ? "vip" : "customer";
+  /* VIP is a canonical ACTIVE MEMBERSHIP on the same customer account (`/auth/me` → isWholesaleMember),
+     exactly the entitlement the wholesale order endpoints gate on. The local demo `buyers` store is only
+     consulted in offline demo mode — a frontend/demo role is never the VIP authority (locked remediation). */
+  const role = !authUser ? "guest"
+    : (authUser.isWholesaleMember || authUser.roles.includes("vip")) ? "vip"
+      : (DEMO_MODE && buyer?.status === "فعال") ? "vip"
+        : "customer";
   const [section, setSection] = useState<Section>("retail");
   const [view, setView] = useState<RetailView>("home");
   const [returnTo, setReturnTo] = useState<{ section: Section; view: RetailView } | null>(null);
@@ -129,7 +138,6 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const [megaOpen, setMegaOpen] = useState(false);
   const [shopCategory, setShopCategory] = useState<{ name: string; nonce: number } | null>(null);
   const [navTaxonomy, setNavTaxonomy] = useState<{ categories: { slug: string; name: string }[]; vibes: { slug: string; name: string }[] } | null>(null);
-  const [twoFactor, setTwoFactor] = useState<{ challengeId: string; devCode?: string; code: string; error: string } | null>(null);
   const { layout, theme } = useSiteExperience();
   useThemeTokens(theme, dark);
   const toast = useToast();
@@ -432,21 +440,14 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             setCart(next);
           }} /></Suspense>}
         {section === "auth" && (
-          <AuthScreens portal="retail" onDone={async (phone) => {
-            // Real backend auth: try register then login. For demo, password is fixed dev value; in production SMS OTP is verified server-side.
+          <AuthScreens portal="retail" onDone={async () => {
+            // AuthScreens already established a REAL server session (OTP verify, password login,
+            // 2FA step or registration+login) — no demo account, no fixed password, no local fallback.
             try {
-              // Attempt register (idempotent if already exists)
-              await authApi.register({ phone: digitsOnly(phone), password: "KolbeDemo123456!", displayName: "مشتری کلبه" }).catch(()=>undefined);
-              const res = await authApi.login({ identity: digitsOnly(phone), password: "KolbeDemo123456!" });
-              if (res.twoFactorRequired && res.challengeId) {
-                // Second factor (Req 351): the session is only issued after the SMS code is verified.
-                setTwoFactor({ challengeId: res.challengeId, devCode: res.devCode, code: "", error: "" });
-                return;
-              }
-              const me = await authApi.me() as { id: string; displayName: string; roles: string[]; phone?: string };
+              const me = await authApi.me();
               setAuthUser(me);
             } catch {
-              // Fallback: keep guest but show error (no silent local account)
+              // Session could not be read: stay a guest instead of inventing a local account.
             }
             // The guest cart is merged into the server saved cart by the authUser effect above.
             if (guestWishlist.length) setGuestWishlist([]);
@@ -514,35 +515,10 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           <p className="text-[18px] font-extrabold">پیش‌نمایش پنل‌ها</p>
           <p className="mt-2 text-[13px] leading-7 text-[var(--kv-muted)]">برای تست جریان‌ها، بدون ورود دوباره جابه‌جا شوید. این میان‌بُر فقط برای نسخه آزمایشی است و نباید در محصول نهایی منتشر شود.</p>
           <div className="mt-5 space-y-2">
-            <button onClick={() => { setDemoOpen(false); alert("برای تست عضویت عمده، با حساب واقعی وارد شوید و از تب عضویت درخواست دهید — دیتای نمونه دیگر به‌عنوان هویت تجاری استفاده نمی‌شود."); }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><Crown size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">حساب مشتری با عضویت عمده نمونه</b><span className="text-xs text-[var(--kv-muted)]">اکنون فقط با احراز هویت واقعی — دمو خاموش است</span></span><ArrowLeft size={16} className="mr-auto" /></button>
-            <button onClick={() => { sessionStorage.setItem("kolbe-preview", "1"); sessionStorage.setItem("kolbe-supplier", "1"); setDemoOpen(false); window.location.hash = "#/supplier"; }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><Store size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">پنل تأمین‌کننده</b><span className="text-xs text-[var(--kv-muted)]">محصولات، سری‌ها و زیرسفارش‌های نیلگون</span></span><ArrowLeft size={16} className="mr-auto" /></button>
-            <button onClick={() => { sessionStorage.setItem("kolbe-preview", "1"); setDemoOpen(false); window.location.hash = "#/admin"; }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><ShieldCheck size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">پنل مدیریت</b><span className="text-xs text-[var(--kv-muted)]">ورود با حساب مدیر و مشاهده سفارش‌های واقعی</span></span><ArrowLeft size={16} className="mr-auto" /></button>
+            <button onClick={() => { sessionStorage.setItem("kolbe-preview", "1"); setDemoOpen(false); window.location.hash = "#/supplier"; }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><Store size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">پنل تأمین‌کننده</b><span className="text-xs text-[var(--kv-muted)]">ورود واقعی تأمین‌کننده (ایمیل + رمز عبور)</span></span><ArrowLeft size={16} className="mr-auto" /></button>
+            <button onClick={() => { sessionStorage.setItem("kolbe-preview", "1"); setDemoOpen(false); window.location.hash = "#/admin"; }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] p-4 text-right hover:border-[var(--kv-accent)]"><ShieldCheck size={20} className="text-[var(--kv-accent)]" /><span><b className="block text-[13.5px]">پنل مدیریت</b><span className="text-xs text-[var(--kv-muted)]">ورود جداگانه کارکنان کلبه — بدون ثبت‌نام عمومی</span></span><ArrowLeft size={16} className="mr-auto" /></button>
           </div>
         </div>
-      </Modal>
-
-      <Modal open={!!twoFactor} onClose={() => setTwoFactor(null)} max="max-w-[420px]" title="ورود دومرحله‌ای">
-        {twoFactor && (
-          <form className="space-y-4 pl-10" onSubmit={async (e) => {
-            e.preventDefault();
-            try {
-              await authApi.loginTwoFactor(twoFactor.challengeId, twoFactor.code);
-              const me = await authApi.me() as { id: string; displayName: string; roles: string[]; phone?: string };
-              setAuthUser(me); setTwoFactor(null); toast.push("ورود دومرحله‌ای تأیید شد.");
-              setSection(returnTo?.section ?? "retail"); setView(returnTo?.view ?? "account"); setReturnTo(null);
-            } catch { setTwoFactor({ ...twoFactor, error: "کد واردشده صحیح نیست یا منقضی شده است." }); }
-          }}>
-            <p className="text-[17px] font-extrabold">کد تأیید ورود</p>
-            <p className="text-[13px] leading-7 text-[var(--kv-muted)]">ورود دومرحله‌ای برای این حساب فعال است. کد ۶ رقمی پیامک‌شده را وارد کنید.</p>
-            {twoFactor.devCode && <p className="rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه — کد: <b dir="ltr">{twoFactor.devCode}</b></p>}
-            <label className="block text-[13px] font-semibold">کد تأیید
-              <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={twoFactor.code} onChange={(e) => setTwoFactor({ ...twoFactor, code: e.target.value.replace(/\D/g, ""), error: "" })}
-                className="mt-2 h-12 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] text-center text-lg font-bold tracking-[0.3em] outline-none focus:border-[var(--kv-accent)]" dir="ltr" />
-            </label>
-            {twoFactor.error && <p role="alert" className="text-[12px] text-[var(--kv-danger)]">{twoFactor.error}</p>}
-            <Btn variant="accent" className="w-full" disabled={twoFactor.code.length !== 6}>تأیید و ورود</Btn>
-          </form>
-        )}
       </Modal>
 
       {section !== "auth" && <FloatingSupport onTicket={() => { setAccountTab("support"); if (account) go("retail", "account"); else openAuth({ section: "retail", view: "account" }); }} />}

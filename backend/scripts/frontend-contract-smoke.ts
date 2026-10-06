@@ -122,6 +122,59 @@ try {
   const me = await authApi.me();
   check('authApi.me (Bearer auto-attached, 401→refresh path armed)', typeof me.id === 'string' && me.roles.includes('customer'));
 
+  // ---------- AUTH remediation: mobile + OTP is a REAL login on the same customer account ----------
+  const otpPhone = `09${String(Math.floor(Math.random() * 1e9)).padStart(9, '0')}`;
+  const otpEmail = `smoke-otp-${suffix}@example.test`;
+  /* MOBILE-FIRST REGISTRATION (locked §6): the number is verified BEFORE the account exists. */
+  const signupChallenge = await authApi.requestOtp({ phone: otpPhone, purpose: 'signup' });
+  check('authApi.requestOtp(purpose=signup) verifies the number before the account exists',
+    typeof signupChallenge.challengeId === 'string' && signupChallenge.deliveryHint === 'sms_queued' &&
+    typeof signupChallenge.devCode === 'string');
+  const registered = await authApi.register({ displayName: 'خریدار اسموک OTP', phone: otpPhone,
+    code: signupChallenge.devCode!, email: otpEmail, password: 'SmokePassword123456!' });
+  check('authApi.register (mobile verified) creates the canonical customer and signs them in',
+    typeof registered.id === 'string' && Boolean(registered.accessToken) && registered.linking === 'new' &&
+    getAccessToken() === registered.accessToken);
+  const registeredMe = await authApi.me();
+  check('the same account carries BOTH verified identities and no wholesale entitlement',
+    registeredMe.id === registered.id && registeredMe.phone === otpPhone && registeredMe.email === otpEmail &&
+    registeredMe.isWholesaleMember === false && registeredMe.membership === null && registeredMe.supplier === null);
+  let duplicateSignup = false;
+  try { await authApi.requestOtp({ phone: otpPhone, purpose: 'signup' }); } catch { duplicateSignup = true; }
+  check('signing up twice for one verified number is refused (no duplicate account)', duplicateSignup);
+
+  const otpChallenge = await authApi.requestOtp({ phone: otpPhone });
+  check('authApi.requestOtp queues ONE SMS challenge (masked mobile, no code in production)',
+    typeof otpChallenge.challengeId === 'string' && otpChallenge.deliveryHint === 'sms_queued' &&
+    otpChallenge.phoneMasked === `${otpPhone.slice(0, 4)}***${otpPhone.slice(-2)}`, otpChallenge.phoneMasked);
+  const otpWrong = await authApi.requestOtp({ phone: otpPhone });
+  check('a new OTP request invalidates the previous live code (single live challenge per customer)',
+    otpWrong.challengeId !== otpChallenge.challengeId);
+  let rejected = false;
+  try { await authApi.verifyOtp({ challengeId: otpChallenge.challengeId, code: '000000' }); } catch { rejected = true; }
+  check('authApi.verifyOtp rejects a wrong code instead of logging in', rejected);
+  const otpSession = await authApi.verifyOtp({ challengeId: otpWrong.challengeId, code: otpWrong.devCode! });
+  check('authApi.verifyOtp issues a real session for the SAME customer account',
+    Boolean(otpSession.accessToken) && getAccessToken() === otpSession.accessToken);
+  const otpMe = await authApi.me();
+  check('mobile+OTP and email+password are two logins for ONE customer/VIP account',
+    otpMe.id === (await authApi.me()).id && otpMe.email === otpEmail && otpMe.phone === otpPhone &&
+    otpMe.isWholesaleMember === false && otpMe.membership === null);
+
+  // ---------- canonical password recovery (one-time token → set-password) ----------
+  const recovery = await authApi.forgotPassword(otpPhone);
+  check('authApi.forgotPassword uses the canonical one-time token (no enumeration, hash only)',
+    recovery.delivered === true && typeof recovery.devToken === 'string' && recovery.devToken.length > 20);
+  const anonymous = await authApi.forgotPassword(`nobody-${suffix}@example.test`);
+  check('recovery never reveals whether an identity exists', anonymous.delivered === true && anonymous.devToken === undefined);
+  await authApi.setPassword({ token: recovery.devToken!, newPassword: 'RecoveredSmoke123456!' });
+  const recoveredLogin = await authApi.login({ identity: otpPhone, password: 'RecoveredSmoke123456!' });
+  check('the recovered password signs into the SAME account', Boolean(recoveredLogin.accessToken));
+  check('recovery left the canonical identity intact', (await authApi.me()).id === registered.id);
+  await authApi.login({ identity: otpPhone, password: 'SmokePassword123456!' }).then(
+    () => check('the previous password is no longer valid after recovery', false),
+    () => check('the previous password is no longer valid after recovery', true));
+
   const savedPrefs = await authApi.updatePreference('orderUpdates', false);
   const reread = await authApi.me();
   check('authApi.updatePreference round-trips through PostgreSQL',
@@ -767,19 +820,87 @@ try {
     bulkGhost.failed === 1 && bulkGhost.results[0]!.ok === false && (bulkGhost.results[0]!.error ?? '').length > 0);
   const ordersHubSrc = readFileSync(join(repoRoot, 'src/portals/orders-hub.tsx'), 'utf8');
   const hubTabs = ordersHubSrc.slice(ordersHubSrc.indexOf('export function OrdersHub'));
-  check('orders hub has exactly 3 tabs: خرده / عمده کلبه / عمده تأمین‌کنندگان',
-    (hubTabs.match(/label: "سفارشات /g) ?? []).length === 3 && hubTabs.includes('سفارشات خرده') &&
-    hubTabs.includes('سفارشات عمده کلبه') && hubTabs.includes('سفارشات عمده تأمین‌کنندگان'));
+  /* PRODUCT-OWNER IA (locked): exactly TWO primary order surfaces. Source type is NOT an order type:
+     the per-source wholesale centers must not exist as tabs, components or routes. */
+  const adminSrcForIa = readFileSync(join(repoRoot, 'src/portals/admin.tsx'), 'utf8');
+  const studioSrcForAuth = readFileSync(join(repoRoot, 'src/portals/studio.tsx'), 'utf8');
+  const supplierSrcForAuth = readFileSync(join(repoRoot, 'src/portals/supplier.tsx'), 'utf8');
+  const appSrcForAuth = readFileSync(join(repoRoot, 'src/App.tsx'), 'utf8');
+  const childPanelSrc = readFileSync(join(repoRoot, 'src/components/master-child-orders.tsx'), 'utf8');
+  check('orders hub has exactly TWO tabs: سفارشات خرده / سفارشات عمده / VIP',
+    (hubTabs.match(/label: "سفارشات /g) ?? []).length === 2 && hubTabs.includes('سفارشات خرده') &&
+    hubTabs.includes('سفارشات عمده / VIP'));
+  check('the separate per-source wholesale centers are REMOVED (no tab label, no component)',
+    !/label:\s*"سفارشات عمده کلبه"/.test(hubTabs) && !/label:\s*"سفارشات عمده تأمین‌کنندگان"/.test(hubTabs) &&
+    !/label:\s*"مرکز سفارش‌های مادر VIP"/.test(hubTabs) &&
+    !ordersHubSrc.includes('function WholesaleTab') && !ordersHubSrc.includes('function MasterOrdersStrip'));
+  check('a COLD deep link resolves through the redirect table and keeps its hub sub-target',
+    adminSrcForIa.includes('const [initialRoute]') && adminSrcForIa.includes('const [hubSub, setHubSub] = useState<string | null>(initialRoute?.sub ?? null)') &&
+    /const \[tab, setTab\] = useState\(initialProductsRoute \? "products" : \(initialRoute\?\.hub \?\? "tower"\)\)/.test(adminSrcForIa));
+  check('legacy wholesale order routes REDIRECT to the one unified surface (no duplicate authority)',
+    /worders:\s*"server-orders:wholesale"/.test(adminSrcForIa) && /kolbe:\s*"server-orders:wholesale"/.test(adminSrcForIa) &&
+    /masters:\s*"server-orders:wholesale"/.test(adminSrcForIa) && /wholesale:\s*"server-orders:wholesale"/.test(adminSrcForIa) &&
+    /rorders:\s*"server-orders:retail"/.test(adminSrcForIa) && adminSrcForIa.includes('<OrdersHub initial={hubSub} />'));
+  check('child/sub-orders carry their operational tools inside the master workspace module',
+    childPanelSrc.includes('ordersApi.bulkTransitions') && childPanelSrc.includes('invoicesApi.bulkForOrders') &&
+    childPanelSrc.includes('trackingApi.labelsBundlePath') && childPanelSrc.includes('trackingApi.createShipment') &&
+    !childPanelSrc.includes('Drawer'));
+  // ---------- AUTH remediation (locked): ONE customer/VIP account, real methods, no fake auth ----------
+  check('customer+VIP log in with REAL methods only: mobile+OTP and email+password (no hardcoded code)',
+    studioSrcForAuth.includes('authApi.requestOtp') && studioSrcForAuth.includes('authApi.verifyOtp') &&
+    studioSrcForAuth.includes('authApi.login') && !/["'`]12345["'`]/.test(studioSrcForAuth) &&
+    !studioSrcForAuth.includes('کد آزمایشی') && !/devCode\s*\?\?/.test(studioSrcForAuth));
+  check('registration is REAL, mobile-first, and admin/supplier have NO public self-registration',
+    studioSrcForAuth.includes('authApi.register') && studioSrcForAuth.includes('tab("register", "ثبت‌نام")') &&
+    studioSrcForAuth.includes('دسترسی امن کارکنان کلبه') && studioSrcForAuth.includes('authApi.setPassword') &&
+    studioSrcForAuth.includes('ثبت‌نام ادمین وجود ندارد') && studioSrcForAuth.includes('درخواست عضویت تأمین‌کننده'));
+  check('VIP is NEVER a frontend/demo role: no demo VIP shortcut, no hardcoded demo password',
+    !appSrcForAuth.includes('KolbeDemo123456!') && !appSrcForAuth.includes('ورود آزمایشی VIP') &&
+    appSrcForAuth.includes('isWholesaleMember') && appSrcForAuth.includes('DEMO_MODE'));
+  check('the supplier portal gates on the SERVER cooperation state and shows the real pending/rejected state',
+    (supplierSrcForAuth.match(/me\.supplier\?\.cooperationStatus/g) ?? []).length >= 2 &&
+    supplierSrcForAuth.includes('status === "approved"') &&
+    supplierSrcForAuth.includes('درخواست عضویت تأمین‌کننده در حال بررسی است') &&
+    supplierSrcForAuth.includes('درخواست عضویت تأمین‌کننده تأیید نشد'));
+  check('the auth surface exposes BOTH real login methods and only one set of inputs at a time',
+    studioSrcForAuth.includes('setLoginMethod') && studioSrcForAuth.includes('شماره موبایل و کد یکبارمصرف') &&
+    studioSrcForAuth.includes('ایمیل و رمز عبور') && studioSrcForAuth.includes('autoComplete="one-time-code"') &&
+    studioSrcForAuth.includes('autoComplete="current-password"') && studioSrcForAuth.includes('autoComplete="new-password"'));
+  check('registration is mobile-first with the canonical OTP signup purpose',
+    studioSrcForAuth.includes('purpose: "signup"') && studioSrcForAuth.includes('signupChallenge') &&
+    studioSrcForAuth.includes('شماره موبایل') && studioSrcForAuth.includes('نام خانوادگی'));
+  check('password recovery and legacy activation are wired to the canonical endpoints',
+    studioSrcForAuth.includes('authApi.forgotPassword') && studioSrcForAuth.includes('authApi.setPassword') &&
+    studioSrcForAuth.includes('فعال‌سازی حساب‌های قدیمی'));
+  check('the VIP area shows a membership-required state instead of a fake login loop',
+    vipSrc.includes('قیمت و ثبت سفارش فقط برای اعضای عمده') && vipSrc.includes('ورود جداگانه‌ای وجود ندارد') &&
+    vipSrc.includes('درخواست عضویت در همین حساب'));
+  check('login always returns to the intended destination (checkout / account / studio)',
+    /const \[returnTo, setReturnTo\]/.test(appSrcForAuth) &&
+    appSrcForAuth.includes('setReturnTo({ section: "retail", view: "account" })') &&
+    appSrcForAuth.includes('setSection(returnTo?.section ?? "retail")'));
+  check('the storefront never derives VIP from a demo/hardcoded account',
+    appSrcForAuth.includes('authUser.isWholesaleMember || authUser.roles.includes("vip")') &&
+    appSrcForAuth.includes('DEMO_MODE && buyer?.status'));
+  check('supplier portal auth is SERVER-derived (JWT + /auth/me roles) with no client-side bypass left',
+    supplierSrcForAuth.includes('const me = await authApi.me()') &&
+    supplierSrcForAuth.includes('me.roles.includes("supplier")') &&
+    !supplierSrcForAuth.includes('kolbe-supplier') && !supplierSrcForAuth.includes('demo-session') &&
+    !/if\s*\(\s*demo\s*\)\s*\{\s*setAuthed/.test(supplierSrcForAuth) &&
+    supplierSrcForAuth.includes('authApi.logout'));
+  check('the retired inline 2FA modal is gone — OTP lives in the canonical auth screens',
+    !appSrcForAuth.includes('setTwoFactor(') && !appSrcForAuth.includes('ورود دومرحله‌ای'));
+
   const labelEngineSrc = readFileSync(join(repoRoot, 'backend/src/shipping-labels.ts'), 'utf8');
   check('shipping labels are SERVER PDFs (100×150mm thermal + A4 grid, price-free) and tracking writes go through the shipments domain',
-    ordersHubSrc.includes('trackingApi.labelPath') && ordersHubSrc.includes('trackingApi.labelsBundlePath') &&
-    !ordersHubSrc.includes('document.write') && labelEngineSrc.includes('283.46') &&
-    !labelEngineSrc.includes('_rial') && ordersHubSrc.includes('trackingApi.createShipment') &&
-    ordersHubSrc.includes('trackingApi.updateShipment'));
+    (ordersHubSrc.includes('trackingApi.labelPath') || childPanelSrc.includes('trackingApi.labelPath')) &&
+    (ordersHubSrc.includes('trackingApi.labelsBundlePath') || childPanelSrc.includes('trackingApi.labelsBundlePath')) &&
+    !ordersHubSrc.includes('document.write') && !childPanelSrc.includes('document.write') && labelEngineSrc.includes('283.46') &&
+    !labelEngineSrc.includes('_rial') &&
+    (ordersHubSrc.includes('trackingApi.createShipment') || childPanelSrc.includes('trackingApi.createShipment')) &&
+    (ordersHubSrc.includes('trackingApi.updateShipment') || childPanelSrc.includes('trackingApi.updateShipment')));
   check('bulk invoice print reuses the existing invoice domain (no parallel invoice renderer)',
-    ordersHubSrc.includes('invoicesApi.list({ orderId') && !ordersHubSrc.includes('INV-'));
-  check('orders hub shows ONE canonical master row (MasterOrdersStrip) — children stay in the wholesale tabs (§152)',
-    ordersHubSrc.includes('MasterOrdersStrip') && ordersHubSrc.includes('wholesaleOmsApi.masters'));
+    ordersHubSrc.includes('invoicesApi.list({ orderId') && !ordersHubSrc.includes('INV-') && !childPanelSrc.includes('INV-'));
 
   // ---------- §31-§35: manual sale = REAL order on the canonical pipeline ----------
   const moVariant = wmsProduct.variants.find((v) => v.color === 'مشکی' && v.size === 'M')!;
@@ -868,6 +989,20 @@ try {
     !/readiness\s*=\s*[^;]*===/.test(orderCenterSrc));
   check('the ops workspace flags every open exception and names the Prompt-6 boundary in the UI',
     orderCenterSrc.includes('ورود کالا، کنترل کیفیت و ثبت رسید در انبار کلبه انجام می‌شود'));
+  check('source coverage is a FILTER on the one master list (server-backed), never a separate center',
+    orderCenterSrc.includes('COVERAGE_FILTERS') && orderCenterSrc.includes('دارای موجودی کلبه') &&
+    orderCenterSrc.includes('دارای موجودی تأمین‌کننده نزد کلبه') && orderCenterSrc.includes('نیازمند تأمین') &&
+    orderCenterSrc.includes('ترکیبی') && orderCenterSrc.includes('p.coverage = filters.coverage') &&
+    omsSrc.includes("coverage: z.enum(['all', 'kolbe', 'supplier_at_kolbe', 'supply_required', 'mixed'])"));
+  check('child/sub-orders live INSIDE the master workspace (تخصیص و تأمین), not as a competing center',
+    orderCenterSrc.includes('<MasterChildOrders') && orderCenterSrc.includes('title="تخصیص و تأمین"') &&
+    orderCenterSrc.includes('سفارشات عمده / VIP') && !orderCenterSrc.includes('Drawer'));
+  /* §152 (re-homed by the PO IA): ONE canonical row per Master Order — children never resurface as
+     separate top-level orders; they are read through the master's own detail workspace. */
+  check('orders hub shows ONE canonical master row per VIP master order — children stay inside the master (§152)',
+    ordersHubSrc.includes('WholesaleOrderCenter') && orderCenterSrc.includes('wholesaleOmsApi.masters') &&
+    orderCenterSrc.includes('ordered_series') && orderCenterSrc.includes('CoverageCells') && !ordersHubSrc.includes('WholesaleTab') &&
+    !ordersHubSrc.includes('supplier_children === m.child_count'));
 
   setAccessToken(null);
 } catch (error) {

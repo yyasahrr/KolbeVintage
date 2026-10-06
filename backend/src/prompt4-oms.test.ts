@@ -756,6 +756,29 @@ test('P4-OMS-004/008/015/016/022 — prescribed 4+3+2 multi-supplier master and 
       orderedSeries: 10, kolbeSeries: 3, supplierAtKolbeSeries: 2, capacitySeries: 5, receivedSeries: 0, qcPassedSeries: 0,
     });
     assert.equal(mixedView.readiness, 'partial', 'physical holds landed (5) but the supply requirement (5) is open');
+    /* §IA (PO-locked): source coverage is a FILTER over the ONE canonical Master Order list — the
+       same rows, server-filtered; there is no per-source order center. */
+    const coverageRows = async (value: string) => (await app.inject({ method: 'GET',
+      url: `/api/v1/wholesale/masters?scope=all&limit=100&coverage=${value}`, headers: adminHeaders })).json() as
+      { items: Array<{ id: string; kolbe_series: number; supplier_at_kolbe_series: number; supply_required_series: number }> };
+    const mixedRows = await coverageRows('mixed');
+    assert.ok(mixedRows.items.some((row) => row.id === mixedMaster.id), 'the 3-source master is «ترکیبی»');
+    assert.ok(mixedRows.items.every((row) => [row.kolbe_series > 0, row.supplier_at_kolbe_series > 0,
+      row.supply_required_series > 0].filter(Boolean).length > 1), 'mixed = at least two real buckets');
+    const kolbeRows = await coverageRows('kolbe');
+    assert.ok(kolbeRows.items.some((row) => row.id === master.id) && kolbeRows.items.some((row) => row.id === mixedMaster.id));
+    assert.ok(kolbeRows.items.every((row) => row.kolbe_series > 0));
+    const atKolbeRows = await coverageRows('supplier_at_kolbe');
+    assert.ok(atKolbeRows.items.some((row) => row.id === mixedMaster.id) && !atKolbeRows.items.some((row) => row.id === master.id));
+    assert.ok(atKolbeRows.items.every((row) => row.supplier_at_kolbe_series > 0));
+    const supplyRows = await coverageRows('supply_required');
+    assert.ok(supplyRows.items.some((row) => row.id === master.id) && supplyRows.items.some((row) => row.id === mixedMaster.id));
+    assert.ok(supplyRows.items.every((row) => row.supply_required_series > 0));
+    const allRows = await coverageRows('all');
+    assert.ok(allRows.items.some((row) => row.id === mixedMaster.id), 'coverage=all keeps every source bucket');
+    const unfiltered = (await app.inject({ method: 'GET', url: '/api/v1/wholesale/masters?scope=all&limit=100',
+      headers: adminHeaders })).json() as { items: unknown[] };
+    assert.equal(allRows.items.length, unfiltered.items.length, 'coverage=all == no coverage filter');
     // physical buckets: 3 Kolbe + 2 supplier reserved, on_hand never decremented by the reservation.
     const kolbeAfter = await pool.query<{ on_hand: number; reserved: number }>(
       "SELECT on_hand, reserved FROM series_stock_balances WHERE series_template_id = $1", [kolbeOnly.tplId]);

@@ -20,9 +20,19 @@ const env = {
   ...process.env, NODE_ENV: 'test', DATABASE_URL: databaseUrl, TEST_DATABASE_URL: databaseUrl,
   JWT_SECRET: 'verify-secret-at-least-thirty-two-characters', PUBLIC_ORIGIN: 'http://127.0.0.1:5173', PG_POOL_MAX: '2',
 };
-const run = (args, overrides = {}) => new Promise((resolve) => {
-  const child = spawn('npm', args, { env: { ...env, ...overrides }, stdio: 'inherit', shell: process.platform === 'win32' });
-  child.on('exit', (code) => resolve(code ?? 1));
+const run = (args, overrides = {}, { silent = false } = {}) => new Promise((resolve) => {
+  const child = spawn('npm', args, { env: { ...env, ...overrides },
+    stdio: silent ? ['ignore', 'pipe', 'pipe'] : 'inherit', shell: process.platform === 'win32' });
+  let captured = '';
+  if (silent) {
+    child.stdout.on('data', (chunk) => { captured += chunk; });
+    child.stderr.on('data', (chunk) => { captured += chunk; });
+  }
+  child.on('exit', (code) => {
+    // A failing step must show WHY — otherwise a red verifier is undiagnosable.
+    if (silent && (code ?? 1) !== 0) console.log(captured.split('\n').slice(-25).join('\n'));
+    resolve(code ?? 1);
+  });
   child.on('error', () => resolve(1));
 });
 
@@ -33,7 +43,7 @@ const check = (ok, label, detail = '') => {
 };
 
 try {
-  const migrated = await run(['run', '--silent', 'migrate']);
+  const migrated = await run(['run', '--silent', 'migrate'], {}, { silent: true });
   check(migrated === 0, 'migrate runs from an empty database');
 
   const rows = (await db.query('SELECT version, applied_at FROM schema_migrations ORDER BY version')).rows;
@@ -47,17 +57,17 @@ try {
   check(rows.length === new Set(names).size, 'no duplicate migration rows (one file = one row)');
 
   // Integration (Agent 6): the merged inventory is the union of every agent's migrations.
-  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql','064_wholesale_master_oms.sql','065_supplier_settlement_core.sql','066_tryon_monetization.sql','067_cashback_wallet.sql','068_transfer_discrepancy.sql','069_catalog_category_authority.sql','070_series_commercial_pricing.sql','071_wholesale_child_cancellation.sql'];
+  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql','064_wholesale_master_oms.sql','065_supplier_settlement_core.sql','066_tryon_monetization.sql','067_cashback_wallet.sql','068_transfer_discrepancy.sql','069_catalog_category_authority.sql','070_series_commercial_pricing.sql','071_wholesale_child_cancellation.sql','072_customer_otp_login.sql'];
   check(JSON.stringify(names) === JSON.stringify(expectedAll),
     'full merged inventory applied in name order', names.length === expectedAll.length ? '' : `got ${names.length} files`);
   const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '../src/migrations');
   const migrationFiles = readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
   const migrationIds = migrationFiles.map((name) => name.match(/^(\d{3}[a-z]?)/)?.[1] ?? '');
-  check(migrationFiles.length === 52 && JSON.stringify(migrationFiles) === JSON.stringify(expectedAll)
+  check(migrationFiles.length === 53 && JSON.stringify(migrationFiles) === JSON.stringify(expectedAll)
     && migrationIds.every(Boolean) && migrationIds.length === new Set(migrationIds).size,
-    '52 migration files have unique version identifiers (050z is a distinct recovery-snapshot id)');
-  check(names.slice(-2).join(',') === '070_series_commercial_pricing.sql,071_wholesale_child_cancellation.sql',
-    '070 series commercial pricing and 071 wholesale child cancellation are the final unique migrations');
+    '53 migration files have unique version identifiers (050z is a distinct recovery-snapshot id)');
+  check(names.slice(-2).join(',') === '071_wholesale_child_cancellation.sql,072_customer_otp_login.sql',
+    '071 wholesale child cancellation and 072 customer OTP login are the final unique migrations');
   const reserved = names.filter((name) => /^02[5-9]_/.test(name));
   check(reserved.join(',') === '025_supplier360.sql,026_invoice_engine.sql,027_finance_operations.sql',
     '025 → 026 → 027 order preserved');
@@ -157,10 +167,10 @@ try {
     check(await run(['run', '--silent', 'migrate'], { ...upgradeEnv, MIGRATION_STOP_AFTER: '' }) === 0,
       'upgrade applies 069/070 after the populated 068 fixture');
     const upgradedVersions = (await upgradeDb.query('SELECT version FROM schema_migrations ORDER BY version')).rows.map((row) => row.version);
-    check(upgradedVersions.length === 52 && upgradedVersions.includes('069_catalog_category_authority.sql')
+    check(upgradedVersions.length === 53 && upgradedVersions.includes('069_catalog_category_authority.sql')
       && upgradedVersions.includes('070_series_commercial_pricing.sql')
-      && upgradedVersions.includes('071_wholesale_child_cancellation.sql'),
-      'populated upgrade records 069/070/071 exactly once in the 52-file sequence');
+      && upgradedVersions.includes('071_wholesale_child_cancellation.sql') && upgradedVersions.includes('072_customer_otp_login.sql'),
+      'populated upgrade records 069/070/071/072 exactly once in the 53-file sequence');
 
     const badProductCategories = Number((await upgradeDb.query(`SELECT count(*)::int AS n FROM products p
       LEFT JOIN cms_categories c ON c.id = p.category_id WHERE c.id IS NULL OR c.name <> p.category`)).rows[0].n);

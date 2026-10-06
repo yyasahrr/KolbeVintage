@@ -12,12 +12,26 @@ import { emitEvent } from './events.js';
 import { ensureContact, recordTimeline } from './crm-intelligence.js';
 import { decryptSecret } from './secrets.js';
 
-const registration = z.object({
-  email: z.email().max(254).optional(),
-  phone: z.string().regex(/^09\d{9}$/).optional(),
-  password: z.string().min(12).max(128),
+/**
+ * PUBLIC CUSTOMER/VIP REGISTRATION (§6/§7) — ONE identity model, TWO entry points:
+ *  - mobile-first: the number is VERIFIED with a one-time code before the account exists;
+ *  - email + password: the canonical second method directly.
+ * Both create the same `users` row with the `customer` role. Email/password are optional on the
+ * mobile path because a customer can sign in with mobile+code forever and add the second identity
+ * later through the canonical verified contact-change flow.
+ */
+const customerRegistration = z.object({
   displayName: z.string().trim().min(2).max(120),
-}).refine((value) => !!value.email || !!value.phone, 'ایمیل یا شماره همراه لازم است.');
+  phone: z.string().trim().regex(/^09\d{9}$/),
+  code: z.string().trim().regex(/^\d{6}$/),
+  email: z.email().max(254).optional(),
+  password: z.string().min(12).max(128).optional(),
+}).strict();
+const emailRegistration = z.object({
+  displayName: z.string().trim().min(2).max(120),
+  email: z.email().max(254),
+  password: z.string().min(12).max(128),
+}).strict();
 const loginBody = z.object({ identity: z.string().trim().min(5).max(254), password: z.string(),
   // 6 digits for TOTP/SMS, 10 hex characters for a saved recovery code.
   code: z.string().trim().regex(/^([0-9]{6}|[A-Fa-f0-9]{10})$/).optional() });
@@ -159,41 +173,119 @@ export function requirePermission(user: Principal, permission: string) {
 
 export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
   app.post('/api/v1/auth/register', { config: { rateLimit: { max: 5, timeWindow: '1 hour' } } }, async (request, reply) => {
-    const body = registration.parse(request.body);
-    const email = body.email?.toLowerCase() ?? null;
+    const mobileBody = customerRegistration.safeParse(request.body);
+    const body = mobileBody.success ? null : emailRegistration.parse(request.body);
+    const displayName = body ? body.displayName : mobileBody.data!.displayName;
+    const email = (body ? body.email : mobileBody.data!.email)?.toLowerCase() ?? null;
+    const phone = body ? null : mobileBody.data!.phone;
     const id = randomUUID();
-    const passwordHash = await argon2.hash(body.password, { type: argon2.argon2id });
-    try {
-      await transaction(pool, async (client) => {
-        await client.query('INSERT INTO users(id, email, phone, password_hash, display_name) VALUES ($1,$2,$3,$4,$5)', [id, email, body.phone ?? null, passwordHash, body.displayName]);
-        await client.query('INSERT INTO user_roles(user_id, role_code) VALUES ($1,$2)', [id, 'customer']);
-        // Requirement 143: marketing SMS is opt-in, so a new account starts with a
-        // consent row that says "no" instead of relying on a missing row.
-        await client.query(
-          `INSERT INTO customer_consents(user_id,marketing_sms,transactional_sms,email_marketing,source)
-           VALUES ($1,false,true,false,'registration') ON CONFLICT (user_id) DO NOTHING`, [id]);
-        // Requirement 23: customer.created is part of the automation event catalog.
-        await emitEvent(client, { eventType: 'customer.created', entityType: 'user', entityId: id,
-          payload: { userId: id, displayName: body.displayName, hasEmail: Boolean(email), hasPhone: Boolean(body.phone) },
-          actorId: id, source: 'auth' });
-        await recordTimeline(client, { userId: id, eventType: 'customer.created', source: 'auth',
-          title: 'حساب کاربری ساخته شد', actorId: id, refType: 'user', refId: id });
-        await ensureContact(client, id, 'customer');
-      });
-    } catch (error) {
-      if ((error as { code?: string }).code === '23505') throw conflict('این ایمیل یا شماره همراه قبلاً ثبت شده است.');
+
+    const created = await transaction(pool, async (client) => {
+      // `id` keeps its UUID literal type for the fresh-account inserts; the linked path reuses an
+      // existing row whose id comes back from the database as a plain string.
+      let createdId: string = id;
+      let linking = 'new';
+      if (mobileBody.success && phone) {
+        /* The number must be PROVEN before the account exists (§10). */
+        const challenge = await one<{ id: string; code_hash: string; attempts: number; max_attempts: number }>(client,
+          `SELECT id,code_hash,attempts,max_attempts FROM two_factor_challenges
+           WHERE phone = $1 AND purpose = 'customer_signup' AND consumed_at IS NULL AND expires_at > now()
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [phone]);
+        if (!challenge || challenge.attempts >= challenge.max_attempts) throw badRequest('کد تأیید منقضی شده است؛ دوباره درخواست دهید.');
+        if (challenge.code_hash !== otpHash(mobileBody.data!.code)) {
+          await client.query('UPDATE two_factor_challenges SET attempts = attempts + 1 WHERE id = $1', [challenge.id]);
+          throw badRequest('کد واردشده صحیح نیست.');
+        }
+        await client.query('UPDATE two_factor_challenges SET consumed_at = now() WHERE id = $1', [challenge.id]);
+
+        /* IDENTITY LINKING (§8): a verified number identifies ONE person. An existing account that
+         * still holds the operator-issued one-time credential (migrated/legacy account, §16) is the
+         * same person completing activation — never a second account. A live account with real
+         * credentials is NEVER auto-merged: the customer must sign in and add the email from the
+         * verified profile flow, so an unverified claim can not hijack an account. */
+        const owner = await one<{ id: string; must_reset_password: boolean }>(client,
+          'SELECT id, must_reset_password FROM users WHERE phone = $1 FOR UPDATE', [phone]);
+        if (owner) {
+          if (!owner.must_reset_password) {
+            throw conflict('این شماره همراه قبلاً ثبت شده است؛ وارد شوید یا رمز عبور را بازیابی کنید.');
+          }
+          createdId = owner.id; linking = 'legacy_activation';
+          await client.query('UPDATE users SET display_name = $2, email = COALESCE(email, $3), updated_at = now() WHERE id = $1',
+            [createdId, displayName, email]);
+        } else {
+          await client.query('INSERT INTO users(id, email, phone, password_hash, display_name) VALUES ($1,$2,$3,$4,$5)',
+            [id, email, phone, await argon2.hash(randomBytes(32).toString('base64url'), { type: argon2.argon2id }), displayName]);
+        }
+        if (mobileBody.data!.password) {
+          await client.query('UPDATE users SET password_hash = $2, must_reset_password = false, updated_at = now() WHERE id = $1',
+            [createdId, await argon2.hash(mobileBody.data!.password, { type: argon2.argon2id })]);
+        }
+      } else {
+        await client.query('INSERT INTO users(id, email, phone, password_hash, display_name) VALUES ($1,$2,NULL,$3,$4)',
+          [id, email, await argon2.hash(body!.password, { type: argon2.argon2id }), displayName]);
+      }
+
+      const exists = await one<{ id: string }>(client, 'SELECT id FROM users WHERE id = $1', [createdId]);
+      if (!exists) throw conflict('حساب کاربری ساخته نشد؛ دوباره تلاش کنید.');
+      await client.query('INSERT INTO user_roles(user_id, role_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [createdId, 'customer']);
+      // Requirement 143: marketing SMS is opt-in, so a new account starts with a
+      // consent row that says "no" instead of relying on a missing row.
+      await client.query(
+        `INSERT INTO customer_consents(user_id,marketing_sms,transactional_sms,email_marketing,source)
+         VALUES ($1,false,true,false,'registration') ON CONFLICT (user_id) DO NOTHING`, [createdId]);
+      // Requirement 23: customer.created is part of the automation event catalog.
+      await emitEvent(client, { eventType: 'customer.created', entityType: 'user', entityId: createdId,
+        payload: { userId: createdId, displayName, hasEmail: Boolean(email), hasPhone: Boolean(phone), linking },
+        actorId: createdId, source: 'auth' });
+      await recordTimeline(client, { userId: createdId, eventType: 'customer.created', source: 'auth',
+        title: linking === 'legacy_activation' ? 'حساب قدیمی فعال شد' : 'حساب کاربری ساخته شد',
+        actorId: createdId, refType: 'user', refId: createdId });
+      await ensureContact(client, createdId, 'customer');
+      return { accountId: createdId, linking };
+    }).catch((error) => {
+      if ((error as { code?: string }).code === '23505') {
+        const target = email && !phone ? 'ایمیل' : 'ایمیل یا شماره همراه';
+        throw conflict(`این ${target} قبلاً ثبت شده است؛ وارد شوید یا رمز عبور را بازیابی کنید.`);
+      }
       throw error;
-    }
-    return reply.code(201).send({ id, displayName: body.displayName });
+    });
+
+    /* The verified identity is a real sign-in: registration ends in the SAME canonical session the
+     * two login methods create, so the customer never re-enters credentials right after signing up. */
+    const user = await one<UserRow>(pool, 'SELECT * FROM users WHERE id = $1', [created.accountId]);
+    if (!user) throw notFound();
+    const session = await createSession(pool, user, config,
+      { ip: request.ip, userAgent: request.headers['user-agent'], method: phone ? 'otp_sms' : 'password' });
+    await recordLoginAttempt(pool, { userId: user.id, identity: phone ?? email ?? user.id, success: true,
+      ip: request.ip, userAgent: request.headers['user-agent'] });
+    reply.setCookie('kolbe_refresh', session.refreshToken, cookieOptions(config));
+    return reply.code(201).send({ id: created.accountId, displayName, accessToken: session.accessToken,
+      tokenType: 'Bearer', expiresIn: 900, linking: created.linking });
   });
 
   app.post('/api/v1/auth/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const body = loginBody.parse(request.body);
+    const identity = body.identity.trim().toLowerCase();
     const user = await one<UserRow>(pool,
-      'SELECT * FROM users WHERE email = $1 OR phone = $1', [body.identity.toLowerCase()]);
+      'SELECT * FROM users WHERE email = $1 OR phone = $1', [identity]);
     if (!user || user.status !== 'active') {
       await recordLoginAttempt(pool, { userId: null, identity: body.identity, success: false,
         reason: !user ? 'unknown_identity' : 'inactive_account', ip: request.ip, userAgent: request.headers['user-agent'] });
+      /* §22: a supplier application is a REAL operational state. The applicant has no account yet
+       * (accounts are created on approval), so report the application status precisely instead of a
+       * generic "not found" — without ever revealing another customer's data. */
+      const application = await one<{ status: string }>(pool,
+        `SELECT status FROM cooperation_requests
+          WHERE payload->>'mobile' = $1 OR lower(payload->>'email') = $1
+          ORDER BY created_at DESC LIMIT 1`, [identity]);
+      if (application && (application.status === 'new' || application.status === 'reviewing')) {
+        throw new ApiError(403, 'SUPPLIER_APPLICATION_PENDING',
+          'درخواست عضویت تأمین‌کننده شما در حال بررسی است؛ پس از تأیید می‌توانید وارد شوید.');
+      }
+      if (application && application.status === 'rejected') {
+        throw new ApiError(403, 'SUPPLIER_APPLICATION_REJECTED',
+          'درخواست عضویت تأمین‌کننده شما تأیید نشد؛ برای پیگیری با پشتیبانی کلبه تماس بگیرید.');
+      }
       throw unauthorized();
     }
     // Item 45: migrated accounts hold a random unknown password, so ANY password
@@ -293,6 +385,103 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
     return { accessToken: session.accessToken, tokenType: 'Bearer', expiresIn: 900 };
   });
 
+  /*
+   * CUSTOMER / VIP PRIMARY OTP LOGIN (mobile + one-time code).
+   *
+   * ONE account for retail and VIP: this is the second real login method on the SAME user row and
+   * the SAME session model as email+password — never a separate account, never a demo shortcut.
+   * The code is generated and stored hashed server-side (purpose `customer_login`), queued through
+   * the SMS panel, and only exchanged for a session after verification. VIP status is NOT decided
+   * here: it stays the canonical active-membership gate (GET /api/v1/auth/me exposes it).
+   */
+  app.post('/api/v1/auth/otp/request', { config: { rateLimit: { max: 5, timeWindow: '5 minutes' } } }, async (request) => {
+    const body = z.object({ phone: z.string().trim().regex(/^09\d{9}$/),
+      // signup = verify the number BEFORE the account exists (§6); login = passwordless sign-in (§10).
+      purpose: z.enum(['login', 'signup']).default('login') }).strict().parse(request.body);
+    const user = await one<UserRow>(pool, 'SELECT * FROM users WHERE phone = $1', [body.phone]);
+
+    if (body.purpose === 'signup') {
+      if (user) throw conflict('این شماره همراه قبلاً ثبت شده است؛ وارد شوید.');
+      const challenge = await transaction(pool, async (client) => {
+        const code = sixDigits();
+        const challengeId = randomUUID();
+        await client.query(
+          `UPDATE two_factor_challenges SET consumed_at = now()
+            WHERE phone = $1 AND purpose = 'customer_signup' AND consumed_at IS NULL`, [body.phone]);
+        await client.query(
+          `INSERT INTO two_factor_challenges(id,user_id,purpose,method,code_hash,phone,expires_at,ip)
+           VALUES ($1,NULL,'customer_signup','otp_sms',$2,$3, now() + interval '3 minutes',$4)`,
+          [challengeId, otpHash(code), body.phone, request.ip ?? null]);
+        // outbox aggregate ids are UUIDs: the challenge is the aggregate, the number stays in the payload.
+        const emitted = await emitEvent(client, { eventType: 'customer.otp_signup_requested', entityType: 'phone_verification',
+          entityId: challengeId, payload: { challengeId, method: 'otp_sms',
+            phoneMasked: `${body.phone.slice(0, 4)}***${body.phone.slice(-2)}` }, source: 'auth' });
+        await client.query(
+          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,NULL,$3,$4,'transactional')`,
+          [randomUUID(), emitted.eventId, body.phone, `کد ثبت‌نام کلبه وینتیج: ${code}`]);
+        return { challengeId, devCode: code };
+      });
+      return { challengeId: challenge.challengeId, phoneMasked: `${body.phone.slice(0, 4)}***${body.phone.slice(-2)}`,
+        deliveryHint: 'sms_queued', purpose: 'signup' as const,
+        devCode: config.NODE_ENV === 'production' ? undefined : challenge.devCode };
+    }
+
+    if (!user || user.status !== 'active') {
+      await recordLoginAttempt(pool, { userId: user?.id ?? null, identity: body.phone, success: false,
+        reason: user ? 'inactive_account' : 'unknown_mobile', ip: request.ip, userAgent: request.headers['user-agent'] });
+      throw notFound('حسابی با این شماره همراه یافت نشد؛ ابتدا ثبت‌نام کنید.');
+    }
+    const challenge = await transaction(pool, async (client) => {
+      const code = sixDigits();
+      const challengeId = randomUUID();
+      // Only one live code per customer: issuing a new one invalidates the previous.
+      await client.query(
+        `UPDATE two_factor_challenges SET consumed_at = now()
+          WHERE user_id = $1 AND purpose = 'customer_login' AND consumed_at IS NULL`, [user.id]);
+      await client.query(
+        `INSERT INTO two_factor_challenges(id,user_id,purpose,method,code_hash,phone,expires_at,ip)
+         VALUES ($1,$2,'customer_login','otp_sms',$3,$4, now() + interval '3 minutes',$5)`,
+        [challengeId, user.id, otpHash(code), body.phone, request.ip ?? null]);
+      const emitted = await emitEvent(client, { eventType: 'customer.otp_login_requested', entityType: 'user',
+        entityId: user.id, payload: { challengeId, method: 'otp_sms' }, actorId: user.id, source: 'auth' });
+      await client.query(
+        `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'transactional')`,
+        [randomUUID(), emitted.eventId, user.id, body.phone, `کد ورود کلبه وینتیج: ${code}`]);
+      return { challengeId, devCode: code };
+    });
+    return {
+      challengeId: challenge.challengeId,
+      phoneMasked: `${body.phone.slice(0, 4)}***${body.phone.slice(-2)}`,
+      deliveryHint: 'sms_queued',
+      // Dev/demo only — production never returns the code to the browser.
+      devCode: config.NODE_ENV === 'production' ? undefined : challenge.devCode,
+    };
+  });
+
+  app.post('/api/v1/auth/otp/verify', { config: { rateLimit: { max: 10, timeWindow: '5 minutes' } } }, async (request, reply) => {
+    const body = z.object({ challengeId: z.uuid(), code: z.string().trim().regex(/^\d{6}$/) }).strict().parse(request.body);
+    const user = await transaction(pool, async (client) => {
+      const challenge = await one<{ id: string; user_id: string; code_hash: string; attempts: number; max_attempts: number }>(client,
+        `SELECT id,user_id,code_hash,attempts,max_attempts FROM two_factor_challenges
+         WHERE id = $1 AND purpose = 'customer_login' AND consumed_at IS NULL AND expires_at > now() FOR UPDATE`,
+        [body.challengeId]);
+      if (!challenge || challenge.attempts >= challenge.max_attempts) return null;
+      if (challenge.code_hash !== otpHash(body.code)) {
+        await client.query('UPDATE two_factor_challenges SET attempts = attempts + 1 WHERE id = $1', [challenge.id]);
+        return null;
+      }
+      await client.query('UPDATE two_factor_challenges SET consumed_at = now() WHERE id = $1', [challenge.id]);
+      return one<UserRow>(client, 'SELECT * FROM users WHERE id = $1', [challenge.user_id]);
+    });
+    if (!user || user.status !== 'active') throw unauthorized();
+    const session = await createSession(pool, user, config,
+      { ip: request.ip, userAgent: request.headers['user-agent'], method: 'otp_sms' });
+    await recordLoginAttempt(pool, { userId: user.id, identity: user.phone ?? user.email ?? user.id, success: true,
+      ip: request.ip, userAgent: request.headers['user-agent'] });
+    reply.setCookie('kolbe_refresh', session.refreshToken, cookieOptions(config));
+    return { accessToken: session.accessToken, tokenType: 'Bearer', expiresIn: 900 };
+  });
+
   app.post('/api/v1/auth/refresh', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const current = request.cookies.kolbe_refresh;
     if (!current) throw unauthorized();
@@ -308,6 +497,43 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
     });
     reply.setCookie('kolbe_refresh', replacement, cookieOptions(config));
     return { accessToken: await accessToken(user, user.session_id, config), tokenType: 'Bearer', expiresIn: 900 };
+  });
+
+  /**
+   * PUBLIC PASSWORD RECOVERY (§12). Reuses the canonical one-time token table and the canonical
+   * `/auth/set-password` completion step — no parallel reset mechanism and no secret in a URL the
+   * frontend can leak. The response is ALWAYS the same shape so the endpoint cannot be used to
+   * discover which identities exist.
+   */
+  app.post('/api/v1/auth/password/forgot', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, async (request) => {
+    const body = z.object({ identity: z.string().trim().min(5).max(254) }).strict().parse(request.body);
+    const identity = body.identity.toLowerCase();
+    const user = await one<{ id: string; phone: string | null; email: string | null; status: string }>(pool,
+      'SELECT id, phone, email, status FROM users WHERE email = $1 OR phone = $1', [identity]);
+    if (!user || user.status !== 'active') return { delivered: true };
+    const token = randomBytes(32).toString('base64url');
+    const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+    await transaction(pool, async (client) => {
+      // Only one live token per account: an old link dies as soon as a new one is requested.
+      await client.query('UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [user.id]);
+      await client.query(
+        `INSERT INTO password_reset_tokens(id, user_id, token_hash, expires_at, created_by)
+         VALUES ($1,$2,$3,$4,NULL)`, [randomUUID(), user.id, tokenHash(token), expiresAt]);
+      const emitted = await emitEvent(client, { eventType: 'customer.password_recovery_requested', entityType: 'user',
+        entityId: user.id, payload: { expiresAt }, actorId: user.id, source: 'auth' });
+      if (user.phone) {
+        await client.query(
+          `INSERT INTO sms_deliveries(id,event_id,user_id,phone,message,category) VALUES ($1,$2,$3,$4,$5,'transactional')`,
+          [randomUUID(), emitted.eventId, user.id, user.phone, 'برای تعیین گذرواژه جدید کلبه وینتیج از لینک بازیابی پیام‌شده استفاده کنید.']);
+      }
+      await client.query('INSERT INTO notifications(id,user_id,event_id,title,body,priority) VALUES ($1,$2,$3,$4,$5,$6)',
+        [randomUUID(), user.id, emitted.eventId, 'بازیابی رمز عبور',
+          'درخواست تعیین گذرواژه جدید برای حساب شما ثبت شد. اگر شما این درخواست را نداده‌اید، گذرواژه فعلی شما معتبر است.', 'high']);
+      await audit(client, user.id, 'auth.password_recovery_requested', 'user', user.id, undefined,
+        { expiresAt }, request.ip);
+    });
+    return { delivered: true, // dev/demo only: the operator-free flow needs a reachable link locally
+      ...(config.NODE_ENV === 'production' ? {} : { devToken: token, devExpiresAt: expiresAt }) };
   });
 
   // Item 45: one-time password activation for imported/migrated users.
@@ -359,8 +585,27 @@ export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: C
     const user = await principal(request, pool, config);
     const row = await one<{ id: string; display_name: string; email: string | null; phone: string | null; birthday: string | null; preferences: Record<string, boolean> | null }>(
       pool, 'SELECT id, display_name, email, phone, birthday, preferences FROM users WHERE id = $1', [user.id]);
+    /*
+     * CANONICAL VIP AUTHORITY: wholesale/VIP is an active membership on the SAME customer account —
+     * exactly the gate the order endpoints use (`memberships` active + started + not ended). The
+     * client must never decide VIP from a local/demo role, so the entitlement travels with /auth/me.
+     */
+    const membership = await one<{ status: string; ends_at: Date; plan_code: string; plan_title: string; tier: string | null }>(pool,
+      `SELECT m.status, m.ends_at, p.code AS plan_code, p.title AS plan_title, p.tier
+       FROM memberships m JOIN membership_plans p ON p.id = m.plan_id
+       WHERE m.user_id = $1 AND m.status = 'active' AND m.starts_at <= now() AND m.ends_at > now()
+       ORDER BY m.created_at DESC LIMIT 1`, [user.id]);
+    /* Supplier cooperation state travels with the session so the supplier surface can show the
+       REAL operational state (pending / rejected / approved) instead of guessing from a missing profile. */
+    const supplier = await one<{ cooperation_status: string; activity_status: string; brand_name: string }>(pool,
+      'SELECT cooperation_status, activity_status, brand_name FROM supplier_profiles WHERE user_id = $1', [user.id]);
     return { id: user.id, displayName: row?.display_name ?? user.displayName, email: row?.email ?? null, phone: row?.phone ?? null,
-      birthday: row?.birthday ?? null, preferences: row?.preferences ?? {}, roles: user.roles, permissions: user.permissions };
+      birthday: row?.birthday ?? null, preferences: row?.preferences ?? {}, roles: user.roles, permissions: user.permissions,
+      membership: membership ? { status: membership.status, endsAt: membership.ends_at, planCode: membership.plan_code,
+        planTitle: membership.plan_title, tier: membership.tier } : null,
+      isWholesaleMember: Boolean(membership),
+      supplier: supplier ? { cooperationStatus: supplier.cooperation_status, activityStatus: supplier.activity_status,
+        brandName: supplier.brand_name } : null };
   });
 
   /** Notification preferences (allowlisted keys) — the account UI persists switches here. */

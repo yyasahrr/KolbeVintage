@@ -158,8 +158,19 @@ const emptySupplierForm = () => ({ name: "", category: "پیراهن", desc: "",
 
 export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; setDark: (v: boolean) => void; onExit: () => void }) {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  // Real supplier auth: JWT + /auth/me must have role supplier (backend enforces). No hardcoded s1. Fallback to sessionStorage only for ?demo=1.
-  useEffect(()=>{ const demo = new URLSearchParams(window.location.search).has("demo"); if (demo && sessionStorage.getItem("kolbe-supplier")==="1") { setAuthed(true); return; } (async()=>{ try{ if(!isAuthenticated()) { setAuthed(false); return; } const me = await authApi.me(); setAuthed(me.roles.includes("supplier") || me.roles.includes("admin")); } catch{ setAuthed(false); } })(); },[]);
+  /* Operational access is the SERVER's decision: a JWT session whose /auth/me carries the supplier
+     role AND an approved cooperation state. §22: an applicant whose membership request is still in
+     review (or was rejected) sees the REAL state from the backend — never a made-up one and never a
+     generic "user not found". The former ?demo=1 sessionStorage bypass is gone. */
+  const [coopState, setCoopState] = useState<string | null>(null);
+  useEffect(()=>{ (async()=>{ try{
+    if(!isAuthenticated()) { setAuthed(false); return; }
+    const me = await authApi.me();
+    const isStaff = me.roles.includes("admin");
+    const status = me.supplier?.cooperationStatus ?? null;
+    setCoopState(status);
+    setAuthed(isStaff || (me.roles.includes("supplier") && status === "approved"));
+  } catch{ setAuthed(false); } })(); },[]);
   if (!authed) {
     return (
       <div className="min-h-screen">
@@ -189,12 +200,28 @@ export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; 
               ))}
             </ol>
           </div>
-          <SupplierEntry onLogin={async () => { try{ if(isAuthenticated()){ const me = await authApi.me(); if(me.roles.includes("supplier")||me.roles.includes("admin")) setAuthed(true); else setAuthed(false); } else setAuthed(false); } catch{ setAuthed(false); } }} />
+          <div>
+            {coopState && coopState !== "approved" && (
+              <Card className="mb-4 p-4 text-[13px] leading-7">
+                <b className="block text-[14px]">{coopState === "rejected" ? "درخواست عضویت تأمین‌کننده تأیید نشد" : "درخواست عضویت تأمین‌کننده در حال بررسی است"}</b>
+                <span className="text-[var(--kv-muted)]">{coopState === "rejected"
+                  ? "برای پیگیری با پشتیبانی کلبه تماس بگیرید؛ پس از اصلاح، دسترسی عملیاتی فعال می‌شود."
+                  : "پس از تأیید تیم کلبه، دسترسی عملیاتی این پنل فعال می‌شود."}</span>
+              </Card>
+            )}
+          <SupplierEntry onLogin={async () => { try{
+            if(!isAuthenticated()) return setAuthed(false);
+            const me = await authApi.me();
+            const status = me.supplier?.cooperationStatus ?? null;
+            setCoopState(status);
+            setAuthed(me.roles.includes("admin") || (me.roles.includes("supplier") && status === "approved"));
+          } catch{ setAuthed(false); } }} />
+          </div>
         </div>
       </div>
     );
   }
-  return <SupplierWorkspace dark={dark} setDark={setDark} onLogout={() => { sessionStorage.removeItem("kolbe-supplier"); setAuthed(false); }} />;
+  return <SupplierWorkspace dark={dark} setDark={setDark} onLogout={() => { void authApi.logout().catch(()=>undefined); setAuthed(false); }} />;
 }
 
 function SupplierBrand() {

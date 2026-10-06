@@ -147,8 +147,20 @@ export const publicApi = {
 /* ------------------------------- auth ------------------------------- */
 
 export const authApi = {
-  register: (payload: { email?: string; phone?: string; password: string; displayName: string }) =>
-    publicApi.post<{ id: string }>("/auth/register", payload),
+  /**
+   * PUBLIC REGISTRATION — two entry points on ONE identity model:
+   *   • mobile-first: `{ phone, code, displayName, email?, password? }` (the number is verified first)
+   *   • email+password: `{ email, password, displayName }`
+   * Both return the canonical account plus a real session, exactly like the two login methods.
+   */
+  register: async (payload: { displayName: string; phone?: string; code?: string; email?: string; password?: string }) => {
+    const res = await publicApi.post<{ id: string; displayName: string; accessToken?: string; linking?: string }>("/auth/register", payload);
+    if (res.accessToken) setAccessToken(res.accessToken);
+    return res;
+  },
+  /** Self-service recovery: the server issues a one-time token and never reveals whether the identity exists. */
+  forgotPassword: (identity: string) =>
+    publicApi.post<{ delivered: boolean; devToken?: string; devExpiresAt?: string }>("/auth/password/forgot", { identity }),
   login: async (payload: { identity: string; password: string }) => {
     const res = await publicApi.post<{ accessToken?: string; twoFactorRequired?: boolean; challengeId?: string; devCode?: string }>("/auth/login", payload);
     if (res.accessToken) setAccessToken(res.accessToken);
@@ -160,8 +172,26 @@ export const authApi = {
     setAccessToken(res.accessToken);
     return res;
   },
+  /**
+   * CUSTOMER/VIP PRIMARY OTP LOGIN (mobile + code) — the second real method on the SAME account.
+   * The server issues and stores the code hashed; the browser only ever sends it back. `devCode`
+   * is a non-production convenience and is never returned in production.
+   */
+  requestOtp: (payload: { phone: string; purpose?: "login" | "signup" }) =>
+    publicApi.post<{ challengeId: string; phoneMasked: string; deliveryHint: string; purpose?: string; devCode?: string }>("/auth/otp/request", payload),
+  verifyOtp: async (payload: { challengeId: string; code: string }) => {
+    const res = await publicApi.post<{ accessToken: string }>("/auth/otp/verify", payload);
+    setAccessToken(res.accessToken);
+    return res;
+  },
   refresh: refreshOnce,
-  me: () => authFetch<{ id: string; displayName: string; roles: string[]; permissions: string[]; preferences?: Record<string, boolean> }>("/auth/me"),
+  /** Canonical identity + entitlement: `membership`/`isWholesaleMember` are SERVER-derived (the same
+   *  active-membership gate the order endpoints use) — never a frontend/demo role. */
+  me: () => authFetch<{ id: string; displayName: string; roles: string[]; permissions: string[]; preferences?: Record<string, boolean>;
+    email?: string | null; phone?: string | null;
+    membership?: { status: string; endsAt: string; planCode: string; planTitle: string; tier: string | null } | null;
+    isWholesaleMember?: boolean;
+    supplier?: { cooperationStatus: string; activityStatus: string; brandName: string } | null }>("/auth/me"),
   updateProfile: (payload: { displayName?: string; email?: string | null; birthday?: string | null }) =>
     authFetch<unknown>("/auth/me", { method: "PATCH", body: JSON.stringify(payload) }),
   updatePreference: (key: string, value: boolean) =>

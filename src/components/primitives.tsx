@@ -110,11 +110,22 @@ export function Field({ label, children, hint, required }: { label: string; chil
   );
 }
 
-export function Input({ placeholder, value, onChange, icon, className, type = "text", ariaLabel }: { placeholder?: string; value?: string; onChange?: (v: string) => void; icon?: ReactNode; className?: string; type?: string; ariaLabel?: string }) {
+/**
+ * Shared text input. `inputMode`/`autoComplete`/`dir` exist because the locked auth surface needs
+ * real mobile keyboards (`tel`/`numeric`), OTP autofill (`one-time-code`), password-manager
+ * compatibility (`username`/`current-password`/`new-password`) and LTR digits inside an RTL page.
+ */
+export function Input({ placeholder, value, onChange, icon, className, type = "text", ariaLabel, inputMode,
+  autoComplete, dir, name, autoFocus, maxLength }: {
+    placeholder?: string; value?: string; onChange?: (v: string) => void; icon?: ReactNode; className?: string;
+    type?: string; ariaLabel?: string; inputMode?: "text" | "tel" | "email" | "numeric" | "decimal" | "search" | "url";
+    autoComplete?: string; dir?: "ltr" | "rtl" | "auto"; name?: string; autoFocus?: boolean; maxLength?: number;
+  }) {
   return (
     <div className={cn("relative", className)}>
       {icon && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--kv-faint)]">{icon}</span>}
-      <input type={type} aria-label={ariaLabel}
+      <input type={type} aria-label={ariaLabel} inputMode={inputMode} autoComplete={autoComplete} dir={dir}
+        name={name} autoFocus={autoFocus} maxLength={maxLength}
         // `undefined` keeps the field uncontrolled; a null value made React warn on every render.
         value={value ?? ""} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
         className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 text-sm text-[var(--kv-ink)] outline-none transition-all placeholder:text-[var(--kv-faint)] focus:border-[var(--kv-accent)] focus:ring-2 focus:ring-[var(--kv-accent)]/15"

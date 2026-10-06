@@ -128,12 +128,20 @@ type NavItem = { g: string } | { v: string; label: string; icon: React.ReactNode
  */
 const TAB_REDIRECT: Record<string, string> = {
   "server-ops": "wms",          // QC/transfers/server-promotions moved into their domains
-  worders: "server-orders",      // demo wholesale orders → OrdersHub (عمده کلبه/تأمین‌کنندگان)
-  kolbe: "server-orders",        // demo Kolbe ops desk → OrdersHub consolidation/dispatch + WMS QC
-  rorders: "server-orders",      // demo retail orders → OrdersHub (سفارشات خرده)
-  "manual-sales": "server-orders", // manual sales live inside مرکز سفارشات
+  // ---- Product-Owner IA: ONE wholesale surface (سفارشات عمده / VIP) ----
+  // The old per-source wholesale centers no longer exist as routes: their links land on the ONE
+  // Master Order list of the unified tab, where source is a FILTER and children live inside the
+  // order's «تخصیص و تأمین». No duplicate authority survives behind any legacy deep link.
+  worders: "server-orders:wholesale",   // demo wholesale orders (عمده کلبه/تأمین‌کنندگان) → unified
+  kolbe: "server-orders:wholesale",     // demo Kolbe wholesale desk → unified (children in detail)
+  supporders: "server-orders:wholesale", // any supplier-side wholesale order list → unified
+  masters: "server-orders:wholesale",   // «مرکز سفارش‌های مادر VIP» → the unified surface
+  wholesale: "server-orders:wholesale", // ONE canonical wholesale surface (#/admin/wholesale)
+  "retail-orders": "server-orders:retail", // #/admin/retail-orders → سفارشات خرده
+  rorders: "server-orders:retail",      // demo retail orders → سفارشات خرده
+  "manual-sales": "server-orders:retail", // manual sales live inside مرکز سفارشات (retail)
   shipping: "settings",          // shipping CONFIG belongs to settings
-  tracking: "server-orders",     // operational tracking belongs to the Orders hub
+  tracking: "server-orders:retail",     // operational tracking belongs to the Orders hub
   "finance-ledger": "finance", "finance-wallet": "finance",
   "promo-safety": "promo",
   series: "structure",           // series templates = product structure configuration
@@ -226,19 +234,25 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     && /^#\/admin\/products\/(pricing|studio)\//i.test(window.location.hash));
   /* §50 (Prompt 4): a plain `#/admin/<tab>` deep link is honoured — used by the Wholesale Order Center
      to open the canonical CRM for the order's VIP buyer without duplicating any CRM surface. */
-  const [initialHashTab] = useState(() => {
+  /* A cold deep link (`#/admin/<legacy-or-tab>`) resolves through the SAME redirect table as in-app
+     navigation AND keeps its hub sub-target (e.g. server-orders:wholesale). A bookmark of a retired
+     per-source wholesale center must land on the unified surface, never on an unowned tab id. */
+  const [initialRoute] = useState<{ hub: string; sub: string | null } | null>(() => {
     if (typeof window === "undefined") return null;
     const match = window.location.hash.match(/^#\/admin\/([a-z-]+)$/i);
-    return match?.[1]?.toLowerCase() ?? null;
+    const key = match?.[1]?.toLowerCase() ?? null;
+    if (!key) return null;
+    const target = TAB_REDIRECT[key] ?? key;
+    if (!target.includes(":") && !["crm", "server-orders", "wms", "settings", "finance", "products"].includes(target)) return null;
+    const [hub, sub] = target.split(":");
+    return { hub: hub!, sub: sub ?? null };
   });
-  const [tab, setTab] = useState(initialProductsRoute ? "products"
-    : (initialHashTab && TAB_REDIRECT[initialHashTab] !== undefined || initialHashTab && ["crm", "server-orders", "wms", "settings", "finance", "products"].includes(initialHashTab)
-      ? (TAB_REDIRECT[initialHashTab] ?? initialHashTab) : "tower")); // landing = نمای کلی (برج کنترل)
+  const [tab, setTab] = useState(initialProductsRoute ? "products" : (initialRoute?.hub ?? "tower")); // landing = نمای کلی (برج کنترل)
   /* §2: a discount/festival deep link from the per-product pricing page carries that product into
      the canonical Promotion Center so the two surfaces are one authority, never two views. */
   const [promoFocus, setPromoFocus] = useState<{ productId: string; productName: string; anchor?: "discount" | "festival" } | null>(null);
-  // deep-link sub-tab inside a hub (legacy redirects like users → crm:customers)
-  const [hubSub, setHubSub] = useState<string | null>(null);
+  // deep-link sub-tab inside a hub (legacy redirects like users → crm:customers, wholesale → server-orders:wholesale)
+  const [hubSub, setHubSub] = useState<string | null>(initialRoute?.sub ?? null);
   const go = useCallback((next: string) => {
     const target = TAB_REDIRECT[next] ?? next;
     const [hub, sub] = target.split(":");
@@ -302,7 +316,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
   ];
   const titles: Record<string, [string, string]> = {
-    "server-orders": ["مرکز سفارشات", "سه نمای عملیاتی: خرده، عمده کلبه و عمده تأمین‌کنندگان + رهگیری و فروش دستی — داده واقعی PostgreSQL"],
+    "server-orders": ["مرکز سفارشات", "دو نمای عملیاتی: سفارشات خرده و سفارشات عمده / VIP + رهگیری و فروش دستی — داده واقعی PostgreSQL"],
     tower: ["برج کنترل عملیات", "همه صف‌ها بر اساس فوریت"],
     worders: ["سفارش‌های عمده در جریان", "سفارش مادر و زیرسفارش‌های هر تأمین‌کننده"],
     kolbe: ["میز عملیات کلبه", "تأیید، آماده‌سازی و ارسال زیرسفارش‌های محصولات خود کلبه"],
@@ -350,6 +364,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
   // Composite keys (hub:sub) get their own header so e.g. «استودیو محصول» is not titled as WMS.
   const compositeTitles: Record<string, [string, string]> = {
     "products:drafts": ["پیش‌نویس‌های محصولات کلبه", "محصولاتی که سفر ایجادشان کامل نشده است — ادامهٔ تکمیل از همین‌جا"],
+    // Product-Owner order IA: exactly two order surfaces.
+    "server-orders:retail": ["سفارشات خرده", "سفارش‌های خرده‌فروشی، فروش دستی و رهگیری مرسوله‌ها"],
+    "server-orders:wholesale": ["سفارشات عمده / VIP", "یک فهرست واحد از سفارش‌های مادر VIP؛ منبع تأمین فیلتر است و داخل خود سفارش دیده می‌شود"],
   };
   const [t, d] = (hubSub ? compositeTitles[`${tab}:${hubSub}`] : undefined) ?? titles[tab] ?? titles.tower;
 
@@ -431,7 +448,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
 
           {moduleBoundary("وضعیت اتصال", <ServerConnectionState tab={tab} key={tab} />)}
           <ModuleBoundary name={t} key={tab}>
-          {tab === "server-orders" && <OrdersHub />}
+          {tab === "server-orders" && <OrdersHub initial={hubSub} />}
 
           {/* ---------- Tower ---------- */}
           {tab === "tower" && (

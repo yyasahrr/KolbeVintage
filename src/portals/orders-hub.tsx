@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardList, FileText, Package, Printer, RefreshCw, Tag, Truck } from "lucide-react";
 import { Btn, Checkbox, Drawer, Empty, ErrorState, LoadingState, Modal, SearchBox, Segmented, Textarea } from "../components/primitives";
-import { authBlobUrl, invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi, wholesaleOmsApi, type MasterOrderSummary } from "../data/api";
+import { authBlobUrl, invoicesApi, manualSalesApi, omsApi, ordersApi, trackingApi, wholesaleFulfillmentApi } from "../data/api";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { ManualOrderForm } from "../components/manual-order-form";
 import { TrackingCenter } from "../components/tracking-center";
@@ -62,7 +62,6 @@ const EXCEPTION_LABEL: Record<string, string> = {
   payment_unverified: "پرداخت تأییدنشده",
 };
 /** wholesale_fulfillment_status — ONE canonical column, projected into two display stages (§21). */
-const SUPPLIER_STAGE = new Set(["awaiting_supplier", "supplier_preparing", "supplier_dispatched", "dispatched_to_kolbe"]);
 const WS_LABEL: Record<string, string> = {
   not_applicable: "—", awaiting_supplier: "در انتظار تأمین‌کننده", supplier_preparing: "آماده‌سازی تأمین‌کننده",
   supplier_dispatched: "ارسال تأمین‌کننده", dispatched_to_kolbe: "در مسیر انبار کلبه", arrived_at_kolbe: "رسیده به انبار کلبه",
@@ -71,14 +70,6 @@ const WS_LABEL: Record<string, string> = {
   qc_issue: "مشکل QC", accepted: "پذیرفته‌شده", qc_passed: "QC تأیید شد", rejected: "ردشده",
   awaiting_consolidation: "در انتظار تجمیع", consolidated: "تجمیع‌شده", ready_for_vip: "آماده ارسال VIP",
   ready_for_vip_dispatch: "آماده ارسال VIP", vip_dispatched: "ارسال‌شده به VIP", delivered: "تحویل‌شده",
-};
-const supplierStage = (ws: string | null | undefined) => {
-  if (!ws || ws === "not_applicable") return "—";
-  return SUPPLIER_STAGE.has(ws) ? (WS_LABEL[ws] ?? ws) : "تحویل‌شده به کلبه";
-};
-const kolbeStage = (ws: string | null | undefined) => {
-  if (!ws || ws === "not_applicable") return "—";
-  return SUPPLIER_STAGE.has(ws) ? "در انتظار دریافت" : (WS_LABEL[ws] ?? ws);
 };
 /** Mirror of the backend transition map — DISPLAY ONLY; the server is the rulebook. */
 const NEXT_STATUS: Record<string, string[]> = {
@@ -591,122 +582,6 @@ const PAGE = 30;
 
 /* ----------------------------- wholesale tab (§20-21) ----------------------------- */
 
-function WholesaleTab({ scope }: { scope: "kolbe" | "supplier" }) {
-  const [rows, setRows] = useState<OrderRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [preset, setPreset] = useState<PresetId>("all");
-  const [search, setSearch] = useState("");
-  const [applied, setApplied] = useState("");
-  const [paymentFilter, setPaymentFilter] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [bulkError, setBulkError] = useState<string | null>(null);
-  const [drawerId, setDrawerId] = useState<string | null>(null);
-  const [trackingOrder, setTrackingOrder] = useState<{ id: string; reference: string; tracking_code?: string | null; shipment_carrier?: string | null } | null>(null);
-
-  const load = useCallback(async (nextOffset = 0) => {
-    setLoading(true); setError(null);
-    try {
-      const params: Record<string, string> = {
-        orderType: "wholesale", sellerScope: scope, withTotal: "1",
-        limit: String(PAGE), offset: String(nextOffset), ...presetParams(preset),
-      };
-      if (applied) params.search = applied;
-      if (paymentFilter) params.paymentStatus = paymentFilter;
-      const res = await ordersApi.list(params) as unknown as { items: OrderRow[]; total?: number };
-      setRows(res.items); setTotal(res.total ?? res.items.length); setOffset(nextOffset); setSelected(new Set());
-    } catch (err) { setError(err instanceof Error ? err.message : "خطا در دریافت سفارش‌ها"); }
-    finally { setLoading(false); }
-  }, [scope, preset, applied, paymentFilter]);
-  useEffect(() => { void load(0); }, [load]);
-
-  const toggle = (id: string) => setSelected((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.id));
-  const selectedRows = rows.filter((r) => selected.has(r.id));
-
-  return (
-    <div className="space-y-3">
-      <PresetChips presets={PRESETS} active={preset} onPick={(p) => { setPreset(p); }} />
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="w-full max-w-xs"><SearchBox placeholder="جست‌وجو: شماره، خریدار VIP، تلفن، SKU، رهگیری…" value={search} onChange={setSearch} /></div>
-        <Btn size="sm" variant="soft" onClick={() => setApplied(search.trim())}>اعمال جست‌وجو</Btn>
-        <LSelect label="وضعیت پرداخت" value={paymentFilter} onChange={setPaymentFilter}
-          options={[{ v: "", label: "همه" }, ...Object.entries(PAYMENT_BADGE).map(([v, b]) => ({ v, label: b.label }))]} />
-        <Btn size="sm" variant="ghost" icon={<RefreshCw size={14} />} onClick={() => void load(offset)}>به‌روزرسانی</Btn>
-        <span className="mr-auto text-[11px] font-bold text-[var(--kv-muted)]">{fa(total)} سفارش</span>
-      </div>
-
-      {selected.size > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-[12px] border border-[var(--kv-action)] bg-[var(--kv-surface)] px-3 py-2">
-          <b className="text-[12px]">{fa(selected.size)} انتخاب‌شده</b>
-          <Btn size="sm" onClick={() => setBulkOpen(true)}>تغییر وضعیت گروهی</Btn>
-          <Btn size="sm" variant="soft" disabled={busy} icon={<FileText size={14} />} onClick={() => void bulkPrintInvoices(selectedRows, setBusy, setBulkError)}>چاپ فاکتورها</Btn>
-          <Btn size="sm" variant="soft" disabled={busy} icon={<Printer size={14} />} onClick={() => void bulkPrintLabels([...selected], setBusy, setBulkError)}>لیبل‌ها (PDF)</Btn>
-          {bulkError && <span className="text-[11px] font-bold text-[var(--kv-danger)]">{bulkError}</span>}
-        </div>
-      )}
-
-      {loading && <LoadingState />}
-      {error && <ErrorState message={error} onRetry={() => void load(offset)} />}
-      {!loading && !error && rows.length === 0 && <Empty title="سفارشی یافت نشد" desc="با این فیلترها سفارش عمده‌ای ثبت نشده است." />}
-      {!loading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto rounded-[14px] border border-[var(--kv-line)]">
-          <table className="w-full min-w-[1100px] text-right text-[11.5px]">
-            <thead className="bg-[var(--kv-surface-2)] text-[10.5px] text-[var(--kv-muted)]">
-              <tr>
-                <th className="p-2.5"><Checkbox checked={allChecked} onChange={(v) => setSelected(v ? new Set(rows.map((r) => r.id)) : new Set())} label="" /></th>
-                <th className="p-2.5">شماره</th><th className="p-2.5">خریدار VIP</th>
-                {scope === "supplier" && <th className="p-2.5">تأمین‌کننده</th>}
-                <th className="p-2.5">اقلام</th><th className="p-2.5">مبلغ</th><th className="p-2.5">پرداخت</th>
-                <th className="p-2.5">وضعیت سفارش</th>
-                {scope === "supplier" && <th className="p-2.5">مرحله تأمین‌کننده</th>}
-                {scope === "supplier" && <th className="p-2.5">مرحله انبار کلبه</th>}
-                {scope === "kolbe" && <th className="p-2.5">مرحله عمده</th>}
-                <th className="p-2.5">حمل</th><th className="p-2.5">رهگیری</th><th className="p-2.5">تاریخ</th><th className="p-2.5">عملیات</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t border-[var(--kv-line)] hover:bg-[var(--kv-surface-2)]/60">
-                  <td className="p-2.5"><Checkbox checked={selected.has(r.id)} onChange={() => toggle(r.id)} label="" /></td>
-                  <td className="p-2.5 font-bold" dir="ltr">{r.reference}<ExceptionBadges reasons={r.exception_reasons} /></td>
-                  <td className="p-2.5">{r.buyer_name ?? "—"}<p className="text-[10px] text-[var(--kv-muted)]" dir="ltr">{r.buyer_phone}</p></td>
-                  {scope === "supplier" && <td className="p-2.5">{r.first_supplier ?? (r.supplier_names?.filter((s) => s !== "کلبه وینتیج")[0] ?? "—")}</td>}
-                  <td className="p-2.5 tabular-nums">{fa(r.lines_count)}</td>
-                  <td className="p-2.5 font-bold tabular-nums">{toman(r.total_rial)}</td>
-                  <td className="p-2.5"><BadgePill map={PAYMENT_BADGE} value={r.payment_status ?? "none"} /></td>
-                  <td className="p-2.5"><BadgePill map={ORDER_BADGE} value={r.status} /></td>
-                  {scope === "supplier" && <td className="p-2.5 text-[10.5px] font-bold">{supplierStage(r.wholesale_fulfillment_status)}</td>}
-                  {scope === "supplier" && <td className="p-2.5 text-[10.5px] font-bold">{kolbeStage(r.wholesale_fulfillment_status)}</td>}
-                  {scope === "kolbe" && <td className="p-2.5 text-[10.5px] font-bold">{r.wholesale_fulfillment_status ? (WS_LABEL[r.wholesale_fulfillment_status] ?? r.wholesale_fulfillment_status) : "—"}</td>}
-                  <td className="p-2.5"><BadgePill map={SHIPMENT_BADGE} value={r.shipment_status} /></td>
-                  <td className="p-2.5" dir="ltr">
-                    {r.tracking_code ?? (
-                      <button className="rounded-full border border-dashed border-[var(--kv-line-strong)] px-2 py-0.5 text-[10px] font-bold text-[var(--kv-muted)] hover:border-[var(--kv-action)]"
-                        onClick={() => setTrackingOrder({ id: r.id, reference: r.reference, tracking_code: r.tracking_code, shipment_carrier: r.shipment_carrier })}>+ ثبت</button>
-                    )}
-                  </td>
-                  <td className="p-2.5 text-[10.5px] text-[var(--kv-muted)]">{formatPersianDateTimeFull(r.created_at)}</td>
-                  <td className="p-2.5"><Btn size="sm" variant="ghost" onClick={() => setDrawerId(r.id)}>جزئیات</Btn></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <Pager offset={offset} total={total} onPage={(o) => void load(o)} />
-
-      <BulkStatusModal ids={[...selected]} open={bulkOpen} onClose={() => setBulkOpen(false)} onDone={() => void load(offset)} />
-      <TrackingModal order={trackingOrder} onClose={() => setTrackingOrder(null)} onDone={() => void load(offset)} />
-      <OrderDrawer orderId={drawerId} onClose={() => setDrawerId(null)} onChanged={() => void load(offset)} onTracking={(o) => setTrackingOrder(o)} />
-    </div>
-  );
-}
-
 function Pager({ offset, total, onPage }: { offset: number; total: number; onPage: (o: number) => void }) {
   if (total <= PAGE) return null;
   return (
@@ -858,59 +733,30 @@ function RetailTab() {
  * (کلبه / تأمین‌کننده / ترکیبی) — children are listed in the wholesale tabs below,
  * so the master never duplicates per-seller rows.
  */
-function MasterOrdersStrip() {
-  const [items, setItems] = useState<MasterOrderSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    setError(null);
-    try { const res = await wholesaleOmsApi.masters({ scope: "all", limit: 20 }); setItems(res.items); }
-    catch (err) { setError(err instanceof Error ? err.message : "خطا در دریافت سفارش‌های مادر"); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-  if (error) return <ErrorState message={error} onRetry={load} />;
-  if (!items || items.length === 0) return null;
-  const fa = new Intl.NumberFormat("fa-IR");
-  return (
-    <div className="overflow-x-auto rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)]">
-      <div className="flex items-center justify-between border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-4 py-2.5">
-        <p className="text-[12.5px] font-extrabold">سفارش‌های مادر VIP (هر خرید یک ردیف — زیرسفارش‌ها در جدول پایین)</p>
-        <button onClick={() => void load()} className="text-[11.5px] font-bold text-[var(--kv-accent)] hover:underline">به‌روزرسانی</button>
-      </div>
-      <table className="kv-table min-w-[900px] text-xs">
-        <thead><tr><th>مرجع</th><th>ترکیب</th><th>زیرسفارش‌ها</th><th>پرداخت‌شده</th><th>وضعیت ترکیب</th><th>ارسال نهایی</th><th>جمع (ریال)</th><th>تاریخ</th></tr></thead>
-        <tbody>
-          {items.map((m) => {
-            const mix = m.supplier_children === 0 ? "کلبه" : m.supplier_children === m.child_count ? "تأمین‌کننده" : "ترکیبی";
-            return (
-              <tr key={m.id}>
-                <td className="font-mono font-bold" dir="ltr">{m.reference}</td>
-                <td><span className="rounded-full bg-[var(--kv-surface-2)] px-2 py-0.5 text-[11px]">{mix}</span></td>
-                <td className="tabular-nums">{fa.format(m.included_children)} / {fa.format(m.child_count)}</td>
-                <td className="tabular-nums">{fa.format(m.paid_children)}</td>
-                <td>{m.locked_at ? "قفل‌شده" : "باز"}</td>
-                <td>{m.delivered_at ? "تحویل شد" : m.shipped_at ? `ارسال شد${m.tracking_code ? ` (${m.tracking_code})` : ""}` : "—"}</td>
-                <td className="tabular-nums">{fa.format(Number(m.total_rial))}</td>
-                <td>{new Date(m.created_at).toLocaleDateString("fa-IR")}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-export function OrdersHub() {
-  const [tab, setTab] = useState<"retail" | "masters" | "kolbe" | "supplier">("retail");
+/**
+ * مرکز سفارشات — the PRIMARY order IA, fixed by the Product Owner's locked decision:
+ *
+ *   1. سفارشات خرده
+ *   2. سفارشات عمده / VIP        ← ONE canonical wholesale surface (Master Orders)
+ *
+ * The former primary tabs «مرکز سفارش‌های مادر VIP», «سفارشات عمده کلبه» and
+ * «سفارشات عمده تأمین‌کنندگان» are GONE: source type is not an order type. A Master Order may hold
+ * Kolbe physical stock, supplier physical stock at Kolbe and supplier capacity at the same time, so
+ * source differences are shown INSIDE the order (per line, under تخصیص و تأمین) and narrowed by
+ * FILTERS on the one Master Order list. The per-seller child-order tooling moved into the master's
+ * «تخصیص و تأمین» workspace (components/master-child-orders.tsx) — no duplicate authority survives
+ * behind any other route; legacy deep links land on the unified surface (see admin.tsx TAB_REDIRECT).
+ */
+export function OrdersHub({ initial }: { initial?: string | null }) {
+  const [tab, setTab] = useState<"retail" | "wholesale">(initial === "wholesale" ? "wholesale" : "retail");
   const [trackingOpen, setTrackingOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [retailReload, setRetailReload] = useState(0);
   const tabs = useMemo(() => ([
     { v: "retail" as const, label: "سفارشات خرده" },
-    { v: "masters" as const, label: "مرکز سفارش‌های مادر VIP" },
-    { v: "kolbe" as const, label: "سفارشات عمده کلبه" },
-    { v: "supplier" as const, label: "سفارشات عمده تأمین‌کنندگان" },
+    { v: "wholesale" as const, label: "سفارشات عمده / VIP" },
   ]), []);
+  useEffect(() => { if (initial === "wholesale") setTab("wholesale"); }, [initial]);
   return (
     <div className="space-y-4 animate-[fadeUp_0.35s_ease]">
       <div className="flex flex-wrap items-center gap-3">
@@ -923,11 +769,9 @@ export function OrdersHub() {
         </div>
       </div>
       {tab === "retail" && <RetailTab key={retailReload} />}
-      {/* §21-§23: the canonical VIP Order Center is a full-page workspace inside مرکز سفارشات. */}
-      {tab === "masters" && <WholesaleOrderCenter />}
-      {tab !== "retail" && tab !== "masters" && <MasterOrdersStrip />}
-      {tab === "kolbe" && <WholesaleTab scope="kolbe" key="kolbe" />}
-      {tab === "supplier" && <WholesaleTab scope="supplier" key="supplier" />}
+      {/* §21-§23 + PO IA: the ONE canonical wholesale center — master list, source FILTERS and the
+          full-page detail workspace. Child orders live inside the detail's «تخصیص و تأمین». */}
+      {tab === "wholesale" && <WholesaleOrderCenter />}
       {trackingOpen && (
         <Drawer open onClose={() => setTrackingOpen(false)} title="مرکز رهگیری مرسوله‌ها" wide>
           <div className="p-5"><TrackingCenter flash={() => undefined} /></div>

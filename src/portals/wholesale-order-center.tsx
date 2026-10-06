@@ -21,6 +21,7 @@ import {
   type MasterOrderSummary, type MasterReadiness, type OpsAllocation, type OpsMasterDetail,
 } from "../data/api";
 import { formatPersianDateTimeFull } from "../data/persian-date";
+import { MasterChildOrders } from "../components/master-child-orders";
 import { cn } from "../utils/cn";
 
 const fa = (value: number | string) => String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
@@ -112,9 +113,20 @@ const SOURCE: Record<string, { label: string; short: string; cls: string; hint: 
 
 type Filters = {
   search: string; readiness: string; customerStatus: string; supplyRequired: "" | "1" | "0";
+  /* Source coverage is a FILTER on the one Master Order list (never a separate order center). */
+  coverage: "" | "kolbe" | "supplier_at_kolbe" | "supply_required" | "mixed";
   dateFrom: string; dateTo: string; sort: "newest" | "oldest";
 };
-const EMPTY_FILTERS: Filters = { search: "", readiness: "", customerStatus: "", supplyRequired: "", dateFrom: "", dateTo: "", sort: "newest" };
+const EMPTY_FILTERS: Filters = { search: "", readiness: "", customerStatus: "", supplyRequired: "", coverage: "", dateFrom: "", dateTo: "", sort: "newest" };
+
+/** PRODUCT-OWNER IA: source differences live INSIDE the order; these chips only narrow the list. */
+const COVERAGE_FILTERS: { v: Filters["coverage"]; label: string; hint: string }[] = [
+  { v: "", label: "همه", hint: "همه سفارش‌های مادر، بدون توجه به منبع تأمین." },
+  { v: "kolbe", label: "دارای موجودی کلبه", hint: "سفارش‌هایی که دست‌کم بخشی از اقلام از موجود فیزیکی کلبه رزرو شده است." },
+  { v: "supplier_at_kolbe", label: "دارای موجودی تأمین‌کننده نزد کلبه", hint: "سفارش‌هایی که از موجود فیزیکی تأمین‌کننده در انبار کلبه تأمین می‌شوند." },
+  { v: "supply_required", label: "نیازمند تأمین", hint: "سفارش‌هایی که بخشی از آن‌ها نیاز به تأمین دارد (ظرفیت تأمین‌کننده)." },
+  { v: "mixed", label: "ترکیبی", hint: "سفارش‌هایی که هم‌زمان بیش از یک منبع تأمین دارند." },
+];
 const isoDay = (value: string, endOfDay: boolean) =>
   value ? new Date(`${value}T${endOfDay ? "23:59:59" : "00:00:00"}`).toISOString() : "";
 
@@ -167,6 +179,7 @@ function MasterList({ onOpen }: { onOpen: (id: string) => void }) {
     if (filters.readiness) p.readiness = filters.readiness;
     if (filters.customerStatus) p.customerStatus = filters.customerStatus;
     if (filters.supplyRequired !== "") p.supplyRequired = filters.supplyRequired;
+    if (filters.coverage) p.coverage = filters.coverage;
     const from = isoDay(filters.dateFrom, false);
     const to = isoDay(filters.dateTo, true);
     if (from) p.dateFrom = from;
@@ -220,6 +233,19 @@ function MasterList({ onOpen }: { onOpen: (id: string) => void }) {
         <Btn size="sm" variant="ghost" disabled={!dirty} onClick={() => setFilters(EMPTY_FILTERS)}>پاک‌کردن فیلترها</Btn>
       </div>
 
+      {/* §Product-Owner IA: ONE Master Order list; sources narrow it, they never split it. */}
+      <div className="flex flex-wrap items-center gap-2" role="group" aria-label="فیلتر منبع تأمین">
+        <span className="text-[11.5px] font-bold text-[var(--kv-muted)]">منبع تأمین:</span>
+        {COVERAGE_FILTERS.map((option) => (
+          <button key={option.v || "all"} title={option.hint} aria-pressed={filters.coverage === option.v}
+            onClick={() => setFilters((f) => ({ ...f, coverage: option.v }))}
+            className={cn("kv-press min-h-9 rounded-full border px-3.5 text-[12px] font-bold transition-all",
+              filters.coverage === option.v ? "border-[var(--kv-action)] bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]")}>
+            {option.label}
+          </button>
+        ))}
+      </div>
+
       {error && <ErrorState message={error} onRetry={load} />}
       {!error && !items && <LoadingState label="در حال دریافت سفارش‌های مادر…" />}
       {!error && items && items.length === 0 && (
@@ -228,7 +254,7 @@ function MasterList({ onOpen }: { onOpen: (id: string) => void }) {
       {!error && items && items.length > 0 && (
         <div className="overflow-x-auto rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)]">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-4 py-2.5">
-            <p className="text-[12.5px] font-extrabold">سفارش‌های مادر VIP</p>
+            <p className="text-[12.5px] font-extrabold">سفارش‌های مادر VIP (یک فهرست واحد — منبع تأمین فقط فیلتر است)</p>
             <p className="text-[11.5px] text-[var(--kv-muted)]">{num(total)} سفارش{dirty ? " (فیلترشده)" : ""}</p>
           </div>
           <table className="kv-table min-w-[1020px] text-xs">
@@ -502,6 +528,10 @@ function MasterDetail({ id, onBack, flash }: { id: string; onBack: () => void; f
               ))}
             </div>
           )))}
+          {/* IA consolidation: the internal child orders + their operational tools live HERE —
+              inside the one Master Order workspace, never in a competing wholesale order center. */}
+          <MasterChildOrders children={detail.children} masterReference={detail.reference}
+            canOperate={detail.allowedActions.length > 0} onChanged={() => void load()} />
         </div>
       </Section>
 
@@ -588,9 +618,9 @@ export function WholesaleOrderCenter({ flash = () => undefined }: { flash?: (mes
       <div className="flex flex-wrap items-center gap-3">
         <span className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-[var(--kv-surface-2)]"><ClipboardList size={18} /></span>
         <div>
-          <h2 className="text-[13.5px] font-extrabold">مرکز سفارش‌های مادر VIP</h2>
+          <h2 className="text-[13.5px] font-extrabold">سفارشات عمده / VIP</h2>
           <p className="text-[11.5px] text-[var(--kv-muted)]">
-            یک خرید خریدار = یک سفارش؛ تأمین چندتأمین‌کننده‌ای، تخصیص، تجمیع و ارسال نهایی کلبه در یک پرونده.
+            یک خرید خریدار = یک سفارش؛ منابع تأمین (موجودی کلبه، موجود تأمین‌کننده نزد کلبه و نیاز به تأمین) داخل همان پرونده نمایش داده می‌شوند — تفاوت منبع، نوع سفارش نیست.
           </p>
         </div>
       </div>
