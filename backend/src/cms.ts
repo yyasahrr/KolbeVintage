@@ -23,15 +23,6 @@ const colors = z.object({
   text: z.string().regex(/^#[0-9a-fA-F]{3,8}$/),
 }).strict();
 
-const componentBody = z.object({
-  code: z.string().trim().regex(/^[a-z0-9_]{2,40}$/),
-  title: z.string().trim().min(2).max(120),
-  componentType: z.enum(['hero', 'banner', 'product_slider', 'category_section', 'promotional', 'text_image',
-    'cta', 'faq', 'blog_section', 'brand_section', 'custom']),
-  fieldSchema: z.record(z.string(), z.unknown()).default({}),
-  active: z.boolean().default(true),
-}).strict();
-
 const pageBody = z.object({
   code: z.string().trim().regex(/^[a-z0-9_-]{2,40}$/),
   title: z.string().trim().min(2).max(160),
@@ -176,16 +167,18 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
       }
 
       const createdSections: string[] = [];
-      for (const section of BASE_SECTIONS) {
-        const component = await one<{ id: string }>(client, 'SELECT id FROM cms_components WHERE code = $1', [section.componentCode]);
+      for (const section of pageCreated ? BASE_SECTIONS : []) {
+        const component = await one<{ id: string; variants: string[] }>(client, 'SELECT id,variants FROM cms_components WHERE code = $1', [section.componentCode]);
         if (!component) continue; // registry is seeded by migration 010; skip gracefully if missing
         const already = await one<{ id: string }>(client,
           'SELECT id FROM cms_sections WHERE page_id = $1 AND component_id = $2', [pageId, component.id]);
         if (already) continue;
         const sectionId = randomUUID();
+        const template = section.payload.template;
+        const variant = typeof template === 'string' && component.variants?.includes(template) ? template : component.variants?.[0] ?? 'default';
         await client.query(
-          `INSERT INTO cms_sections(id,page_id,component_id,title,payload,visible,position) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [sectionId, pageId, component.id, section.title, JSON.stringify(section.payload), true, section.position]);
+          `INSERT INTO cms_sections(id,page_id,component_id,title,payload,visible,position,variant) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [sectionId, pageId, component.id, section.title, JSON.stringify(section.payload), true, section.position, variant]);
         createdSections.push(sectionId);
       }
       if (createdSections.length) {
@@ -223,32 +216,14 @@ export function registerCmsRoutes(app: FastifyInstance, pool: DbPool, config: Co
     return { items: rows.rows };
   });
 
-  app.post('/api/v1/admin/cms/components', async (request, reply) => {
+  // Component definitions are shipped with code and migrations; the admin may only configure instances.
+  app.post('/api/v1/admin/cms/components', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'cms:manage');
-    const body = componentBody.parse(request.body);
-    const id = randomUUID();
-    await transaction(pool, async (client) => {
-      await client.query('INSERT INTO cms_components(id,code,title,component_type,field_schema,active) VALUES ($1,$2,$3,$4,$5,$6)',
-        [id, body.code, body.title, body.componentType, JSON.stringify(body.fieldSchema), body.active]);
-      await audit(client, user.id, 'cms.component_created', 'cms_component', id, undefined, body, request.ip);
-    });
-    return reply.code(201).send({ id, ...body });
+    throw badRequest('ساخت کامپوننت فقط با انتشار نسخه جدید انجام می‌شود.');
   });
-
   app.patch('/api/v1/admin/cms/components/:id', async (request) => {
     const user = await principal(request, pool, config); requirePermission(user, 'cms:manage');
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = patchBody(componentBody.omit({ code: true }).partial().parse(request.body), request.body);
-    return transaction(pool, async (client) => {
-      const before = await one<Record<string, unknown>>(client, 'SELECT * FROM cms_components WHERE id = $1 FOR UPDATE', [id]);
-      if (!before) throw notFound();
-      await client.query(
-        `UPDATE cms_components SET title = COALESCE($2, title), component_type = COALESCE($3, component_type),
-           field_schema = COALESCE($4, field_schema), active = COALESCE($5, active) WHERE id = $1`,
-        [id, body.title ?? null, body.componentType ?? null, body.fieldSchema ? JSON.stringify(body.fieldSchema) : null, body.active ?? null]);
-      await audit(client, user.id, 'cms.component_updated', 'cms_component', id, before, body, request.ip);
-      return one(client, 'SELECT * FROM cms_components WHERE id = $1', [id]);
-    });
+    throw badRequest('تعریف کامپوننت فقط با انتشار نسخه جدید تغییر می‌کند.');
   });
 
   app.get('/api/v1/admin/cms/pages', async (request) => {

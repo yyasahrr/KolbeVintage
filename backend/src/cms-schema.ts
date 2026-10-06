@@ -179,6 +179,8 @@ export const cardStylesSchema = z.object({
   ctaStyle: z.enum(['solid', 'outline', 'ghost']).default('solid'), focusRing: z.enum(['accent', 'ink']).default('accent'),
   skeleton: z.boolean().default(true), textAlign: z.enum(['start', 'center', 'left', 'right']).default('start'),
   imageFit: z.enum(['cover', 'contain']).default('cover'), badgeText: z.string().trim().max(24).optional(),
+  showInstallmentLabel: z.boolean().optional(), installmentLabelText: z.string().trim().max(32).optional(),
+  installmentLabelColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).strict();
 
 const hexToRgb = (hex: string) => {

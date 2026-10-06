@@ -8,7 +8,7 @@ import {
 import { filesApi } from "../data/api";
 import { useStore } from "../data/store";
 import { formatPersianDateTime } from "../data/persian-date";
-import { CategoryCard, Composable, CommerceCard, type ComposableNode } from "../components/cms-blocks";
+import { CategoryCard, CommerceCard } from "../components/cms-blocks";
 import { HeaderCta, ServerAnnouncementBar } from "../components/site-chrome";
 import { PreviewFrame } from "../components/cms-preview-frame";
 import { invalidateCardTemplates, type CardPreviewState, type CardTemplate } from "../components/commerce-card";
@@ -32,7 +32,7 @@ const defaultPayload = (c: RegistryComponent): Record<string, unknown> => {
    Everything here persists through /admin/cms/*; server validation is the source of truth. */
 
 type F = (m: string) => void;
-type Tab = "pages" | "seo" | "themes" | "cards" | "taxonomy" | "collections" | "assets" | "announcements" | "layout" | "builder" | "style" | "reviews" | "insights" | "installments";
+type Tab = "pages" | "seo" | "themes" | "cards" | "taxonomy" | "collections" | "assets" | "announcements" | "layout" | "style" | "reviews" | "insights" | "installments";
 const fa = (n: number) => n.toLocaleString("fa-IR");
 const errMsg = (e: unknown, d = "خطا") => (e instanceof Error ? e.message : d);
 
@@ -55,7 +55,7 @@ export function CmsStudio({ flash }: { flash: F }) {
   const tabs: { v: Tab; label: string }[] = [
     { v: "pages", label: "صفحات و انتشار" }, { v: "seo", label: "سئو" }, { v: "themes", label: "تم و توکن‌ها" }, { v: "cards", label: "کارت محصول" }, { v: "installments", label: "اقساط" }, { v: "taxonomy", label: "دسته و وایب" },
     { v: "collections", label: "کالکشن‌ها" }, { v: "assets", label: "رسانه‌ها" }, { v: "announcements", label: "نوار اعلان" }, { v: "layout", label: "هدر و فوتر" },
-    { v: "builder", label: "کامپوننت‌ساز" }, { v: "style", label: "هوش استایل" }, { v: "reviews", label: "نظرات" }, { v: "insights", label: "سرنخ و آمار" },
+    { v: "style", label: "هوش استایل" }, { v: "reviews", label: "نظرات" }, { v: "insights", label: "سرنخ و آمار" },
   ];
   return (
     <div className="space-y-4">
@@ -75,7 +75,6 @@ export function CmsStudio({ flash }: { flash: F }) {
       {tab === "assets" && <AssetsPanel flash={flash} />}
       {tab === "announcements" && <AnnouncementsPanel flash={flash} />}
       {tab === "layout" && <LayoutPanel flash={flash} />}
-      {tab === "builder" && <BuilderPanel flash={flash} />}
       {tab === "style" && <StylePanel flash={flash} />}
       {tab === "reviews" && <ReviewsPanel flash={flash} />}
       {tab === "insights" && <InsightsPanel />}
@@ -313,12 +312,13 @@ function CardsPanel({ flash }: { flash: F }) {
   const rules = useAsync(() => studioApi.cardRules());
   const { products: storeProducts } = useStore();
   const [tpl, setTpl] = useState({ id: "", code: "", name: "", variant: "custom", blocks: ["image", "badge", "name", "discount_price", "installment", "cta"], accentColor: "#1B2A4A", radius: "18px",
-    aspectRatio: "3/4", ctaStyle: "solid", hoverEffect: "zoom", titleLines: 2, badgeText: "", darkSurface: false, serifTitle: false, prominentInstallment: false, highlightDiscount: false });
+    aspectRatio: "3/4", ctaStyle: "solid", hoverEffect: "zoom", titleLines: 2, badgeText: "", darkSurface: false, serifTitle: false, prominentInstallment: false, highlightDiscount: false, showInstallmentLabel: false, installmentLabelText: "خرید اقساطی", installmentLabelColor: "#1B2A4A" });
   const [previewState, setPreviewState] = useState<CardPreviewState>("default");
   const [sampleKind, setSampleKind] = useState<"long" | "image" | "sale" | "soldout">("long");
   const styles = { accentColor: tpl.accentColor, radius: tpl.radius, aspectRatio: tpl.aspectRatio, ctaStyle: tpl.ctaStyle, hoverEffect: tpl.hoverEffect, titleLines: tpl.titleLines,
     ...(tpl.badgeText.trim() ? { badgeText: tpl.badgeText.trim() } : {}), ...(tpl.darkSurface ? { darkSurface: true } : {}), ...(tpl.serifTitle ? { serifTitle: true } : {}),
-    ...(tpl.prominentInstallment ? { prominentInstallment: true } : {}), ...(tpl.highlightDiscount ? { highlightDiscount: true } : {}) };
+    ...(tpl.prominentInstallment ? { prominentInstallment: true } : {}), ...(tpl.highlightDiscount ? { highlightDiscount: true } : {}),
+    showInstallmentLabel: tpl.showInstallmentLabel, installmentLabelText: tpl.installmentLabelText, installmentLabelColor: tpl.installmentLabelColor };
   const [gate, setGate] = useState<{ passed: boolean; checks: Record<string, boolean>; contrast: number } | null>(null);
   const [rule, setRule] = useState({ name: "", priority: 10, minDiscountPercent: "", isNew: false, installmentEnabled: false, templateCode: "kolbe-sale" });
   const styleKey = JSON.stringify(styles);
@@ -336,7 +336,8 @@ function CardsPanel({ flash }: { flash: F }) {
     const st = t.styles as Record<string, string | number | boolean | undefined>;
     setTpl({ id: t.id, code: t.code, name: t.name, variant: t.variant, blocks: t.blocks, accentColor: String(st.accentColor ?? "#1B2A4A"), radius: String(st.radius ?? "18px"), aspectRatio: String(st.aspectRatio ?? "3/4"),
       ctaStyle: String(st.ctaStyle ?? "solid"), hoverEffect: String(st.hoverEffect ?? "zoom"), titleLines: Number(st.titleLines ?? 2), badgeText: String(st.badgeText ?? ""), darkSurface: !!st.darkSurface,
-      serifTitle: !!st.serifTitle, prominentInstallment: !!st.prominentInstallment, highlightDiscount: !!st.highlightDiscount });
+      serifTitle: !!st.serifTitle, prominentInstallment: !!st.prominentInstallment, highlightDiscount: !!st.highlightDiscount,
+      showInstallmentLabel: !!st.showInstallmentLabel, installmentLabelText: String(st.installmentLabelText ?? 'خرید اقساطی'), installmentLabelColor: String(st.installmentLabelColor ?? '#1B2A4A') });
   };
   return (
     <div className="space-y-4">
@@ -365,6 +366,7 @@ function CardsPanel({ flash }: { flash: F }) {
           <div className="flex flex-wrap gap-4 text-[12px]">
             {([["darkSurface", "سطح تیره"], ["serifTitle", "عنوان سریف"], ["prominentInstallment", "اقساط برجسته"], ["highlightDiscount", "تأکید تخفیف"]] as const).map(([k, l]) => <label key={k} className="flex items-center gap-1.5"><input type="checkbox" checked={tpl[k]} onChange={(e) => setTpl({ ...tpl, [k]: e.target.checked })} />{l}</label>)}
           </div>
+          <div className="space-y-2 border-t border-[var(--kv-line)] pt-3"><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={tpl.showInstallmentLabel} onChange={e=>setTpl({...tpl,showInstallmentLabel:e.target.checked})}/>نمایش لیبل اقساطی روی کارت محصول واجد شرایط</label>{tpl.showInstallmentLabel&&<div className="flex flex-wrap gap-3"><Field label="متن لیبل"><Input value={tpl.installmentLabelText} onChange={installmentLabelText=>setTpl({...tpl,installmentLabelText})}/></Field><label className="text-xs font-bold">رنگ لیبل<input type="color" value={tpl.installmentLabelColor} onChange={e=>setTpl({...tpl,installmentLabelColor:e.target.value})} className="mr-2 h-9 w-10 align-middle"/></label></div>}</div>
           <div className="grid grid-cols-2 gap-3 rounded-[14px] bg-[var(--kv-surface-2)] p-3" data-testid="card-draft-preview">
             <CommerceCard product={sample} template={draftTemplate} previewState={previewState} />
             <CommerceCard product={{ ...sample, image: null, name: base.name }} template={draftTemplate} previewState={previewState === "default" ? "hover" : "default"} />
@@ -426,7 +428,7 @@ function TaxonomyPanel({ flash }: { flash: F }) {
         <p className="text-[14px] font-extrabold">{kind === "vibes" ? "وایب جدید" : "دسته جدید"}</p>
         <div className="grid gap-2 sm:grid-cols-2"><Field label="نام"><Input value={form.name} onChange={(name) => setForm({ ...form, name })} /></Field><Field label="Slug"><Input value={form.slug} onChange={(v) => setForm({ ...form, slug: v.toLowerCase().replace(/[^a-z0-9-]/g, "") })} /></Field>
           <Field label="کاور (https یا مسیر رسانه)"><Input value={form.coverUrl} onChange={(coverUrl) => setForm({ ...form, coverUrl })} /></Field>
-          {kind === "categories" && <Field label="قالب کارت"><Select options={["image", "editorial", "minimal", "glass", "overlay", "horizontal"]} value={form.cardTemplate} onChange={(cardTemplate) => setForm({ ...form, cardTemplate })} /></Field>}</div>
+          {kind === "categories" && <Field label="قالب کارت"><Select options={["image", "editorial", "minimal", "glass", "overlay", "horizontal", "circle"]} labels={{image:'تصویری',editorial:'ادیتوریال',minimal:'ساده',glass:'شیشه‌ای',overlay:'متن روی تصویر',horizontal:'افقی',circle:'دایره‌ای'}} value={form.cardTemplate} onChange={(cardTemplate) => setForm({ ...form, cardTemplate })} /></Field>}</div>
         <Field label="توضیح"><Textarea rows={2} value={form.description} onChange={(description) => setForm({ ...form, description })} /></Field>
         <Btn variant="accent" size="sm" disabled={!form.name || form.slug.length < 2} onClick={async () => { try { await studioApi.createTaxonomy(kind, { name: form.name, slug: form.slug, description: form.description, coverUrl: form.coverUrl || null, ...(kind === "categories" ? { cardTemplate: form.cardTemplate } : {}) }); flash("ذخیره شد"); setForm({ name: "", slug: "", description: "", coverUrl: "", cardTemplate: "editorial" }); await load(); } catch (e) { flash(errMsg(e)); } }}>ذخیره</Btn>
       </Card>
@@ -437,7 +439,7 @@ function TaxonomyPanel({ flash }: { flash: F }) {
           return (
             <div className="space-y-3" data-testid="category-style-editor">
               <div className="grid gap-2 sm:grid-cols-2">
-                <Field label="قالب"><Select options={["image", "editorial", "minimal", "glass", "overlay", "horizontal"]} value={styleFor.cardTemplate} onChange={(cardTemplate) => setStyleFor({ ...styleFor, cardTemplate })} /></Field>
+                <Field label="قالب"><Select options={["image", "editorial", "minimal", "glass", "overlay", "horizontal", "circle"]} labels={{image:'تصویری',editorial:'ادیتوریال',minimal:'ساده',glass:'شیشه‌ای',overlay:'متن روی تصویر',horizontal:'افقی',circle:'دایره‌ای'}} value={styleFor.cardTemplate} onChange={(cardTemplate) => setStyleFor({ ...styleFor, cardTemplate })} /></Field>
                 <Field label="نسبت تصویر"><Select options={["4/3", "1/1", "3/4", "16/9"]} value={cs.aspect ?? "4/3"} onChange={(aspect) => set({ aspect: aspect as CategoryCardStyle["aspect"] })} /></Field>
                 <Field label="گردی"><Select options={["sm", "md", "lg", "xl"]} value={cs.radius ?? "lg"} onChange={(radius) => set({ radius: radius as CategoryCardStyle["radius"] })} /></Field>
                 <Field label="رنگ زمینه"><Select options={["surface", "accent", "primary"]} value={cs.accent ?? "surface"} onChange={(accent) => set({ accent: accent as CategoryCardStyle["accent"] })} /></Field>
@@ -801,41 +803,6 @@ function MegaMenuEditor({ columns, menus, onChange }: { columns: MegaMenuColumn[
         </details>
       ))}
       {columns.length < 8 && <Btn size="sm" variant="soft" icon={<Plus size={13} />} onClick={() => onChange([...columns, { id: `mm${Date.now().toString(36)}`, title: "ستون جدید", menuId: megaMenus[0]?.id, items: [] }])}>افزودن ستون مگامنو</Btn>}
-    </div>
-  );
-}
-
-/* ============================ Composable component builder (Req 178-179) ============================ */
-
-const PRIMITIVE_LABEL: Record<string, string> = { text: "متن", image: "تصویر", badge: "نشان", button: "دکمه", product_image: "تصویر محصول", product_title: "نام محصول", price: "قیمت", installment_info: "اقساط", rating: "امتیاز", spacer: "فاصله" };
-function BuilderPanel({ flash }: { flash: F }) {
-  const registry = useAsync(() => studioApi.registry());
-  const [code, setCode] = useState(""); const [title, setTitle] = useState("");
-  const [nodes, setNodes] = useState<ComposableNode[]>([{ type: "product_image" }, { type: "badge", props: { value: "ویژه" } }, { type: "product_title" }, { type: "price" }, { type: "installment_info" }, { type: "button", props: { label: "خرید", href: "shop" } }]);
-  if (registry.error) return <ErrorState message={registry.error} onRetry={registry.load} />;
-  if (!registry.data) return <LoadingState />;
-  const composables = (registry.data.items as { id: string; code: string; title: string; kind: string }[]).filter((c) => c.kind === "composable");
-  const sample: CommerceProduct = { id: "s", name: "پیراهن کتان کلبه", brand: "Kolbe", category: "پیراهن", productType: "shirt", gender: "unisex", seasons: [], vibes: [], priceRial: "38000000", installmentPriceRial: null, perInstallmentRial: "9500000", compareAtRial: null, discountPercent: 0, installmentEnabled: true, installmentProviders: [], image: null, flatLay: null, available: 4, isNew: true, createdAt: "", rating: 4.8, reviewCount: 9, variants: [] };
-  return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-      <Card className="space-y-3 p-4">
-        <p className="text-[14px] font-extrabold">ساخت کامپوننت بدون کدنویسی</p>
-        <p className="text-[11.5px] leading-6 text-[var(--kv-muted)]">فقط از اجزای امن: {registry.data.primitives.join("، ")}. اجرای کد دلخواه ممنوع است؛ کامپوننت‌های کدنویسی‌شده فقط توسط توسعه‌دهنده ثبت می‌شوند.</p>
-        <div className="grid gap-2 sm:grid-cols-2"><Field label="کد"><Input value={code} onChange={(v) => setCode(v.toLowerCase().replace(/[^a-z0-9_]/g, ""))} /></Field><Field label="عنوان"><Input value={title} onChange={setTitle} /></Field></div>
-        <ul className="space-y-1.5">{nodes.map((n, i) => (
-          <li key={i} className="flex flex-wrap items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-2 py-1.5">
-            <b className="w-24 text-[12px]">{PRIMITIVE_LABEL[n.type] ?? n.type}</b>
-            {["text", "badge"].includes(n.type) && <Input className="flex-1" value={String(n.props?.value ?? "")} onChange={(value) => setNodes(nodes.map((x, j) => (j === i ? { ...x, props: { ...x.props, value } } : x)))} />}
-            {n.type === "button" && <><Input className="w-28" value={String(n.props?.label ?? "")} onChange={(label) => setNodes(nodes.map((x, j) => (j === i ? { ...x, props: { ...x.props, label } } : x)))} /><Input className="w-28" value={String(n.props?.href ?? "")} onChange={(href) => setNodes(nodes.map((x, j) => (j === i ? { ...x, props: { ...x.props, href } } : x)))} /></>}
-            {n.type === "image" && <Input className="flex-1" value={String(n.props?.src ?? "")} onChange={(src) => setNodes(nodes.map((x, j) => (j === i ? { ...x, props: { ...x.props, src } } : x)))} placeholder="https://…" />}
-            <span className="mr-auto flex gap-1"><button aria-label="بالا" onClick={() => { if (!i) return; const l = [...nodes]; [l[i - 1], l[i]] = [l[i]!, l[i - 1]!]; setNodes(l); }}><ArrowUp size={13} /></button><button aria-label="حذف" onClick={() => setNodes(nodes.filter((_, j) => j !== i))} className="text-[var(--kv-danger)]"><Trash2 size={13} /></button></span>
-          </li>
-        ))}</ul>
-        <div className="flex flex-wrap gap-1.5">{Object.keys(PRIMITIVE_LABEL).map((t) => <button key={t} onClick={() => setNodes([...nodes, { type: t, props: t === "text" ? { value: "متن" } : t === "button" ? { label: "مشاهده", href: "shop" } : {} }])} className="rounded-full border border-[var(--kv-line)] px-2.5 py-1 text-[11.5px] hover:border-[var(--kv-accent)]">+ {PRIMITIVE_LABEL[t]}</button>)}</div>
-        <Btn variant="accent" size="sm" disabled={code.length < 2 || title.length < 2 || !nodes.length} onClick={async () => { try { await studioApi.createComposable({ code, title, composition: [{ type: "container", children: nodes }] }); flash("کامپوننت ثبت شد و در رجیستری در دسترس است"); await registry.load(); } catch (e) { flash(errMsg(e)); } }}>ثبت در رجیستری</Btn>
-        {composables.length > 0 && <div className="border-t border-[var(--kv-line)] pt-3"><p className="mb-2 text-[12.5px] font-bold">کامپوننت‌های ساخته‌شده</p><div className="flex flex-wrap gap-2">{composables.map((c) => <span key={c.id} className="inline-flex items-center gap-1.5 rounded-full bg-[var(--kv-surface-2)] px-3 py-1 text-[12px]">{c.title}<button aria-label="حذف" onClick={async () => { try { await studioApi.deleteComponent(c.id); await registry.load(); } catch (e) { flash(errMsg(e)); } }} className="text-[var(--kv-danger)]"><Trash2 size={12} /></button></span>)}</div></div>}
-      </Card>
-      <div><p className="mb-2 text-[12px] font-bold text-[var(--kv-muted)]">پیش‌نمایش زنده (همان رندرکننده سایت)</p><div className="rounded-[18px] border border-dashed border-[var(--kv-line-strong)] bg-[var(--kv-bg)] p-3"><Composable nodes={[{ type: "container", children: nodes }]} payload={{}} product={sample} onNav={() => undefined} /></div></div>
     </div>
   );
 }

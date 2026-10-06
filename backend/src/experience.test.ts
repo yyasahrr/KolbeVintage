@@ -383,13 +383,18 @@ test('CMS studio, style intelligence and unified profile work end to end', { ski
     const restored = await app.inject({ method: 'POST', url: `/api/v1/admin/cms/pages/${pageId}/versions/${versions.json().items[0].version}/restore`, headers: admin.headers });
     assert.equal(restored.statusCode, 200, restored.body);
 
-    /* ---- Composable builder, themes, announcements, layout safety ---- */
+    /* ---- Release-owned component registry, themes, announcements, layout safety ---- */
     const unsafe = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/components/composable', headers: admin.headers,
       payload: { code: `bad_${suffix.replace(/-/g, '')}`, title: 'بد', composition: [{ type: 'text', props: { value: '<script>x</script>' } }] } });
     assert.equal(unsafe.statusCode, 400);
     const composable = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/components/composable', headers: admin.headers,
       payload: { code: `card_${suffix.replace(/-/g, '')}`, title: 'کارت سفارشی', composition: [{ type: 'container', children: [{ type: 'product_image' }, { type: 'badge', props: { value: 'ویژه' } }, { type: 'price' }] }] } });
-    assert.equal(composable.statusCode, 201, composable.body);
+    assert.equal(composable.statusCode, 400, composable.body);
+    const componentRegistry = await app.inject({ method: 'GET', url: '/api/v1/admin/cms/registry', headers: admin.headers });
+    assert.equal(componentRegistry.statusCode, 200, componentRegistry.body);
+    const registered = componentRegistry.json().items as { code: string; field_schema: { fields?: { key: string; options?: string[] }[] } }[];
+    assert.ok(registered.find(c => c.code === 'countdown')?.field_schema.fields?.some(f => f.key === 'fontFamily'));
+    assert.ok(registered.find(c => c.code === 'category_card')?.field_schema.fields?.some(f => f.key === 'template' && f.options?.includes('circle')));
     const badTheme = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/themes', headers: admin.headers, payload: { code: `bt-${suffix}`, name: 'بد',
       tokens: { background: '#FFFFFF', surface: '#FFFFFF', surfaceSecondary: '#FFFFFF', textPrimary: '#EEEEEE', textSecondary: '#DDDDDD', primary: '#111111', secondary: '#222222', accent: '#333333', border: '#EEEEEE', success: '#00AA00', warning: '#AAAA00', danger: '#AA0000' } } });
     assert.equal(badTheme.statusCode, 400);
@@ -713,8 +718,13 @@ test('CMS starter content is created only by the admin bootstrap and is idempote
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { identity: `starter-${suffix}@example.test`, password: 'Password-123456!' } });
     const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
 
+    const existing = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/landing-pages', headers, payload: {
+      code: `existing-${suffix}`, title: 'صفحه کمپین موجود', path: `/existing/${suffix}`, pageType: 'campaign', template: 'blank',
+    } });
+    assert.equal(existing.statusCode, 201, existing.body);
     const first = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/bootstrap', headers });
     assert.equal(first.statusCode, 200, first.body);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM cms_pages WHERE code=$1', [`existing-${suffix}`])).rows[0].n, 1);
     const pages = (await pool.query(`SELECT code, status, active FROM cms_pages WHERE code IN ('about','vibe-old-money','vibe-dark-academia','vip-lead') ORDER BY code`)).rows;
     assert.deepEqual(pages.map((r) => r.code), ['about', 'vibe-dark-academia', 'vibe-old-money', 'vip-lead']);
     assert.ok(pages.every((r) => r.status === 'draft' && r.active));
@@ -726,6 +736,10 @@ test('CMS starter content is created only by the admin bootstrap and is idempote
     const stats = await pool.query(`SELECT 1 FROM cms_sections s JOIN cms_pages p ON p.id = s.page_id JOIN cms_components c ON c.id = s.component_id
       WHERE p.code = 'about' AND c.code = 'stats_strip'`);
     assert.equal(stats.rowCount, 0, 'no fabricated customer/rating metrics in CMS content');
+    const invalidVariants = await pool.query(`SELECT p.code,s.title FROM cms_sections s JOIN cms_pages p ON p.id=s.page_id
+      JOIN cms_components c ON c.id=s.component_id WHERE p.code IN ('home','about','vibe-old-money','vibe-dark-academia','vip-lead')
+      AND NOT (c.variants ? s.variant)`);
+    assert.equal(invalidVariants.rowCount, 0, `starter sections must use registry variants: ${JSON.stringify(invalidVariants.rows)}`);
     const ann = await pool.query(`SELECT active, messages::text AS m FROM cms_announcements WHERE id = '8a660000-0000-4000-8000-000000000001'`);
     assert.equal(ann.rows[0]?.active, false, 'starter announcement ships inactive');
     assert.ok(!/ارسال رایگان|چهارقسطی/.test(ann.rows[0]!.m), 'shipping/instalment terms are not duplicated in CMS copy');

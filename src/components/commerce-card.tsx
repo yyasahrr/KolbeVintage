@@ -15,6 +15,7 @@ export type CardStyles = {
   aspectRatio?: string; radius?: string; badgeTone?: string; accentColor?: string; darkSurface?: boolean; serifTitle?: boolean;
   highlightDiscount?: boolean; prominentInstallment?: boolean; borderless?: boolean; luxuryBorder?: boolean; showSwatches?: boolean;
   titleLines?: number; hoverEffect?: string; ctaStyle?: string; focusRing?: string; textAlign?: string; imageFit?: string; badgeText?: string;
+  showInstallmentLabel?: boolean; installmentLabelText?: string; installmentLabelColor?: string;
 };
 export type CardPreviewState = "default" | "hover" | "loading" | "added" | "soldout" | "skeleton";
 
@@ -103,6 +104,7 @@ export function CommerceCard({ product, onOpen, onQuickAdd, pageCode, variant, t
               className={cn("h-full w-full transition-transform duration-500", s.imageFit === "contain" ? "object-contain" : "object-cover", s.hoverEffect === "zoom" && "group-hover:scale-105", hover && s.hoverEffect === "zoom" && "scale-105")} />
               : <div className="flex h-full w-full items-center justify-center text-[12px] text-[var(--kv-muted)]">بدون تصویر</div>}
             {has("badge") && badgeText && <span className={cn("absolute right-2 top-2 rounded-full px-2.5 py-1 text-[11px] font-bold", BADGE_TONE[s.badgeTone ?? ""] ?? "text-white")} style={!BADGE_TONE[s.badgeTone ?? ""] ? { background: s.accentColor } : undefined}>{badgeText}</span>}
+            {s.showInstallmentLabel && product.installmentEnabled && perInstallment && <span className="absolute left-2 top-2 rounded-full px-2.5 py-1 text-[11px] font-bold text-white" style={{ background: s.installmentLabelColor ?? '#1B2A4A' }}>{s.installmentLabelText || 'خرید اقساطی'}</span>}
             {soldOut && <span className="absolute inset-x-2 bottom-2 rounded-lg bg-black/60 py-1 text-center text-[11.5px] font-bold text-white">ناموجود</span>}
           </div>
         )}

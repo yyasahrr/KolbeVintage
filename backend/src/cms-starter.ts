@@ -31,8 +31,9 @@ ON CONFLICT (id) DO NOTHING`,
    'صفحه جذب سرنخ متصل به CRM برای دسترسی زودهنگام به کالکشن‌های محدود',
    '{"title":"باشگاه مشتریان ویژه | کلبه وینتیج"}'::jsonb, true)
 ON CONFLICT (code) DO NOTHING`,
-  `INSERT INTO cms_sections(id, page_id, component_id, title, payload, visible, position)
-SELECT gen_random_uuid(), p.id, c.id, v.title, v.payload::jsonb, true, v.position
+  `INSERT INTO cms_sections(id, page_id, component_id, title, payload, visible, position, variant)
+SELECT gen_random_uuid(), p.id, c.id, v.title, v.payload::jsonb, true, v.position,
+       CASE WHEN c.variants ? (v.payload::jsonb ->> 'template') THEN v.payload::jsonb ->> 'template' ELSE COALESCE(c.variants ->> 0, 'default') END
 FROM (VALUES
   ('about', 'story_hero', 'هیرو داستان ما', '{"eyebrow":"از ۱۳۹۸","title":"کلبه وینتیج؛ پوشاکی برای سال‌ها","subtitle":"از یک کارگاه کوچک در تهران شروع کردیم تا پارچه خوب، دوخت دقیق و طراحی ماندگار را به کمد لباس شما بیاوریم.","yearFounded":"۱۳۹۸","location":"تهران"}', 1),
   ('about', 'text_section', 'روایت برند', '{"eyebrow":"داستان برند","title":"اصالت، دوخت و ماندگاری","body":"هر محصول کلبه مسیر مشخصی دارد: انتخاب پارچه از بافندگان معتبر، الگوسازی دقیق، دوخت تمیز و کنترل کیفیت سه‌مرحله‌ای.\\nما باور داریم لباس خوب باید سال‌ها بماند؛ نه یک فصل.","alignment":"center"}', 2),
@@ -55,9 +56,10 @@ WHERE NOT EXISTS (SELECT 1 FROM cms_sections s WHERE s.page_id = p.id)`,
   `UPDATE cms_sections s SET position = s.position + 1 FROM cms_pages p, cms_components c
   WHERE p.id = s.page_id AND c.id = s.component_id AND p.code IN ('vibe-old-money', 'vibe-dark-academia') AND c.code = 'product_grid'
     AND NOT EXISTS (SELECT 1 FROM cms_sections x JOIN cms_components xc ON xc.id = x.component_id WHERE x.page_id = p.id AND xc.code = 'collection_showcase')`,
-  `INSERT INTO cms_sections(id, page_id, component_id, title, payload, visible, position)
+  `INSERT INTO cms_sections(id, page_id, component_id, title, payload, visible, position, variant)
 SELECT gen_random_uuid(), p.id, c.id, v.title, v.payload::jsonb, true,
-       (SELECT COALESCE(max(position), 0) FROM cms_sections WHERE page_id = p.id) + v.offs
+       (SELECT COALESCE(max(position), 0) FROM cms_sections WHERE page_id = p.id) + v.offs,
+       CASE WHEN c.variants ? (v.payload::jsonb ->> 'template') THEN v.payload::jsonb ->> 'template' ELSE COALESCE(c.variants ->> 0, 'default') END
 FROM (VALUES
   ('about', 'gallery', 'گالری کارگاه', '{"title":"از کارگاه تا کمد شما","layout":"masonry","columns":3,"images":"https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=1200|کارگاه دوخت کلبه|انتخاب پارچه\\nhttps://images.unsplash.com/photo-1523381210434-271e8be1f52b?w=1200|قفسه پوشاک|کالکشن پاییز\\nhttps://images.unsplash.com/photo-1490481651871-ab68de25d43d?w=1200|جزئیات دوخت|دوخت دقیق"}', -2),
   ('about', 'video_section', 'ویدیو داستان برند', '{"title":"کلبه در یک دقیقه","caption":"روایت کوتاه ما از انتخاب پارچه تا بسته‌بندی","video":"https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4","poster":"https://images.unsplash.com/photo-1441986300917-64674bd600d8?w=1600","aspect":"16/9","controls":true,"muted":true}', -1),

@@ -4,18 +4,20 @@ import { formatPersianDateTime } from "../data/persian-date";
 import { CmsPages } from "./cms-pages";
 import { CmsJournal } from "./cms-journal";
 import { CmsGlobalContent } from "./cms-global-content";
+import { CmsComponentCatalog } from "./cms-component-catalog";
 import { cmsWorkspaceApi, cmsError, PAGE_STATUS } from "./cms-api";
 import { cmsApi } from '../data/api';
 
-type Tab="overview"|"pages"|"journal"|"global";
+type Tab="overview"|"pages"|"journal"|"global"|"components";
 export function CmsCenter({flash}:{flash:(m:string)=>void}) {
   const [tab,setTab]=useState<Tab>("overview");
   const [create,setCreate]=useState(false);
   return <div dir="rtl" className="min-w-0 space-y-5">
     <header><h2 className="text-xl font-bold">مدیریت محتوا</h2><p className="mt-1 text-sm text-[var(--kv-muted)]">محتوا را در پیش‌نویس ذخیره، بررسی و با اقدام صریح منتشر کنید.</p></header>
-    <Segmented<Tab> options={[{v:"overview",label:"نمای کلی"},{v:"pages",label:"صفحات"},{v:"journal",label:"مجله"},{v:"global",label:"اجزای سایت"}]} value={tab} onChange={(v)=>{setTab(v);setCreate(false);}}/>
+    <Segmented<Tab> options={[{v:"overview",label:"نمای کلی"},{v:"pages",label:"صفحات"},{v:"components",label:"کامپوننت‌ها"},{v:"journal",label:"مجله"},{v:"global",label:"اجزای سایت"}]} value={tab} onChange={(v)=>{setTab(v);setCreate(false);}}/>
     {tab==="overview"&&<CmsOverview onCreate={(v)=>{setTab(v);setCreate(true);}}/>}
     {tab==="pages"&&<CmsPages flash={flash} initialCreate={create}/>}
+    {tab==="components"&&<CmsComponentCatalog/>}
     {tab==="journal"&&<CmsJournal flash={flash} initialCreate={create}/>}
     {tab==="global"&&<CmsGlobalContent flash={flash}/>}
   </div>;

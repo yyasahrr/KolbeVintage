@@ -71,9 +71,29 @@ function refreshOnce() {
   return refreshPromise;
 }
 
+function tokenExpiresSoon(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: number };
+    return typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now() + 60_000;
+  } catch { return false; }
+}
+
 /** Authenticated transport with single-refresh retry. */
 export async function authFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const initial = getAccessToken();
+  let initial = getAccessToken();
+  // A multipart body can be cut off by a proxy when the server rejects an expired
+  // token before consuming the stream. Refresh first so the browser receives a
+  // normal upload response and the editor can show a useful error if needed.
+  if (typeof FormData !== 'undefined' && init.body instanceof FormData && initial && tokenExpiresSoon(initial)) {
+    try {
+      const refreshed = await refreshOnce();
+      setAccessToken(refreshed.accessToken);
+      initial = refreshed.accessToken;
+    } catch (error) {
+      expireSession();
+      throw error;
+    }
+  }
   try {
     return await apiCall<T>(path, init, initial ?? undefined);
   } catch (error) {

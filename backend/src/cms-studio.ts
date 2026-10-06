@@ -613,57 +613,18 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
     return { payload: validateSectionPayload(component.field_schema, z.record(z.string(), z.unknown()).parse(request.body)) };
   });
 
-  app.post('/api/v1/admin/cms/components/composable', async (request, reply) => {
-    const user = await actor(request, 'cms:components');
-    const body = z.object({
-      code: z.string().regex(/^[a-z0-9_]{2,40}$/), title: safeString(120),
-      composition: z.array(z.any()).min(1).max(40),
-      variants: z.array(z.string().regex(/^[a-z0-9_-]{2,30}$/)).min(1).max(10).default(['default']),
-      presets: z.array(safeString(60)).max(10).default([]),
-      styleTokens: z.record(z.string(), z.string().max(60)).default({}),
-    }).strict().parse(request.body);
-    validateComposition(body.composition as CompositionNode[]);
-    assertSafeText(body.styleTokens, 'styleTokens');
-    const id = randomUUID();
-    await transaction(pool, async (client) => {
-      await client.query(`INSERT INTO cms_components(id,code,title,component_type,kind,composition,variants,presets,style_tokens,field_schema)
-        VALUES ($1,$2,$3,'composable','composable',$4,$5,$6,$7,$8)`,
-        [id, body.code, body.title, JSON.stringify(body.composition), JSON.stringify(body.variants), JSON.stringify(body.presets),
-          JSON.stringify(body.styleTokens), JSON.stringify({ props: ['title', 'text', 'image', 'ctaLabel', 'ctaTarget'] })]);
-      await audit(client, user.id, 'cms.component_created', 'cms_component', id, undefined, { code: body.code, kind: 'composable' }, request.ip);
-    });
-    return reply.code(201).send({ id, code: body.code, kind: 'composable' });
+  // Component definitions are release-owned. Existing composable records remain readable for old pages.
+  app.post('/api/v1/admin/cms/components/composable', async (request) => {
+    await actor(request, 'cms:components');
+    throw badRequest('ساخت کامپوننت فقط در نسخه نرم‌افزار و توسط توسعه‌دهنده انجام می‌شود.');
   });
-
   app.patch('/api/v1/admin/cms/components/:id/composition', async (request) => {
-    const user = await actor(request, 'cms:components');
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const body = z.object({ composition: z.array(z.any()).min(1).max(40), variants: z.array(z.string().regex(/^[a-z0-9_-]{2,30}$/)).max(10).optional() }).strict().parse(request.body);
-    validateComposition(body.composition as CompositionNode[]);
-    return transaction(pool, async (client) => {
-      const before = await one<{ kind: string; composition: unknown }>(client, 'SELECT kind, composition FROM cms_components WHERE id = $1 FOR UPDATE', [id]);
-      if (!before) throw notFound();
-      if (before.kind !== 'composable') throw badRequest('کامپوننت‌های کدنویسی‌شده فقط توسط توسعه‌دهنده تغییر می‌کنند.');
-      await client.query('UPDATE cms_components SET composition = $2, variants = COALESCE($3, variants), updated_at = now() WHERE id = $1',
-        [id, JSON.stringify(body.composition), body.variants ? JSON.stringify(body.variants) : null]);
-      await audit(client, user.id, 'cms.template_updated', 'cms_component', id, before, body, request.ip);
-      return { id, updated: true };
-    });
+    await actor(request, 'cms:components');
+    throw badRequest('تعریف کامپوننت فقط با انتشار نسخه جدید تغییر می‌کند.');
   });
-
   app.delete('/api/v1/admin/cms/components/:id', async (request) => {
-    const user = await actor(request, 'cms:components');
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    return transaction(pool, async (client) => {
-      const row = await one<{ kind: string; code: string }>(client, 'SELECT kind, code FROM cms_components WHERE id = $1 FOR UPDATE', [id]);
-      if (!row) throw notFound();
-      if (row.kind !== 'composable') throw badRequest('کامپوننت‌های سیستمی حذف نمی‌شوند؛ می‌توانید آن‌ها را غیرفعال کنید.');
-      const used = await one<{ n: number }>(client, 'SELECT count(*)::int AS n FROM cms_sections WHERE component_id = $1', [id]);
-      if (used && used.n > 0) throw conflict(`این کامپوننت در ${used.n} بخش استفاده شده است.`);
-      await client.query('DELETE FROM cms_components WHERE id = $1', [id]);
-      await audit(client, user.id, 'cms.component_deleted', 'cms_component', id, row, undefined, request.ip);
-      return { id, deleted: true };
-    });
+    await actor(request, 'cms:components');
+    throw badRequest('کامپوننت‌های موجود برای حفظ صفحات قدیمی حذف نمی‌شوند.');
   });
 
   /* ---------- Admin: page lifecycle (Req 214-217, 281-282) ---------- */
@@ -961,7 +922,7 @@ export function registerCmsStudioRoutes(app: FastifyInstance, pool: DbPool, conf
       seo: z.object({ title: safeString(160).optional(), description: safeString(320).optional() }).strict().default({}),
       ...(table === 'cms_categories'
         ? { imageUrl: z.string().max(400).nullable().optional(), icon: z.string().max(40).nullable().optional(),
-            cardTemplate: z.enum(['image', 'editorial', 'minimal', 'glass', 'overlay', 'horizontal']).default('editorial'),
+            cardTemplate: z.enum(['image', 'editorial', 'minimal', 'glass', 'overlay', 'horizontal', 'circle']).default('editorial'),
             parentId: z.uuid().nullable().optional(),
             cardStyle: z.object({ aspect: z.enum(['4/3', '1/1', '3/4', '16/9']).optional(), radius: z.enum(['sm', 'md', 'lg', 'xl']).optional(),
               overlay: z.number().int().min(0).max(80).optional(), textAlign: z.enum(['start', 'center']).optional(), showDescription: z.boolean().optional(),

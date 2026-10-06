@@ -31,6 +31,8 @@ try {
   expected.push('071_crm_relationship_operations.sql');
   expected.push('072_crm_followup_projection.sql');
   expected.push('073_cms_draft_publication.sql');
+  expected.push('074_cms_visual_components.sql');
+  expected.push('075_cms_section_variant_repair.sql');
   const applied = before.rows.map((row) => row.version);
   if (JSON.stringify(applied) !== JSON.stringify(expected)) throw new Error(`Unexpected migrations: ${applied.join(', ')}`);
   await run(['run', '--silent', 'migrate']);

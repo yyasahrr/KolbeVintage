@@ -265,6 +265,9 @@ table.kv-table tbody tr:last-child td { border-bottom: none; }
 [data-kv-minh="sm"] { min-height: 240px; } [data-kv-minh="md"] { min-height: 380px; } [data-kv-minh="lg"] { min-height: 520px; } [data-kv-minh="screen"] { min-height: 90svh; }
 [data-kv-type="sm"] h1, [data-kv-type="sm"] h2 { font-size: 0.85em; } [data-kv-type="lg"] h2 { font-size: 1.2em; } [data-kv-type="xl"] h1, [data-kv-type="xl"] h2 { font-size: 1.4em; }
 [data-kv-font="display"] h1, [data-kv-font="display"] h2 { font-family: var(--font-display); }
+[data-preview-frame] [data-cms-section-id] { cursor: pointer; outline: 2px solid transparent; outline-offset: 4px; transition: outline-color 150ms ease; }
+[data-preview-frame] [data-cms-section-id]:hover { outline-color: color-mix(in srgb, var(--kv-accent) 50%, transparent); }
+[data-preview-frame] [data-cms-selected="true"] { outline-color: var(--kv-accent); }
 [data-kv-align="center"] { text-align: center; } [data-kv-align="end"] { text-align: left; }
 [data-kv-fit="contain"] img { object-fit: contain !important; }
 [data-kv-anim="fade"] { animation: fadeIn .6s ease both; } [data-kv-anim="rise"] { animation: fadeUp .7s cubic-bezier(.2,.7,.2,1) both; }

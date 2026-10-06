@@ -277,16 +277,20 @@ export function TargetInput({ label, value, onChange, pickers }: { label: string
 
 export function MediaInput({ label, kind, value, onChange, pickers, flash }: { label: string; kind: "media" | "video"; value: string; onChange: (v: unknown) => void; pickers: PickerData | null; flash: F }) {
   const [busy, setBusy] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [uploadMessage, setUploadMessage] = useState('');
   const library = kind === "video" ? pickers?.videos ?? [] : pickers?.images ?? [];
   const upload = async (file: File) => {
     const okTypes = kind === "video" ? ["video/mp4", "video/webm"] : ["image/jpeg", "image/png", "image/webp", "image/avif"];
-    if (!okTypes.includes(file.type)) { flash(kind === "video" ? "فقط ویدیوی MP4/WebM" : "فقط تصویر JPG/PNG/WebP/AVIF"); return; }
+    setUploadError(''); setUploadMessage('');
+    if (!okTypes.includes(file.type)) { setUploadError(kind === "video" ? "فقط ویدیوی MP4/WebM مجاز است." : "فقط تصویر JPG/PNG/WebP/AVIF مجاز است."); return; }
+    if (file.size === 0 || file.size > 10 * 1024 * 1024) { setUploadError('حجم فایل باید بین ۱ بایت تا ۱۰ مگابایت باشد.'); return; }
     setBusy(true);
     try {
       const uploaded = await filesApi.upload(file);
       const asset = await studioApi.createAsset({ fileId: uploaded.id, title: file.name.replace(/\.[a-z0-9]+$/i, "").slice(0, 150) || "رسانه", assetType: kind === "video" ? "video" : "image", folder: "sections" });
-      onChange(asset.url); resetPickerCache(); flash("رسانه بارگذاری و در کتابخانه ثبت شد (پردازش نسخه‌های واکنش‌گرا در صف است)");
-    } catch (e) { flash(e instanceof Error ? e.message : "بارگذاری ناموفق بود"); }
+      onChange(asset.url); resetPickerCache(); setUploadMessage('فایل بارگذاری شد و در پیش‌نویس قرار گرفت.'); flash("رسانه بارگذاری و در کتابخانه ثبت شد (پردازش نسخه‌های واکنش‌گرا در صف است)");
+    } catch (e) { setUploadError(e instanceof Error ? e.message : "بارگذاری ناموفق بود"); }
     finally { setBusy(false); }
   };
   return (
@@ -299,6 +303,10 @@ export function MediaInput({ label, kind, value, onChange, pickers, flash }: { l
             <input type="file" className="sr-only" accept={kind === "video" ? "video/mp4,video/webm" : "image/jpeg,image/png,image/webp,image/avif"} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
           </label>
         </div>
+        <div onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{e.preventDefault();const file=e.dataTransfer.files[0];if(file&&!busy)void upload(file);}} className="rounded-lg border border-dashed border-[var(--kv-line)] px-3 py-2 text-center text-xs text-[var(--kv-muted)]">یا فایل {kind==='video'?'ویدیو':'تصویر'} را اینجا رها کنید</div>
+        {busy&&<p role="status" className="text-xs text-[var(--kv-muted)]">در حال بارگذاری فایل…</p>}
+        {uploadError&&<p role="alert" className="text-xs leading-5 text-[var(--kv-danger)]">{uploadError}</p>}
+        {uploadMessage&&!busy&&<p role="status" className="text-xs leading-5 text-[var(--kv-success)]">{uploadMessage}</p>}
         <Input value={value} onChange={onChange} placeholder="یا نشانی https:// / ‎/api/v1/media/…" />
         {value && kind === "media" && /^(https:\/\/|\/api\/v1\/media\/)/.test(value) && <img src={mediaSrc(value)} alt="" className="h-20 w-32 rounded-[8px] object-cover" />}
       </div>

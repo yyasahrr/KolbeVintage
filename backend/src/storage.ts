@@ -8,8 +8,8 @@ import { join, extname } from 'node:path';
 export type StoragePutResult = { storageKey: string; sha256: string };
 
 const ALLOWED_MIME = new Set([
-  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
-  'application/pdf', 'video/mp4', 'text/plain',
+  'image/png', 'image/jpeg', 'image/webp', 'image/avif', 'image/gif',
+  'application/pdf', 'video/mp4', 'video/webm', 'text/plain',
 ]);
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 

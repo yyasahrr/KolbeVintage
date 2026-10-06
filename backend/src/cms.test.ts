@@ -26,14 +26,14 @@ test('CMS page builder, palettes and support widget are fully manageable', { ski
       payload: { identity: `m-admin-${suffix}@example.test`, password: 'AdminPassword123456!' } });
     const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
 
-    // Component registry is shared and extensible (item 18).
+    // Component definitions are release-owned; admins can use registered instances.
     const components = await app.inject({ method: 'GET', url: '/api/v1/site/components' });
     assert.ok(components.json().items.length >= 10);
     const custom = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/components', headers, payload: {
       code: `lookbook_${suffix.replace(/-/g, '')}`, title: 'لوک‌بوک فصل', componentType: 'custom',
       fieldSchema: { image: 'text', caption: 'textarea' },
     } });
-    assert.equal(custom.statusCode, 201, custom.body);
+    assert.equal(custom.statusCode, 400, custom.body);
 
     // Page builder with sections and drag-drop ordering (items 18-19).
     const page = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/pages', headers, payload: {

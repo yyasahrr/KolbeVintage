@@ -28,7 +28,7 @@ function useViewEvent(pageCode: string | undefined, section: PageSection) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
+    if (!el || typeof IntersectionObserver === "undefined" || new URLSearchParams(window.location.search).has("kvPreview")) return;
     const io = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) { siteApi.event({ eventType: "component.view", pageCode, sectionId: section.id, componentCode: section.component_code }); io.disconnect(); }
     }, { threshold: 0.35 });
@@ -54,7 +54,7 @@ function ProductGrid({ products, columns = 4, onOpen, onQuickAdd, pageCode, empt
 
 const CD_TONE: Record<string, string> = { terra: "bg-[#A34E2E] text-white", navy: "bg-[#1B2A4A] text-[#F5EFE3]", dark: "bg-[#0B0F17] text-white", light: "bg-[var(--kv-surface)] text-[var(--kv-ink)] border border-[var(--kv-line)]" };
 const CD_RADIUS: Record<string, string> = { none: "rounded-none", sm: "rounded-[10px]", md: "rounded-[16px]", lg: "rounded-[20px]", xl: "rounded-[28px]" };
-type CountdownOpts = { layout?: string; tone?: string; background?: string; foreground?: string; radius?: string; units?: { d: boolean; h: boolean; m: boolean; s: boolean } };
+type CountdownOpts = { layout?: string; tone?: string; background?: string; foreground?: string; radius?: string; fontFamily?: string; units?: { d: boolean; h: boolean; m: boolean; s: boolean } };
 /** Countdown (Req 218-221): manual date or bound to a campaign; configurable units, layout, tone and colours. Hides itself at zero. */
 function Countdown({ endsAt, title, tone, cta, onCta, opts = {} }: { endsAt?: string | null; title: string; tone: string; cta?: string; onCta?: () => void; opts?: CountdownOpts }) {
   const [now, setNow] = useState(Date.now());
@@ -73,7 +73,7 @@ function Countdown({ endsAt, title, tone, cta, onCta, opts = {} }: { endsAt?: st
     u.s && cell(u.m ? secs % 60 : secs, "ثانیه"),
   ].filter(Boolean);
   const layout = opts.layout ?? "inline";
-  const style = { ...(opts.background ? { background: opts.background } : {}), ...(opts.foreground ? { color: opts.foreground } : {}) };
+  const style = { ...(opts.background ? { background: opts.background } : {}), ...(opts.foreground ? { color: opts.foreground } : {}), ...(opts.fontFamily === 'mono' ? { fontFamily: 'ui-monospace, monospace' } : {}), ...(opts.fontFamily === 'display' ? { fontFamily: 'var(--font-display)' } : {}) };
   return (
     <section style={style} className={cn("gap-5 p-6 md:p-8", CD_TONE[opts.tone ?? tone] ?? CD_TONE.terra, CD_RADIUS[opts.radius ?? "lg"],
       layout === "stacked" ? "flex flex-col items-center text-center" : layout === "split" ? "grid items-center md:grid-cols-2" : "flex flex-wrap items-center justify-between")}>
@@ -132,7 +132,7 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
   const st = (section.style_overrides ?? {}) as Record<string, string | number | undefined>;
   const styleAttr = (k: string) => (st[k] && st[k] !== "inherit" && st[k] !== "auto" ? String(st[k]) : undefined);
   const wrap = (node: ReactNode) => (
-    <div ref={ref} data-component={section.component_code} data-variant={section.variant || undefined} data-kv-section=""
+    <div ref={ref} data-component={section.component_code} data-cms-section-id={section.id} data-variant={section.variant || undefined} data-kv-section=""
       data-kv-bg={styleAttr("background")} data-kv-fg={styleAttr("foreground")} data-kv-border={styleAttr("border") === "none" ? undefined : styleAttr("border")}
       data-kv-radius={styleAttr("radius")} data-kv-shadow={styleAttr("shadow") === "none" ? undefined : styleAttr("shadow")} data-kv-pad={styleAttr("padding") === "none" ? undefined : styleAttr("padding")}
       data-kv-gap={styleAttr("gap")} data-kv-width={styleAttr("width")} data-kv-minh={styleAttr("minHeight")} data-kv-type={styleAttr("typeScale")}
@@ -159,7 +159,7 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
       const endsAt = p.mode === "manual" ? str(p.targetDate ?? p.endsAt) : (r.campaign?.ends_at ?? str(p.targetDate ?? p.endsAt));
       const units = { d: p.showDays !== false, h: p.showHours !== false, m: p.showMinutes !== false, s: p.showSeconds !== false };
       return wrap(<Countdown endsAt={endsAt} title={str(p.title, section.title)} tone={str(p.tone, "terra")} cta={str(p.cta) || undefined} onCta={cta(str(p.cta), str(p.target, "shop"), "campaign.click")}
-        opts={{ layout: str(p.layout, "inline"), tone: str(p.tone, "terra"), background: str(p.background) || undefined, foreground: str(p.foreground) || undefined, radius: str(p.radius, "lg"), units }} />);
+        opts={{ layout: str(p.layout, "inline"), tone: str(p.tone, "terra"), background: str(p.background) || undefined, foreground: str(p.foreground) || undefined, fontFamily: str(p.fontFamily, "site"), radius: str(p.radius, "lg"), units }} />);
     }
     case "recommendation_section": {
       const rec = r.recommendation;
@@ -242,8 +242,8 @@ export function CmsSection({ section, pageCode, onNav, onOpenProduct, onQuickAdd
       return wrap(<section className="flex flex-wrap items-center justify-center gap-x-10 gap-y-3 rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-6 py-5 text-[13px] font-bold text-[var(--kv-muted)]">{(str(p.items) ? str(p.items).split(/[،,\n]/) : ["ضمانت اصالت", "ارسال سریع", "برگشت ۷ روزه", "پرداخت چهارقسطه"]).map((x) => <span key={x} className="inline-flex items-center gap-1.5"><BadgeCheck size={15} className="text-[var(--kv-accent)]" />{x.trim()}</span>)}</section>);
     case "faq":
       return wrap(<section className="rounded-[20px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-6 md:p-8"><h2 className="kv-editorial-title text-[22px]">{str(p.title, section.title)}</h2><div className="mt-3 divide-y divide-[var(--kv-line)]">{lines(p.items).map(([q, a], i) => <details key={i} className="group py-3"><summary className="cursor-pointer list-none text-[14px] font-bold">{q}</summary><p className="pt-2 text-[13.5px] leading-7 text-[var(--kv-muted)]">{a}</p></details>)}</div></section>);
-    case "spacer": return <div aria-hidden style={{ height: Number(p.heightPx ?? 48) }} />;
-    case "divider": return <div aria-hidden className="flex items-center gap-3 py-2"><span className="h-px flex-1 bg-[var(--kv-line)]" />{p.style === "ornament" && <span className="text-[var(--kv-accent)]">◆</span>}<span className="h-px flex-1 bg-[var(--kv-line)]" /></div>;
+    case "spacer": return wrap(<div aria-hidden style={{ height: Number(p.heightPx ?? 48) }} />);
+    case "divider": return wrap(<div aria-hidden className="flex items-center gap-3 py-2"><span className="h-px flex-1 bg-[var(--kv-line)]" />{p.style === "ornament" && <span className="text-[var(--kv-accent)]">◆</span>}<span className="h-px flex-1 bg-[var(--kv-line)]" /></div>);
     default:
       if (section.composition && Array.isArray(section.composition)) return wrap(<Composable nodes={section.composition as ComposableNode[]} payload={p} product={products[0]} onNav={onNav} />);
       return null;
@@ -263,14 +263,14 @@ export function CategoryCard({ category: c, fallbackTemplate = "editorial", onCl
   const accentBg = cs.accent === "accent" ? "bg-[var(--kv-accent)] text-white" : cs.accent === "primary" ? "bg-[var(--kv-action)] text-[var(--kv-bg)]" : "";
   return (
     <button onClick={onClick} data-category={c.slug} data-card-template={tpl}
-      className={cn("group relative w-full overflow-hidden text-right", CAT_RADIUS[cs.radius ?? "lg"], tpl === "minimal" ? "border border-[var(--kv-line)] p-5" : "border border-[var(--kv-line)] bg-[var(--kv-surface)]", tpl === "horizontal" && "flex items-stretch", accentBg, cs.textAlign === "center" && "text-center")}>
+      className={cn("group relative w-full text-right focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--kv-accent)]", tpl === "circle" ? "text-center" : "overflow-hidden", tpl === "circle" ? "rounded-[20px] p-2" : CAT_RADIUS[cs.radius ?? "lg"], tpl === "minimal" ? "border border-[var(--kv-line)] p-5" : tpl === "circle" ? "" : "border border-[var(--kv-line)] bg-[var(--kv-surface)]", tpl === "horizontal" && "flex items-stretch", accentBg, cs.textAlign === "center" && "text-center")}>
       {tpl !== "minimal" && (
-        <div className={cn("relative bg-[var(--kv-surface-2)]", tpl === "horizontal" ? "w-2/5 shrink-0" : "")} style={tpl === "horizontal" ? undefined : { aspectRatio: cs.aspect ?? "4/3" }}>
+        <div className={cn("relative bg-[var(--kv-surface-2)]", tpl === "horizontal" ? "w-2/5 shrink-0" : "", tpl === "circle" && "aspect-square overflow-hidden rounded-full border border-[var(--kv-line)]")} style={tpl === "horizontal" || tpl === "circle" ? undefined : { aspectRatio: cs.aspect ?? "4/3" }}>
           {img && <ResponsiveImg src={img} alt={c.name} sizes="(min-width: 768px) 33vw, 50vw" className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />}
           {overlaid && (cs.overlay ?? 30) > 0 && <div className="absolute inset-0" style={{ background: `linear-gradient(to top, rgba(14,21,39,${(cs.overlay ?? 30) / 100}), transparent 70%)` }} />}
         </div>
       )}
-      <div className={cn(tpl === "glass" ? "absolute inset-x-2 bottom-2 rounded-[12px] bg-[var(--kv-glass)] p-3 backdrop-blur-md" : overlaid && tpl !== "glass" ? "absolute inset-x-0 bottom-0 p-4 text-white" : "p-4", tpl === "horizontal" && "flex flex-col justify-center")}>
+      <div className={cn(tpl === "glass" ? "absolute inset-x-2 bottom-2 rounded-[12px] bg-[var(--kv-glass)] p-3 backdrop-blur-md" : overlaid && tpl !== "glass" ? "absolute inset-x-0 bottom-0 p-4 text-white" : "p-4", tpl === "circle" && "px-1 py-3", tpl === "horizontal" && "flex flex-col justify-center")}>
         <p className="text-[14.5px] font-extrabold">{c.name}</p>
         {cs.showDescription !== false && c.description && <p className={cn("mt-1 line-clamp-2 text-[12px]", overlaid && tpl !== "glass" ? "text-white/85" : "text-[var(--kv-muted)]")}>{c.description}</p>}
         {typeof c.product_count === "number" && <p className="mt-1 text-[11px] opacity-75">{fa(c.product_count)} محصول</p>}
