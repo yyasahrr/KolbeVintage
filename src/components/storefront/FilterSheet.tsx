@@ -112,7 +112,7 @@ export default function FilterSheet({ open, onClose, categories, category, onCat
 
       {brands.length > 0 && (
         <section className="mt-6">
-          <p className="mb-2 text-[12.5px] font-bold text-[var(--kvaf-ink)]">برند / تأمین‌کننده</p>
+          <p className="mb-2 text-[12.5px] font-bold text-[var(--kvaf-ink)]">برند</p>
           <div className="flex flex-wrap gap-2">
             {brands.map((brand) => (
               <button

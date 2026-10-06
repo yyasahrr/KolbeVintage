@@ -121,10 +121,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const filtered = useMemo(() => {
     let list = [...retailProducts];
     if (cat !== "همه") list = list.filter((p) => p.category === cat);
-    if (q.trim()) list = list.filter((p) => p.name.includes(q.trim()) || p.supplier.includes(q.trim()));
+    /* Retail search matches customer-facing fields only. `p.supplier` is
+       operational data and must never be searchable here: matching it turns the
+       search box into a supplier-enumeration oracle. */
+    if (q.trim()) list = list.filter((p) => p.name.includes(q.trim()) || p.brand.includes(q.trim()));
     if (facets.colors.length) list = list.filter((p) => p.colors.some((c) => facets.colors.includes(c.name)));
     if (facets.sizes.length) list = list.filter((p) => sizesOf(p).some((size) => facets.sizes.includes(size)));
-    if (facets.brands.length) list = list.filter((p) => facets.brands.includes(p.supplier));
+    if (facets.brands.length) list = list.filter((p) => facets.brands.includes(p.brand));
     if (facets.maxPrice !== null) list = list.filter((p) => p.retailPrice <= (facets.maxPrice as number));
     if (facets.inStock) list = list.filter((p) => p.stock > 0);
     if (sort === "ارزان‌ترین") list.sort((a, b) => a.retailPrice - b.retailPrice);
@@ -140,7 +143,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return Array.from(seen, ([name, hex]) => ({ name, hex }));
   }, [retailProducts]);
   const sizeOptions = useMemo(() => Array.from(new Set(retailProducts.flatMap((p) => sizesOf(p)))), [retailProducts]);
-  const brandOptions = useMemo(() => Array.from(new Set(retailProducts.map((p) => p.supplier))), [retailProducts]);
+  /* Brand is customer-facing; supplier is not. The facet used to be built from
+     `p.supplier`, which put supplier names in the filter panel. */
+  const brandOptions = useMemo(() => Array.from(new Set(retailProducts.map((p) => p.brand))), [retailProducts]);
   const priceBounds = useMemo(() => {
     const prices = retailProducts.map((p) => p.retailPrice).filter((value) => value > 0);
     return prices.length ? { min: Math.min(...prices), max: Math.max(...prices) } : { min: 0, max: 0 };

@@ -98,7 +98,6 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
     { term: "شناسه کالا", value: p.sku },
     { term: "دسته‌بندی", value: p.category },
     { term: "برند", value: p.brand },
-    { term: "تأمین‌کننده", value: p.supplier },
     ...(p.badge ? [{ term: "برچسب کالا", value: p.badge }] : []),
     ...(p.soldNote ? [{ term: "یادداشت فروشنده", value: p.soldNote }] : []),
     { term: "وضعیت موجودی", value: soldOut ? "ناموجود" : "موجود" },

@@ -8,12 +8,25 @@ import { cn } from "../../utils/cn";
 const SLIDE_MS = 6000;
 
 /**
+ * Presentation-only focal points for the campaign photograph.
+ *
+ * These are **not** part of the CMS `HeroConfig` contract and are not persisted
+ * anywhere: they exist so a hero can be cropped deliberately per breakpoint
+ * without touching the CMS or the backend. When neither is supplied the
+ * stylesheet's tokens win (`--kvaf-hero-focus-mobile` / `--kvaf-hero-focus`),
+ * which are already portrait-safe on handheld layouts.
+ */
+export type HeroFocalPoint = { mobilePosition?: string; desktopPosition?: string };
+
+type HeroWithFocalPoint = HeroConfig & HeroFocalPoint;
+
+/**
  * Full-viewport editorial hero — a presentation adapter over the existing CMS
  * `HeroConfig` contract. It reads the same fields the CMS renderer does
  * (title/subtitle/eyebrow/CTAs/media/overlay/slides/video) and composes them as
  * one full-bleed fashion frame instead of a card.
  */
-export default function EditorialHero({ h, onNav }: { h: HeroConfig; onNav: (target: NavTarget) => void }) {
+export default function EditorialHero({ h, onNav }: { h: HeroWithFocalPoint; onNav: (target: NavTarget) => void }) {
   const reduced = usePrefersReducedMotion();
   const [slide, setSlide] = useState(0);
   const [playing, setPlaying] = useState(true);
@@ -37,12 +50,18 @@ export default function EditorialHero({ h, onNav }: { h: HeroConfig; onNav: (tar
   const overlayOpacity = Math.min(0.9, Math.max(0.15, h.overlay / 100 + 0.2));
   const centered = h.align === "center";
 
+  /* only forwarded when a campaign actually supplies one, so the stylesheet
+     keeps ownership of the default crop */
+  const focal = h as HeroWithFocalPoint;
+
   return (
     <section
       className="kv-sf-hero"
       style={{
         "--kvaf-hero-y": reduced ? 0 : drift * 0.16,
         "--kvaf-hero-scale": reduced ? 1 : scale,
+        ...(focal.mobilePosition ? { "--kvaf-hero-focus-mobile": focal.mobilePosition } : null),
+        ...(focal.desktopPosition ? { "--kvaf-hero-focus": focal.desktopPosition } : null),
       } as CSSProperties}
       aria-roledescription={isCarousel ? "اسلایدر" : undefined}
       aria-label={isCarousel ? "اسلایدهای کمپین" : undefined}
@@ -73,7 +92,7 @@ export default function EditorialHero({ h, onNav }: { h: HeroConfig; onNav: (tar
         <p className="kvaf-body mt-5 max-w-[46ch] text-[15px] text-[rgba(247,244,237,0.82)] [text-wrap:pretty]">
           {subtitle}
         </p>
-        <div className={cn("mt-8 flex flex-wrap gap-3", centered && "justify-center")}>
+        <div className={cn("kv-sf-hero-actions", centered && "justify-center")}>
           {h.ctaLabel && (
             <button onClick={() => onNav(h.ctaTarget)} data-variant="solid" className="kv-sf-hero-cta">
               {h.ctaLabel}<ArrowLeft size={17} />

@@ -823,8 +823,8 @@ harness outside the repository; `dist/` rebuilt before every run.
 | Check | Result |
 | --- | --- |
 | `tsc --noEmit` | 0 errors |
-| `vite build` | `dist/index.html` 954.7 kB (gzip 242.7 kB) |
-| DOM suite — desktop + mobile flows, PDP, support semantics, footer honesty, demo gating, z-index and band audits | **132 / 132** |
+| `vite build` | `dist/index.html` 958.2 kB (gzip 243.2 kB) |
+| DOM suite — desktop + mobile flows, PDP, support semantics, footer honesty, demo gating, privacy regressions, z-index and band audits | **152 / 152** |
 | worst-case fixtures (13 hostile products × card + PDP) | **72 / 72** |
 | unit checks — recommendations, media integrity, line thumbnails | **118 / 118** |
 | overflow, 10 widths × 7 surfaces | scrollWidth == clientWidth, 0 offenders |
@@ -837,3 +837,108 @@ Harness: `.smoke/` (`entry.tsx`, `break.tsx`, `units.tsx`, `build.mjs`, `dom.mjs
 `SMOKE_NAME=app SMOKE_ENTRY=.smoke/entry.tsx node .smoke/build.mjs` — then run
 `node .smoke/run.mjs`. Omitting `SMOKE_ENTRY` silently builds the default entry for
 all three names, which reads as a passing run against the wrong code.
+
+---
+
+# Phase 4.2 — retail privacy and the mobile hero
+
+Two independent jobs: stop the retail storefront leaking supplier identity, and
+make the mobile homepage a composed frame instead of a squeezed desktop one.
+Desktop presentation is untouched.
+
+## Retail supplier privacy (P0)
+
+`Product.supplier` / `supplierId` are operational data. They are still on the
+product record — the admin console, the supplier centre, wholesale and the order
+components read them exactly as before — but **nothing shopper-facing renders
+them any more**:
+
+| Surface | Before | After |
+| --- | --- | --- |
+| Filter panel | `برند / تأمین‌کننده`, built from `p.supplier` | `برند`, built from `p.brand` |
+| Listing search | matched `p.name` **or `p.supplier`** | matched `p.name` or `p.brand` |
+| Search overlay | matched supplier, byline `category · supplier` | matches name/brand/category, byline `category · brand` |
+| PDP specifications | row `تأمین‌کننده` | removed (rows are built from real product fields only) |
+| Product cards | never showed it | unchanged, verified by test |
+| Recommendation metadata | never showed it, verified | unchanged |
+
+Two of those were worse than a leak: the *brand* filter was filtering on
+`p.supplier`, and the search boxes matched supplier names — so typing a supplier
+returned that supplier's entire range, which is an enumeration oracle, not a
+search box. Brand and supplier happen to be distinct fields today (`Kolbe` vs
+`کلبه وینتیج`), so the fix was a real split rather than a rename.
+
+Wholesale masking is explicitly **unchanged**: `portals/vip.tsx` still renders
+`SupplierChip` with `p.supplier` for approved buyers, and a test fails if that
+attribution is altered or if the storefront layer starts importing the supplier
+display helper.
+
+## The mobile hero
+
+`min-height: 96svh - announcement` measured 689px on an 844px viewport, so the
+next section began **41px above the fold** — the first thing a phone visitor saw
+below the CTAs was somebody else's content. The hero now uses **`100svh`** with no
+fixed pixel height, and the announcement strip and floating header are fixed
+overlays, so covering the full small viewport *is* "viewport minus announcement"
+(verified: 844 = 844, 800 = 800, 932 = 932, 1024 = 1024, 1180 = 1180). `svh`
+rather than `dvh` on purpose: the frame must not resize while mobile browser
+chrome collapses mid-scroll.
+
+The bottom of the hero now accounts for the fixed mobile navigation
+(`--kvaf-bottomnav-space` + `env(safe-area-inset-bottom)`), so hero content can
+never sit under it — CTA bottoms land 18px above the nav at every handheld width.
+
+Mobile composition, all below the 1024px breakpoint:
+
+* headline `clamp(1.9rem, 8.6vw, 2.5rem)` (was a flat 41.6px) — always **2 lines**
+  at 360/390/430 instead of dominating the frame;
+* paragraph constrained to `36ch` (was an unconstrained 388px measure);
+* actions become a **column** below 640px, so the primary CTA is full-width
+  (244–314px) and the secondary sits underneath it rather than competing beside it;
+* the actions block reserves the support launcher's lane
+  (`--kvaf-support-lane`, 5.25rem on narrow phones), so a floating utility can
+  never be mistaken for part of the campaign's call to action;
+* tablet (768–1023px) gets its own scale — `clamp(2.6rem, 5.4vw, 3.6rem)`,
+  a `44ch` measure and side-by-side actions — rather than inheriting the phone
+  composition.
+
+Campaign photography keeps `object-fit: cover` and gains a responsive focal
+point: `--kvaf-hero-focus-mobile` (default `50% 32%`, portrait-safe) and
+`--kvaf-hero-focus` (default `50% 45%`) on desktop. A hero may override either
+through the presentation-only `HeroFocalPoint` fields (`mobilePosition` /
+`desktopPosition`); they are not part of `HeroConfig` and are not persisted
+anywhere — when neither is supplied the stylesheet's defaults win, so no CMS or
+backend change is implied.
+
+One deliberate exception to "nothing after the hero competes": at 1440 the
+approved desktop frame still ends at 96svh, leaving its 71px peek. That is the
+frozen desktop language, and the desktop hero is unchanged.
+
+## Verification record (Phase 4.2)
+
+| Check | Result |
+| --- | --- |
+| `tsc --noEmit` | 0 errors |
+| `vite build` | `dist/index.html` 958.2 kB (gzip 243.2 kB) |
+| DOM suite | **152 / 152** (20 new privacy checks) |
+| worst-case fixtures | **72 / 72** |
+| unit checks | **118 / 118** |
+| browser acceptance pass (hero geometry, support, filters, PDP, desktop, tablet) | **54 / 54** |
+| overflow, 4 widths × 6 surfaces | 24 / 24 clean |
+| desktop identity | hero bottom 829 (expected 829), headline 84px, bar 1180px, nav visible, actions in a row |
+
+Measured hero geometry (Chromium):
+
+| Width | Hero bottom | Next section top | First CTA | CTA bottom | Support | Bottom nav |
+| --- | --- | --- | --- | --- | --- | --- |
+| 360×800 | 800 | 800 (hidden) | 244px wide | 704 | y 572 | y 722 |
+| 390×844 | 844 | 844 (hidden) | 274px wide | 748 | y 616 | y 766 |
+| 430×932 | 932 | 932 (hidden) | 314px wide | 836 | y 704 | y 854 |
+| 768×1024 | 1024 | 1024 (hidden) | 197px + 119px | 928 | y 796 | y 946 |
+| 820×1180 | 1180 | 1180 (hidden) | 197px + 119px | 1084 | y 952 | y 1102 |
+| 1440×900 | 829 | 829 (desktop peek) | 197px + 119px | 765 | y 816 | — |
+
+The narrow-phone support launcher becomes a 52px icon pill (same height, same
+single 20px icon slot, same cross-fade, caption hidden below 640px). The
+launcher's own geometry is untouched: opening still moves it by **0.00px**, and
+the open panel clears the hero CTAs.

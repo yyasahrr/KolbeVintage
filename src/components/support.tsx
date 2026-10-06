@@ -303,7 +303,10 @@ export function FloatingSupport({ onTicket, lift = false }: { onTicket: () => vo
             <Headset size={19} data-slot="closed" />
             <X size={19} data-slot="open" />
           </span>
-          <span>پشتیبانی</span>
+          {/* Decorative here: the button's aria-label is the accessible name, and
+              on narrow phones this caption is hidden so the launcher becomes a
+              compact pill that cannot read as part of the hero's call to action. */}
+          <span className="kv-sf-support-caption" aria-hidden="true">پشتیبانی</span>
         </button>
       </div>
     </div>

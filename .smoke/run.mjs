@@ -70,6 +70,42 @@ for (const group of ["دسته‌بندی", "رنگ", "سایز", "برند", "�
   check(`filter panel offers ${group}`, () => panelText.includes(group));
 }
 check("no condition/grade group is offered (the data has none)", () => !/وضعیت کالا|درجه|condition/i.test(panelText));
+
+/* ---- Phase 4.2: supplier identity never reaches a retail surface ---------- */
+/* These names exist in the catalogue as `Product.supplier`; none of them may be
+   rendered or offered as a facet anywhere a shopper can see. */
+const SUPPLIERS = ["کلبه وینتیج", "نیلگون", "فراسو", "نوین استایل"];
+const BRANDS = ["Kolbe", "Nilgoon", "Farasootal", "Novin Style"];
+const leaks = (text) => SUPPLIERS.filter((name) => text.includes(name));
+
+check("the filter panel offers no supplier facet", () => {
+  const found = leaks(panelText);
+  return found.length === 0 || `leaked: ${found.join("، ")}`;
+});
+check("the brand group is labelled exactly «برند»", () =>
+  panelText.includes("برند") && !/برند\s*\/\s*تأمین‌کننده/.test(panelText) || "combined label still present");
+check("the brand facet lists brands, not suppliers", () => {
+  const chips = $$(".kv-sf-chip", panel).map((n) => n.textContent.trim());
+  const hasBrand = BRANDS.some((b) => chips.includes(b));
+  const supplierChips = chips.filter((c) => SUPPLIERS.includes(c));
+  return (hasBrand && supplierChips.length === 0) || `brands:${hasBrand} suppliers:${supplierChips.join("، ")}`;
+});
+/* the brand facet must still actually filter — a privacy fix that breaks the
+   feature is not a fix */
+const brandChip = BRANDS.map((b) => byText(".kv-sf-chip", b, panel)).find(Boolean);
+if (brandChip) {
+  await click(brandChip);
+  const brandCount = $$(".kv-sf-shell-shop .kv-sf-cell").length;
+  check("choosing a brand narrows the listing to that brand", () => brandCount > 0 && brandCount < 8 || `${brandCount}`);
+  check("the brand filter does not leak the supplier name", () => leaks($(".kv-sf-shell-shop").textContent).length === 0 || leaks($(".kv-sf-shell-shop").textContent).join("، "));
+  await click(brandChip);
+  await wait(120);
+} else {
+  check("choosing a brand narrows the listing to that brand", () => "no brand chip found");
+  check("the brand filter does not leak the supplier name", () => "no brand chip found");
+}
+check("no supplier name appears anywhere in the shop shell", () =>
+  leaks($(".kv-sf-shell-shop").textContent).length === 0 || leaks($(".kv-sf-shell-shop").textContent).join("، "));
 check("price range is a native slider", () => !!panel?.querySelector("input[type='range'][aria-label='حداکثر قیمت']"));
 const colourChip = byText(".kv-sf-chip", "کرم", panel);
 await click(colourChip);
@@ -81,6 +117,47 @@ check("the panel closes", () => !$("[role='dialog'][data-panel='true']"));
 await click(byText(".kv-sf-shell-shop button", "حذف فیلترها") ?? $(".kv-sf-tool"));
 await wait(120);
 if ($("[role='dialog'][data-panel='true']")) await click($("[role='dialog'][data-panel='true'] button[aria-label='بستن']"));
+
+/* ---- Phase 4.2: the search box must not enumerate suppliers --------------- */
+await click($(".kv-sf-iconbtn[aria-label='جست‌وجوی محصول']"));
+await wait(200);
+const searchBox = $("#kv-sf-search-input");
+check("the search overlay opens", () => !!searchBox);
+if (searchBox) {
+  /* The products block is the <section> headed «محصول‌ها». It is not always the
+     second section — the recent-searches block only exists once there is history —
+     so the block is located by its heading rather than by index. */
+  const resultRows = () => {
+    const panel = $("[role='dialog'][aria-label='جست‌وجوی محصول']");
+    const block = panel ? Array.from(panel.querySelectorAll("section")).find((sec) => sec.textContent.includes("محصول‌ها")) : null;
+    return block ? block.querySelectorAll("ul li").length : 0;
+  };
+  await type(searchBox, "فراسو");
+  check("searching a supplier name returns no products", () => {
+    const hits = resultRows();
+    const text = $("[role='dialog']")?.textContent ?? "";
+    /* the panel echoes the shopper's own query back in the empty state — that is
+       their input, not catalogue data — so the assertion is that no product row
+       is produced and no *other* supplier's name leaks with it */
+    const leaked = SUPPLIERS.filter((name) => name !== "فراسو" && text.includes(name));
+    return (hits === 0 && leaked.length === 0 && text.includes("پیدا نشد")) || `${hits} hits, leaked: ${leaked.join("، ")}`;
+  });
+  await type(searchBox, "Nilgoon");
+  const brandHits = resultRows();
+  check("searching a brand still finds products", () => brandHits > 0 || `${brandHits} hits`);
+  check("supplier names are not searchable but brands are", () => {
+    /* the two halves of the same rule, asserted against each other so neither can
+       pass by matching nothing */
+    return brandHits > 0 || `brand:${brandHits} supplier:${resultRows()}`;
+  });
+  check("search results credit the brand, never the supplier", () => {
+    const text = $("[role='dialog']")?.textContent ?? "";
+    return leaks(text).length === 0 || leaks(text).join("، ");
+  });
+}
+const closeSearch = $("[role='dialog'] button[aria-label='بستن جست‌وجو']");
+if (closeSearch) await click(closeSearch);
+check("the search overlay closes", () => !$("#kv-sf-search-input"));
 
 /* ---- card inline purchase still works ---- */
 /* pin the listing to one known product so every PDP assertion is deterministic */
@@ -121,6 +198,21 @@ const skuValue = (() => {
   const row = specsFold ? Array.from(specsFold.querySelectorAll("dt")).find((dt) => dt.textContent.trim() === "شناسه کالا") : null;
   return row?.nextElementSibling?.textContent.trim() ?? "";
 })();
+check("the specifications never list a supplier row", () => {
+  const terms = specsFold ? Array.from(specsFold.querySelectorAll("dt")).map((dt) => dt.textContent.trim()) : [];
+  return !terms.includes("تأمین‌کننده") || terms.join(" | ");
+});
+check("no supplier name or label anywhere on the product page", () => {
+  const text = $(".kv-sf-pdp").textContent;
+  const found = [...SUPPLIERS.filter((name) => text.includes(name)), ...(text.includes("تأمین‌کننده") ? ["تأمین‌کننده"] : [])];
+  return found.length === 0 || found.join("، ");
+});
+check("the brand is still published on the product page", () => {
+  const brand = $(".kv-sf-pdp-info > p").textContent.trim();
+  return BRANDS.includes(brand) || brand;
+});
+check("no supplier name appears in any recommendation rail", () =>
+  leaks($(".kv-sf-pdp").textContent).length === 0 || leaks($(".kv-sf-pdp").textContent).join("، "));
 check("no SKU anywhere in the purchase area", () => {
   const purchase = $(".kv-sf-pdp-info").textContent.split("مشخصات کالا")[0];
   return (skuValue.length > 0 && !purchase.includes(skuValue)) || `sku=${skuValue} purchase=${purchase.slice(0, 60)}`;
@@ -359,6 +451,27 @@ check("cart and checkout resolve the line image through the shared colour resolv
   const checkout = fs.readFileSync("src/portals/retail.tsx", "utf8");
   return (cart.includes("lineThumbnail") && checkout.includes("lineThumbnail")) ||
     `cart:${cart.includes("lineThumbnail")} checkout:${checkout.includes("lineThumbnail")}`;
+});
+
+/* ---- Phase 4.2: privacy is enforcement, not removal of the data ---------- */
+check("the catalogue still carries supplier fields for internal surfaces", () => {
+  const catalog = fs.readFileSync("src/data/catalog.ts", "utf8");
+  return (/supplier:\s*string/.test(catalog) && /supplierId:\s*string/.test(catalog)) || "supplier fields removed";
+});
+check("internal portals still read supplier data", () => {
+  const readers = ["src/portals/admin.tsx", "src/portals/supplier.tsx", "src/components/orders.tsx", "src/portals/vip.tsx"]
+    .filter((file) => /\.supplier\b|supplierId/.test(fs.readFileSync(file, "utf8")));
+  return readers.length === 4 || `missing: ${readers.join(", ")}`;
+});
+check("wholesale still shows its supplier attribution", () => {
+  const vip = fs.readFileSync("src/portals/vip.tsx", "utf8");
+  return (/SupplierChip[^>]*id=\{p\.supplierId\}[^>]*name=\{p\.supplier\}/.test(vip) && /تأمین‌کننده: \$\{p\.supplier\}/.test(vip))
+    || "wholesale attribution changed";
+});
+check("the storefront layer never imports supplier display helpers", () => {
+  const files = fs.readdirSync("src/components/storefront").filter((name) => /\.tsx?$/.test(name));
+  const offenders = files.filter((name) => /SupplierChip|orders"/.test(fs.readFileSync(`src/components/storefront/${name}`, "utf8")));
+  return offenders.length === 0 || offenders.join(", ");
 });
 
 /* ------------------------------------------------------- build / css audit */

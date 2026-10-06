@@ -139,6 +139,11 @@
   --kvaf-z-sheet: 88;
   --kvaf-z-toast: 95;
 
+  /* The support launcher is fixed in the lower-left lane on handheld layouts.
+     Hero actions keep out of it so a floating utility never reads as part of the
+     campaign's call to action: 12px inset + the ~107px launcher + a 16px gap. */
+  --kvaf-support-lane: 0px;
+
   /* Mobile bottom bands, bottom of the viewport upwards (below 1024px):
        0 .. 76px   bottom navigation            (z 62)
       76 .. 80px   gap
@@ -312,6 +317,8 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .kv-sf-support > div { bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); }
 @media (max-width: 1023px) {
   .kv-sf-support > div { bottom: calc(var(--kvaf-bottomnav-space) + 12px); }
+  /* the launcher shares this lane; hero actions reserve it (see --kvaf-support-lane) */
+  .kv-storefront { --kvaf-support-lane: 9rem; }
 }
 
 /* ============================== HEADER ============================== */
@@ -465,9 +472,16 @@ html[data-surface="storefront"] body { background-color: transparent; }
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  min-height: calc(88svh - var(--kvaf-announce-h));
+  /* Both the announcement strip and the floating header are fixed overlays, so
+     the hero starts at the top of the document; covering the whole *small*
+     viewport (svh) is therefore the same as "viewport minus announcement". The
+     small viewport unit — not dvh — keeps the frame from resizing as mobile
+     browser chrome collapses mid-scroll. No fixed pixel height anywhere. */
+  min-height: 100svh;
   padding-top: calc(var(--kvaf-header-space) + 12px);
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 2.5rem);
+  /* clears the mobile bottom navigation (plus the home indicator) so no copy or
+     control ever sits underneath it */
+  padding-bottom: calc(var(--kvaf-bottomnav-space) + env(safe-area-inset-bottom, 0px) + 1.25rem);
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -475,7 +489,12 @@ html[data-surface="storefront"] body { background-color: transparent; }
   color: var(--kvaf-bone);
 }
 @media (min-width: 1024px) {
-  .kv-sf-hero { min-height: calc(96svh - var(--kvaf-announce-h)); padding-bottom: 4rem; }
+  /* approved desktop composition: an immersive frame that deliberately lets the
+     next section peek. Unchanged. */
+  .kv-sf-hero {
+    min-height: calc(96svh - var(--kvaf-announce-h));
+    padding-bottom: 4rem;
+  }
 }
 .kv-sf-hero-media {
   position: absolute;
@@ -485,7 +504,19 @@ html[data-surface="storefront"] body { background-color: transparent; }
   transform: translate3d(0, calc(var(--kvaf-hero-y, 0) * 1px), 0) scale(var(--kvaf-hero-scale, 1));
 }
 .kv-sf-hero-media img,
-.kv-sf-hero-media video { width: 100%; height: 100%; object-fit: cover; }
+.kv-sf-hero-media video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  /* Responsive focal point. A campaign may override either value per hero
+     (`hero.mobilePosition` / `hero.desktopPosition` become these properties);
+     otherwise the portrait-safe mobile default keeps a garment centred in the
+     tall crop instead of slicing it at the waist. */
+  object-position: var(--kvaf-hero-focus-mobile, 50% 32%);
+}
+@media (min-width: 1024px) {
+  .kv-sf-hero-media img,
+  .kv-sf-hero-media video { object-position: var(--kvaf-hero-focus, 50% 45%); }
+}
 .kv-sf-hero-scrim {
   position: absolute;
   inset: 0;
@@ -508,6 +539,39 @@ html[data-surface="storefront"] body { background-color: transparent; }
   color: rgba(247, 244, 237, 0.62);
 }
 @media (max-width: 1023px) { .kv-sf-hero-caption { display: none; } }
+/* ---- handheld composition (below the desktop breakpoint) ------------------- */
+.kv-sf-hero-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
+
+@media (max-width: 1023px) {
+  /* Fewer, smaller headline lines: the campaign title must not own the frame. */
+  .kv-sf-hero-copy h1 { font-size: clamp(1.9rem, 8.6vw, 2.5rem); }
+  /* A constrained measure reads as editorial copy instead of a full-bleed block. */
+  .kv-sf-hero-copy p.kvaf-body { max-width: 36ch; }
+  .kv-sf-hero-actions { max-width: calc(100% - var(--kvaf-support-lane)); }
+}
+
+@media (max-width: 640px) {
+  /* Two comfortable stacked buttons beat one cramped row: the primary keeps full
+     width and the secondary stays available but quieter underneath it. */
+  .kv-sf-hero-actions { flex-direction: column; align-items: stretch; }
+  .kv-sf-hero-actions .kv-sf-hero-cta { width: 100%; }
+
+  /* Narrow phones get the compact launcher: same 52px height, same single 20px
+     icon slot and the same open/close cross-fade — only the visible caption is
+     dropped, so the floating utility stops competing with the campaign copy and
+     the hero buttons regain the width the label was holding. */
+  .kv-sf-support-caption { display: none; }
+  .kv-sf-support-launch { justify-content: center; padding-inline: 0; width: 52px; }
+  /* the lane shrinks to match: inset + launcher + gap */
+  .kv-storefront { --kvaf-support-lane: 5.25rem; }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  /* Tablet is not a phone: larger title, wider measure, side-by-side actions. */
+  .kv-sf-hero-copy h1 { font-size: clamp(2.6rem, 5.4vw, 3.6rem); }
+  .kv-sf-hero-copy p.kvaf-body { max-width: 44ch; font-size: 1rem; }
+}
+
 .kv-sf-hero-cta {
   display: inline-flex;
   align-items: center;

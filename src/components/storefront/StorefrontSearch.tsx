@@ -4,7 +4,7 @@ import { fmtMoney, type Product } from "../../data/catalog";
 import { useFocusTrap, useScrollLock } from "./shared";
 
 /**
- * Storefront search over the live catalogue: products by name/brand/supplier and
+ * Storefront search over the live catalogue: products by name/brand/category and
  * categories by name. No recents or trending lists — the app does not store any,
  * and inventing analytics would be fake data.
  */
@@ -26,7 +26,9 @@ export default function StorefrontSearch({ open, onClose, products, categories, 
   const results = useMemo(() => {
     if (!term) return [];
     return products
-      .filter((p) => p.name.includes(term) || p.brand.includes(term) || p.supplier.includes(term) || p.category.includes(term))
+      /* supplier is deliberately absent: it is operational data, and matching it
+         would let anyone enumerate which supplier makes which product */
+      .filter((p) => p.name.includes(term) || p.brand.includes(term) || p.category.includes(term))
       .slice(0, 6);
   }, [products, term]);
   const matchedCategories = useMemo(() => {
@@ -113,7 +115,7 @@ export default function StorefrontSearch({ open, onClose, products, categories, 
                           <img src={product.images[0]} alt="" className="h-14 w-11 shrink-0 rounded-[10px] object-cover" />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-[13.5px] font-bold text-[var(--kvaf-ink)]">{product.name}</span>
-                            <span className="block truncate text-[11.5px] text-[var(--kvaf-muted)]">{product.category} · {product.supplier}</span>
+                            <span className="block truncate text-[11.5px] text-[var(--kvaf-muted)]">{product.category} · {product.brand}</span>
                           </span>
                           <span className="kvaf-num shrink-0 text-[12.5px] font-bold text-[var(--kvaf-ink)]">{fmtMoney(product.retailPrice)}</span>
                           <ArrowLeft size={15} className="shrink-0 text-[var(--kvaf-muted)]" />
