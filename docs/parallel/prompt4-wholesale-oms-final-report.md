@@ -15,7 +15,7 @@ Baseline for this prompt: Prompt-3 HEAD `1ff2268` · starting SHA of the P4 work
 | --- | --- |
 | Session branch (all work committed here) | `arena/01a10ace-kolbevintage` |
 | Starting SHA (Prompt-3 close, verified ancestor) | `1ff2268` |
-| Final SHA (code + tests + docs) | `4a177cc` (this report) — the docs-pin commit that records this SHA is the branch tip |
+| Final SHA (code + tests, second pass) | `5c951ae` — the docs-pin commit that records this SHA is the branch tip |
 | Merge-base with `origin/main` | `3cd9dace97e00e3131af018fb5b696f8c18d67fc` — `main` untouched, never merged/reset |
 | Working tree | clean (no `dist/`, `node_modules/`, `.scratch/` or browser artifacts committed) |
 | Migration count | **52** (`071_wholesale_child_cancellation.sql` is the only Prompt-4 migration, additive) |
@@ -76,6 +76,11 @@ Rules enforced server-side:
   * **declared capacity is never progress**: a capacity-only order is `not_ready`; once something is
     physically held (or a child is paid / fulfilment progressed) it is honestly `partial`;
   * no editable «آماده ارسال» toggle exists anywhere in the API or UI.
+* the list is filterable server-side by `search`, `status`, `readiness`, **`customerStatus`** (the derived
+  lifecycle), `supplyRequired`, `dateFrom`/`dateTo`, `sort` and `before`; a contract check now reads the
+  Order Center source and fails if the UI sends any query parameter the server schema does not accept —
+  this caught the `customerStatus` filter being silently ignored and it was wired server-side (P4 suite
+  asserts every returned lifecycle value round-trips through the filter).
 * `masterCustomerStatus` maps internal states to the small customer lifecycle
   (`processing / awaiting_payment / needs_decision / preparing / ready_to_ship / shipped / delivered /
   cancelled`) with Persian labels; the list/detail expose only the derived code **and** its label.
@@ -260,7 +265,7 @@ implementation impact — **not guessed in code**:
 | Migration verifier (`scripts/verify-migrations.mjs`) | **ALL CHECKS PASSED** (52 files; second run no-op; populated 068→071 upgrade) |
 | Prompt-4 acceptance suite (`src/prompt4-oms.test.ts`, 11 integration tests) | **11/11 pass** (covers P4-OMS-001…025) |
 | Prompt-2/3 regressions inside the embedded suite (`wholesale-oms`, `series-inventory`, `wms-workflows`, `prompt3-wms`, `oms`, pricing/snapshot suites) | pass (included in 239/239) |
-| Contract smoke (`npm run test:contract`) | **135/135** |
+| Contract smoke (`npm run test:contract`) | **142/142** (7 new Prompt-4 static/contract locks: UI-filter↔schema parity, three source buckets, ops-only workspace, destructive-cancel confirmation, no rendered identifiers, server-derived readiness, Prompt-6 boundary note) |
 | Dynamic-table smoke (`npm run test:dynamic-table`) | **14/14** |
 | Pricing-routing smoke (`npm run test:pricing-routing`) | **25/25** |
 | Responsive static QA (`backend/scripts/qa-responsive-static.mjs`, now covering the P4 surfaces) | **1/1 PASS** — 14 surfaces, 35 fixed/min widths ≥320px, none without a scroll/clamp wrapper |
@@ -268,6 +273,19 @@ implementation impact — **not guessed in code**:
 | Frontend TypeScript (`tsc -p tsconfig.json --noEmit`) | **0 errors** |
 | Production build (`vite build`) | OK — `dist/index.html` 2,407.71 kB / gzip 593.90 kB; `dist/index.html` restored afterwards, nothing built is committed |
 | §110 UAT seed (`seed:local` twice on a fresh DB) | one master `MV-2000`, 3 children; coverage `kolbe_stock/reserved/2`, `supplier_stock_at_kolbe/reserved/2`, `supplier_external/pending/2`; **idempotent** (identical row set after the second run) |
+
+Two late fixes landed after the first battery and every gate above was re-run afterwards:
+
+* **Filter parity (real defect, fixed):** the Order Center sent `customerStatus`, which the list schema did
+  not accept, so the UI filter was silently ignored. The lifecycle is now a server-side filter over the
+  derived column, the stale unknown `withTotal` param was removed, the P4 suite round-trips every lifecycle
+  value, and the contract smoke locks UI filter params to the server schema.
+* **SEO integration test data (test-only, pre-existing latent bug):** `seo.integration.test.ts` asserted a
+  `ProductGroup` schema node for a product seeded with only ONE variant, where the canonical rule
+  (`storefront-html.ts`: a group is emitted when a product has more than one variant) means no group can
+  exist. The assertion therefore only ever passed by matching the *inlined SPA bundle text* of a freshly
+  built `dist/index.html`. The test now seeds a genuinely multi-variant retail product, so the check
+  exercises real rendering. No production behaviour was changed and no check was weakened.
 
 ## 21. P4-OMS-001 … P4-OMS-025 → evidence map
 
@@ -299,7 +317,44 @@ implementation impact — **not guessed in code**:
 | P4-OMS-024 | Distinct buyer/Admin projections | `P4-OMS-004/005/024` → buyer whitelist, ops-only fields, supplier token 403 on the ops projection |
 | P4-OMS-025 | Transition guards | `P4-OMS-021/022/023` → pick/ship after cancel rejected; status filters consistent with the derived state |
 
-## 22. Security audit (§19 of the request)
+## 21b. Requested report items → where each is answered
+
+| Requested item (§29 of the prompt) | Section |
+| --- | --- |
+| starting SHA / final SHA / branch | §1 |
+| exact Master Order model | §2, §3 |
+| allocation model | §3 |
+| coverage / readiness derivation | §4 |
+| physical reservation integration | §5 |
+| capacity reservation integration | §6 |
+| source reassignment | §7 |
+| cancellation behaviour | §8 |
+| creation idempotency | §9 |
+| Series / pricing snapshots | §10 |
+| Buyer / Admin projections | §11 |
+| VIP membership enforcement | §12 |
+| supplier privacy | §13 |
+| no-direct-shipping guarantee | §14 |
+| final-dispatch guard | §14 |
+| Order Center UX | §16 |
+| customer status mapping | §15 |
+| migrations / schema impact | §17 |
+| open DEC-OMS items | §18 |
+| dead code removed / retained | §19 |
+| exact test counts | §20 |
+| mapping P4-OMS-001..025 → evidence | §21 |
+| browser status | §24 |
+| commit SHAs / local == remote / clean tree | §1, §25 |
+| explicit Prompt-5 / Prompt-6 deferrals | §23 |
+| security audit (buyer isolation, supplier data, permissions) | §22 |
+| UI/UX qualities: RTL Persian, no enums/ids, no overloaded clusters, clear hierarchy, loading/error/empty, destructive confirmation, a11y labels | §11, §13, §16 (and the static locks in §20: no rendered identifiers, status not colour-only labels, named action buttons, `aria`-labelled sections) |
+| responsive 360 / 390 / 768 / 1024 / 1280 / 1440 with no whole-page overflow | §20 (responsive static QA, now covering the four P4 surfaces) |
+| multi-supplier 4+3+2 scenario | §21 (P4-OMS-004/008/015/016/022 evidence) and §2 |
+| mixed coverage 10 = 3 + 2 + 5 scenario | §21 (P4-OMS-008/023 evidence) |
+| historical immutability | §10, §21 (P4-OMS-013/014) |
+| order-creation idempotency + payload conflict | §9, §21 (P4-OMS-011/012) |
+
+## 22. Security audit (buyer isolation / permissions)
 
 Verified by the matrix: buyer A cannot read or cancel buyer B's master (403); a non-VIP cannot create a
 wholesale order (403); a supplier cannot read a master's ops projection (403) and the supplier endpoints
