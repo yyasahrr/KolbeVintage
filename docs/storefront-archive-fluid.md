@@ -598,10 +598,16 @@ here, so this remains an open item for a real device pass.
 
 ## Verification record (Phase 3)
 
+> **Superseded in part by Phase 4.** The limitation described below no longer
+> applies: a Chromium build was later made to run in this sandbox, and Phase 4
+> carries out the visual QA this section could not — measured overflow, support
+> geometry, responsive behaviour at ten widths, and screenshots. The Phase 3
+> *counts* below remain accurate for the code as it stood at that commit.
+
 Environment: no browser can be installed in this sandbox (Playwright's CDN is
-unreachable, no Chromium/Firefox binary, no sudo). **Visual QA is therefore
-incomplete** — no screenshots, no measured layout, no `document.scrollWidth`.
-Everything below is what could actually be executed.
+unreachable, no Chromium/Firefox binary, no sudo). **Visual QA was therefore
+incomplete at the time of this record** — no screenshots, no measured layout, no
+`document.scrollWidth`. Everything below is what could actually be executed then.
 
 | Check | Result |
 | --- | --- |
