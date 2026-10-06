@@ -96,9 +96,29 @@
   --kvaf-t-slow: 620ms;
 
   /* ---------- type ---------- */
+  /* Four-level scale. HERO speaks for the brand, FEATURE introduces a section
+     or story, COMMERCE carries product identity, price and purchase controls,
+     UTILITY labels and metadata. Documented in
+     docs/storefront-archive-fluid.md §Scale system. */
+  --kvaf-fs-feature: clamp(1.5rem, 2.1vw, 1.9375rem);
+  /* HERO level — the editorial display size, unchanged from the approved hero */
   --kvaf-fs-display: clamp(2.6rem, 6.4vw, 5.25rem);
   --kvaf-fs-h1: clamp(1.9rem, 3.4vw, 2.9rem);
   --kvaf-fs-h2: clamp(1.45rem, 2.2vw, 2rem);
+  --kvaf-fs-commerce-title: 0.8438rem;   /* 13.5px — product name in a card */
+  --kvaf-fs-commerce-meta: 0.75rem;
+  --kvaf-fs-commerce-price: 0.8438rem;
+  --kvaf-fs-utility: 0.75rem;
+  --kvaf-fs-utility-sm: 0.6875rem;       /* floor — never render below 11px */
+
+  /* Density tokens: the product grid's whole rhythm in one place. */
+  --kvaf-card-radius: 20px;
+  --kvaf-card-media-radius: 12px;
+  --kvaf-grid-gap: 0.875rem;
+  --kvaf-grid-gap-y: 1.75rem;
+  --kvaf-thumb: 72px;
+  --kvaf-gallery-max: 580px;
+  --kvaf-gallery-vh: 74vh;
   --kvaf-lh-display: 1.22;
   --kvaf-lh-body: 1.85;
 
@@ -146,7 +166,15 @@
   --kvaf-shadow-liquid: 0 14px 36px -14px rgba(0, 0, 0, 0.66);
   --kvaf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 20px -14px rgba(0, 0, 0, 0.6);
   --kvaf-shadow-md: 0 2px 6px rgba(0, 0, 0, 0.4), 0 20px 46px -20px rgba(0, 0, 0, 0.65);
+
+  /* Dark separation: a 12% hairline vanishes on ink, so cards get a lighter
+     line and a deeper shadow instead of relying on the border alone. */
+  --kvaf-line: rgba(244, 240, 230, 0.16);
+  --kvaf-line-strong: rgba(244, 240, 230, 0.3);
+  --kvaf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 10px 24px -14px rgba(0, 0, 0, 0.75);
 }
+.dark .kv-storefront .kv-sf-cell { background: var(--kvaf-surface); }
+.dark .kv-storefront .kv-sf-fold-btn:hover { background: rgba(244, 240, 230, 0.05); }
 
 /* The page behind the storefront (overscroll, iOS rubber band). */
 html[data-surface="storefront"] { background-color: #F7F4ED; }
@@ -233,10 +261,12 @@ html[data-surface="storefront"] body { background-color: transparent; }
   letter-spacing: -0.015em;
   text-wrap: balance;
 }
+/** FEATURE level: section titles, story titles, the product name on a PDP. */
+.kvaf-feature-title { font-size: var(--kvaf-fs-feature); line-height: 1.38; font-weight: 800; letter-spacing: -0.01em; text-wrap: balance; }
 .kvaf-h1 { font-size: var(--kvaf-fs-h1); line-height: 1.32; font-weight: 800; letter-spacing: -0.01em; text-wrap: balance; }
 .kvaf-h2 { font-size: var(--kvaf-fs-h2); line-height: 1.4; font-weight: 800; letter-spacing: -0.005em; text-wrap: balance; }
 .kvaf-body { font-size: 0.9375rem; line-height: var(--kvaf-lh-body); text-wrap: pretty; }
-.kvaf-meta { font-size: 0.75rem; line-height: 1.6; color: var(--kvaf-muted); }
+.kvaf-meta { font-size: var(--kvaf-fs-utility); line-height: 1.6; color: var(--kvaf-muted); }
 .kvaf-num { font-variant-numeric: tabular-nums; }
 
 /* Vintage graphic language: hairline rule + serif Latin accent, used sparingly. */
@@ -576,10 +606,11 @@ html[data-surface="storefront"] body { background-color: transparent; }
   display: flex;
   flex-direction: column;
   align-self: start;            /* an expanded neighbour never stretches this card */
-  padding: 0.5rem 0.5rem 0.875rem;
+  min-width: 0;                 /* a grid item must never push its track wider */
+  padding: 0.4375rem 0.4375rem 0.6875rem;
   border: 1px solid var(--kvaf-line);
-  /* concentric with the photograph: 24px - 8px padding = the 16px media radius */
-  border-radius: 24px;
+  /* concentric with the photograph: 20px - 7px padding = the 12px media radius */
+  border-radius: var(--kvaf-card-radius);
   background: var(--kvaf-surface);
   box-shadow: var(--kvaf-shadow-sm);
   transition: box-shadow var(--kvaf-t-base) var(--kvaf-ease-out), border-color var(--kvaf-t-base) var(--kvaf-ease-out);
@@ -595,9 +626,9 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .kv-sf-cell-figure {
   position: relative;
   isolation: isolate;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 4 / 5;          /* calmer and denser than 3:4 at equal width */
   overflow: hidden;
-  border-radius: var(--kvaf-r-md);
+  border-radius: var(--kvaf-card-media-radius);
   background-color: var(--kvaf-sand);
 }
 .kv-sf-cell-shot { display: block; width: 100%; height: 100%; }
@@ -616,7 +647,7 @@ html[data-surface="storefront"] body { background-color: transparent; }
   padding: 1rem;
   text-align: center;
   font-size: 12px;
-  color: var(--kvaf-muted);
+  color: var(--kvaf-ink-2);   /* 7.45:1 on the sand placeholder ground */
 }
 
 /* media navigation — small glass discs, they never compete with the photograph */
@@ -673,7 +704,7 @@ html[data-surface="storefront"] body { background-color: transparent; }
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.5);
-  font-size: 11px;
+  font-size: var(--kvaf-fs-utility-sm);
   font-weight: 700;
   color: var(--kvaf-ink);
 }
@@ -710,8 +741,8 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .kv-sf-cell-body {
   display: flex;
   flex-direction: column;
-  margin-top: 0.625rem;
-  padding: 0.75rem 0.375rem 0;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.25rem 0;
   border-top: 1px solid var(--kvaf-line);
 }
 .kv-sf-cell-name {
@@ -720,9 +751,9 @@ html[data-surface="storefront"] body { background-color: transparent; }
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-size: 14px;
+  font-size: var(--kvaf-fs-commerce-title);
   font-weight: 700;
-  line-height: 1.55;
+  line-height: 1.5;
   color: var(--kvaf-ink);
   overflow-wrap: anywhere;
   transition: color var(--kvaf-t-fast) var(--kvaf-ease-out);
@@ -730,10 +761,10 @@ html[data-surface="storefront"] body { background-color: transparent; }
 @media (hover: hover) and (pointer: fine) {
   .kv-sf-cell:hover .kv-sf-cell-name { color: var(--kvaf-brass-deep); }
 }
-.kv-sf-cell-cat { margin-top: 2px; font-size: 12px; color: var(--kvaf-muted); }
-.kv-sf-cell-price { margin-top: 0.5rem; font-size: 14.5px; font-weight: 800; color: var(--kvaf-ink); }
+.kv-sf-cell-cat { margin-top: 1px; font-size: var(--kvaf-fs-utility-sm); color: var(--kvaf-muted); }
+.kv-sf-cell-price { margin-top: 0.375rem; font-size: var(--kvaf-fs-commerce-price); font-weight: 800; color: var(--kvaf-ink); }
 
-.kv-sf-cell-variant { margin-top: 0.75rem; }
+.kv-sf-cell-variant { margin-top: 0.5rem; }
 .kv-sf-cell-row {
   display: flex;
   align-items: baseline;
@@ -758,9 +789,9 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .kv-sf-cell-purchase {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.875rem;
-  padding-top: 0.75rem;
+  gap: 0.4375rem;
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
   border-top: 1px dashed var(--kvaf-line);
   overflow: hidden;
   animation: kvaf-reveal var(--kvaf-t-sheet) var(--kvaf-ease-sheet);
@@ -770,22 +801,26 @@ html[data-surface="storefront"] body { background-color: transparent; }
   from { max-height: 0; opacity: 0; transform: translateY(-4px); }
   to { max-height: 22rem; opacity: 1; transform: none; }
 }
-.kv-sf-cell-purchase .kv-sf-size { min-width: 40px; height: 38px; padding-inline: 0.5rem; font-size: 12.5px; }
-.kv-sf-cell-cta { width: 100%; height: 46px; margin-top: 0.125rem; font-size: 13.5px; }
+.kv-sf-cell-purchase .kv-sf-size { min-width: 36px; height: 34px; padding-inline: 0.4375rem; font-size: 12px; }
+.kv-sf-cell-cta { width: 100%; height: 42px; margin-top: 0.125rem; font-size: 13px; }
 .kv-sf-cell-note { font-size: 12px; color: var(--kvaf-muted); }
 .kv-sf-cell-notice { font-size: 12px; font-weight: 600; color: var(--kvaf-danger); text-align: center; }
 
 /* collapsed cards keep the same rhythm, so the grid never looks ragged */
 .kv-sf-cell-hint {
-  margin-top: 0.875rem;
-  padding-top: 0.75rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
   border-top: 1px dashed var(--kvaf-line);
   font-size: 12px;
-  color: var(--kvaf-faint);
+  color: var(--kvaf-muted);   /* 5.48:1 — the faint token measured 3.43:1 here */
   text-align: center;
 }
 
-/* swatches — small disc inside a 38px touch target */
+/* swatches — small disc inside a 38px touch target; 32px inside a dense card */
+.kv-sf-cell .kv-sf-swatch,
+.kv-sf-cell .kv-sf-swatch-more { width: 32px; height: 32px; }
+.kv-sf-cell .kv-sf-swatch > i { width: 16px; height: 16px; }
+.kv-sf-cell .kv-sf-swatch[aria-pressed="true"]::after { inset: 3px; }
 /* the white hairline reads as glare on a light page; dark mode softens it */
 .dark .kv-storefront .kv-sf-nav,
 .dark .kv-storefront .kv-sf-wish,
@@ -1133,3 +1168,379 @@ html[data-surface="storefront"] body { background-color: transparent; }
   .kv-sf-hero-media { transform: none !important; }
   .kv-sf-hero-copy { transform: none !important; }
 }
+
+/* ============================================================================
+   PHASE 3 — density, PDP and editorial refinement
+   ----------------------------------------------------------------------------
+   Nothing below changes the palette, the glass material or the header. It adds
+   the product-detail layout, the accordion, the compact listing toolbar, the
+   recommendation rails and the journal grid, all on the tokens above.
+   ========================================================================= */
+
+/* ---------- measures ----------
+   The editorial shell stays at 1440px; commerce surfaces are capped so a
+   desktop card lands in the 280–320px band instead of stretching to 340px. */
+.kv-sf-shell-shop { max-width: 1320px; }
+.kv-sf-shell-pdp { max-width: 1120px; }
+
+/* ---------- product detail: two balanced columns ----------
+   DOM order is information first, gallery second. In RTL that puts the
+   information column on the right and the gallery on the left, which is what
+   the brief asks for, and it keeps a logical reading order for screen readers.
+   Below lg the gallery is pulled up visually with `order`, never by reordering
+   the DOM. */
+.kv-sf-pdp { display: grid; gap: 1.75rem; align-items: start; }
+.kv-sf-pdp-gallery { order: -1; min-width: 0; }
+.kv-sf-pdp-info { min-width: 0; }
+@media (min-width: 1024px) {
+  .kv-sf-pdp { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 3.5rem; }
+  .kv-sf-pdp-gallery { order: 0; }
+  .kv-sf-pdp-info { position: sticky; top: calc(var(--kvaf-header-space) + 12px); }
+}
+
+/* gallery: a 4:5 photograph that never becomes a full-viewport poster */
+.kv-sf-gallery { display: flex; flex-direction: column-reverse; gap: 0.625rem; }
+@media (min-width: 1024px) { .kv-sf-gallery { flex-direction: row; gap: 0.75rem; } }
+.kv-sf-gallery-main {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: var(--kvaf-gallery-max);
+  margin-inline: auto;
+  overflow: hidden;
+  border-radius: var(--kvaf-r-lg);
+  background-color: var(--kvaf-sand);
+}
+.kv-sf-gallery-main > img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  max-height: var(--kvaf-gallery-vh);
+  object-fit: cover;
+  animation: kvaf-fade var(--kvaf-t-base) var(--kvaf-ease-out);
+}
+/* thumbnails — 72px, quiet until focused or selected */
+.kv-sf-thumbs {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.kv-sf-thumbs::-webkit-scrollbar { display: none; }
+@media (min-width: 1024px) {
+  .kv-sf-thumbs { flex-direction: column; overflow-x: visible; flex: 0 0 auto; }
+}
+.kv-sf-thumb {
+  position: relative;
+  width: var(--kvaf-thumb);
+  aspect-ratio: 4 / 5;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: var(--kvaf-r-xs);
+  border: 1px solid var(--kvaf-line);
+  opacity: 0.62;
+  transition: opacity var(--kvaf-t-fast) var(--kvaf-ease-out), border-color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+.kv-sf-thumb > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.kv-sf-thumb[aria-current="true"] { opacity: 1; border-color: var(--kvaf-ink); }
+.kv-sf-thumb:focus-visible { opacity: 1; outline: 2px solid var(--kvaf-accent); outline-offset: 2px; }
+@media (hover: hover) and (pointer: fine) { .kv-sf-thumb:hover { opacity: 1; } }
+
+/* ---------- accordion (details section) ----------
+   A real <button aria-expanded> + region: native keyboard support, no library,
+   and the open state is in the DOM where assistive tech and tests can read it. */
+.kv-sf-fold { border-top: 1px solid var(--kvaf-line); }
+.kv-sf-fold:last-child { border-bottom: 1px solid var(--kvaf-line); }
+.kv-sf-fold-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  min-height: 52px;
+  padding-block: 0.75rem;
+  text-align: start;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--kvaf-ink);
+  transition: background-color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+@media (hover: hover) and (pointer: fine) { .kv-sf-fold-btn:hover { background: rgba(28, 28, 25, 0.035); } }
+.kv-sf-fold-btn:focus-visible { outline: 2px solid var(--kvaf-accent); outline-offset: -2px; border-radius: var(--kvaf-r-xs); }
+.kv-sf-fold-chevron {
+  margin-inline-start: auto;
+  flex: 0 0 auto;
+  color: var(--kvaf-muted);
+  transition: transform var(--kvaf-t-base) var(--kvaf-ease-out);
+}
+.kv-sf-fold-btn[aria-expanded="true"] .kv-sf-fold-chevron { transform: rotate(180deg); }
+.kv-sf-fold-body {
+  padding: 0 0 1rem;
+  font-size: 0.875rem;
+  line-height: 1.95;
+  color: var(--kvaf-ink-2);
+  animation: kvaf-reveal var(--kvaf-t-base) var(--kvaf-ease-out);
+}
+.kv-sf-fold-body dt { font-size: var(--kvaf-fs-utility); font-weight: 700; color: var(--kvaf-muted); margin-top: 0.625rem; }
+.kv-sf-fold-body dd { margin: 0.125rem 0 0; }
+
+/* ---------- listing toolbar: search · filter · sort ---------- */
+.kv-sf-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.875rem;
+}
+.kv-sf-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 100%;
+  min-width: 0;
+  height: 42px;
+  padding-inline: 0.75rem;
+  border: 1px solid var(--kvaf-line);
+  border-radius: var(--kvaf-r-pill);
+  background: var(--kvaf-surface);
+  color: var(--kvaf-muted);
+  transition: border-color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+@media (min-width: 768px) { .kv-sf-field { flex: 0 1 260px; } }
+.kv-sf-field:focus-within { border-color: var(--kvaf-line-strong); }
+.kv-sf-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  font-size: 13px;
+  color: var(--kvaf-ink);
+  outline: none;
+}
+.kv-sf-field input::placeholder { color: var(--kvaf-muted); }
+.kv-sf-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 42px;
+  padding-inline: 0.875rem;
+  border: 1px solid var(--kvaf-line);
+  border-radius: var(--kvaf-r-pill);
+  background: var(--kvaf-surface);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--kvaf-ink);
+  white-space: nowrap;
+  transition: border-color var(--kvaf-t-fast) var(--kvaf-ease-out), background-color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+@media (hover: hover) and (pointer: fine) { .kv-sf-tool:hover { border-color: var(--kvaf-line-strong); } }
+.kv-sf-tool[data-on="true"] { border-color: var(--kvaf-ink); }
+.kv-sf-tool-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding-inline: 5px;
+  border-radius: var(--kvaf-r-pill);
+  background: var(--kvaf-action);
+  color: var(--kvaf-on-action);
+  font-size: var(--kvaf-fs-utility-sm);
+  font-weight: 800;
+}
+.kv-sf-select {
+  appearance: none;
+  height: 42px;
+  padding-inline: 2rem 0.875rem;
+  border: 1px solid var(--kvaf-line);
+  border-radius: var(--kvaf-r-pill);
+  background: var(--kvaf-surface);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--kvaf-ink);
+  outline: none;
+}
+.kv-sf-select-wrap { position: relative; display: inline-flex; align-items: center; }
+.kv-sf-select-wrap > svg {
+  position: absolute;
+  inset-inline-start: 0.75rem;
+  pointer-events: none;
+  color: var(--kvaf-muted);
+}
+.kv-sf-select:focus-visible { border-color: var(--kvaf-accent); }
+
+/* ---------- recommendation rails ----------
+   Compact cards: 4–5 across on desktop, a swipeable rail below that. */
+.kv-sf-recs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--kvaf-grid-gap);
+  row-gap: var(--kvaf-grid-gap-y);
+}
+@media (min-width: 768px) { .kv-sf-recs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 1024px) { .kv-sf-recs { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 767px) {
+  .kv-sf-recs {
+    display: flex;
+    gap: 0.625rem;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    /* the last card peeks past the shell edge so the rail reads as scrollable */
+    margin-inline: -1rem;
+    padding-inline: 1rem;
+  }
+  .kv-sf-recs::-webkit-scrollbar { display: none; }
+  .kv-sf-recs > * { flex: 0 0 min(62vw, 220px); scroll-snap-align: start; }
+}
+
+/* ---------- journal ---------- */
+.kv-sf-jrnl-featured {
+  display: grid;
+  gap: 1rem;
+  align-items: center;
+}
+@media (min-width: 768px) {
+  .kv-sf-jrnl-featured { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 2rem; }
+}
+.kv-sf-jrnl-featured-media {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--kvaf-r-lg);
+  background: var(--kvaf-sand);
+}
+.kv-sf-jrnl-featured-media img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
+.kv-sf-jrnl-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+@media (min-width: 1024px) { .kv-sf-jrnl-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.kv-sf-jrnl-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  text-align: start;
+}
+.kv-sf-jrnl-media {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--kvaf-r-md);
+  background: var(--kvaf-sand);
+}
+.kv-sf-jrnl-media img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  transition: transform var(--kvaf-t-slow) var(--kvaf-ease-out);
+}
+@media (hover: hover) and (pointer: fine) { .kv-sf-jrnl-card:hover .kv-sf-jrnl-media img { transform: scale(1.04); } }
+.kv-sf-jrnl-card:focus-visible { outline: 2px solid var(--kvaf-accent); outline-offset: 4px; border-radius: var(--kvaf-r-sm); }
+.kv-sf-jrnl-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  line-height: 1.6;
+  color: var(--kvaf-ink);
+}
+.kv-sf-jrnl-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: var(--kvaf-fs-utility-sm);
+  font-weight: 700;
+  color: var(--kvaf-brass-deep);
+}
+.dark .kv-storefront .kv-sf-jrnl-cat { color: var(--kvaf-brass); }
+
+/* ---------- PDP support blocks ---------- */
+.kv-sf-buyrow { display: flex; gap: 0.625rem; align-items: stretch; margin-top: 1.25rem; }
+.kv-sf-iconaction {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  flex: 0 0 auto;
+  border: 1px solid var(--kvaf-line-strong);
+  border-radius: var(--kvaf-r-sm);
+  color: var(--kvaf-ink);
+  transition: transform var(--kvaf-t-fast) var(--kvaf-ease-out), color var(--kvaf-t-fast) var(--kvaf-ease-out), border-color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+.kv-sf-iconaction:active { transform: scale(0.95); }
+.kv-sf-iconaction[data-on="true"] { color: var(--kvaf-sienna); border-color: var(--kvaf-sienna); }
+.kv-sf-iconaction:focus-visible { outline: 2px solid var(--kvaf-accent); outline-offset: 2px; }
+
+.kv-sf-trust {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.kv-sf-trust li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: var(--kvaf-muted);
+}
+.kv-sf-trust svg { flex: 0 0 auto; margin-top: 0.25rem; color: var(--kvaf-ink-2); }
+
+.kv-sf-rating { display: inline-flex; align-items: center; gap: 0.375rem; }
+.kv-sf-rating-stars { display: inline-flex; gap: 1px; color: var(--kvaf-brass-deep); }
+.dark .kv-storefront .kv-sf-rating-stars { color: var(--kvaf-brass); }
+
+.kv-sf-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--kvaf-muted);
+}
+.kv-sf-summary b { color: var(--kvaf-ink); font-weight: 700; }
+
+/* section heading used by every post-hero block */
+.kv-sf-sect { margin-top: 3.5rem; }
+.kv-sf-sect-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+.kv-sf-sect-title { font-size: var(--kvaf-fs-feature); }
+
+/* range input — native control, themed with accent-color, no library */
+.kv-sf-range {
+  width: 100%;
+  accent-color: var(--kvaf-action);
+  cursor: pointer;
+}
+.kv-sf-range:focus-visible { outline: 2px solid var(--kvaf-accent); outline-offset: 4px; border-radius: var(--kvaf-r-xs); }
+
+/* The same FROST surface, anchored as a side panel on pointer widths. It stays
+   a bottom sheet on touch, where a thumb reaches the controls. */
+@media (min-width: 1024px) {
+  .kv-sf-sheet[data-panel="true"] {
+    inset-block: 0;
+    inset-inline-start: 0;
+    inset-inline-end: auto;
+    width: min(400px, 92vw);
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+    border-start-end-radius: var(--kvaf-r-xl);
+    border-end-end-radius: var(--kvaf-r-xl);
+    animation: kvaf-panel-in var(--kvaf-t-sheet) var(--kvaf-ease-sheet);
+  }
+  .kv-sf-sheet[data-panel="true"] .kv-sf-sheet-grip { display: none; }
+  .kv-sf-sheet[data-panel="true"] .kv-sf-sheet-body { padding-inline: 1.5rem; }
+}
+/* RTL: the panel sits on the inline-start edge, so it enters from that side */
+@keyframes kvaf-panel-in { from { transform: translate3d(100%, 0, 0); opacity: 0.6; } to { transform: none; opacity: 1; } }

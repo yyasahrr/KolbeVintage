@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft, Truck, Check, Minus, Plus, Trash2, CreditCard, MapPin, SlidersHorizontal,
+  ArrowLeft, ArrowUpDown, Truck, Check, Minus, Plus, Search, Trash2, CreditCard, MapPin, SlidersHorizontal, X,
 } from "lucide-react";
 import { IMG, JOURNAL, fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { digitsOnly, type CustomerAccount, type CustomerAddress } from "../data/customer";
@@ -9,12 +9,13 @@ import { useStore } from "../data/store";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
 import { BlockRenderer, type NavTarget } from "../components/cms-render";
-import { Btn, Card, Empty, Field, Input, SearchBox, Select } from "../components/primitives";
+import { Btn, Card, Empty, Field, Input } from "../components/primitives";
 import EditorialHero from "../components/storefront/EditorialHero";
 import ProductDetail from "../components/storefront/ProductDetail";
 import StorefrontProductCard from "../components/storefront/StorefrontProductCard";
 import FilterSheet from "../components/storefront/FilterSheet";
 import { CategoryRail } from "../components/storefront/CategoryCircles";
+import { sizesOf } from "../components/storefront/shared";
 import { cn } from "../utils/cn";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
@@ -41,9 +42,31 @@ const LinkToShop = ({ children, onClick }: { children: React.ReactNode; onClick:
   </button>
 );
 
+/* 2 columns up to 1023px, 3 at 1024, 4 from 1280 — with the shell capped at
+   1320px a desktop card lands around 300px, inside the 280–320px target. */
 const ProductGrid = ({ children }: { children: React.ReactNode }) => (
-  <div className="grid grid-cols-2 items-start gap-x-3 gap-y-6 sm:gap-x-4 md:gap-x-5 md:gap-y-7 lg:grid-cols-3 xl:grid-cols-4">{children}</div>
+  <div className="grid grid-cols-2 items-start gap-x-[var(--kvaf-grid-gap)] gap-y-[var(--kvaf-grid-gap-y)] lg:grid-cols-3 xl:grid-cols-4">{children}</div>
 );
+
+/**
+ * Journal card — category, reading time and title, all straight from JOURNAL.
+ * It renders as a button only when there is somewhere real to go; the entries
+ * carry no body or slug, so a "read" link would be a dead control.
+ */
+function JournalCard({ entry, onOpen }: { entry: typeof JOURNAL[number]; onOpen?: () => void }) {
+  const body = (
+    <>
+      <div className="kv-sf-jrnl-media">
+        <img src={entry.img} alt="" loading="lazy" />
+      </div>
+      <p className="kv-sf-jrnl-cat">{entry.cat} · <span className="kvaf-num font-medium text-[var(--kvaf-muted)]">{entry.read}</span></p>
+      <h3 className="kv-sf-jrnl-title">{entry.title}</h3>
+    </>
+  );
+  return onOpen
+    ? <button onClick={onOpen} className="kv-sf-jrnl-card kv-sf-press">{body}</button>
+    : <article className="kv-sf-jrnl-card">{body}</article>;
+}
 
 /* ============ MAIN RETAIL ============ */
 export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success";
@@ -72,6 +95,11 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("پیشنهاد کلبه");
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [journalCat, setJournalCat] = useState("همه");
+  /* listing facets — every group below is backed by a real product field */
+  const [facets, setFacets] = useState<{ colors: string[]; sizes: string[]; brands: string[]; maxPrice: number | null; inStock: boolean }>({
+    colors: [], sizes: [], brands: [], maxPrice: null, inStock: false,
+  });
   const [checkStep, setCheckStep] = useState(0);
   const [checkoutAddressId, setCheckoutAddressId] = useState("");
   const [checkoutAddress, setCheckoutAddress] = useState<CustomerAddress>({ id: "", title: "خانه", recipient: "", phone: "", province: "", city: "", line: "", postalCode: "", isDefault: false });
@@ -93,11 +121,35 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     let list = [...retailProducts];
     if (cat !== "همه") list = list.filter((p) => p.category === cat);
     if (q.trim()) list = list.filter((p) => p.name.includes(q.trim()) || p.supplier.includes(q.trim()));
+    if (facets.colors.length) list = list.filter((p) => p.colors.some((c) => facets.colors.includes(c.name)));
+    if (facets.sizes.length) list = list.filter((p) => sizesOf(p).some((size) => facets.sizes.includes(size)));
+    if (facets.brands.length) list = list.filter((p) => facets.brands.includes(p.supplier));
+    if (facets.maxPrice !== null) list = list.filter((p) => p.retailPrice <= (facets.maxPrice as number));
+    if (facets.inStock) list = list.filter((p) => p.stock > 0);
     if (sort === "ارزان‌ترین") list.sort((a, b) => a.retailPrice - b.retailPrice);
     if (sort === "گران‌ترین") list.sort((a, b) => b.retailPrice - a.retailPrice);
     if (sort === "پربازدیدترین") list.sort((a, b) => b.reviews - a.reviews);
     return list;
-  }, [cat, q, sort, retailProducts]);
+  }, [cat, q, sort, facets, retailProducts]);
+
+  /* filter options are read off the catalogue, never hardcoded */
+  const colorOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const product of retailProducts) for (const color of product.colors) if (!seen.has(color.name)) seen.set(color.name, color.hex);
+    return Array.from(seen, ([name, hex]) => ({ name, hex }));
+  }, [retailProducts]);
+  const sizeOptions = useMemo(() => Array.from(new Set(retailProducts.flatMap((p) => sizesOf(p)))), [retailProducts]);
+  const brandOptions = useMemo(() => Array.from(new Set(retailProducts.map((p) => p.supplier))), [retailProducts]);
+  const priceBounds = useMemo(() => {
+    const prices = retailProducts.map((p) => p.retailPrice).filter((value) => value > 0);
+    return prices.length ? { min: Math.min(...prices), max: Math.max(...prices) } : { min: 0, max: 0 };
+  }, [retailProducts]);
+  const facetCount = facets.colors.length + facets.sizes.length + facets.brands.length
+    + (facets.maxPrice !== null ? 1 : 0) + (facets.inStock ? 1 : 0) + (cat !== "همه" ? 1 : 0);
+  const clearFilters = () => {
+    setQ(""); setCat("همه"); setSort("پیشنهاد کلبه");
+    setFacets({ colors: [], sizes: [], brands: [], maxPrice: null, inStock: false });
+  };
 
   const addToCart = (id: string, size: string, color: string): boolean => {
     const product = retailProducts.find((p) => p.id === id);
@@ -186,6 +238,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           onWish={() => toggleWish(selected.id)}
           onBack={() => setSelectedId(null)}
           onAdd={(size, color) => addToCart(selected.id, size, color)}
+          catalogue={retailProducts}
+          wishlist={wishlist}
+          onToggleWish={toggleWish}
+          onAddProduct={(id, size, color) => addToCart(id, size, color)}
+          onOpenProduct={(id) => { setSelectedId(id); window.scrollTo({ top: 0 }); }}
+          onTryOn={() => onStudio("tryon")}
+          shipping={retailShipping}
         />
         <div className="kv-sf-shell mt-20">
           <Section title="شاید بپسندید" latin="You may also like" />
@@ -337,23 +396,47 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return <AccountExperience key={account.id} account={account} buyer={buyer} tab={accountTab} setTab={setAccountTab} onShop={() => setView("shop")} onWholesale={onWholesale} onOpenProduct={setSelectedId} onCheckout={() => setView("checkout")} onStudio={() => onStudio("builder")} onLogout={onLogout} />;
   }
   if (view === "journal") {
+    const journalCats = ["همه", ...Array.from(new Set(JOURNAL.map((j) => j.cat)))];
+    const entries = journalCat === "همه" ? JOURNAL : JOURNAL.filter((j) => j.cat === journalCat);
+    const [lead, ...rest] = entries;
     return (
-      <div className="kv-sf-shell pb-20">
+      <div className="kv-sf-shell kv-sf-shell-shop pb-20">
         <Section title="مجله کلبه" latin="Journal" desc="درباره استایل، پارچه و آدم‌هایی که لباس‌های شما را می‌دوزند." />
-        <div className="grid gap-x-6 gap-y-12 md:grid-cols-3">
-          {JOURNAL.map((j) => (
-            <article key={j.id} className="group">
-              <div className="overflow-hidden rounded-[18px] bg-[var(--kvaf-sand)]">
-                <img src={j.img} alt={j.title} loading="lazy" className="aspect-[4/5] w-full object-cover transition-transform duration-[620ms] ease-[var(--kvaf-ease-out)] group-hover:scale-[1.04]" />
-              </div>
-              <p className="mt-4 text-[11.5px] font-bold text-[var(--kvaf-muted)]">{j.cat} · {j.read}</p>
-              <h3 className="mt-1.5 text-[16px] font-bold leading-8 text-[var(--kvaf-ink)]">{j.title}</h3>
-              <button className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-bold text-[var(--kvaf-ink)]">
-                خواندن<ArrowLeft size={14} />
-              </button>
-            </article>
+
+        {/* only categories that actually exist in JOURNAL */}
+        <div className="kv-sf-scrollx -mt-2 mb-8" role="group" aria-label="دسته‌های مجله">
+          {journalCats.map((item) => (
+            <button key={item} onClick={() => setJournalCat(item)} data-on={journalCat === item ? "true" : "false"} aria-pressed={journalCat === item} className="kv-sf-chip">
+              {item}
+            </button>
           ))}
         </div>
+
+        {entries.length === 0 ? (
+          <Empty title="مطلبی در این دسته نیست" desc="دسته دیگری را انتخاب کنید." action={<Btn variant="soft" size="sm" onClick={() => setJournalCat("همه")}>همه مطلب‌ها</Btn>} />
+        ) : (
+          <>
+            {/* one large story, the rest at reading scale */}
+            {lead && (
+              <article className="kv-sf-jrnl-featured">
+                <div className="kv-sf-jrnl-featured-media">
+                  <img src={lead.img} alt="" />
+                </div>
+                <div>
+                  <p className="kv-sf-jrnl-cat">{lead.cat} · <span className="kvaf-num font-medium text-[var(--kvaf-muted)]">{lead.read}</span></p>
+                  {/* no summary paragraph: JOURNAL carries no excerpt or body,
+                      and none is invented — see the contract note in the docs */}
+                  <h2 className="kvaf-h2 mt-3 text-[var(--kvaf-ink)]">{lead.title}</h2>
+                </div>
+              </article>
+            )}
+            {rest.length > 0 && (
+              <div className="kv-sf-jrnl-grid mt-12">
+                {rest.map((entry) => <JournalCard key={entry.id} entry={entry} />)}
+              </div>
+            )}
+          </>
+        )}
       </div>
     );
   }
@@ -362,45 +445,59 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   if (view === "shop") {
     const sorts = ["پیشنهاد کلبه", "ارزان‌ترین", "گران‌ترین", "پربازدیدترین"];
     return (
-      <div className="kv-sf-shell pb-24">
-        <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-5">
-          <div>
-            <p className="kvaf-rule max-w-[16rem]"><span className="shrink-0">Archive</span></p>
-            <h1 className="kvaf-h1 mt-3 text-[var(--kvaf-ink)]">فروشگاه</h1>
-            <p className="kvaf-num mt-2 text-[13px] text-[var(--kvaf-muted)]">
-              {fmtNum(filtered.length)} محصول{cat !== "همه" ? ` در ${cat}` : ""} · ارسال به سراسر کشور
+      <div className="kv-sf-shell kv-sf-shell-shop pb-24">
+        <header>
+          <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+            <h1 className="kvaf-feature-title min-w-0 text-[var(--kvaf-ink)]">
+              فروشگاه{cat !== "همه" ? <span className="text-[var(--kvaf-muted)]"> — {cat}</span> : null}
+            </h1>
+            <p className="kvaf-num text-[12.5px] text-[var(--kvaf-muted)]">
+              {fmtNum(filtered.length)} محصول · ارسال به سراسر کشور
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="hidden w-60 md:block">
-              <SearchBox value={q} onChange={setQ} placeholder="جست‌وجوی محصول، برند…" />
-            </div>
-            <div className="hidden w-44 md:block">
-              <Select options={sorts} value={sort} onChange={setSort} />
-            </div>
-            <button onClick={() => setFiltersOpen(true)} className="kv-sf-chip md:hidden">
-              <SlidersHorizontal size={14} /> فیلتر و مرتب‌سازی
+
+          {/* compact toolbar: search · filter · sort — one row, utility scale */}
+          <div className="kv-sf-toolbar">
+            <label className="kv-sf-field">
+              <Search size={15} aria-hidden="true" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="جست‌وجوی محصول یا برند" aria-label="جست‌وجوی محصول" />
+              {q.trim() !== "" && (
+                <button type="button" onClick={() => setQ("")} aria-label="پاک کردن جست‌وجو" className="kv-sf-press text-[var(--kvaf-faint)] hover:text-[var(--kvaf-ink)]">
+                  <X size={14} />
+                </button>
+              )}
+            </label>
+            <button onClick={() => setFiltersOpen(true)} data-on={facetCount > 0 ? "true" : "false"} className="kv-sf-press kv-sf-tool">
+              <SlidersHorizontal size={15} aria-hidden="true" /> فیلتر
+              {facetCount > 0 && <span className="kv-sf-tool-count kvaf-num">{facetCount.toLocaleString("fa-IR")}</span>}
             </button>
+            <span className="kv-sf-select-wrap">
+              <ArrowUpDown size={14} aria-hidden="true" />
+              <select className="kv-sf-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="مرتب‌سازی">
+                {sorts.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </span>
+          </div>
+
+          {/* category chips: secondary to the toolbar, swipeable on touch */}
+          <div className="kv-sf-scrollx mt-3" role="group" aria-label="دسته‌بندی‌ها">
+            {cats.map((c) => (
+              <button key={c} onClick={() => setCat(c)} data-on={cat === c ? "true" : "false"} aria-pressed={cat === c} className="kv-sf-chip">
+                {c}
+              </button>
+            ))}
           </div>
         </header>
-
-        <div className="kv-sf-scrollx mt-7 hidden md:flex">
-          {cats.map((c) => (
-            <button key={c} onClick={() => setCat(c)} data-on={cat === c ? "true" : "false"} aria-pressed={cat === c} className="kv-sf-chip">
-              {c}
-            </button>
-          ))}
-        </div>
 
         {filtered.length === 0 ? (
           <div className="mt-10">
             <Empty
               title="محصولی پیدا نشد" desc="عبارت دیگری را امتحان کنید یا فیلترها را بردارید."
-              action={<Btn variant="soft" size="sm" onClick={() => { setQ(""); setCat("همه"); }}>حذف فیلترها</Btn>}
+              action={<Btn variant="soft" size="sm" onClick={clearFilters}>حذف فیلترها</Btn>}
             />
           </div>
         ) : (
-          <div className="mt-10">
+          <div className="mt-8">
             <ProductGrid>
               {filtered.map((p) => (
                 <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
@@ -414,7 +511,10 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           categories={cats} category={cat} onCategory={setCat}
           sortOptions={sorts} sort={sort} onSort={setSort}
           resultCount={filtered.length}
-          onReset={() => { setQ(""); setCat("همه"); setSort("پیشنهاد کلبه"); }}
+          colors={colorOptions} sizes={sizeOptions} brands={brandOptions}
+          facets={facets} onFacets={setFacets}
+          priceBounds={priceBounds}
+          onReset={clearFilters}
         />
       </div>
     );
@@ -524,15 +624,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           title="از مجله کلبه" latin="Journal"
           action={<LinkToShop onClick={() => setView("journal")}>همه مطالب</LinkToShop>}
         />
-        <div className="grid gap-x-6 gap-y-10 md:grid-cols-3">
-          {JOURNAL.map((j) => (
-            <button key={j.id} onClick={() => setView("journal")} className="group text-start">
-              <div className="overflow-hidden rounded-[18px] bg-[var(--kvaf-sand)]">
-                <img src={j.img} alt={j.title} loading="lazy" className="aspect-[4/5] w-full object-cover transition-transform duration-[620ms] ease-[var(--kvaf-ease-out)] group-hover:scale-[1.04]" />
-              </div>
-              <p className="mt-4 text-[11.5px] font-bold text-[var(--kvaf-muted)]">{j.cat} · {j.read}</p>
-              <h3 className="mt-1.5 text-[15.5px] font-bold leading-7 text-[var(--kvaf-ink)]">{j.title}</h3>
-            </button>
+        <div className="kv-sf-jrnl-grid">
+          {JOURNAL.map((entry) => (
+            <JournalCard key={entry.id} entry={entry} onOpen={() => { setView("journal"); window.scrollTo({ top: 0 }); }} />
           ))}
         </div>
       </section>

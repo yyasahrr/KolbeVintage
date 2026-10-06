@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { X, ChevronDown } from "lucide-react";
 import type { Product } from "../../data/catalog";
 
 /* ---------- capability hooks (media queries, never UA sniffing) ---------- */
@@ -105,9 +105,11 @@ export function useDismissOnOutside<T extends HTMLElement>(active: boolean, onDi
 
 /* ---------- FROST bottom sheet ---------- */
 
-export function Sheet({ open, onClose, title, description, children, footer, labelledBy }: {
+/** `panel` renders the same FROST surface as a side-anchored panel from 1024px
+    up instead of a bottom sheet, so listing filters never need a page column. */
+export function Sheet({ open, onClose, title, description, children, footer, labelledBy, panel = false }: {
   open: boolean; onClose: () => void; title?: string; description?: string;
-  children: ReactNode; footer?: ReactNode; labelledBy?: string;
+  children: ReactNode; footer?: ReactNode; labelledBy?: string; panel?: boolean;
 }) {
   const generatedId = useId();
   const titleId = labelledBy ?? `${generatedId}-title`;
@@ -121,6 +123,7 @@ export function Sheet({ open, onClose, title, description, children, footer, lab
         ref={trapRef} role="dialog" aria-modal="true"
         aria-label={title} aria-labelledby={title ? undefined : labelledBy}
         className="kv-sf-sheet kv-frost"
+        data-panel={panel ? "true" : undefined}
       >
         <div className="kv-sf-sheet-grip" aria-hidden="true" />
         <div className="flex items-start justify-between gap-3 px-5 pt-2">
@@ -139,6 +142,50 @@ export function Sheet({ open, onClose, title, description, children, footer, lab
         {footer && <div className="kv-sf-sheet-foot">{footer}</div>}
       </div>
     </>
+  );
+}
+
+/* ---------- accordion (product details) ---------- */
+
+/**
+ * A single disclosure row: a real <button aria-expanded> over a labelled
+ * region. Native keyboard support and focus come free from the button, the
+ * open state lives in the DOM (so assistive tech and tests can read it) and no
+ * library is involved. Motion is a short opacity/height reveal that the global
+ * reduced-motion rule neutralises.
+ */
+export function Fold({ title, children, defaultOpen = false, icon }: {
+  title: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+  icon?: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const generated = useId();
+  const panelId = `${generated}-panel`;
+  const headingId = `${generated}-heading`;
+  return (
+    <div className="kv-sf-fold">
+      <h3 className="m-0 text-inherit">
+        <button
+          type="button" id={headingId}
+          className="kv-sf-fold-btn"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {icon}
+          {title}
+          <ChevronDown size={16} className="kv-sf-fold-chevron" aria-hidden="true" />
+        </button>
+      </h3>
+      <div
+        id={panelId} role="region" aria-labelledby={headingId}
+        hidden={!open} className="kv-sf-fold-body"
+      >
+        {children}
+      </div>
+    </div>
   );
 }
 

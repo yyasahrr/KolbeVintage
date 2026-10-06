@@ -325,3 +325,285 @@ colour restores the untouched gallery; wholesale colour restrictions and
 deactivated series do not shrink the retail size run; the PDP does not fake a
 photo for an unphotographed colour. `addToCart` is byte-identical to the base
 commit and `backend/` is untouched.
+
+---
+
+# Phase 3 — density, product detail and editorial refinement
+
+The direction from Phases 1–2 is unchanged: floating Liquid Glass header, editorial
+type, circular categories, hairline product cards with inline purchase, glass
+material, dark mode. Phase 3 changes scale, density and information architecture —
+not the visual language.
+
+## Scale system (four levels)
+
+Four levels, each with one token. Nothing between them: a size either speaks for
+the brand, introduces a section, sells a product, or labels something.
+
+| Level | Token | Value | Used for |
+| --- | --- | --- | --- |
+| **Hero** | `--kvaf-fs-display` | `clamp(2.6rem, 6.4vw, 5.25rem)` | the editorial hero headline only (`EditorialHero`) — unchanged from Phase 1 |
+| **Feature** | `--kvaf-fs-feature` | `clamp(1.5rem, 2.1vw, 1.9375rem)` | section titles, story titles, the product name on a PDP (`.kvaf-feature-title`) |
+| | `--kvaf-fs-h2` | `clamp(1.45rem, 2.2vw, 2rem)` | the shared `h2` voice (`Section`, journal lead, sheet titles) — same level |
+| **Commerce** | `--kvaf-fs-commerce-title` | `0.8438rem` (13.5px) | product name in a card |
+| | `--kvaf-fs-commerce-price` | `0.8438rem` | card price |
+| | `--kvaf-fs-h1` | `clamp(1.9rem, 3.4vw, 2.9rem)` | page-level headings that are not marketing (VIP portal) |
+| **Utility** | `--kvaf-fs-utility` | `0.75rem` (12px) | labels, metadata, `.kvaf-meta`, accordion terms |
+| | `--kvaf-fs-utility-sm` | `0.6875rem` (11px) | **floor** — category labels, chips, flags. Nothing renders below 11px |
+
+Rules that came out of this:
+
+* The hero is the only place above 40px. The listing title dropped from `--kvaf-fs-h1`
+  (30–46px) to Feature scale (24–31px); a product grid does not need a poster.
+* Body copy under a Feature heading stays at 14px, line-height ≥ 1.7.
+* Utility text is never the only carrier of a decision — price and stock are
+  Commerce level, and the add-to-cart label is 15px.
+
+## Density system
+
+The card's rhythm is now tokenised so it can be tuned in one place:
+
+```css
+--kvaf-card-radius: 20px;          /* was 24px */
+--kvaf-card-media-radius: 12px;    /* concentric: 20px − 7px padding */
+--kvaf-grid-gap: 0.875rem;         /* was 12–20px depending on breakpoint */
+--kvaf-grid-gap-y: 1.75rem;        /* was 24–28px */
+--kvaf-thumb: 72px;
+--kvaf-gallery-max: 580px;
+--kvaf-gallery-vh: 74vh;
+```
+
+Measured on the collapsed card (arithmetic from the CSS values above; the media
+ratio moved 3:4 → 4:5):
+
+| Viewport | before | after | area |
+| --- | --- | --- | --- |
+| 390 (2 cols) | 172 × 480 | 172 × 426 | **−11.1 %** |
+| 768 (2 cols) | 337 × 700 | 337 × 633 | **−9.6 %** |
+| 1024 (3 cols) | 295 × 644 | 293 × 578 | **−10.9 %** |
+| 1280 (4 cols) | 289 × 636 | 293 × 578 | **−7.9 %** |
+| ≥1440 (4 cols) | 329 × 689 | 303 × 590 | **−21.1 %** |
+
+At 1280 the old card was already 289px — inside the 280–320px target — so the
+reduction there is limited by the 280px floor, not by the tokens. Commerce
+surfaces now share a capped measure (`.kv-sf-shell-shop` 1320px, `.kv-sf-shell-pdp`
+1120px) so a desktop card lands at 303px instead of stretching to 329px.
+
+Kept intact: hairline border, soft shadow, inline expansion, image carousel,
+circular swatches, inline size chips, cart feedback wording.
+Shrunk: media ratio, card padding, information block spacing, swatch target
+(38 → 32px inside a card; still 38px on the PDP), size chip (40×38 → 36×34),
+CTA height (46 → 42px).
+
+## Grid
+
+`grid-cols-2` up to 1023px · `lg:grid-cols-3` at 1024 · `xl:grid-cols-4` from 1280.
+Five columns was rejected on purpose: at any shell width this storefront considers
+comfortable, a fifth column pushes cards to ~255px, below the 280px floor.
+
+## Product detail
+
+Two columns, DOM order **information first, gallery second**. In RTL that puts the
+information on the right and the gallery on the left, which is the requested
+layout, and it keeps a logical reading order for screen readers (name before
+photograph). Below `lg` the gallery is pulled up with `order: -1` — visual order
+changes, DOM order does not.
+
+* Columns: `minmax(0, 2fr) minmax(0, 3fr)` = 40 / 60 at ≥1024px, gap 56px.
+* Gallery: `max-width: 580px`, `aspect-ratio: 4/5`, `max-height: 74vh`, centred in
+  its column. It never becomes a full-viewport poster; the tallest frame at 1440×900
+  is 725px wide × 74vh.
+* Thumbnails: 72px, 4:5, a vertical rail on desktop and a swipeable strip on
+  touch. Rendered only when the product has more than one photograph.
+* Mobile: swipeable strip (`74vw`, capped 380px), `loading="eager"` on the first
+  frame and `lazy` on the rest, fixed purchase bar with `env(safe-area-inset-bottom)`.
+* Try-on is a quiet secondary button under the primary action, retail only, and it
+  routes to the existing studio tab — no try-on logic is reimplemented.
+
+### Information architecture (only fields that exist)
+
+brand · SKU (`<bdi dir="ltr">`) → name (Feature) → rating + review count →
+retail price + four-installment figure → colour swatches + selected colour →
+sizes + size-guide label → stock → selection summary (`aria-live="polite"`) →
+add to cart + wishlist → try-on → delivery/return/authenticity strip.
+
+### Details section — accordions and the missing contract
+
+`Fold` (in `shared.tsx`) is a real `<button aria-expanded aria-controls>` over a
+`role="region"` panel: native keyboard support, state readable in the DOM, no
+library. Motion is a short reveal that the existing `prefers-reduced-motion`
+block neutralises.
+
+Four disclosures ship, because four are all the data can fill:
+
+| Disclosure | Source |
+| --- | --- |
+| درباره محصول | `Product.desc` |
+| جنس و متریال | `Product.fabric` |
+| وضعیت کالا | `badge` (when present), `soldNote` (when present), `stock`, `supplier`, `category` |
+| ارسال و مرجوعی | live `shipping` methods (`name`, `zones`, `eta`, `price`, `freeAbove`) + the store's existing 7-day label |
+
+**Not rendered, because no field exists** — and none was invented:
+
+* form/Fit, design details, care instructions
+* condition grade, wear description, era/year, country of origin, unique-piece
+  flag, restoration history
+
+Required contract for Core Commerce (presentation-ready, additive):
+
+```ts
+type ProductProvenance = {
+  conditionGrade?: "نو" | "در حد نو" | "کارکرده تمیز" | "نیاز به تعمیر";
+  wear?: string;              // free text from the merchandiser
+  era?: string;               // "دهه ۸۰ میلادی"
+  origin?: string;
+  uniquePiece?: boolean;
+  restoration?: string;
+  fit?: string;
+  care?: string;
+};
+type JournalEntry = {
+  id: string; cat: string; read: string; title: string; img: string;
+  slug?: string;              // join to the CMS article (m4/m5/m6 already exist)
+  excerpt?: string;           // card summary
+  body?: CmsBlock[];          // rendered by the existing BlockRenderer
+  publishedAt?: string; author?: string;
+};
+```
+
+When a field appears, the accordion gains a row; nothing else changes. Until then
+the sections stay out rather than showing placeholder prose.
+
+**Reviews:** the catalogue carries `rating` and `reviews` (a count) and no review
+bodies, so the PDP shows the summary and count only. No review text is generated.
+
+**Journal read action:** `JOURNAL` entries have no `slug` or body, so a "خواندن"
+link would be a dead control. The previous journal view had one; it is gone. The
+home preview still navigates to the journal view, which is a real destination.
+
+## Recommendations
+
+`src/components/storefront/recommendations.ts` — deterministic, presentation-side,
+no engine, no analytics, no invented relations.
+
+* `complementsOf` («این استایل را کامل کن»): walks a styling-complement map keyed
+  by the catalogue's real category names and takes **one** piece per complementary
+  category, in layering order (an outer piece first asks for what goes under it).
+  Categories that are not stocked yet (شلوار، بافت، اکسسوری) are in the map so the
+  rule keeps working as the catalogue grows; today they match nothing and the rail
+  falls back to other pieces from the same wardrobe.
+* `similarTo` («شاید بپسندید»): same category first, then categories that share a
+  complement list, then the reverse relation. Products already shown in the look
+  rail are claimed, so the two sections never repeat a product.
+* Both take `(current, catalogue)`, filter to `status === "published" &&
+  retailPrice > 0`, exclude the product being viewed, cap at 4, and are stable
+  across renders (verified for all 8 products).
+
+Future engine contract: `productRelations: { productId, relatedProductId,
+kind: "look" | "similar", reason: string }[]`, backend-ordered; these two functions
+then become a filter over that array with the same deterministic fallback.
+
+Cards in both rails are the standard product card at compact width — 4 across on
+desktop, a snap-scrolling rail below 768px with the last card peeking past the
+shell edge.
+
+## Product listing
+
+* One compact toolbar row: `[search] [filter] [sort]`. The search field is
+  full-width on touch and 260px from 768px; the sort is a native `<select>`
+  labelled «مرتب‌سازی»; the filter button carries a live count of active facets.
+* Category chips stay, one row below, secondary, swipeable.
+* Filters open the existing FROST `Sheet` as a **side-anchored panel** from
+  1024px (`data-panel="true"`), so no permanent filter column eats the grid.
+* Facet groups, each backed by a real field: دسته‌بندی (`category`), رنگ
+  (`colors[].name`), سایز (`sizesOf`), برند (`supplier`), حداکثر قیمت
+  (native range slider bounded by the real min/max), موجودی (`stock > 0`).
+  **No condition group** — the field does not exist.
+* The grid uses the full capped content width; 2/3/4 columns as above.
+
+## Journal
+
+One large lead story (4:3 media, Feature-scale title) plus standard cards at
+2/3 across (`.kv-sf-jrnl-grid`, 4:3 media, category · reading time · title).
+Category chips are derived from the entries themselves — today that is exactly
+`همه / استایل / هنر ساخت`; nothing is added to the taxonomy.
+
+## Horizontal overflow — what was checked
+
+Static audit (no browser is available in this environment — see the verification
+record):
+
+* `grep 100vw` across `src/`: **0 hits**. Nothing in the storefront sizes itself
+  to the viewport.
+* Every `overflow-x: auto` rule in the built CSS belongs to a deliberate scroller:
+  `.kv-sf-scrollx` (product/press rails, hidden scrollbar + scroll snap),
+  `.kv-sf-cats` (circular categories), `.kv-sf-thumbs`, `.kv-sf-recs` (below
+  768px, with `-1rem` bleed + matching padding so the last card peeks), and the
+  Tailwind `.overflow-x-auto` utility used only by admin tables — never by a
+  storefront component.
+* The one structural cause that can produce accidental page scroll in an image
+  grid is a grid item whose automatic minimum size is the photograph's intrinsic
+  width. `.kv-sf-cell` now sets `min-width: 0`, and both new grids use
+  `minmax(0, …)`/`min-w-0` columns.
+* Fixed widths were reviewed against 360px: thumbnails 72px, icon actions 50px,
+  toolbar controls 42px, mobile gallery frames `min(74vw, 380px)` inside a rail.
+
+No global `overflow-x: hidden` was added. **`document.scrollWidth <= innerWidth`
+was not measured** — jsdom has no layout engine and no browser can be installed
+here, so this remains an open item for a real device pass.
+
+## Accessibility
+
+* Accordions: real buttons, `aria-expanded`, `aria-controls`, `role="region"`,
+  `aria-labelledby`; Enter/Space come free from the button.
+* Selection summary is `aria-live="polite"`, so a colour or size change is
+  announced without moving focus.
+* Swatches keep `aria-pressed` + a concentric ring (state is never colour alone);
+  size chips keep `aria-pressed`; the thumbnail rail is a labelled group with
+  `aria-current`.
+* The filter panel is `role="dialog" aria-modal="true"` with the existing focus
+  trap, Escape and focus restore; the range slider is a native input.
+* Gallery controls are buttons with Persian labels; decorative images are `alt=""`.
+* Touch targets: 42–50px for purchase controls, 32px swatches inside a card,
+  38px on the PDP — nothing interactive below 32px.
+* Measured contrast (WCAG, computed): card name 16.4:1, category label 5.5:1,
+  journal category 5.1:1, CTA 15.6:1, wishlist-on 6.2:1 (light); card name 14.9:1,
+  category 6.5:1, journal category 5.2:1 (dark). Two defects found and fixed while
+  measuring: the collapsed-card hint used `--kvaf-faint` at **3.43:1** and is now
+  `--kvaf-muted` at 5.48:1; the no-image placeholder is `--kvaf-ink-2` at 7.45:1.
+
+## Performance
+
+* No new dependency: gallery, accordion, filters, rails and the journal are CSS +
+  native elements.
+* Non-primary images are `loading="lazy"` — card frames, thumbnails, journal
+  media; only the first mobile gallery frame is eager.
+* No eager full-resolution thumbnails: thumbnails are the same URLs as the frames
+  (the catalogue ships one size per image — a `thumb` field is the obvious
+  contract addition) but are rendered at 72px and deferred.
+* Animations use transform/opacity only; the accordion reveal is CSS, and the
+  reduced-motion block still neutralises everything.
+
+## Verification record (Phase 3)
+
+Environment: no browser can be installed in this sandbox (Playwright's CDN is
+unreachable, no Chromium/Firefox binary, no sudo). **Visual QA is therefore
+incomplete** — no screenshots, no measured layout, no `document.scrollWidth`.
+Everything below is what could actually be executed.
+
+| Check | Result |
+| --- | --- |
+| `tsc --noEmit` | 0 errors |
+| `vite build` | `dist/index.html` 955.8 kB (gzip 243.6 kB) |
+| jsdom suite — desktop + mobile flows, PDP, accordion, filters, rails, journal, CSS audit | **107 / 107** |
+| jsdom worst-case fixtures (13 hostile products × card + PDP) | **72 / 72** |
+| unit checks — recommendations + media integrity over all 8 products | **84 / 84** |
+| runtime errors during every flow | 0 |
+
+Harness: `.smoke/` (`entry.tsx`, `break.tsx`, `units.tsx`, `build.mjs`, `dom.mjs`,
+`run.mjs`, `break.mjs`, `units.mjs`). Rebuild a bundle with
+`SMOKE_NAME=app SMOKE_ENTRY=.smoke/entry.tsx node .smoke/build.mjs`, then
+`node .smoke/run.mjs`. `.smoke/out/` holds generated bundles and is not committed.
+
+Still open, and stated plainly: measured horizontal overflow, real-device
+responsive behaviour, and any visual judgement about balance and whitespace.
