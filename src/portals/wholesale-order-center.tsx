@@ -162,7 +162,7 @@ function MasterList({ onOpen }: { onOpen: (id: string) => void }) {
   const [error, setError] = useState<string | null>(null);
 
   const params = useMemo(() => {
-    const p: Record<string, string | number> = { scope: "all", withTotal: 1, limit: 50, sort: filters.sort };
+    const p: Record<string, string | number> = { scope: "all", limit: 50, sort: filters.sort };
     if (filters.search.trim()) p.search = filters.search.trim();
     if (filters.readiness) p.readiness = filters.readiness;
     if (filters.customerStatus) p.customerStatus = filters.customerStatus;
