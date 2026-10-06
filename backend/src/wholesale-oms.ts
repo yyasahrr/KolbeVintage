@@ -1100,6 +1100,9 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       search: z.string().trim().max(120).optional(),
       status: z.enum(['active', 'completed', 'cancelled']).optional(),
       readiness: z.enum(['not_ready', 'partial', 'ready', 'shipped', 'delivered', 'cancelled']).optional(),
+      // §24/§62: the small customer lifecycle — filterable with the SAME derived values the list returns.
+      customerStatus: z.enum(['processing', 'awaiting_payment', 'needs_decision', 'preparing',
+        'ready_to_ship', 'shipped', 'delivered', 'cancelled']).optional(),
       supplyRequired: z.coerce.number().int().min(0).max(1).optional(),
       dateFrom: z.string().datetime({ offset: true }).optional(),
       dateTo: z.string().datetime({ offset: true }).optional(),
@@ -1188,10 +1191,12 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
        SELECT * FROM rows
         WHERE ($7::text IS NULL OR rows.readiness = $7)
           AND ($8::int IS NULL OR ($8 = 1 AND rows.supply_required_series > 0) OR ($8 = 0 AND rows.supply_required_series = 0))
+          AND ($10::text IS NULL OR rows.customer_status = $10)
         ORDER BY rows.created_at {order}, rows.id DESC
         LIMIT $9 OFFSET 0`.replace('{order}', query.sort === 'oldest' ? 'ASC' : 'DESC'),
       [buyerId, query.before ?? null, query.search ?? null, query.status ?? null, query.dateFrom ?? null,
-        query.dateTo ?? null, query.readiness ?? null, query.supplyRequired ?? null, query.limit]);
+        query.dateTo ?? null, query.readiness ?? null, query.supplyRequired ?? null, query.limit,
+        query.customerStatus ?? null]);
     const items = rows.rows.map((row: Record<string, unknown> & { total_rows: number; included_children: number }) => {
       const { total_rows: totalRows, ...rest } = row;
       void totalRows;
