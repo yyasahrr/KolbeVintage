@@ -1,6 +1,6 @@
 import { boot, helpers, reporter } from "./dom.mjs";
 
-const { check, done } = reporter("worst-case fixtures (phase 3)");
+const { check, done } = reporter("worst-case fixtures (phase 4)");
 const env = await boot(".smoke/out/break.js");
 const { $, $$ } = helpers(env.document);
 const caseOf = (id) => $(`[data-case="${id}"]`);
@@ -11,9 +11,12 @@ check("no runtime errors across the fixtures", () => env.errors.length === 0 || 
 for (const id of $$("[data-case]").map((node) => node.dataset.case)) {
   const scope = caseOf(id);
   check(`${id}: PDP structure intact`, () => !!scope.querySelector(".kv-sf-pdp-info") && !!scope.querySelector(".kv-sf-pdp-gallery"));
-  check(`${id}: four disclosures, no empty ones`, () => {
+  /* Phase 4: a section renders only when its backing data exists, so the
+     disclosure count follows the data (3–4) and no fold is ever empty. */
+  check(`${id}: disclosures follow the data, none empty`, () => {
     const folds = scope.querySelectorAll(".kv-sf-fold");
-    return folds.length === 4 && Array.from(folds).every((fold) => (fold.textContent ?? "").trim().length > 0);
+    return (folds.length >= 3 && folds.length <= 4) &&
+      Array.from(folds).every((fold) => (fold.textContent ?? "").trim().length > 0) || `${folds.length} folds`;
   });
   check(`${id}: purchase control present and labelled`, () => {
     const button = Array.from(scope.querySelectorAll(".kv-sf-buyrow button")).find((node) => /افزودن|به سبد/.test(node.textContent));
@@ -47,9 +50,10 @@ check("zero-rating: the summary stays honest", () => {
   const scope = caseOf("zero-rating");
   return scope.textContent.includes("۰") && scope.textContent.includes("دیدگاه") && !/NaN/.test(scope.textContent);
 });
-check("no-shipping: the delivery disclosure falls back without inventing a carrier", () => {
+check("no-shipping: the delivery disclosure is omitted, not stubbed", () => {
   const scope = caseOf("no-shipping");
-  return scope.textContent.includes("۷ روز مهلت برگشت") && !scope.textContent.includes("پست پیشتاز");
+  const titles = Array.from(scope.querySelectorAll(".kv-sf-fold-btn")).map((node) => node.textContent.trim());
+  return (!titles.includes("ارسال") && !/پست پیشتاز|تیپاکس/.test(scope.textContent)) || titles.join(" | ");
 });
 check("shipping present: real carrier, window and threshold are shown", () => {
   const scope = caseOf("with-instalment");

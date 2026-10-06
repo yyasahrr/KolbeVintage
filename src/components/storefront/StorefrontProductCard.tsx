@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Heart, ShoppingBag, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Heart, ScanFace, ShoppingBag, X } from "lucide-react";
 import { fmtMoney, type Colorway, type Product } from "../../data/catalog";
 import { Swatches } from "./Swatches";
 import { useCartToast } from "./CartToast";
@@ -19,13 +19,20 @@ const EXPAND_EVENT = "kv-sf-card-expand";
  * Price, stock and cart validation always come from the product record and the
  * store state; nothing is recomputed here.
  */
-export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd }: {
+export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd, onTryOn }: {
   p: Product;
   wished: boolean;
   onWish: () => void;
   onOpen: () => void;
   /** existing cart + stock rules; returns whether the line was accepted */
   onAdd: (size: string, color: string) => boolean;
+  /**
+   * Retail only. The card never decides eligibility: it simply offers the entry
+   * point and the studio keeps login and usage rules authoritative. Rendered as
+   * a quiet text action inside the already-expanded purchase area, so the
+   * collapsed card keeps its approved geometry and no second CTA is added.
+   */
+  onTryOn?: () => void;
 }) {
   const [color, setColor] = useState<Colorway | undefined>(undefined);
   const [expanded, setExpanded] = useState(false);
@@ -240,6 +247,11 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
                   : "سایز را انتخاب کنید"}
             </button>
             {notice && <p className="kv-sf-cell-notice" role="status">{notice}</p>}
+            {onTryOn && (
+              <button type="button" onClick={onTryOn} className="kv-sf-cell-tryon">
+                <ScanFace size={13} aria-hidden="true" /> پرو مجازی
+              </button>
+            )}
           </div>
         ) : (
           <p className="kv-sf-cell-hint">

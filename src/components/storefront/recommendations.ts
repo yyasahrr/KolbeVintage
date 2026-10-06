@@ -43,6 +43,10 @@ const sellable = (p: Product) => p.status === "published" && p.retailPrice > 0;
 /**
  * «این استایل را کامل کن» — complementary pieces from *other* categories.
  * Deterministic, duplicate-free, and never the product being viewed.
+ *
+ * Returns an EMPTY array when the category has no mapped complement (or the
+ * catalogue stocks nothing in those categories). The caller hides the section
+ * in that case — this function never pads the rail with arbitrary products.
  */
 export function complementsOf(current: Product, catalogue: Product[], limit = 4): Product[] {
   const order = COMPLEMENTS[current.category] ?? [];
@@ -60,17 +64,10 @@ export function complementsOf(current: Product, catalogue: Product[], limit = 4)
     if (picked.length >= limit) return picked.slice(0, limit);
   }
 
-  /* Nothing complements this category yet: fall back to other products from the
-     same wardrobe rather than showing an empty rail. Still no similarity claim
-     is made — this is the same "complete the look" surface, not "similar". */
-  if (picked.length === 0) {
-    for (const product of pool) {
-      if (seen.has(product.id)) continue;
-      seen.add(product.id);
-      picked.push(product);
-      if (picked.length >= limit) break;
-    }
-  }
+  /* No explicit complement exists for this category (or the catalogue has no
+     pieces in the complementary categories): the section is hidden rather than
+     filled with unrelated products. An empty rail is honest; a rail of random
+     neighbours is a styling claim the data does not support. */
   return picked.slice(0, limit);
 }
 

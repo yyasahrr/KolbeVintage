@@ -216,6 +216,22 @@ export function mediaForColor(p: Product, colorId?: string): string[] {
   return own?.length ? own : p.images;
 }
 
+/**
+ * Thumbnail for a cart/checkout line, matched to the colour the shopper chose.
+ *
+ * `CartLine.color` is the colour *name* the storefront writes at add-to-cart
+ * time (there is no variantId in the cart identity yet), so the name is resolved
+ * back to a colourway and its own media when — and only when — that colour was
+ * actually photographed. With no dedicated media the product's first frame is
+ * used, which is the honest fallback: never a photo of a different colour
+ * presented as the chosen one.
+ */
+export function lineThumbnail(p: Product, colorName?: string): string {
+  const match = colorName ? p.colors.find((color) => color.name === colorName) : undefined;
+  if (match && hasOwnMedia(p, match.id)) return mediaForColor(p, match.id)[0];
+  return p.images[0] ?? "";
+}
+
 /** True when this colourway has photographs of its own. */
 export const hasOwnMedia = (p: Product, colorId?: string): boolean =>
   !!colorId && !!p.colorMedia?.[colorId]?.length;

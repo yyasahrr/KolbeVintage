@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { MessageCircle, Send, X, Phone, Mail, Headset, Clock, Check, RotateCcw, Truck, Ban } from "lucide-react";
 import { fmtMoney } from "../data/catalog";
 import { useOps, opsNow, channelHref, TICKET_STATUS, RETURN_STATUS, type Ticket, type ReturnReq, type QuickChannelId } from "../data/ops";
 import { Btn, Empty, Field, Input, Select, Status, Textarea, Timeline, Segmented } from "./primitives";
 import { cn } from "../utils/cn";
+import { useDismissOnOutside } from "./storefront/shared";
 
 const CATEGORIES = ["پیگیری سفارش", "مرجوعی و بازگشت", "پرداخت و مالی", "عضویت عمده", "محصول و موجودی", "مالی و تسویه", "سایر موارد"];
 const PRIORITY: Record<Ticket["priority"], string> = { low: "کم", normal: "عادی", high: "فوری" };
@@ -196,35 +197,115 @@ const ICON: Record<QuickChannelId, React.ReactNode> = {
 };
 const TINT: Record<QuickChannelId, string> = { telegram: "#2AABEE", instagram: "#C13584", whatsapp: "#25D366", bale: "#1FA89A", eitaa: "#E86E1C", phone: "#1B2A4A", email: "#6E7B8E" };
 
-export function FloatingSupport({ onTicket }: { onTicket: () => void }) {
+/**
+ * Floating quick-support launcher for the public storefront.
+ *
+ * Geometry is fixed: the launcher is always 52px tall with a 20px icon slot and
+ * a fixed padding, so closed / hover / focus / open render in exactly the same
+ * box. The open state swaps the glyph *inside* the slot (both are stacked and
+ * cross-faded) and changes colour — it never adds or removes a flex child, so
+ * the label cannot move and the row cannot reflow.
+ *
+ * It is a non-modal quick-support surface: no focus trap, Escape and outside
+ * clicks close it, and focus stays where the user put it.
+ *
+ * Material: the launcher is LIQUID (it floats over content), the panel is FROST
+ * (it must stay readable over content). Channels come from `quickSupport`; the
+ * ticket action still hands off to the existing ticket centre.
+ */
+export function FloatingSupport({ onTicket, lift = false }: { onTicket: () => void; lift?: boolean }) {
   const { quickSupport } = useOps();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const generatedId = useId();
+  const panelId = `${generatedId}-support-panel`;
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus({ preventScroll: true });
+    };
+    /* Capture phase: the storefront's sheets also listen for Escape, and this
+       surface closes before any of them react. */
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [open]);
+
+  const dismissRef = useDismissOnOutside<HTMLDivElement>(open, () => setOpen(false));
+
   if (!quickSupport.enabled) return null;
   const channels = quickSupport.channels.filter((c) => c.enabled && c.value.trim());
+
   return (
-    <div className="fixed bottom-5 left-5 z-[60] flex flex-col items-start gap-2">
-      {open && (
-        <div role="dialog" aria-label={quickSupport.title} className="kv-glass w-[270px] rounded-[18px] p-3 animate-[scaleIn_0.2s_ease]">
-          <div className="flex items-start justify-between gap-2 px-1.5 pb-2">
-            <div><p className="text-[13.5px] font-extrabold">{quickSupport.title}</p><p className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--kv-muted)]"><Clock size={11} />{quickSupport.hours}</p></div>
-            <button onClick={() => setOpen(false)} aria-label="بستن پشتیبانی" className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]"><X size={15} /></button>
+    <div
+      className="kv-sf-support"
+      data-lift={lift ? "true" : "false"}
+      ref={dismissRef}
+    >
+      <div className="kv-sf-support-inner">
+        {open && (
+          <div
+            ref={panelRef}
+            id={panelId}
+            role="dialog"
+            aria-label={quickSupport.title}
+            className="kv-sf-support-panel kv-frost"
+          >
+            <div className="kv-sf-support-head">
+              <p className="kv-sf-support-title">{quickSupport.title}</p>
+              {quickSupport.hours && (
+                <p className="kv-sf-support-hours"><Clock size={11} aria-hidden="true" />{quickSupport.hours}</p>
+              )}
+            </div>
+            <div className="kv-sf-support-list">
+              {channels.map((channel) => (
+                <a
+                  key={channel.id} href={channelHref(channel)}
+                  target="_blank" rel="noopener noreferrer"
+                  className="kv-sf-support-row"
+                >
+                  <span className="kv-sf-support-glyph" style={{ background: TINT[channel.id] }} aria-hidden="true">
+                    {ICON[channel.id]}
+                  </span>
+                  <span className="kv-sf-support-label">{channel.label}</span>
+                  <span className="kv-sf-support-value" dir="ltr">{channel.value}</span>
+                </a>
+              ))}
+              <button
+                type="button"
+                onClick={() => { setOpen(false); onTicket(); }}
+                className="kv-sf-support-row"
+              >
+                <span className="kv-sf-support-glyph" style={{ background: "var(--kvaf-charcoal)" }} aria-hidden="true">
+                  <Headset size={17} />
+                </span>
+                <span className="kv-sf-support-label">ثبت تیکت پشتیبانی</span>
+              </button>
+            </div>
           </div>
-          <div className="space-y-1">
-            {channels.map((c) => (
-              <a key={c.id} href={channelHref(c)} target="_blank" rel="noopener noreferrer" className="flex min-h-11 items-center gap-3 rounded-[12px] px-2.5 py-2 text-[13px] font-semibold hover:bg-[var(--kv-surface-2)]">
-                <span className="flex h-8 w-8 items-center justify-center rounded-[10px] text-white" style={{ background: TINT[c.id] }}>{ICON[c.id]}</span>
-                <span className="flex-1">{c.label}</span><span className="text-[11px] text-[var(--kv-muted)]" dir="ltr">{c.value}</span>
-              </a>
-            ))}
-            <button onClick={() => { setOpen(false); onTicket(); }} className="flex min-h-11 w-full items-center gap-3 rounded-[12px] px-2.5 py-2 text-right text-[13px] font-semibold hover:bg-[var(--kv-surface-2)]">
-              <span className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-[var(--kv-accent)] text-white"><Headset size={17} /></span>ثبت تیکت پشتیبانی
-            </button>
-          </div>
-        </div>
-      )}
-      <button onClick={() => setOpen(!open)} aria-expanded={open} aria-label="پشتیبانی سریع" className="kv-press flex h-13 items-center gap-2 rounded-full bg-[var(--kv-accent)] px-4 py-3 text-[13px] font-bold text-white shadow-[var(--shadow-soft-lg)]">
-        {open ? <X size={19} /> : <Headset size={19} />}<span className="hidden sm:inline">پشتیبانی</span>
-      </button>
+        )}
+
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          aria-controls={panelId}
+          aria-label={open ? "بستن پشتیبانی سریع" : "پشتیبانی سریع"}
+          data-open={open ? "true" : "false"}
+          className="kv-sf-support-launch kv-liquid kv-sf-press"
+        >
+          <span className="kv-sf-support-slot" aria-hidden="true">
+            <Headset size={19} data-slot="closed" />
+            <X size={19} data-slot="open" />
+          </span>
+          <span>پشتیبانی</span>
+        </button>
+      </div>
     </div>
   );
 }

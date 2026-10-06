@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Check, ChevronLeft, Heart, Plus, RotateCcw, Ruler, ScanFace, ShieldCheck, Star, Truck,
-} from "lucide-react";
+import { Check, ChevronLeft, Heart, Plus, ScanFace, Star } from "lucide-react";
 import { JOURNAL, fmtMoney, fmtNum, type Colorway, type Product } from "../../data/catalog";
 import type { ShippingMethod } from "../../data/platform";
 import { Swatches } from "./Swatches";
@@ -9,15 +7,21 @@ import StorefrontProductCard from "./StorefrontProductCard";
 import { useCartToast } from "./CartToast";
 import { Fold, SizeRow, hasOwnMedia, mediaForColor, preferredSize, sizesOf, useCrossfadeKey } from "./shared";
 import { complementsOf, similarTo } from "./recommendations";
-import { cn } from "../../utils/cn";
 
 /**
- * Product detail page in the Archive Fluid system.
+ * Product detail page — Archive Fluid.
  *
- * Two balanced columns — information on the right, gallery on the left in RTL —
- * and a photograph that stays a photograph instead of a full-viewport poster.
- * Everything below the main area is data-driven: a section only appears when the
- * catalogue actually carries the field, so nothing here is invented.
+ * The top is a focused purchase interface: what the product is, what it costs,
+ * which colour and size, whether it can be bought, and the three actions. Every
+ * technical or editorial fact lives below it in `جزئیات محصول`.
+ *
+ * Nothing on this page is invented. A row, a badge or a claim only appears when
+ * the catalogue or the live configuration actually carries it:
+ *   - stock is stated as presence, never a quantity (there is no colour×size
+ *     availability contract yet — see docs/storefront-archive-fluid.md);
+ *   - shipping lines come from the store's active shipping methods;
+ *   - there is no returns or authenticity claim because no policy source exists;
+ *   - the size guide control is gone until a sizeGuide contract exists.
  *
  * The page recomputes no price and no stock; it calls the cart rules it is
  * handed and reports what they returned.
@@ -83,15 +87,66 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
   const installment = installmentPrice > 0 ? Math.ceil(installmentPrice / 4) : 0;
   const delivery = shipping.slice(0, 2);
 
-  /** Only fields the catalogue actually carries. No condition grade, era, origin
-      or restoration is claimed anywhere: the data has no such field. */
-  const facts: { term: string; value: string }[] = [
+  /**
+   * Detail rows, built from fields that actually exist on the product record.
+   * Anything undefined is filtered out, so a section can never render with an
+   * empty value and the page never grows a section "because the layout wants
+   * four". Add a field to the contract and it appears here; leave it out and it
+   * stays invisible.
+   */
+  const specRows: { term: string; value: string }[] = [
+    { term: "شناسه کالا", value: p.sku },
+    { term: "دسته‌بندی", value: p.category },
+    { term: "برند", value: p.brand },
+    { term: "تأمین‌کننده", value: p.supplier },
     ...(p.badge ? [{ term: "برچسب کالا", value: p.badge }] : []),
     ...(p.soldNote ? [{ term: "یادداشت فروشنده", value: p.soldNote }] : []),
-    { term: "وضعیت موجودی", value: soldOut ? "ناموجود" : `موجود در انبار — ${fmtNum(p.stock)} عدد` },
-    { term: "تأمین‌کننده", value: p.supplier },
-    { term: "دسته‌بندی", value: p.category },
-  ];
+    { term: "وضعیت موجودی", value: soldOut ? "ناموجود" : "موجود" },
+  ].filter((row) => !!row.value?.trim());
+
+  const sections = [
+    p.desc?.trim()
+      ? { id: "about", title: "درباره محصول", defaultOpen: true, body: <p className="m-0">{p.desc}</p> }
+      : null,
+    p.fabric?.trim()
+      ? { id: "material", title: "جنس و متریال", defaultOpen: false, body: <p className="m-0">{p.fabric}</p> }
+      : null,
+    specRows.length
+      ? {
+        id: "specs", title: "مشخصات کالا", defaultOpen: false,
+        body: (
+          <dl className="m-0">
+            {specRows.map((row) => (
+              <div key={row.term}>
+                <dt>{row.term}</dt>
+                <dd className={row.term === "شناسه کالا" ? "kvaf-num" : undefined} dir={row.term === "شناسه کالا" ? "ltr" : undefined}>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ),
+      }
+      : null,
+    delivery.length
+      ? {
+        id: "delivery", title: "ارسال", defaultOpen: false,
+        body: (
+          <dl className="m-0">
+            {delivery.map((method) => (
+              <div key={method.id}>
+                <dt>{method.name} — {method.zones}</dt>
+                <dd>
+                  {method.eta}
+                  {method.freeAbove !== null && method.freeAbove > 0
+                    ? <> · رایگان برای خرید بالای <span className="kvaf-num">{fmtMoney(method.freeAbove)}</span>، در غیر این صورت <span className="kvaf-num">{fmtMoney(method.price)}</span></>
+                    : <> · <span className="kvaf-num">{fmtMoney(method.price)}</span></>}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ),
+      }
+      : null,
+  ].filter((section): section is NonNullable<typeof section> => section !== null);
 
   const rail = (items: Product[]) => items.map((item) => (
     <StorefrontProductCard
@@ -118,13 +173,8 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
       <div className="kv-sf-pdp">
         {/* ---- information: first in the DOM, on the right in RTL ---- */}
         <div className="kv-sf-pdp-info">
-          <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-[var(--kvaf-muted)]">
-            <span className="font-bold text-[var(--kvaf-ink-2)]">{p.brand}</span>
-            <span aria-hidden="true">·</span>
-            <bdi dir="ltr" className="kvaf-num">{p.sku}</bdi>
-          </p>
-
-          <h1 className="kvaf-feature-title mt-2 text-[var(--kvaf-ink)]">{p.name}</h1>
+          <p className="text-[12px] font-bold text-[var(--kvaf-ink-2)]">{p.brand}</p>
+          <h1 className="kvaf-feature-title mt-1.5 text-[var(--kvaf-ink)]">{p.name}</h1>
 
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px] text-[var(--kvaf-muted)]">
             <span className="kv-sf-rating">
@@ -156,29 +206,25 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
           </div>
 
           <div className="mt-5">
-            <div className="mb-1.5 flex items-center justify-between gap-3">
-              <p className="text-[13px] font-bold text-[var(--kvaf-ink)]">سایز</p>
-              <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-[var(--kvaf-muted)]">
-                <Ruler size={13} /> راهنمای سایز
-              </span>
-            </div>
+            <p className="mb-1.5 text-[13px] font-bold text-[var(--kvaf-ink)]">سایز</p>
             <SizeRow sizes={sizes} value={size} onChange={setSize} idPrefix={`pdp-${p.id}`} />
           </div>
 
-          <p className="mt-4 flex items-center gap-2 text-[12px] text-[var(--kvaf-muted)]">
-            <span className={cn("h-2 w-2 shrink-0 rounded-full", soldOut ? "bg-[var(--kvaf-danger)]" : "bg-[var(--kvaf-success)]")} aria-hidden="true" />
-            {soldOut
-              ? <span className="font-semibold text-[var(--kvaf-danger)]">ناموجود</span>
-              : <span>موجود در انبار — <span className="kvaf-num font-bold text-[var(--kvaf-ink)]">{fmtNum(p.stock)}</span> عدد</span>}
+          {/* Product-level stock only: the colour×size quantity does not exist in
+              the data yet, so the page states presence and never a number. */}
+          <p className="kv-sf-stock mt-4" data-available={soldOut ? "false" : "true"}>
+            <i aria-hidden="true" />
+            {soldOut ? "ناموجود" : "موجود"}
           </p>
 
-          {/* what is about to be added, announced to screen readers */}
-          <p className="kv-sf-summary mt-4" aria-live="polite">
-            انتخاب شما:{color ? <> <b>{color.name}</b></> : null}
-            {size ? <> · سایز <b>{size}</b></> : null}
+          {/* assistive tech gets the live selection summary; it is not repeated
+              visually, where the swatch and the size chip already show it */}
+          <p className="sr-only" aria-live="polite">
+            انتخاب شما:{color ? ` رنگ ${color.name}` : " رنگ انتخاب نشده"}
+            {size ? ` · سایز ${size}` : " · سایز انتخاب نشده"}
           </p>
 
-          <div className="kv-sf-buyrow hidden lg:flex">
+          <div className="kv-sf-buyrow">
             <button onClick={submit} disabled={soldOut} data-added={added ? "true" : undefined} className="kv-sf-action flex-1">
               {added ? <><Check size={17} strokeWidth={3} />به سبد اضافه شد</> : <><Plus size={17} />افزودن به سبد خرید</>}
             </button>
@@ -190,24 +236,21 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
               <Heart size={19} fill={wished ? "currentColor" : "none"} />
             </button>
           </div>
-          {/* try-on stays secondary: a quiet button below the primary action */}
+
+          {/* try-on stays secondary: a quiet button below the primary action,
+              rendered once for every width. Eligibility, login and usage rules
+              live in the studio, which is where this hands off. */}
           {onTryOn && (
-            <button onClick={onTryOn} className="kv-sf-action kv-sf-action-quiet mt-2.5 hidden w-full lg:inline-flex">
-              <ScanFace size={17} /> پرو مجازی این محصول
+            <button onClick={onTryOn} className="kv-sf-action kv-sf-action-quiet mt-2.5 w-full">
+              <ScanFace size={17} /> پرو مجازی
             </button>
           )}
-
-          <ul className="kv-sf-trust mt-6 border-t border-[var(--kvaf-line)] pt-5">
-            <li><Truck size={14} /> ارسال به سراسر کشور{delivery.length > 0 && <> — {delivery[0].name}، {delivery[0].eta}</>}</li>
-            <li><RotateCcw size={14} /> ۷ روز مهلت برگشت</li>
-            <li><ShieldCheck size={14} /> ضمانت اصالت</li>
-          </ul>
         </div>
 
         {/* ---- gallery: second in the DOM, visually first below lg ---- */}
         <div className="kv-sf-pdp-gallery">
           {/* touch: swipeable strip · pointer: one calm frame with thumbnails */}
-          <div className="kv-sf-scrollx snap-x lg:hidden" aria-label={`تصاویر ${p.name}`}>
+          <div className="kv-sf-scrollx kv-sf-pdp-strip snap-x" aria-label={`تصاویر ${p.name}`}>
             {media.map((image, index) => (
               <img
                 key={image + index} src={image} alt={`${p.name} — نمای ${(index + 1).toLocaleString("fa-IR")}`}
@@ -217,7 +260,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
             ))}
           </div>
 
-          <div className="kv-sf-gallery hidden lg:flex">
+          <div className="kv-sf-gallery">
             <div className="kv-sf-gallery-main">
               <img key={fade.key} src={media[shot]} alt={`${p.name}${color ? ` — ${color.name}` : ""}`} />
               {p.badge && <span className="kv-sf-cell-flag">{p.badge}</span>}
@@ -245,48 +288,21 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
         </div>
       </div>
 
-      {/* ---- structured details: only sections the data can fill ---- */}
-      <section aria-labelledby="pdp-details-title" className="mt-14">
-        <h2 id="pdp-details-title" className="kvaf-h2 text-[19px] text-[var(--kvaf-ink)]">جزئیات محصول</h2>
-        <div className="mt-4">
-          <Fold title="درباره محصول" defaultOpen>
-            <p className="m-0">{p.desc}</p>
-          </Fold>
-          <Fold title="جنس و متریال">
-            <p className="m-0">{p.fabric}</p>
-          </Fold>
-          <Fold title="وضعیت کالا">
-            <dl className="m-0">
-              {facts.map((fact) => (
-                <div key={fact.term}>
-                  <dt>{fact.term}</dt>
-                  <dd>{fact.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </Fold>
-          <Fold title="ارسال و مرجوعی">
-            <dl className="m-0">
-              {delivery.map((method) => (
-                <div key={method.id}>
-                  <dt>{method.name} — {method.zones}</dt>
-                  <dd>
-                    {method.eta} · {method.freeAbove !== null && method.freeAbove > 0
-                      ? <>رایگان برای خرید بالای <span className="kvaf-num">{fmtMoney(method.freeAbove)}</span>، در غیر این صورت <span className="kvaf-num">{fmtMoney(method.price)}</span></>
-                      : <span className="kvaf-num">{fmtMoney(method.price)}</span>}
-                  </dd>
-                </div>
-              ))}
-              <div>
-                <dt>مرجوعی</dt>
-                <dd>۷ روز مهلت برگشت بدون قید و شرط</dd>
-              </div>
-            </dl>
-          </Fold>
-        </div>
-      </section>
+      {/* ---- details: a section exists only when a real field fills it ---- */}
+      {sections.length > 0 && (
+        <section aria-labelledby="pdp-details-title" className="mt-14">
+          <h2 id="pdp-details-title" className="kvaf-h2 text-[19px] text-[var(--kvaf-ink)]">جزئیات محصول</h2>
+          <div className="mt-4">
+            {sections.map((section) => (
+              <Fold key={section.id} title={section.title} defaultOpen={section.defaultOpen}>
+                {section.body}
+              </Fold>
+            ))}
+          </div>
+        </section>
+      )}
 
-      {/* ---- complete the look ---- */}
+      {/* ---- complete the look: only when a real complementary match exists ---- */}
       {looks.length > 0 && (
         <section aria-labelledby="pdp-look-title" className="kv-sf-sect">
           <div className="kv-sf-sect-head">

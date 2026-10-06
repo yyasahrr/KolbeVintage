@@ -15,7 +15,7 @@ import ProductDetail from "../components/storefront/ProductDetail";
 import StorefrontProductCard from "../components/storefront/StorefrontProductCard";
 import FilterSheet from "../components/storefront/FilterSheet";
 import { CategoryRail } from "../components/storefront/CategoryCircles";
-import { sizesOf } from "../components/storefront/shared";
+import { lineThumbnail, sizesOf } from "../components/storefront/shared";
 import { cn } from "../utils/cn";
 
 export type CartLine = { id: string; qty: number; size: string; color: string };
@@ -75,7 +75,8 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
-  onStudio: (tab: string) => void;
+  /** `productId` lets the studio open on the product the shopper came from */
+  onStudio: (tab: string, productId?: string) => void;
   view: RetailView; setView: (v: RetailView) => void;
   requireLogin?: () => boolean;
   account: CustomerAccount | null; buyer?: Buyer;
@@ -243,14 +244,14 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           onToggleWish={toggleWish}
           onAddProduct={(id, size, color) => addToCart(id, size, color)}
           onOpenProduct={(id) => { setSelectedId(id); window.scrollTo({ top: 0 }); }}
-          onTryOn={() => onStudio("tryon")}
+          onTryOn={() => onStudio("tryon", selected.id)}
           shipping={retailShipping}
         />
         <div className="kv-sf-shell mt-20">
           <Section title="شاید بپسندید" latin="You may also like" />
           <ProductGrid>
             {relatedList.map((p) => (
-              <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
+              <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
             ))}
           </ProductGrid>
         </div>
@@ -296,9 +297,11 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
                   {cart.map((l, i) => {
                     const p = store.products.find((x) => x.id === l.id);
                     if (!p) return null;
+                    /* the checkout thumbnail follows the colour that was added */
+                    const thumb = lineThumbnail(p, l.color);
                     return (
                       <div key={i} className="flex gap-4 rounded-[14px] border border-[var(--kv-line)] p-3">
-                        <img src={p.images[0]} alt={p.name} className="h-24 w-20 shrink-0 rounded-[10px] object-cover" />
+                        <img src={thumb} alt={p.name} className="h-24 w-20 shrink-0 rounded-[10px] object-cover" />
                         <div className="flex flex-1 flex-col">
                           <div className="flex items-start justify-between gap-2">
                             <div><p className="text-sm font-bold">{p.name}</p><p className="mt-1 text-xs text-[var(--kv-muted)]">سایز {l.size} · {l.color}</p></div>
@@ -386,7 +389,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
       <div className="kv-sf-shell pb-20">
         <Section title="علاقه‌مندی‌ها" latin="Saved" desc="چیزهایی که چشم‌تان را گرفته؛ هر وقت آماده بودید به سبد اضافه کنید." />
         {items.length === 0 ? <Empty title="هنوز چیزی ذخیره نکرده‌اید" desc="روی قلب هر محصول بزنید تا اینجا ذخیره شود." action={<Btn variant="accent" size="sm" onClick={() => setView("shop")}>کشف محصولات</Btn>} /> : (
-          <ProductGrid>{items.map((p) => <StorefrontProductCard key={p.id} p={p} wished onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />)}</ProductGrid>
+          <ProductGrid>{items.map((p) => <StorefrontProductCard key={p.id} p={p} wished onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />)}</ProductGrid>
         )}
       </div>
     );
@@ -500,7 +503,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           <div className="mt-8">
             <ProductGrid>
               {filtered.map((p) => (
-                <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
+                <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
               ))}
             </ProductGrid>
           </div>
@@ -549,7 +552,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         />
         <ProductGrid>
           {latestDrop.map((p) => (
-            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
+            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
           ))}
         </ProductGrid>
       </section>
@@ -592,7 +595,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         />
         <ProductGrid>
           {featured.map((p) => (
-            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} />
+            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
           ))}
         </ProductGrid>
       </section>

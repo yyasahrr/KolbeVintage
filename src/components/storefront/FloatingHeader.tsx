@@ -25,7 +25,8 @@ export default function FloatingHeader({ links, menuItems, cartCount, wishlistCo
   onOpenCart: () => void;
   onWishlist: () => void;
   onAuth: () => void;
-  onDemo: () => void;
+  /** development / preview only — absent in a production build */
+  onDemo?: () => void;
   dark: boolean;
   onToggleDark: () => void;
 }) {
@@ -88,18 +89,22 @@ export default function FloatingHeader({ links, menuItems, cartCount, wishlistCo
         </nav>
 
         <div className="ms-auto flex items-center gap-0.5">
-          <button onClick={onDemo} className="kv-sf-iconbtn hidden text-[var(--kvaf-muted)] hover:text-[var(--kvaf-ink)] xl:flex" aria-label="پیش‌نمایش آزمایشی پنل‌ها" title="پیش‌نمایش آزمایشی پنل‌ها">
-            <ShieldCheck size={17} /><span className="text-[12px] font-semibold">تست پنل‌ها</span>
-          </button>
+          {/* development-only shortcut; never part of production navigation */}
+          {onDemo && (
+            <button onClick={onDemo} data-from="xl" className="kv-sf-iconbtn text-[var(--kvaf-muted)] hover:text-[var(--kvaf-ink)]" aria-label="پیش‌نمایش آزمایشی پنل‌ها" title="پیش‌نمایش آزمایشی پنل‌ها">
+              <ShieldCheck size={17} /><span className="text-[12px] font-semibold">تست پنل‌ها</span>
+            </button>
+          )}
 
           <button
             onClick={onToggleDark} aria-label={dark ? "حالت روشن" : "حالت تیره"}
-            className="kv-sf-iconbtn hidden md:flex"
+            data-from="md"
+            className="kv-sf-iconbtn"
           >
             {dark ? <Sun size={17} /> : <Moon size={17} />}
           </button>
 
-          <button onClick={onWishlist} className="kv-sf-iconbtn relative hidden lg:flex" aria-label={`علاقه‌مندی‌ها${wishlistCount ? ` — ${wishlistCount.toLocaleString("fa-IR")} مورد` : ""}`}>
+          <button onClick={onWishlist} data-from="lg" className="kv-sf-iconbtn relative" aria-label={`علاقه‌مندی‌ها${wishlistCount ? ` — ${wishlistCount.toLocaleString("fa-IR")} مورد` : ""}`}>
             <Heart size={17} />
             {wishlistCount > 0 && <span className="absolute inset-block-start-2 inset-inline-start-[18px] h-1.5 w-1.5 rounded-full bg-[var(--kvaf-brass-deep)]" aria-hidden="true" />}
           </button>

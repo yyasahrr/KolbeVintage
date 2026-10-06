@@ -98,6 +98,10 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const [cartOpen, setCartOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
+  const [studioProductId, setStudioProductId] = useState<string | undefined>(undefined);
+  /* Demo-only shortcuts (panel previews) exist for development and the sandbox
+     preview build. They are never part of production storefront navigation. */
+  const demoEnabled = import.meta.env.DEV;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [studioTab, setStudioTab] = useState("tryon");
   const [shopSeed, setShopSeed] = useState<ShopSeed>(null);
@@ -199,6 +203,9 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
     t === "vip" ? go("vip") : t === "tryon" ? (setStudioTab("tryon"), go("studio")) : go("retail", t === "journal" ? "journal" : "shop");
 
   const isHome = section === "retail" && view === "home" && !selectedId;
+  /* The PDP's fixed purchase bar exists below 1024px; while it is on screen the
+     support launcher lifts above it so the two never overlap. */
+  const purchaseBarVisible = section === "retail" && !!selectedId;
   const retailShippingNote = shipping.filter((s) => s.active && s.scope !== "عمده" && s.freeAbove !== null)
     .map((s) => `${s.name}: ارسال رایگان بالای ${(s.freeAbove! / 1000000).toLocaleString("fa-IR")} میلیون تومان`)
     .slice(0, 1)
@@ -226,7 +233,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           onOpenCart={() => setCartOpen(true)}
           onWishlist={() => go("retail", "wishlist")}
           onAuth={() => openAuth()}
-          onDemo={() => setDemoOpen(true)}
+          onDemo={demoEnabled ? () => setDemoOpen(true) : undefined}
           dark={dark}
           onToggleDark={() => setDark(!dark)}
         />
@@ -250,7 +257,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
                 openAuth({ section: "retail", view: "checkout" });
                 return false;
               }}
-              onStudio={(t) => { setStudioTab(t); go("studio"); }}
+              onStudio={(t, productId) => { setStudioProductId(productId); setStudioTab(t); go("studio"); }}
             />
           )}
           {section === "vip" && (
@@ -265,7 +272,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               }}
             />
           )}
-          {section === "studio" && <StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} onLogin={() => openAuth({ section: "studio", view })} />}
+          {section === "studio" && <StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} productId={studioProductId} onLogin={() => openAuth({ section: "studio", view })} />}
           {section === "auth" && (
             <AuthScreens portal="retail" onDone={(phone) => {
               const id = ensureAccount(phone);
@@ -298,7 +305,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             onJournal={() => go("retail", "journal")}
             onStudio={() => { setStudioTab("tryon"); go("studio"); }}
             onVip={() => go("vip")}
-            onDemo={() => setDemoOpen(true)}
+            onDemo={demoEnabled ? () => setDemoOpen(true) : undefined}
             dark={dark}
             onToggleDark={() => setDark(!dark)}
             productCount={retailProducts.length}
@@ -326,14 +333,15 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           <MobileBottomNav items={bottomNav} />
         )}
 
+        {/* Inside the shell on purpose: the support surface is a storefront
+            widget, so it must inherit the Archive Fluid scope (and therefore the
+            dark-mode tokens) without depending on the admin console. */}
         {section !== "auth" && (
-          <div className="kv-sf-support">
-            <FloatingSupport onTicket={() => { setAccountTab("support"); if (account) go("retail", "account"); else openAuth({ section: "retail", view: "account" }); }} />
-          </div>
+          <FloatingSupport lift={purchaseBarVisible} onTicket={() => { setAccountTab("support"); if (account) go("retail", "account"); else openAuth({ section: "retail", view: "account" }); }} />
         )}
       </CartToastProvider>
 
-      <Modal open={demoOpen} onClose={() => setDemoOpen(false)} max="max-w-[500px]" title="پیش‌نمایش آزمایشی پنل‌ها">
+      <Modal open={demoEnabled && demoOpen} onClose={() => setDemoOpen(false)} max="max-w-[500px]" title="پیش‌نمایش آزمایشی پنل‌ها">
         <div className="pl-10">
           <p className="text-[18px] font-extrabold">پیش‌نمایش پنل‌ها</p>
           <p className="mt-2 text-[13px] leading-7 text-[var(--kv-muted)]">برای تست جریان‌ها، بدون ورود دوباره جابه‌جا شوید. این میان‌بُر فقط برای نسخه آزمایشی است و نباید در محصول نهایی منتشر شود.</p>

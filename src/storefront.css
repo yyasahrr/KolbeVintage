@@ -131,10 +131,26 @@
   --kvaf-bottomnav-space: 0px;
   --kvaf-z-header: 60;
   --kvaf-z-bnav: 62;
+  /* floating support launcher: above page chrome and the bottom nav, below the
+     buy bar (bnav-1 fails here — the buy bar must not cover the launcher) */
+  --kvaf-z-support: 64;
   --kvaf-z-drawer: 70;
   --kvaf-z-search: 86;
   --kvaf-z-sheet: 88;
   --kvaf-z-toast: 95;
+
+  /* Mobile bottom bands, bottom of the viewport upwards (below 1024px):
+       0 .. 76px   bottom navigation            (z 62)
+      76 .. 80px   gap
+      80 .. 152px  PDP purchase bar            (z 63)
+     152 .. 164px  gap
+     164 .. 216px  support launcher, lifted    (z 64)
+     164 .. 234px  toast, when no buy bar      (z 95)
+     The launcher lifts exactly one band while a purchase bar is on screen, so
+     the four never intersect. Verified in Chromium at 360/390/430. */
+  /* Support launcher lift: how far above the bottom navigation it must sit.
+     App raises this while the PDP purchase bar is on screen. */
+  --kvaf-support-lift: 0px;
 
   background-color: var(--kvaf-bg);
   color: var(--kvaf-ink);
@@ -353,6 +369,14 @@ html[data-surface="storefront"] body { background-color: transparent; }
   border-radius: 2px;
   background: var(--kvaf-brass);
 }
+/* Header controls appear from a given breakpoint up. Declared here because the
+   framework's `hidden`/`md:flex` utilities sit in a cascade layer and always
+   lose to `.kv-sf-iconbtn`'s unlayered `display`. */
+.kv-sf-iconbtn[data-from="md"], .kv-sf-iconbtn[data-from="lg"], .kv-sf-iconbtn[data-from="xl"] { display: none; }
+@media (min-width: 768px) { .kv-sf-iconbtn[data-from="md"] { display: inline-flex; } }
+@media (min-width: 1024px) { .kv-sf-iconbtn[data-from="lg"] { display: inline-flex; } }
+@media (min-width: 1280px) { .kv-sf-iconbtn[data-from="xl"] { display: inline-flex; } }
+
 .kv-sf-iconbtn {
   display: inline-flex;
   align-items: center;
@@ -807,6 +831,20 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .kv-sf-cell-notice { font-size: 12px; font-weight: 600; color: var(--kvaf-danger); text-align: center; }
 
 /* collapsed cards keep the same rhythm, so the grid never looks ragged */
+.kv-sf-cell-tryon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3125rem;
+  align-self: center;
+  font-size: var(--kvaf-fs-utility-sm);
+  font-weight: 700;
+  color: var(--kvaf-muted);
+  transition: color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+.kv-sf-cell-tryon:focus-visible { outline: 2px solid var(--kvaf-accent); outline-offset: 3px; border-radius: var(--kvaf-r-xs); }
+@media (hover: hover) and (pointer: fine) { .kv-sf-cell-tryon:hover { color: var(--kvaf-ink); } }
+
 .kv-sf-cell-hint {
   margin-top: 0.5rem;
   padding-top: 0.5rem;
@@ -1023,6 +1061,13 @@ html[data-surface="storefront"] body { background-color: transparent; }
     align-items: flex-start;
   }
 }
+/* A product page adds two more fixed bands below the toast (the purchase bar,
+   then the lifted support launcher), so the toast clears all of them instead of
+   covering the button it just confirmed. */
+.kv-storefront:has(.kv-sf-buybar) .kv-sf-toasts {
+  bottom: calc(var(--kvaf-bottomnav-space) + env(safe-area-inset-bottom, 0px) + 160px);
+}
+
 .kv-sf-toast {
   pointer-events: auto;
   width: min(100%, 380px);
@@ -1060,7 +1105,8 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .kv-sf-buybar {
   position: fixed;
   inset-inline: 0;
-  bottom: calc(var(--kvaf-bottomnav-space) + env(safe-area-inset-bottom, 0px));
+  /* 6px of air above the floating bottom nav; bnav top = bottomnav-space + 12px */
+  bottom: calc(var(--kvaf-bottomnav-space) + env(safe-area-inset-bottom, 0px) + 6px);
   z-index: calc(var(--kvaf-z-bnav) - 1);
   display: flex;
   gap: 0.625rem;
@@ -1198,9 +1244,14 @@ html[data-surface="storefront"] body { background-color: transparent; }
   .kv-sf-pdp-info { position: sticky; top: calc(var(--kvaf-header-space) + 12px); }
 }
 
-/* gallery: a 4:5 photograph that never becomes a full-viewport poster */
-.kv-sf-gallery { display: flex; flex-direction: column-reverse; gap: 0.625rem; }
-@media (min-width: 1024px) { .kv-sf-gallery { flex-direction: row; gap: 0.75rem; } }
+/* gallery: a 4:5 photograph that never becomes a full-viewport poster.
+   The two gallery surfaces are switched here, not with `hidden`/`lg:flex`:
+   an unlayered rule outranks the framework's layered utilities, so a Tailwind
+   display utility on a class defined below can never win (Phase 4 fix). */
+.kv-sf-gallery { display: none; }
+@media (min-width: 1024px) { .kv-sf-gallery { display: flex; flex-direction: row; gap: 0.75rem; } }
+.kv-sf-pdp-strip { display: flex; }
+@media (min-width: 1024px) { .kv-sf-pdp-strip { display: none; } }
 .kv-sf-gallery-main {
   position: relative;
   flex: 1 1 auto;
@@ -1459,7 +1510,9 @@ html[data-surface="storefront"] body { background-color: transparent; }
 .dark .kv-storefront .kv-sf-jrnl-cat { color: var(--kvaf-brass); }
 
 /* ---------- PDP support blocks ---------- */
-.kv-sf-buyrow { display: flex; gap: 0.625rem; align-items: stretch; margin-top: 1.25rem; }
+.kv-sf-buyrow { display: none; gap: 0.625rem; align-items: stretch; margin-top: 1.25rem; }
+/* desktop-only purchase row; the mobile purchase bar takes over below 1024 */
+@media (min-width: 1024px) { .kv-sf-buyrow { display: flex; } }
 .kv-sf-iconaction {
   display: grid;
   place-items: center;
@@ -1505,6 +1558,21 @@ html[data-surface="storefront"] body { background-color: transparent; }
 }
 .kv-sf-summary b { color: var(--kvaf-ink); font-weight: 700; }
 
+/* Try-on is a secondary action at either width, never two controls at once. */
+.kv-sf-tryon-mobile { display: inline-flex; }
+.kv-sf-tryon-desktop { display: none; }
+@media (min-width: 1024px) {
+  .kv-sf-tryon-mobile { display: none; }
+  .kv-sf-tryon-desktop { display: inline-flex; }
+}
+
+/* Stock state. Retail colour×size availability does not exist yet, so the
+   storefront states presence, never a quantity. */
+.kv-sf-stock { display: inline-flex; align-items: center; gap: 0.5rem; font-size: var(--kvaf-fs-utility); color: var(--kvaf-muted); }
+.kv-sf-stock > i { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--kvaf-success); }
+.kv-sf-stock[data-available="false"] { color: var(--kvaf-danger); font-weight: 600; }
+.kv-sf-stock[data-available="false"] > i { background: var(--kvaf-danger); }
+
 /* section heading used by every post-hero block */
 .kv-sf-sect { margin-top: 3.5rem; }
 .kv-sf-sect-head {
@@ -1544,3 +1612,123 @@ html[data-surface="storefront"] body { background-color: transparent; }
 }
 /* RTL: the panel sits on the inline-start edge, so it enters from that side */
 @keyframes kvaf-panel-in { from { transform: translate3d(100%, 0, 0); opacity: 0.6; } to { transform: none; opacity: 1; } }
+
+/* ============================================================================
+   PHASE 4 — floating support widget
+   ----------------------------------------------------------------------------
+   Zero layout shift: one fixed icon slot, fixed height, fixed padding. The open
+   state changes colour and the glyph inside the slot — never geometry.
+   Material: LIQUID launcher (it floats over content), FROST panel (it must be
+   readable over content).
+   ========================================================================= */
+/* Physical left, as the widget has always sat. In RTL the PDP information
+   column owns the right-hand side of the page, so a logical `inline-start`
+   anchor would park the launcher over the purchase area at ~1024–1200px. */
+.kv-sf-support { position: fixed; inset-block-end: 0; left: 0; z-index: var(--kvaf-z-support); padding-left: 0.75rem; }
+@media (min-width: 1024px) { .kv-sf-support { padding-left: 1.25rem; } }
+/* The launcher is the only in-flow child. The panel is absolutely positioned
+   above it, so no amount of panel content can move the trigger: layout shift is
+   structurally impossible rather than merely avoided. */
+.kv-sf-support-inner { position: relative; display: block; }
+
+/* the launcher's own lift, on top of whatever the layout reserves at the bottom */
+.kv-sf-support {
+  --kvaf-support-bottom: calc(var(--kvaf-bottomnav-space) + var(--kvaf-support-lift) + env(safe-area-inset-bottom, 0px));
+}
+/* Below lg the PDP's fixed purchase bar sits directly on the bottom nav; the
+   launcher lifts above it so neither the CTA nor the wishlist button is covered. */
+@media (max-width: 1023px) {
+  .kv-sf-support[data-buybar="true"] { --kvaf-support-lift: 84px; }
+}
+@media (min-width: 1024px) { .kv-sf-support { --kvaf-support-bottom: 0px; } }
+.kv-sf-support-inner { padding-block-end: calc(var(--kvaf-support-bottom) + 0.75rem); }
+
+.kv-sf-support-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 52px;                 /* fixed: never grows with its content */
+  padding-inline: 1rem;
+  border-radius: var(--kvaf-r-pill);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--kvaf-on-liquid);
+  transition: background-color var(--kvaf-t-fast) var(--kvaf-ease-out),
+              border-color var(--kvaf-t-fast) var(--kvaf-ease-out),
+              box-shadow var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+.kv-sf-support-launch:focus-visible { outline: 2px solid var(--kvaf-accent); outline-offset: 3px; }
+
+/* the single icon slot: both glyphs are stacked and cross-faded, so the flex
+   row never recalculates and the label never moves */
+.kv-sf-support-slot { position: relative; display: block; width: 20px; height: 20px; flex: none; }
+.kv-sf-support-slot > svg {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  transition: opacity var(--kvaf-t-base) var(--kvaf-ease-out), transform var(--kvaf-t-base) var(--kvaf-ease-out);
+}
+.kv-sf-support-slot > svg[data-slot="open"] { opacity: 0; transform: rotate(-45deg); }
+.kv-sf-support-launch[data-open="true"] .kv-sf-support-slot > svg[data-slot="closed"] { opacity: 0; transform: rotate(45deg); }
+.kv-sf-support-launch[data-open="true"] .kv-sf-support-slot > svg[data-slot="open"] { opacity: 1; transform: none; }
+
+.kv-sf-support-panel {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  margin-bottom: 0.5rem;
+  width: min(320px, calc(100vw - 1.5rem));
+  max-height: min(64svh, calc(100dvh - var(--kvaf-support-bottom) - 7rem));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-start-start-radius: var(--kvaf-r-lg);
+  border-start-end-radius: var(--kvaf-r-lg);
+  border-end-start-radius: var(--kvaf-r-sm);
+  border-end-end-radius: var(--kvaf-r-sm);
+  animation: kvaf-reveal var(--kvaf-t-base) var(--kvaf-ease-out);
+}
+.kv-sf-support-head { padding: 0.875rem 1rem 0.625rem; }
+.kv-sf-support-title { font-size: 0.875rem; font-weight: 800; color: var(--kvaf-ink); }
+.kv-sf-support-hours { display: inline-flex; align-items: center; gap: 0.25rem; margin-top: 0.125rem; font-size: var(--kvaf-fs-utility-sm); color: var(--kvaf-muted); }
+.kv-sf-support-list { padding: 0 0.5rem 0.5rem; overflow-y: auto; overscroll-behavior: contain; }
+.kv-sf-support-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--kvaf-r-sm);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--kvaf-ink);
+  text-align: start;
+  transition: background-color var(--kvaf-t-fast) var(--kvaf-ease-out);
+}
+.kv-sf-support-row > .kv-sf-support-glyph {
+  display: grid;
+  place-items: center;
+  width: 32px; height: 32px;
+  flex: none;
+  border-radius: var(--kvaf-r-xs);
+  color: var(--kvaf-bone);
+}
+.kv-sf-support-row > .kv-sf-support-label { flex: 1 1 auto; min-width: 0; }
+/* long handles must not push the row wider than the panel */
+.kv-sf-support-row > .kv-sf-support-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--kvaf-fs-utility-sm);
+  font-weight: 500;
+  color: var(--kvaf-muted);
+}
+@media (hover: hover) and (pointer: fine) {
+  .kv-sf-support-row:hover { background: rgba(28, 28, 25, 0.05); }
+  .dark .kv-storefront .kv-sf-support-row:hover { background: rgba(244, 240, 230, 0.06); }
+}
+.kv-sf-support-row:focus-visible { outline: 2px solid var(--kvaf-accent); outline-offset: -2px; }

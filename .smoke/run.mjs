@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { boot, helpers, reporter, wait } from "./dom.mjs";
 
-const { check, done } = reporter("storefront DOM suite (phase 3)");
+const { check, done } = reporter("storefront DOM suite (phase 4)");
 const dist = fs.readFileSync("dist/index.html", "utf8");
 
 /* ---------------------------------------------------------------- desktop */
@@ -109,10 +109,21 @@ check("information column precedes the gallery in the DOM (right in RTL)", () =>
 check("PDP title matches the card that opened it", () => text(".kv-sf-pdp-info h1") === cardName || `${text(".kv-sf-pdp-info h1")} ≠ ${cardName}`);
 check("PDP title sits at FEATURE scale, not hero", () => $(".kv-sf-pdp-info h1").className.includes("kvaf-feature-title"));
 check("breadcrumb navigation is present", () => $("nav[aria-label='مسیر']")?.textContent.includes("فروشگاه"));
-check("brand and SKU are shown", () => {
-  const brand = $(".kv-sf-pdp-info p").textContent;
-  const sku = $(".kv-sf-pdp-info bdi").textContent;
-  return brand.length > 0 && /^[A-Z]{2,5}-[A-Z]{2,4}-\d{3}$/.test(sku) || `${brand} / ${sku}`;
+/* Phase 4: the purchase area answers "can I buy this option?" only — identity
+   and technical metadata moved into the details section below. */
+check("brand is shown at the top", () => $(".kv-sf-pdp-info > p").textContent.trim().length > 0);
+const specsFold = $$(".kv-sf-fold").find((fold) => fold.querySelector(".kv-sf-fold-btn").textContent.includes("مشخصات کالا"));
+check("the SKU row exists in the specifications", () => {
+  const terms = specsFold ? Array.from(specsFold.querySelectorAll("dt")).map((dt) => dt.textContent.trim()) : [];
+  return terms.includes("شناسه کالا") || terms.join(" | ");
+});
+const skuValue = (() => {
+  const row = specsFold ? Array.from(specsFold.querySelectorAll("dt")).find((dt) => dt.textContent.trim() === "شناسه کالا") : null;
+  return row?.nextElementSibling?.textContent.trim() ?? "";
+})();
+check("no SKU anywhere in the purchase area", () => {
+  const purchase = $(".kv-sf-pdp-info").textContent.split("مشخصات کالا")[0];
+  return (skuValue.length > 0 && !purchase.includes(skuValue)) || `sku=${skuValue} purchase=${purchase.slice(0, 60)}`;
 });
 check("rating summary is rendered from real data", () => {
   const rating = $(".kv-sf-rating");
@@ -131,8 +142,21 @@ check("four instalments never undercut the cash price", () => {
 });
 check("colour swatches are rendered", () => $$(".kv-sf-pdp-info .kv-sf-swatch").length >= 2);
 check("size chips are rendered", () => $$(".kv-sf-pdp-info .kv-sf-size").length >= 1);
-check("stock is stated from the product record", () => /موجود در انبار|ناموجود/.test($(".kv-sf-pdp-info").textContent));
-check("the selection summary is announced", () => $(".kv-sf-summary")?.getAttribute("aria-live") === "polite");
+check("stock states presence only", () => {
+  const stock = $(".kv-sf-pdp-info .kv-sf-stock");
+  if (!stock) return "no stock element";
+  const label = stock.textContent.replace(/\s+/g, " ").trim();
+  return label === "موجود" || label === "ناموجود" || label;
+});
+check("the product-level count never appears as variant stock", () => {
+  const stock = $(".kv-sf-pdp-info .kv-sf-stock").textContent;
+  return !/[0-9۰-۹]|عدد/.test(stock) || stock;
+});
+check("the selection summary is announced to assistive tech only", () => {
+  const live = $(".kv-sf-pdp-info [aria-live='polite']");
+  if (!live) return "no live region";
+  return (live.className.includes("sr-only") && live.textContent.includes("انتخاب شما")) || live.className;
+});
 check("desktop gallery shows one main frame", () => $$(".kv-sf-gallery-main img").length === 1);
 const thumbs = $$(".kv-sf-thumbs .kv-sf-thumb");
 check("thumbnails match the gallery length", () => thumbs.length === $$(".kv-sf-scrollx img").length || `${thumbs.length}`);
@@ -150,7 +174,7 @@ const folds = $$(".kv-sf-fold");
 check("details section has four disclosures", () => folds.length === 4 || `${folds.length}`);
 check("disclosure titles are the documented set", () => {
   const titles = $$(".kv-sf-fold-btn").map((node) => node.textContent.replace(/\s+/g, " ").trim());
-  return JSON.stringify(titles) === JSON.stringify(["درباره محصول", "جنس و متریال", "وضعیت کالا", "ارسال و مرجوعی"]) || titles.join(" | ");
+  return JSON.stringify(titles) === JSON.stringify(["درباره محصول", "جنس و متریال", "مشخصات کالا", "ارسال"]) || titles.join(" | ");
 });
 check("the first disclosure starts open", () => folds[0].querySelector(".kv-sf-fold-btn").getAttribute("aria-expanded") === "true");
 check("closed disclosures hide their panel", () => folds[1].querySelector(".kv-sf-fold-body").hidden === true);
@@ -175,7 +199,10 @@ await click(folds[3].querySelector(".kv-sf-fold-btn"));
 const deliveryText = folds[3].textContent;
 check("delivery panel uses the real shipping configuration", () =>
   deliveryText.includes("پست پیشتاز") && deliveryText.includes("۲ تا ۴ روز کاری") || deliveryText.slice(0, 80));
-check("return window is the existing store label", () => deliveryText.includes("۷ روز مهلت برگشت"));
+/* Phase 4: the "۷ روز مهلت برگشت" line was a hardcoded promise with no policy
+   contract behind it. Delivery text may only come from live shipping config. */
+check("no unbacked return/authenticity promise is rendered", () =>
+  !/۷ روز|مهلت برگشت|ضمانت اصالت|تحویل تضمینی/.test($(".kv-sf-pdp").textContent) || "policy claim found");
 
 /* ---- recommendation rails ---- */
 const lookCards = $$("section[aria-labelledby='pdp-look-title'] .kv-sf-cell");
@@ -244,9 +271,70 @@ check("mobile gallery defers every frame but the first", () => {
   const images = M.$$(".kv-sf-pdp-gallery .kv-sf-scrollx img");
   return images[0].getAttribute("loading") === "eager" && images.slice(1).every((image) => image.getAttribute("loading") === "lazy");
 });
-check("mobile PDP hides the desktop gallery markup", () => M.$(".kv-sf-gallery").className.includes("hidden"));
+/* Phase 4: unlayered .kv-sf-* rules outrank @layer utilities, so a `hidden lg:flex`
+   utility on a display-owning element was silently dead. Those elements now carry
+   no layout utility at all; the stylesheet owns the switch (asserted in the build
+   audit below) and this check keeps the dead pattern from returning. */
+check("no dead display utility on a display-owning element", () => {
+  const owned = [".kv-sf-gallery", ".kv-sf-pdp-strip", ".kv-sf-buyrow", ".kv-sf-iconbtn"];
+  const offenders = owned.flatMap((sel) => $$(sel)).map((node) => node.className)
+    .filter((cls) => /(^|\s)(hidden|flex|grid|block|inline-flex)(\s|$)|(^|\s)(sm|md|lg|xl):/.test(cls));
+  return offenders.length === 0 || offenders.join(" | ");
+});
 check("mobile bottom nav is present on the PDP", () => !!M.$(".kv-sf-bnav"));
 check("no runtime errors after the mobile flow", () => mobile.errors.length === 0 || mobile.errors.slice(0, 2).join(" | "));
+
+/* ------------------------------------------- support widget: open/close semantics */
+await click($(".kv-sf-support-launch"));
+check("support launcher reports its expanded state", () => $(".kv-sf-support-launch").getAttribute("aria-expanded") === "true" || $(".kv-sf-support-launch").getAttribute("aria-expanded"));
+check("the panel it controls really exists", () => {
+  const id = $(".kv-sf-support-launch").getAttribute("aria-controls");
+  const panel = id ? d.getElementById(id) : null;
+  return (!!panel && panel.className.includes("kv-sf-support-panel")) || `controls=${id}`;
+});
+check("support panel is a non-modal dialog, not a trap", () => {
+  const panel = d.querySelector(".kv-sf-support-panel");
+  return (panel.getAttribute("role") === "dialog" && !panel.hasAttribute("aria-modal")) || panel.outerHTML.slice(0, 80);
+});
+await click($(".kv-sf-support-launch"));
+check("the same control closes it", () => !d.querySelector(".kv-sf-support-panel"));
+d.dispatchEvent(new env.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+await wait(120);
+check("Escape on a closed widget is harmless", () => !d.querySelector(".kv-sf-support-panel") && env.errors.length === 0);
+await click($(".kv-sf-support-launch"));
+check("the panel reopens after Escape", () => !!d.querySelector(".kv-sf-support-panel"));
+d.dispatchEvent(new env.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+await wait(120);
+check("Escape closes the panel", () => !d.querySelector(".kv-sf-support-panel"));
+check("focus returns to the launcher, not the document body", () =>
+  d.activeElement?.classList.contains("kv-sf-support-launch") || d.activeElement?.tagName);
+
+/* ---------------------------------------- footer / demo gating / policy honesty */
+const footer = d.querySelector("footer");
+check("footer renders only real actions", () => {
+  const controls = Array.from(footer.querySelectorAll("button, a"));
+  const dead = controls.filter((node) => node.tagName === "A" && (node.getAttribute("href") ?? "#") === "#");
+  return dead.length === 0 || dead.map((n) => n.textContent.trim()).join(" | ");
+});
+check("no newsletter form or success claim in the footer", () =>
+  (!footer.querySelector("form") && !/خبرنامه|ثبت شد/.test(footer.textContent)) || "newsletter copy found");
+check("no unbacked contact data in the footer", () =>
+  !/۰۲۱\d|tel:|ولیعصر|خیابان|اینستاگرام|تلگرام/.test(footer.textContent) || "contact copy found");
+/* the smoke bundle is built in production mode (mode defaults to production), so
+   the preview affordances must be gone from the DOM — exactly what a shopper sees */
+check("demo/preview controls are absent from the production DOM", () =>
+  !/تست پنل‌ها|پیش‌نمایش پنل‌ها/.test(d.body.textContent) || "demo control rendered");
+check("the preview affordances are gated on the dev flag in source", () => {
+  const source = fs.readFileSync("src/App.tsx", "utf8");
+  return /import\.meta\.env\.DEV/.test(source) && !/onDemo=\{\(?\)?=>/.test(source) || "gate not found";
+});
+
+check("cart and checkout resolve the line image through the shared colour resolver", () => {
+  const cart = fs.readFileSync("src/components/storefront/CartDrawer.tsx", "utf8");
+  const checkout = fs.readFileSync("src/portals/retail.tsx", "utf8");
+  return (cart.includes("lineThumbnail") && checkout.includes("lineThumbnail")) ||
+    `cart:${cart.includes("lineThumbnail")} checkout:${checkout.includes("lineThumbnail")}`;
+});
 
 /* ------------------------------------------------------- build / css audit */
 /* the singlefile build inlines one <style rel="stylesheet"> block; search for the
@@ -267,7 +355,58 @@ check("the gallery is pulled above the information below lg only", () =>
 check("thumbnails are 72px", () => /--kvaf-thumb:\s*72px/.test(css) && /\.kv-sf-thumb\s*{[^}]*width:\s*var\(--kvaf-thumb\)/.test(css));
 check("filter panel docks to the side from 1024px", () => /\.kv-sf-sheet\[data-panel="?true"?\]\s*{[^}]*inset-inline-start:\s*0/.test(css));
 check("reduced motion is still honoured", () => /prefers-reduced-motion:\s*reduce/.test(css));
-check("no viewport-width unit anywhere in the build", () => !/100vw/.test(dist));
+/* Stacking order is explicit: the storefront surfaces use the named tokens only.
+   The legacy dashboards (admin / supplier / style-canvas / account) still carry
+   arbitrary z-index utilities — they are outside the storefront stack and are
+   recorded as debt in docs/storefront-archive-fluid.md, so this audit covers the
+   shopper-facing surfaces that Phase 4 ships. */
+check("storefront surfaces never use an arbitrary z-index utility", () => {
+  const storefrontDir = "src/components/storefront";
+  const files = ["src/App.tsx", "src/components/support.tsx", "src/portals/retail.tsx",
+    ...fs.readdirSync(storefrontDir).filter((name) => /\.tsx?$/.test(name)).map((name) => `${storefrontDir}/${name}`)];
+  const offenders = files.filter((file) => /z-\[\d+\]/.test(fs.readFileSync(file, "utf8")));
+  return offenders.length === 0 || offenders.join(" | ");
+});
+check("the named stacking tokens exist and order correctly", () => {
+  const token = (name) => Number(new RegExp(`--kvaf-z-${name}:\\s*(\\d+)`).exec(css)?.[1] ?? -1);
+  const stack = ["header", "bnav", "support", "drawer", "search", "sheet", "toast"].map((name) => [name, token(name)]);
+  const values = stack.map(([, value]) => value);
+  return values.every((value, index) => value > 0 && (index === 0 || value > values[index - 1])) || JSON.stringify(stack);
+});
+/* The mobile bands are arithmetic, not vibes: every fixed surface on a product
+   page derives its offset from --kvaf-bottomnav-space and clears the one below it. */
+check("the mobile bands derive from one token and never overlap", () => {
+  const gap = (marker) => {
+    const rule = new RegExp(`${marker}\\{[^}]*bottom:calc\\(var\\(--kvaf-bottomnav-space\\)\\s*\\+\\s*env\\(safe-area-inset-bottom,\\s*0px\\)\\s*\\+\\s*(\\d+)px\\)`).exec(css);
+    return Number(rule?.[1] ?? -1);
+  };
+  /* the token is 0px on desktop and the real value inside the mobile query, so the
+     arithmetic is checked against the largest declared value */
+  const nav = Math.max(...[...css.matchAll(/--kvaf-bottomnav-space:\s*(\d+)px/g)].map((match) => Number(match[1])));
+  const buybarGap = gap("\\.kv-sf-buybar");
+  const toastGap = gap("\\.kv-storefront:has\\(\\.kv-sf-buybar\\) \\.kv-sf-toasts");
+  /* the minifier drops quotes from attribute selectors and keeps a space after
+     the custom-property colon, so both regexes are tolerant of that */
+  const lift = Number(/\.kv-sf-support\[data-buybar="?true"?\]\s*\{\s*--kvaf-support-lift:\s*(\d+)px/.exec(css)?.[1] ?? -1);
+  /* the purchase bar must also sit *below* the bottom nav in the stack */
+  const buybarBelowNav = /\.kv-sf-buybar\{[^}]*z-index:calc\(var\(--kvaf-z-bnav\) - 1\)/.test(css);
+  /* and the whole column must carry the safe-area inset, not just the nav */
+  const safeArea = /\.kv-sf-support\{[^}]*--kvaf-support-bottom:\s*calc\(var\(--kvaf-bottomnav-space\) \+ var\(--kvaf-support-lift\) \+ env\(safe-area-inset-bottom, 0px\)\)/.test(css);
+  const ok = nav > 0 && buybarGap > 0 && lift > buybarGap && toastGap >= lift && buybarBelowNav && safeArea;
+  return ok || JSON.stringify({ nav, buybarGap, toastGap, lift, buybarBelowNav, safeArea });
+});
+/* Phase 4: the support panel is deliberately clamped to the viewport
+   (`min(320px, calc(100vw - 1.5rem))`) instead of a rigid 270px, so a viewport unit
+   is allowed there and only there. */
+const vwRules = [...css.matchAll(/([^{}]+)\{([^{}]*100vw[^{}]*)\}/g)].map((match) => match[1].trim());
+check("viewport width is used only to clamp the support panel", () =>
+  (vwRules.length > 0 && vwRules.every((selector) => selector.includes(".kv-sf-support-panel"))) || vwRules.join(" | ") || "no 100vw rule found");
+/* and the responsive display switch really is owned by the stylesheet */
+check("the stylesheet owns the PDP mobile/desktop gallery switch", () => {
+  const base = /\.kv-sf-gallery\{[^}]*display:\s*none/.test(css);
+  const desktop = /@media[^{]*min-width:\s*1024px[^{]*\{[^@]*\.kv-sf-gallery\{[^}]*display:\s*flex/.test(css);
+  return (base && desktop) || `base:${base} lg:${desktop}`;
+});
 const scrollers = [...css.matchAll(/([^{}]+)\{[^{}]*overflow-x:\s*auto[^{}]*\}/g)].map((match) => match[1].trim());
 /* .kv-sf-cats is the circular category rail, .kv-sf-recs the recommendation rail —
    both are deliberate scrollers with hidden scrollbars and scroll snapping */

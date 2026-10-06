@@ -146,6 +146,11 @@ not visually confirmed.
 
 # Phase 2 — product card refinement (inline purchase)
 
+> **Superseded in part by Phase 4.** The card itself is unchanged and still
+> authoritative. The paragraphs below about *per-colour gallery fallbacks* and
+> *derived colour×size availability* describe code that Phase 2.1 and Phase 4
+> removed; treat the Phase 4 section at the end of this document as current.
+
 ## What changed on the card
 
 The card is now a framed miniature purchase surface instead of a photo with a
@@ -187,9 +192,10 @@ photographs in that colour. Rules:
 - only colourways whose photograph is unambiguous are mapped — 8 entries across
   the catalogue (p2 cream/olive, p3 black, p4 white, p5 burgundy, p6 sand,
   p7 cream, p8 black);
-- unmapped colourways fall back to the same product gallery, rotated to a stable
-  frame per colour (`mediaForColor`) so switching colour still changes the
-  photograph without pretending a per-colour shoot exists.
+- ~~unmapped colourways fall back to the same product gallery, rotated to a stable
+  frame per colour (`mediaForColor`)~~ — **superseded by Phase 4.** Rotation is
+  gone: a colour with no mapped media shows the product's own gallery, starting at
+  its first frame, and never a photo that was taken for a different colour.
 
 No new variant system, no pricing/stock/OMS change. When real per-colour studio
 photography arrives, only this table changes.
@@ -230,6 +236,12 @@ are specified in CSS but not visually confirmed.
 ---
 
 # Phase 2.1 — correctness fix (variant data source + media honesty)
+
+> **Superseded in part by Phase 4.** This section's diagnosis still holds, and
+> `sizesForColor` is gone for good. The media rule it left behind — *"unmapped
+> colourways fall back to the same product gallery, rotated to a stable frame per
+> colour"* — is **no longer true**: `mediaForColor()` now returns
+> `colorMedia[colorId] ?? product.images`, with no rotation. See Phase 4.
 
 ## What was wrong in Phase 2
 
@@ -607,3 +619,187 @@ Harness: `.smoke/` (`entry.tsx`, `break.tsx`, `units.tsx`, `build.mjs`, `dom.mjs
 
 Still open, and stated plainly: measured horizontal overflow, real-device
 responsive behaviour, and any visual judgement about balance and whitespace.
+
+---
+
+# Phase 4 — correctness, data honesty, support stabilisation
+
+Not a redesign. The Archive Fluid identity, the floating header, the product card,
+the PDP gallery scale, the grid density, the journal hierarchy and the mobile
+bottom navigation are all unchanged. Phase 4 removes things the interface could
+not honestly support.
+
+## Product detail page
+
+The top of the page now answers only *"can I buy this exact option?"*:
+
+gallery | brand, name, rating, price, real instalment | colour | size |
+availability | Add to Cart | Wishlist | Try-on (secondary).
+
+* **No SKU in the purchase area.** The SKU is published in the
+  `مشخصات کالا` disclosure, where technical metadata belongs. A test reads the real
+  SKU value out of that row and asserts the purchase area never contains it.
+* **Stock is presence only.** `Product.stock` is a product-level count; it cannot
+  describe the selected colour × size. The page renders `موجود` / `ناموجود` from
+  `data-available` and never a number. A test fails if a digit or `عدد` appears in
+  that element.
+* **The size-guide control is gone.** There is no `sizeGuide` contract, no size
+  chart and no measurement table anywhere in the catalogue, so the control was a
+  dead end. It may return only when the field exists.
+* **No hardcoded promises.** `۷ روز مهلت برگشت`, `ضمانت اصالت` and the delivery
+  promises are deleted. Delivery rows come from the live shipping configuration
+  (`SEED_SHIPPING`-shaped: name, carrier, eta, price, free-above, zones), and when
+  that list is empty the delivery disclosure is **omitted** rather than stubbed.
+* **Details are backend-driven.** `p.desc`, `p.fabric`, the spec rows and the
+  delivery rows each render only when their data exists — so a product yields three
+  or four disclosures, never an empty one. The section is one coherent accordion
+  group; there is no dashboard table and no per-property card.
+* **Assistive tech keeps the selection.** `انتخاب شما: رنگ … · سایز …` is a
+  `sr-only` `aria-live="polite"` region, so the visible column stays quiet.
+
+## Recommendations
+
+* `complementsOf()` no longer falls back to arbitrary catalogue items. No curated
+  complement → **the rail is hidden**. The category map is a *presentation
+  heuristic*: it is curated, it lives in `recommendations.ts`, and it is documented
+  there as a stand-in until `productRelations` exists.
+* `شاید بپسندید` remains the broad discovery surface and is disjoint from the look
+  rail (tested).
+
+## Journal
+
+Browse-only, and locked that way. There is no article route, no body, no slug, no
+excerpt, no `publishedAt`, no author, no generated editorial text and no Read
+control — because `JOURNAL` carries only `id`, `title`, `cat`, `read` and `img`.
+Cards show that real metadata and navigate to browsing. When the CMS ships a
+`JournalEntry`, the card grows a destination; nothing parallel is built.
+
+## Support widget
+
+* **Zero layout shift.** One fixed 52px launcher; both glyphs live in a single
+  20px slot, cross-faded and rotated in place, so opening never changes padding,
+  gap, border, width or the icon centre. Measured across
+  closed/hover/focus/open/closing in Chromium at 390 and 1440: **max drift 0.00px**
+  for x, y, width, height, icon centre and slot width.
+* **The panel cannot move the trigger**: it is `position: absolute; bottom: 100%`.
+* **RTL**: the launcher anchors to the *physical* left of the viewport. A logical
+  `inset-inline-start` resolves to the right in an RTL page and covered the PDP
+  purchase column at 1024–1200px — the trap is recorded in the source comment.
+* **Size**: `width: min(320px, calc(100vw - 32px))`, `max-height` with internal
+  scroll, so it fits 360px viewports and long channel names.
+* **Behaviour**: Escape (capture phase, so it closes before any storefront sheet),
+  click-outside, `aria-expanded`, `aria-controls`, non-modal `dialog` with no focus
+  trap, and focus returns to the launcher.
+* **Material**: launcher LIQUID, panel FROST — Archive Fluid tokens, not the legacy
+  `kv-glass`/`kv-accent` pair. Because the widget now renders *inside* the
+  storefront shell, it inherits the dark-mode scope (it previously stayed light on
+  a dark page).
+* Data still comes from `quickSupport`; the ticket action still hands off to the
+  existing ticket centre.
+
+## Stacking order and the mobile bands
+
+Named tokens only, in ascending order:
+
+| Token | Value | Surface |
+| --- | --- | --- |
+| `--kvaf-z-header` | 60 | floating header |
+| `--kvaf-z-bnav` | 62 | mobile bottom navigation |
+| `--kvaf-z-support` | 64 | support launcher |
+| `--kvaf-z-drawer` | 70 | cart drawer |
+| `--kvaf-z-search` | 86 | search overlay |
+| `--kvaf-z-sheet` | 88 | filter sheet |
+| `--kvaf-z-toast` | 95 | cart toast |
+
+Every fixed surface on a product page derives its offset from one token
+(`--kvaf-bottomnav-space: 76px` on mobile), in this order from the bottom:
+
+    0–76px    bottom navigation              (z 62)
+    76–80px   gap
+    80–152px  purchase bar                  (z = bnav − 1)
+    164–216px support launcher, lifted      (lift 84px)
+    164–234px toast, when a purchase bar exists (+160px)
+
+The toast used to land on top of the buy bar — the button the shopper had just
+pressed — and the buy bar overlapped the bottom nav by 2px. Both are fixed and
+verified in Chromium at 360/390/430/768: all six pairwise intersections are 0.
+
+## Footer
+
+No address, no phone number, no Instagram/Telegram/WhatsApp handles, no newsletter
+form and no `ثبت شد` success message — none of those had an authoritative source.
+What remains is six real actions: theme toggle, all products, studio, journal,
+wholesale, supplier centre. The Persian year is computed via `Intl` inside a
+`try/catch`.
+
+## Cart and checkout
+
+A line's thumbnail is resolved by `lineThumbnail(product, colorName)`: the chosen
+colour's own first frame when that colour has media, otherwise the product's first
+photo. Verified end-to-end in the browser — card → toast → cart drawer → checkout
+all show the *same* frame (the checkout order line previously showed
+`images[0]` while the drawer showed the colour frame). Cart business state,
+`CartLine` and `variantId` are untouched.
+
+## Production gating
+
+`تست پنل‌ها` and `پیش‌نمایش پنل‌ها` are behind `import.meta.env.DEV`. In the
+production bundle the footer control renders nothing, the header callback is
+`onDemo: void 0`, and the modal is not mounted; a test asserts no
+`تست پنل‌ها`/`پیش‌نمایش پنل‌ها` text exists in the production DOM while the source
+keeps its dev flag.
+
+## Horizontal overflow (measured, not masked)
+
+`document.scrollWidth === document.documentElement.clientWidth` at 360/390/430/768/820/1024/1280/1440/1600/1920
+across home, shop, shop-with-filters, PDP, journal, cart and search — **0
+offenders**. No global `overflow-x: hidden` was added; the only horizontal
+scrollers are the explicit rails, which are asserted against an allow-list.
+
+## Missing contracts (nothing was invented)
+
+| Contract | What is blocked | Current behaviour |
+| --- | --- | --- |
+| `retailVariants` / `RetailVariant{variantId,sku,colorId,size,available,stock?}` | per-variant availability and quantity | presence-only stock; size list stays the derived union |
+| `ProductProvenance` (`conditionGrade`, `wear`, `era`, `origin`, `uniquePiece`, `restoration`, `fit`, `care`) | the vintage-specific details | omitted entirely |
+| `JournalEntry` (`slug`, `excerpt`, `body`, `publishedAt`, `author`) | article pages | browse-only cards |
+| `productRelations` (`{productId, relatedProductId, kind, reason}`) | authoritative complement/similar data | curated presentation heuristic |
+| `sizeGuide` | the size-guide control | removed |
+| newsletter/lead endpoint | the footer newsletter | removed |
+| authoritative site contact data | address, phone, socials | omitted |
+| per-image `thumb` | lighter thumbnails | same URLs rendered at 72px |
+
+## Debt, recorded rather than hidden
+
+* **`.smoke/` was not moved to `tests/storefront-smoke/`.** Another agent's work
+  lives in the same tree and the move was not provably conflict-free, so the
+  harness stayed where it is; `.smoke/out/` remains untracked scratch.
+* **Legacy dashboards still use arbitrary z-index utilities** —
+  `primitives.tsx` (`z-[70]`, `z-[80]`), `portals/admin.tsx`, `portals/supplier.tsx`
+  (`z-[70]`, `z-[90]`), `portals/style-canvas.tsx` (`z-[999]`) and
+  `portals/account.tsx` (`z-[90]`). They are outside the storefront stack; the
+  Phase 4 audit covers the shopper-facing surfaces only and fails if a `z-[…]`
+  utility reappears there.
+
+## Verification record (Phase 4)
+
+Environment: Chromium (via `@sparticuz/chromium`) driven by `puppeteer-core` from a
+harness outside the repository; `dist/` rebuilt before every run.
+
+| Check | Result |
+| --- | --- |
+| `tsc --noEmit` | 0 errors |
+| `vite build` | `dist/index.html` 956.6 kB (gzip 244.1 kB) |
+| DOM suite — desktop + mobile flows, PDP, support semantics, footer honesty, demo gating, z-index and band audits | **128 / 128** |
+| worst-case fixtures (13 hostile products × card + PDP) | **72 / 72** |
+| unit checks — recommendations, media integrity, line thumbnails | **118 / 118** |
+| overflow, 10 widths × 7 surfaces | scrollWidth == clientWidth, 0 offenders |
+| support drift, closed/hover/focus/open/closing @390 and @1440 | max 0.00px |
+| mobile band intersections @360/390/430/768 | all 0 |
+| runtime errors across every flow | 0 |
+
+Harness: `.smoke/` (`entry.tsx`, `break.tsx`, `units.tsx`, `build.mjs`, `dom.mjs`,
+`run.mjs`, `break.mjs`, `units.mjs`). Rebuild each bundle with its own entry —
+`SMOKE_NAME=app SMOKE_ENTRY=.smoke/entry.tsx node .smoke/build.mjs` — then run
+`node .smoke/run.mjs`. Omitting `SMOKE_ENTRY` silently builds the default entry for
+all three names, which reads as a passing run against the wrong code.

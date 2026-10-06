@@ -1,7 +1,7 @@
 import { ArrowLeft, ShoppingBag, Trash2, X } from "lucide-react";
 import { fmtMoney, fmtNum, type Product } from "../../data/catalog";
 import type { CartLine } from "../../portals/retail";
-import { useFocusTrap, useScrollLock } from "./shared";
+import { lineThumbnail, useFocusTrap, useScrollLock } from "./shared";
 
 /**
  * Cart panel in FROST material: left drawer on desktop, near-full-height sheet on
@@ -55,10 +55,12 @@ export default function CartDrawer({ open, onClose, cart, products, subtotal, on
               {cart.map((line, index) => {
                 const product = products.find((item) => item.id === line.id);
                 if (!product) return null;
+                /* the thumbnail follows the colour that was actually added */
+                const thumb = lineThumbnail(product, line.color);
                 return (
                   <li key={`${line.id}-${line.size}-${line.color}`} className="flex gap-3 rounded-[14px] bg-[var(--kvaf-sand)]/45 p-2.5">
-                    {product.images[0]
-                      ? <img src={product.images[0]} alt="" className="h-24 w-19 shrink-0 rounded-[10px] object-cover" />
+                    {thumb
+                      ? <img src={thumb} alt="" className="h-24 w-19 shrink-0 rounded-[10px] object-cover" />
                       : <span aria-hidden="true" className="h-24 w-19 shrink-0 rounded-[10px] bg-[var(--kvaf-sand)]" />}
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[13.5px] font-bold text-[var(--kvaf-ink)]">{product.name}</p>

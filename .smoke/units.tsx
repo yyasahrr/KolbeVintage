@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { StoreProvider, useStore } from "../src/data/store";
 import { complementsOf, similarTo } from "../src/components/storefront/recommendations";
-import { sizesOf, mediaForColor, hasOwnMedia } from "../src/components/storefront/shared";
+import { sizesOf, mediaForColor, hasOwnMedia, lineThumbnail } from "../src/components/storefront/shared";
 
 /**
  * Runs the presentation helpers against the store's real product list — the same
@@ -32,6 +32,18 @@ function Probe() {
           .filter(([colorId]) => !product.colors.some((c) => c.id === colorId))
           .map(([colorId]) => colorId),
         galleryFor: mediaForColor(product, product.colors[0]?.id).length,
+        /* the same resolver the cart drawer and checkout use for a line thumbnail */
+        thumbs: product.colors.map((color) => ({
+          name: color.name,
+          own: hasOwnMedia(product, color.id),
+          src: lineThumbnail(product, color.name),
+          /* the image the line *should* show: the colour's own first frame when it
+             has one, otherwise the product's first frame */
+          expected: mediaForColor(product, color.id)[0] ?? product.images[0] ?? "",
+          ownFirst: (product.colorMedia?.[color.id] ?? [])[0] ?? "",
+        })),
+        thumbAnonymous: lineThumbnail(product, undefined),
+        images: product.images,
       };
     }
     const stranger = { ...retail[0], id: "zz", category: "دسته‌ای که وجود ندارد" };
@@ -43,7 +55,12 @@ function Probe() {
       deterministic: retail.every((product) =>
         JSON.stringify(complementsOf(product, retail).map((p) => p.id)) === JSON.stringify(complementsOf(product, retail).map((p) => p.id)) &&
         JSON.stringify(similarTo(product, retail).map((p) => p.id)) === JSON.stringify(similarTo(product, retail).map((p) => p.id))),
-      unknownCategory: { looks: complementsOf(stranger, retail).length, alike: similarTo(stranger, retail).length },
+      unknownCategory: {
+        looks: complementsOf(stranger, retail).length,
+        alike: similarTo(stranger, retail).length,
+        /* no mapped complement must mean an empty rail, never a padded one */
+        names: complementsOf(stranger, retail).map((p) => p.name),
+      },
       unpublishedLeak: retail.some((p) =>
         complementsOf(p, retail).some((r) => r.status !== "published" || r.retailPrice <= 0) ||
         similarTo(p, retail).some((r) => r.status !== "published" || r.retailPrice <= 0)),

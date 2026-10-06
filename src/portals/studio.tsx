@@ -131,9 +131,15 @@ export function StyleBuilder({ accountId, onLogin }: { accountId?: string; onLog
 }
 
 /* ================= TRY-ON ================= */
-export function TryOn() {
+/**
+ * Virtual try-on flow. `initialProductId` is presentation context only: when the
+ * shopper arrives from a product page or a product card, the flow opens on that
+ * product instead of asking them to pick it again. Login and usage rules stay
+ * exactly where they were — nothing about eligibility is decided here.
+ */
+export function TryOn({ initialProductId }: { initialProductId?: string } = {}) {
   const [step, setStep] = useState(0);
-  const [product, setProduct] = useState(PRODUCTS[0]);
+  const [product, setProduct] = useState(() => PRODUCTS.find((item) => item.id === initialProductId) ?? PRODUCTS[0]);
   const [photo, setPhoto] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const steps = [
@@ -292,7 +298,7 @@ export function AuthScreens({ portal, onDone }: { portal: string; onDone: (phone
   );
 }
 
-export default function StudioExperience({ tab, setTab, accountId, onLogin }: { tab: string; setTab: (t: string) => void; accountId?: string; onLogin: () => void }) {
+export default function StudioExperience({ tab, setTab, accountId, onLogin, productId }: { tab: string; setTab: (t: string) => void; accountId?: string; onLogin: () => void; productId?: string }) {
   return (
     <div>
       <div className="mx-auto flex w-full max-w-[1400px] justify-center px-4 pt-5 md:px-8">
@@ -304,7 +310,7 @@ export default function StudioExperience({ tab, setTab, accountId, onLogin }: { 
           ))}
         </div>
       </div>
-      {tab === "builder" ? <StyleCanvas accountId={accountId} onLogin={onLogin} /> : <TryOn />}
+      {tab === "builder" ? <StyleCanvas accountId={accountId} onLogin={onLogin} /> : <TryOn initialProductId={productId} />}
     </div>
   );
 }
