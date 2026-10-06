@@ -25,6 +25,7 @@ test('SEO/Search/Media PostgreSQL integration smoke', { skip: !databaseUrl }, as
   const supplierProductId = randomUUID();
   const noindexProductId = randomUUID();
   const variantId = randomUUID();
+  const variantId2 = randomUUID();
   const supplierVariantId = randomUUID();
   const warehouseId = randomUUID();
   const suffix = randomUUID().slice(0, 8);
@@ -66,8 +67,11 @@ test('SEO/Search/Media PostgreSQL integration smoke', { skip: !databaseUrl }, as
       ($1,NULL,'Kolbe','Aurora Coat','Coats','Description','published',500000,'{}'),
       ($2,$3,'Vendor','Supplier Coat','Coats','Description','published',250000,'{}'),
       ($4,NULL,'Kolbe','Noindex Coat','Coats','Description','published',300000,'{}')`, [productId, supplierProductId, vendorId, noindexProductId]);
+    // TWO variants on the retail product: the storefront emits ProductGroup only for a real multi-variant
+    // product, so the schema assertion below must be earned by data, not by the inlined bundle text.
     await pool.query(`INSERT INTO product_variants(id,product_id,sku,size_label,color_label) VALUES
-      ($1,$2,$3,'M','Black'),($4,$5,$6,'M','Black')`, [variantId, productId, `SEO-${suffix}`, supplierVariantId, supplierProductId, `SUP-${suffix}`]);
+      ($1,$2,$3,'M','Black'),($7,$2,$8,'L','Black'),($4,$5,$6,'M','Black')`,
+      [variantId, productId, `SEO-${suffix}`, supplierVariantId, supplierProductId, `SUP-${suffix}`, variantId2, `SEO2-${suffix}`]);
     const videoSave = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${productId}/media`, headers,
       payload: { role: 'video', url: 'https://media.example.test/aurora.mp4', purpose: 'gallery', metadata: { title: 'Aurora video' } } });
     assert.equal(videoSave.statusCode, 201, videoSave.body);
