@@ -706,6 +706,20 @@ test('P4-OMS-004/008/015/016/022 — prescribed 4+3+2 multi-supplier master and 
     const future = await app.inject({ method: 'GET',
       url: `/api/v1/wholesale/masters?scope=all&dateFrom=${encodeURIComponent(new Date(Date.now() + 86400000).toISOString())}`, headers: adminHeaders });
     assert.equal((future.json() as { items: unknown[] }).items.length, 0, 'date window filters server-side');
+    // §24/§62: the derived customer lifecycle is filterable server-side with the SAME values the row returns.
+    for (const item of (await app.inject({ method: 'GET',
+      url: '/api/v1/wholesale/masters?scope=all&limit=100', headers: adminHeaders })).json().items as Array<{ id: string; customer_status: string }>) {
+      const same = (await app.inject({ method: 'GET',
+        url: `/api/v1/wholesale/masters?scope=all&limit=100&customerStatus=${item.customer_status}`, headers: adminHeaders })).json() as
+        { items: Array<{ id: string; customer_status: string }> };
+      assert.ok(same.items.some((row) => row.id === item.id),
+        `customerStatus=${item.customer_status} must return its own row`);
+      assert.ok(same.items.every((row) => row.customer_status === item.customer_status),
+        'the customerStatus filter never mixes other lifecycles in');
+    }
+    const impossible = (await app.inject({ method: 'GET',
+      url: '/api/v1/wholesale/masters?scope=all&customerStatus=delivered&limit=100', headers: adminHeaders })).json() as { items: unknown[] };
+    assert.equal(impossible.items.length, 0, 'lifecycle filter excludes masters in other states');
     const required = (await app.inject({ method: 'GET',
       url: '/api/v1/wholesale/masters?scope=all&supplyRequired=1&limit=100', headers: adminHeaders })).json() as
       { items: Array<{ id: string }> };

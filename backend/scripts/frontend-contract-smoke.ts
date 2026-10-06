@@ -833,6 +833,42 @@ try {
   check('OrdersHub drawer mounts ManualOrderForm — legacy manual-sale CREATE panel no longer offered',
     ordersHubSrc.includes('<ManualOrderForm />') && !ordersHubSrc.includes('<ManualSalesPanel'));
 
+  // =================== Prompt-4 Wholesale Order Center: static + contract locks ===================
+  const orderCenterSrc = readFileSync(join(repoRoot, 'src/portals/wholesale-order-center.tsx'), 'utf8');
+  const omsSrc = readFileSync(join(repoRoot, 'backend/src/wholesale-oms.ts'), 'utf8');
+  // The list schema is the authority: every filter the UI sends MUST exist server-side, otherwise a filter
+  // silently does nothing (this is exactly how the customerStatus filter was caught).
+  const listSchema = omsSrc.slice(omsSrc.indexOf("app.get('/api/v1/wholesale/masters'"));
+  const schemaKeys = [...listSchema.slice(0, listSchema.indexOf('}).parse(request.query')).matchAll(/^\s{6}(\w+):/gm)]
+    .map((match) => match[1]!);
+  const uiParams = [...orderCenterSrc.matchAll(/p\.(\w+) =/g)].map((match) => match[1]!);
+  const unknownParams = [...new Set(uiParams)].filter((key) => !schemaKeys.includes(key));
+  check('every Wholesale Order Center filter exists in the server list schema (no silently ignored filter)',
+    unknownParams.length === 0 && schemaKeys.includes('customerStatus') && schemaKeys.includes('readiness') &&
+    schemaKeys.includes('supplyRequired') && schemaKeys.includes('search'),
+    `schema=${schemaKeys.join(',')} ui=${[...new Set(uiParams)].join(',')}`);
+  check('Order Center renders the THREE source buckets separately and names the unmet demand per line',
+    orderCenterSrc.includes('موجودی کلبه') && orderCenterSrc.includes('موجود تأمین‌کننده نزد کلبه') &&
+    orderCenterSrc.includes('ظرفیت تأمین‌کننده') && orderCenterSrc.includes('نیاز به تأمین') &&
+    orderCenterSrc.includes('پوشش ناقص') && orderCenterSrc.includes('هنوز پوشش ندارد'));
+  check('Order Center is a full-page OPERATIONAL workspace: named sections, no side drawer, ops projection only',
+    orderCenterSrc.includes('view !== "ops"') &&
+    ['خلاصه سفارش', 'خریدار VIP', 'اقلام سفارش', 'تخصیص و تأمین', 'وضعیت انبار', 'ورودی و کنترل کیفیت',
+      'تجمیع و ارسال نهایی', 'تایم‌لاین سفارش']
+      .every((title) => orderCenterSrc.includes(title)) &&
+    !orderCenterSrc.includes('Drawer'));
+  check('destructive cancellation is confirmed AND requires a written reason (no one-click cancel)',
+    orderCenterSrc.includes('cancelMaster(') && orderCenterSrc.indexOf('setCancelOpen(true)') > 0 &&
+    /reason\.trim\(\).length\s*<\s*4/.test(orderCenterSrc));
+  check('Order Center never renders raw identifiers as content (React keys only)',
+    !/(?<!key=)\{(?:m|child|line|allocation|e|entry)\.id\}/.test(orderCenterSrc) &&
+    !orderCenterSrc.includes('slice(0, 8)'));
+  check('readiness/coverage are SERVER values — the UI never derives readiness from raw statuses',
+    orderCenterSrc.includes('m.readiness') && orderCenterSrc.includes('detail.coverage') &&
+    !/readiness\s*=\s*[^;]*===/.test(orderCenterSrc));
+  check('the ops workspace flags every open exception and names the Prompt-6 boundary in the UI',
+    orderCenterSrc.includes('ورود کالا، کنترل کیفیت و ثبت رسید در انبار کلبه انجام می‌شود'));
+
   setAccessToken(null);
 } catch (error) {
   console.error('SMOKE ERROR:', error instanceof Error ? error.message : error);
