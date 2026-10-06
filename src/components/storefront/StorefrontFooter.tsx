@@ -34,7 +34,13 @@ export default function StorefrontFooter({ onShop, onJournal, onStudio, onVip, o
   dark: boolean;
   onToggleDark: () => void;
   productCount: number;
-  shippingNote: string;
+  /**
+   * Delivery copy derived from the *active* shipping configuration, or undefined
+   * when that configuration has nothing to say. There is deliberately no default
+   * text: a blanket «ارسال به سراسر کشور» is a promise the storefront cannot back
+   * from data, so the footer simply omits the line instead of inventing one.
+   */
+  shippingNote?: string;
 }) {
   return (
     <footer className="mt-20 border-t border-[var(--kvaf-line)] bg-[var(--kvaf-surface)]">
@@ -44,8 +50,7 @@ export default function StorefrontFooter({ onShop, onJournal, onStudio, onVip, o
             <p className="kvaf-wordmark text-[22px] leading-none text-[var(--kvaf-ink)] md:text-[30px]">Kolbe</p>
             <p className="kvaf-editorial mt-2 text-[26px] leading-none text-[var(--kvaf-muted)] md:text-[34px]">Vintage</p>
             <p className="kvaf-body mt-6 max-w-[42ch] text-[14px] text-[var(--kvaf-ink-2)]">
-              کلبه، پلی میان اصالت و تجارت مدرن. پوشاک کلاسیک و مدرن از تأمین‌کنندگان منتخب،
-              با ارسال به سراسر کشور.
+              کلبه، پلی میان اصالت و تجارت مدرن. پوشاک کلاسیک و مدرن از تأمین‌کنندگان منتخب.
             </p>
             <div className="mt-6">
               <button
@@ -96,7 +101,7 @@ export default function StorefrontFooter({ onShop, onJournal, onStudio, onVip, o
       <div className="border-t border-[var(--kvaf-line)]">
         <div className="kv-sf-shell flex flex-wrap items-center justify-between gap-3 py-5 text-[12px] text-[var(--kvaf-muted)]">
           <p>© {persianYear()} کلبه وینتج · تمامی حقوق محفوظ است</p>
-          <p>{shippingNote}</p>
+          {shippingNote ? <p>{shippingNote}</p> : null}
         </div>
       </div>
     </footer>

@@ -775,11 +775,39 @@ scrollers are the explicit rails, which are asserted against an allow-list.
 | authoritative site contact data | address, phone, socials | omitted |
 | per-image `thumb` | lighter thumbnails | same URLs rendered at 72px |
 
+## Phase 4.1 — footer delivery copy, recommendation docs
+
+Two honesty leaks closed, nothing else touched:
+
+* **The footer no longer promises delivery.** `با ارسال به سراسر کشور` was
+  hardcoded brand copy, and `App.tsx` fell back to the same claim whenever the
+  shipping configuration had nothing to say. `shippingNote` is now an **optional**
+  prop, `App.tsx` passes `retailShippingNote || undefined` with no literal
+  fallback, and the footer renders the line only when it exists — and it exists
+  only when an *active* retail shipping method declares a free-shipping threshold.
+  No authoritative shipping data therefore means no delivery claim at all.
+* **The look rail is documented as what it is.** `recommendations.ts` previously
+  said "nothing here invents a relation that the catalogue does not state", which
+  was the opposite of the truth: `COMPLEMENTS` is the *only* source of those
+  relations and the catalogue declares none. The file now states plainly that the
+  rail is a curated styling opinion rather than catalogue fact, that `[]` is the
+  correct answer when the table has no opinion (so the rail hides — runtime
+  behaviour is unchanged), and that `productRelations` supersedes the table
+  entirely rather than living alongside it.
+
 ## Debt, recorded rather than hidden
 
 * **`.smoke/` was not moved to `tests/storefront-smoke/`.** Another agent's work
   lives in the same tree and the move was not provably conflict-free, so the
   harness stayed where it is; `.smoke/out/` remains untracked scratch.
+* **`dist/` is an input to its own build.** `dist/index.html` is committed and
+  nothing excludes it from Tailwind's file scan, so a rebuild on top of a stale
+  bundle inherits utility classes from that bundle's own output — 52 dead classes
+  (dashboard-only) in this instance. Measured: building with `dist/` present emits
+  1511 selectors, building with it removed emits 1442; the difference is entirely
+  classes that no longer exist in `src/`. The committed bundle here is the clean
+  one. Excluding `dist/` from the scan is a one-line fix for a future pass, left
+  out of Phase 4.1 deliberately to keep the change set tiny.
 * **Legacy dashboards still use arbitrary z-index utilities** —
   `primitives.tsx` (`z-[70]`, `z-[80]`), `portals/admin.tsx`, `portals/supplier.tsx`
   (`z-[70]`, `z-[90]`), `portals/style-canvas.tsx` (`z-[999]`) and
@@ -795,8 +823,8 @@ harness outside the repository; `dist/` rebuilt before every run.
 | Check | Result |
 | --- | --- |
 | `tsc --noEmit` | 0 errors |
-| `vite build` | `dist/index.html` 956.6 kB (gzip 244.1 kB) |
-| DOM suite — desktop + mobile flows, PDP, support semantics, footer honesty, demo gating, z-index and band audits | **128 / 128** |
+| `vite build` | `dist/index.html` 954.7 kB (gzip 242.7 kB) |
+| DOM suite — desktop + mobile flows, PDP, support semantics, footer honesty, demo gating, z-index and band audits | **132 / 132** |
 | worst-case fixtures (13 hostile products × card + PDP) | **72 / 72** |
 | unit checks — recommendations, media integrity, line thumbnails | **118 / 118** |
 | overflow, 10 widths × 7 surfaces | scrollWidth == clientWidth, 0 offenders |

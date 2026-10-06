@@ -206,6 +206,9 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   /* The PDP's fixed purchase bar exists below 1024px; while it is on screen the
      support launcher lifts above it so the two never overlap. */
   const purchaseBarVisible = section === "retail" && !!selectedId;
+  /* Only an *active* retail shipping method that declares a free-shipping
+     threshold can produce footer copy; otherwise this stays empty and the footer
+     renders no delivery claim at all. */
   const retailShippingNote = shipping.filter((s) => s.active && s.scope !== "عمده" && s.freeAbove !== null)
     .map((s) => `${s.name}: ارسال رایگان بالای ${(s.freeAbove! / 1000000).toLocaleString("fa-IR")} میلیون تومان`)
     .slice(0, 1)
@@ -309,7 +312,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
             dark={dark}
             onToggleDark={() => setDark(!dark)}
             productCount={retailProducts.length}
-            shippingNote={retailShippingNote || "ارسال به سراسر کشور"}
+            shippingNote={retailShippingNote || undefined}
           />
         )}
 

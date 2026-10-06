@@ -318,10 +318,35 @@ check("footer renders only real actions", () => {
 });
 check("no newsletter form or success claim in the footer", () =>
   (!footer.querySelector("form") && !/خبرنامه|ثبت شد/.test(footer.textContent)) || "newsletter copy found");
+/* Phase 4.1: the footer used to end every visit with a blanket delivery promise.
+   Shipping copy may only appear when it is derived from the active shipping
+   configuration, so it names that method and its threshold — or says nothing. */
+check("the footer makes no blanket delivery claim", () =>
+  !/با ارسال به سراسر کشور|ارسال به سراسر کشور/.test(footer.textContent) || "blanket delivery claim found");
+check("any footer delivery copy is configuration-shaped, never a default", () => {
+  const lines = Array.from(footer.querySelectorAll("p")).map((node) => node.textContent.trim());
+  const claim = lines.find((line) => /ارسال/.test(line));
+  return (!claim || /ارسال رایگان بالای [۰-۹]+ میلیون تومان/.test(claim)) || claim;
+});
+check("the footer prop is optional and has no literal fallback in source", () => {
+  const footerSource = fs.readFileSync("src/components/storefront/StorefrontFooter.tsx", "utf8");
+  const appSource = fs.readFileSync("src/App.tsx", "utf8");
+  const optional = /shippingNote\?: string/.test(footerSource);
+  const conditional = /\{shippingNote \?/.test(footerSource);
+  const noDefault = !/shippingNote \|\| "/.test(appSource) && !/shippingNote \?\? "/.test(appSource);
+  return (optional && conditional && noDefault) || `optional:${optional} conditional:${conditional} noDefault:${noDefault}`;
+});
 check("no unbacked contact data in the footer", () =>
   !/۰۲۱\d|tel:|ولیعصر|خیابان|اینستاگرام|تلگرام/.test(footer.textContent) || "contact copy found");
 /* the smoke bundle is built in production mode (mode defaults to production), so
    the preview affordances must be gone from the DOM — exactly what a shopper sees */
+/* Phase 4.1: the look rail's curated heuristic is documented as such in source,
+   so nobody later mistakes the table for a catalogue-declared relationship. */
+check("the look rail documents itself as a curated heuristic", () => {
+  const source = fs.readFileSync("src/components/storefront/recommendations.ts", "utf8");
+  return /not\*\* a relationship the catalogue declares|curated styling heuristic|curated styling opinion/.test(source) &&
+    /productRelations/.test(source) || "heuristic note missing";
+});
 check("demo/preview controls are absent from the production DOM", () =>
   !/تست پنل‌ها|پیش‌نمایش پنل‌ها/.test(d.body.textContent) || "demo control rendered");
 check("the preview affordances are gated on the dev flag in source", () => {

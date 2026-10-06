@@ -4,27 +4,50 @@ import type { Product } from "../../data/catalog";
  * Presentation-side product relations.
  *
  * There is no recommendation engine, no scoring service and no analytics feed
- * in this repository, so both lists below are deterministic rules over data
- * that already exists (`Product.category`, `Product.status`). Nothing here
- * invents a relation that the catalogue does not state, and nothing here reads
- * inventory, pricing or wholesale data.
+ * in this repository, and the catalogue states **no** product-to-product
+ * relationships at all: `Product` has no `relatedProducts`, no `looks` and no
+ * tags. Everything below therefore comes from one hand-written table
+ * (`COMPLEMENTS`) applied deterministically to fields that do exist
+ * (`Product.category`, `Product.status`, `Product.retailPrice`).
+ *
+ * That distinction is the whole point of this file, so it is stated plainly:
+ * **the look rail is a curated styling opinion, not catalogue fact.** It is a
+ * merchandiser's rule of thumb ("a coat wants a blouse under it"), presented as
+ * a suggestion, which is why it may only ever *narrow* what is shown — when the
+ * table has no opinion, the rail is hidden rather than filled with catalogue
+ * neighbours dressed up as a recommendation.
+ *
+ * Nothing here reads inventory, pricing, wholesale or supplier data.
  *
  * ── Contract for a future engine ────────────────────────────────────────────
- * If Core Commerce later exposes relations, it should ship them as
+ * `productRelations` is the authoritative contract, and it does not exist yet.
+ * If Core Commerce adds it, it should ship as
  * `productRelations: { productId, relatedProductId, kind: "look" | "similar",
  * reason: string }[]` on the retail payload, ordered by the backend. These two
- * functions are then reduced to a filter over that array plus the deterministic
- * fallback below when the backend returns nothing for a product. The signature
- * `(current, catalogue) => Product[]` is deliberately kept so the swap is local.
+ * functions then reduce to a filter over that array — including its empty case,
+ * which must hide the rail exactly as `complementsOf` does today. `COMPLEMENTS`
+ * is deleted at that point, because a curated table must not outlive real data.
+ * The signature `(current, catalogue) => Product[]` is deliberately kept so the
+ * swap stays local to this file.
  */
 
 /**
- * Styling complements, keyed by the catalogue's real category names.
+ * A curated styling heuristic — **not** a relationship the catalogue declares.
  *
- * The order matters: it is the order a stylist would layer an outfit — an outer
- * piece first asks for what goes under it, then for the pieces that finish the
- * look. Categories that are not stocked yet (شلوار، بافت، اکسسوری) are listed so
- * the rules keep working as the catalogue grows; they simply match nothing today.
+ * Keyed by the catalogue's real category names, written by hand on the
+ * presentation side. Each key lists the categories that *may* complete that
+ * category's look: an outer piece asks for what goes under it first, then for
+ * the pieces that finish the outfit. Order is the order the rail should read in.
+ *
+ * Two consequences worth keeping in mind when editing this table:
+ *   - it is an opinion, so it is never evidence that two products go together;
+ *   - it is asymmetric on purpose in places (a shirt lists outerwear because a
+ *     shirt is *styled under* a coat), so reading it as a graph is a mistake.
+ *
+ * Categories that are not stocked yet (شلوار، بافت، اکسسوری) are listed so the
+ * rules keep working as the catalogue grows; they simply match nothing today.
+ * When `productRelations` lands, this table is deleted rather than kept as a
+ * fallback — a heuristic that outlives real data becomes the fake signal again.
  */
 const COMPLEMENTS: Record<string, string[]> = {
   "مانتو و بارانی": ["شومیز", "پیراهن", "کت و بلیزر", "بافت", "شلوار", "اکسسوری"],
@@ -41,12 +64,14 @@ const COMPLEMENTS: Record<string, string[]> = {
 const sellable = (p: Product) => p.status === "published" && p.retailPrice > 0;
 
 /**
- * «این استایل را کامل کن» — complementary pieces from *other* categories.
- * Deterministic, duplicate-free, and never the product being viewed.
+ * «این استایل را کامل کن» — pieces from *other* categories, chosen by the
+ * curated `COMPLEMENTS` heuristic above. Deterministic, duplicate-free and never
+ * the product being viewed.
  *
- * Returns an EMPTY array when the category has no mapped complement (or the
- * catalogue stocks nothing in those categories). The caller hides the section
- * in that case — this function never pads the rail with arbitrary products.
+ * There is no fallback and there must not be one: an unmapped category (or one
+ * whose complementary categories are unstocked) returns an EMPTY array, and the
+ * caller hides the section. An empty rail is honest; a rail padded with
+ * catalogue neighbours would assert a styling relationship nothing supports.
  */
 export function complementsOf(current: Product, catalogue: Product[], limit = 4): Product[] {
   const order = COMPLEMENTS[current.category] ?? [];
