@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Film, Image as ImageIcon, Loader2, Plus, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
+import { Check, Film, Image as ImageIcon, Loader2, Plus, Shirt, Sparkles, Trash2, Upload, Wand2, Workflow, X } from "lucide-react";
 import { COLORS, IMG, fmtMoney, fmtNum, nextSku, type Colorway, type Product, type SeriesDef } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE } from "../data/platform";
 import { useOps } from "../data/ops";
 import { fileToUrl, removeBackground, sendToN8n } from "../components/media";
 import { SeriesTemplatePicker, SeriesTemplateManager, seriesComplete, seriesSizesFor } from "./series-templates";
+import { CompatibilityStudio } from "./admin-styling";
 import { Btn, Card, Drawer, Field, Input, Select, Status, Switch, Textarea, SearchBox } from "../components/primitives";
 import { cn } from "../utils/cn";
 
@@ -116,6 +117,7 @@ export function ProductStudio({ flash }: { flash: F }) {
   const [q, setQ] = useState("");
   const [d, setD] = useState<Draft>(blank());
   const [cutFor, setCutFor] = useState<Product | null>(null);
+  const [compatFor, setCompatFor] = useState<Product | null>(null);
   const [manage, setManage] = useState(false);
   const [newColor, setNewColor] = useState({ name: "", hex: "#8A6A4F" });
   const imgRef = useRef<HTMLInputElement>(null);
@@ -157,8 +159,8 @@ export function ProductStudio({ flash }: { flash: F }) {
       </div>
       <Card className="overflow-hidden">
         <div className="kv-scroll overflow-x-auto">
-          <table className="kv-table min-w-[920px]">
-            <thead><tr><th>محصول</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>سری</th><th>رسانه</th><th>استایل‌بیلدر</th><th>انتشار</th></tr></thead>
+          <table className="kv-table min-w-[1020px]">
+            <thead><tr><th>محصول</th><th>مالک</th><th>خرده</th><th>عمده از</th><th>سری</th><th>رسانه</th><th>استایل‌بیلدر</th><th>هماهنگی</th><th>انتشار</th></tr></thead>
             <tbody>
               {list.map((p) => (
                 <tr key={p.id}>
@@ -169,6 +171,7 @@ export function ProductStudio({ flash }: { flash: F }) {
                   <td className="tabular-nums">{fmtNum(p.series.length)}</td>
                   <td className="text-[12px] text-[var(--kv-muted)]">{fmtNum(p.images.length)} تصویر{p.video ? " · ویدیو" : ""}</td>
                   <td><button onClick={() => setCutFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)]"><Sparkles size={13} />{CUT_LABEL[p.cutout?.status ?? "none"]}</button></td>
+                  <td>{p.retailPrice > 0 && p.status === "published" ? <button onClick={() => setCompatFor(p)} className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[var(--kv-accent)]"><Shirt size={13} />محصولات مکمل</button> : <span className="text-[11px] text-[var(--kv-faint)]">—</span>}</td>
                   <td><Switch on={p.status === "published"} onToggle={() => { setStatus(p.id, p.status === "published" ? "draft" : "published"); flash(p.status === "published" ? `${p.name} از فروش خارج شد` : `${p.name} منتشر شد`); }} /></td>
                 </tr>
               ))}
@@ -252,7 +255,11 @@ export function ProductStudio({ flash }: { flash: F }) {
         </div>
       </Drawer>
 
-      <Drawer open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""} wide>
+            <Drawer open={!!compatFor} onClose={() => setCompatFor(null)} title="محصولات مکمل و هماهنگی استایل" wide>
+        {compatFor && <CompatibilityStudio source={compatFor} flash={flash} />}
+      </Drawer>
+
+<Drawer open={!!cutFor} onClose={() => setCutFor(null)} title={cutFor ? `استایل‌بیلدر · ${cutFor.name}` : ""} wide>
         {cutFor && <CutoutUploader key={cutFor.id} productId={cutFor.id} value={products.find((p) => p.id === cutFor.id)?.cutout ?? { status: "none" }} onChange={(c) => updateProduct(cutFor.id, { cutout: c })} candidates={[...cutFor.images, ...(cutFor.cutout?.src && !cutFor.cutout.src.startsWith("data:") ? [cutFor.cutout.src] : [])]} flash={flash} />}
       </Drawer>
       <Drawer open={manage} onClose={() => setManage(false)} title="قالب‌های سری کلبه" wide><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></Drawer>

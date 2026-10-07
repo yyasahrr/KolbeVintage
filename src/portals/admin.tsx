@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Radar, Package, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check, X, Ban, Eye,
   ShieldCheck, Sun, Moon, LogOut, Warehouse, Users, Crown, ShoppingBag, Tags, Truck, Contact,
-  LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2,
+  LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2, Wand2,
 } from "lucide-react";
 import { SUPPLIERS, STATUS_LABEL, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
 import { KOLBE, SUB_STATUS, isTerminal, type SubStatus, type VipPlan } from "../data/platform";
 import { ParentOrderCard, SubOrderDesk, SupplierChip } from "../components/orders";
+import { CuratedStyleStudio } from "./admin-styling";
 import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
 import { RetailOrders, ShippingAdmin, NotifAdmin, IntegrationsAdmin } from "./admin-retail";
 import { ProductStudio } from "./admin-product";
@@ -140,6 +141,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     { g: "خرده‌فروشی" },
     { v: "rorders", label: "سفارش‌های خرده", icon: <ShoppingBag size={17} /> },
     { v: "rproducts", label: "تعریف محصول", icon: <Tags size={17} /> },
+    { v: "cstyles", label: "استایل‌های آماده", icon: <Wand2 size={17} /> },
     { v: "shipping", label: "حمل‌ونقل", icon: <Truck size={17} /> },
     { v: "crm", label: "مشتریان (CRM)", icon: <Contact size={17} /> },
     { v: "promo", label: "کوپن و جشنواره", icon: <TicketPercent size={17} /> },
@@ -164,6 +166,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     plans: ["پلن‌های عضویت عمده", "تعریف سطوح، اعتبار و قابلیت‌ها"],
     rorders: ["سفارش‌های خرده", "آماده‌سازی، ارسال، مرجوعی"],
     rproducts: ["تعریف محصول", "کاتالوگ کامل، واریانت‌ها، سئو و کانال‌های فروش"],
+    cstyles: ["استایل‌های آماده", "ساخت ست‌های فروشگاهی، هماهنگی رنگ و تنظیم اقساط"],
     shipping: ["حمل‌ونقل", "روش‌های ارسال خرده و عمده"],
     crm: ["مدیریت ارتباط با مشتری", "بخش‌بندی، پروفایل ۳۶۰ و کمپین"],
     cms: ["مدیریت محتوا", "صفحات، بنرها و مجله"],
@@ -537,6 +540,7 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
           {/* ---------- Retail modules ---------- */}
           {tab === "rorders" && <RetailOrders flash={flash} />}
           {tab === "rproducts" && <ProductStudio flash={flash} />}
+          {tab === "cstyles" && <CuratedStyleStudio flash={flash} />}
           {tab === "shipping" && <ShippingAdmin flash={flash} />}
           {tab === "crm" && <CrmCenter flash={flash} />}
           {tab === "cms" && <CmsCenter flash={flash} />}
