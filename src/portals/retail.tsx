@@ -429,6 +429,8 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         style={style} catalogue={retailProducts} relations={relations}
         onBack={() => { setView("home"); window.scrollTo({ top: 0 }); }}
         onOpenProduct={(productId) => onOpenProductFromStyle?.(productId)}
+        onBuildWith={(productId, colorId) => onStudio("builder", productId, colorId)}
+        onTryOn={(productId) => onStudio("tryon", productId)}
         onPersonalize={() => personalizeStyle?.(style)}
         onAddToCart={(adds) => addStyleToCart?.(style, adds) ?? { ok: false }}
       />

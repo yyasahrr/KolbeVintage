@@ -2,11 +2,19 @@
  *
  * The customer-facing side of the admin-authored styles:
  *  - CuratedStyleCard: an EDITORIAL card, deliberately distinct from a product
- *    card (cover, title, item count, summary, complete cash total, discount
- *    state, installment flag). It NEVER carries size selectors (§45).
- *  - CuratedStyleDetail: pinned colours are fixed; the shopper picks SIZES and
- *    may enable/disable any item; totals, discount eligibility and the
- *    installment plan update live from the ONE pricing pipeline (§48–§56).
+ *    card (cover, title, summary, item count, live cash total, discount state,
+ *    installment flag). It NEVER carries size selectors (§45). Its two actions
+ *    sit in ONE row: a wide primary «مشاهده استایل» (~70%) beside a narrow
+ *    quiet «ساخت استایل شخصی» (~30%).
+ *  - CuratedStyleDetail: pinned colours are fixed and shown READ-ONLY; the
+ *    shopper picks SIZES and may enable/disable any item; totals, discount
+ *    eligibility and the installment plan update live from the ONE pricing
+ *    pipeline (§48–§56). Every item exposes three actions — خرید محصول
+ *    (its own product flow), ساخت استایل جدید (the existing Style Builder
+ *    entered at that product) and پرو آنلاین لباس (the try-on surface, only
+ *    when `tryOnEligible` says so — unsupported products never get a dead
+ *    entry point), plus a field-driven «جزئیات» fold reusing the PDP's
+ *    sections pattern so each product can be inspected properly.
  *
  * Honesty rules carried over from the domain: every number on screen is a
  * preview of `priceStyle` over the CURRENT catalogue; the cart mutation
@@ -14,15 +22,15 @@
  * in the store (server-side in production). Nothing here executes a payment.
  */
 import { useMemo, useState } from "react";
-import { ArrowRight, Layers, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, Layers, Lock, ScanFace, ShieldCheck, Shirt, Sparkles } from "lucide-react";
 import { fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { FAILURE_TEXT, type LineFailure } from "../data/cart";
 import {
   CURATED_ROLES, priceStyle, previewCompatibility, publicCuratedStyles,
   type CuratedStyle, type VariantRelation,
 } from "../data/curated";
-import { ROLE_LABEL, type OutfitRole } from "../data/styling";
-import { preferredSize, sizesOf } from "../components/storefront/shared";
+import { ROLE_LABEL, tryOnEligible, type OutfitRole } from "../data/styling";
+import { Fold, preferredSize, sizesOf } from "../components/storefront/shared";
 import { cn } from "../utils/cn";
 
 export type StyleAdd = { productId: string; colorId: string; size: string; qty: number };
@@ -41,6 +49,12 @@ export function CuratedStyleCard({ style, catalogue, relations, onOpen, onPerson
   const preview = useMemo(() => priceStyle(style, catalogue), [style, catalogue]);
   const cover = style.cover ?? catalogue.find((p) => p.id === style.items[0]?.productId)?.images[0];
   const compatibility = style.items.length >= 2 ? previewCompatibility(style, catalogue, relations) : null;
+  const discountPercent = style.pricing.discountType === "percentage" && style.pricing.discountValue > 0
+    ? fmtNum(style.pricing.discountValue)
+    : null;
+  const installmentHint = style.installments.installmentEnabled && preview.installments.mode !== "none" && preview.installments.perInstallment > 0
+    ? `یا ۴ قسطِ ${fmtMoney(preview.installments.perInstallment)}`
+    : null;
   return (
     <article className="kv-style-card" aria-label={style.title}>
       <button type="button" onClick={onOpen} className="kv-style-cover" aria-label={`مشاهده استایل ${style.title}`}>
@@ -52,17 +66,20 @@ export function CuratedStyleCard({ style, catalogue, relations, onOpen, onPerson
       <div className="kv-style-body">
         <h3 className="kv-style-title">{style.title}</h3>
         {style.description && <p className="kv-style-desc">{style.description}</p>}
-        <p className="kv-style-meta">
-          <span>{fmtNum(preview.totalCount)} قطعه</span>
-          <span aria-hidden="true">·</span>
-          <span>جمع کامل <b className="tabular-nums">{fmtMoney(preview.subtotal)}</b></span>
-          {preview.discount.eligible && <span className="kv-style-discount tabular-nums">با تخفیف {fmtMoney(preview.payable)}</span>}
-        </p>
-        {compatibility?.reasons.length ? <p className="kv-style-compat">{compatibility.reasons[0]}</p> : null}
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" onClick={onOpen} className="kv-sf-action">مشاهده استایل</button>
-          <button type="button" onClick={onPersonalize} className="kv-sf-action kv-sf-action-quiet">
-            <Sparkles size={13} className="inline" /> ساخت استایل شخصی
+        <div className="kv-style-chips">
+          <span className="kv-style-chip">{fmtNum(preview.totalCount)} قطعه</span>
+          {compatibility?.reasons.length ? <span className="kv-style-chip kv-style-chip-good">{compatibility.reasons[0]}</span> : null}
+        </div>
+        <div className="kv-style-price">
+          {preview.discount.eligible && <s className="kv-style-price-was tabular-nums">{fmtMoney(preview.subtotal)}</s>}
+          <span className="kv-style-price-now tabular-nums">{fmtMoney(preview.payable)}</span>
+          {discountPercent && preview.discount.eligible && <span className="kv-style-price-badge tabular-nums">{discountPercent}٪ تخفیف</span>}
+          {installmentHint && <span className="kv-style-price-inst tabular-nums">{installmentHint}</span>}
+        </div>
+        <div className="kv-style-ctas">
+          <button type="button" onClick={onOpen} className="kv-style-cta-card">مشاهده استایل</button>
+          <button type="button" onClick={onPersonalize} className="kv-style-cta-card kv-style-cta-card-alt">
+            <Sparkles size={13} aria-hidden="true" /> ساخت استایل شخصی
           </button>
         </div>
       </div>
@@ -98,12 +115,61 @@ export function CuratedStyleGrid({ styles, catalogue, relations, onOpen, onPerso
    Detail — pinned colours, per-item sizes, live composition
    ============================================================ */
 
-export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpenProduct, onPersonalize, onAddToCart }: {
+/**
+ * Field-driven per-item facts, built with the SAME rule as the PDP: a section
+ * exists only when a real catalogue field fills it (ProductDetail.tsx). No
+ * size-guide table is invented — the contract does not exist yet, so the fold
+ * lists the offered sizes instead and says nothing more.
+ */
+function StyleItemFacts({ product }: { product: Product }) {
+  const specRows = [
+    { term: "شناسه کالا", value: product.sku },
+    { term: "دسته‌بندی", value: product.category },
+    { term: "برند", value: product.brand },
+    ...(product.badge ? [{ term: "برچسب کالا", value: product.badge }] : []),
+    ...(product.soldNote ? [{ term: "یادداشت فروشنده", value: product.soldNote }] : []),
+  ].filter((row) => !!row.value?.trim());
+  const sizes = sizesOf(product);
+
+  const about = product.desc?.trim();
+  const fabric = product.fabric?.trim();
+  if (!about && !fabric && !specRows.length) return null;
+  return (
+    <div className="kv-style-item-details">
+    <Fold title="جزئیات محصول">
+      <div className="kv-style-facts">
+        {about && <p className="m-0">{about}</p>}
+        {fabric && <p className="m-0"><b>جنس و متریال: </b>{fabric}</p>}
+        {specRows.length > 0 && (
+          <dl className="m-0">
+            {specRows.map((row) => (
+              <div key={row.term}>
+                <dt>{row.term}</dt>
+                <dd className={row.term === "شناسه کالا" ? "kvaf-num" : undefined} dir={row.term === "شناسه کالا" ? "ltr" : undefined}>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {sizes.length > 0 && (
+          <p className="m-0"><b>سایزبندی: </b><span className="kvaf-num">{sizes.map((size) => size).join(" · ")}</span></p>
+        )}
+      </div>
+    </Fold>
+    </div>
+  );
+}
+
+export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpenProduct, onBuildWith, onTryOn, onPersonalize, onAddToCart }: {
   style: CuratedStyle;
   catalogue: Product[];
   relations: VariantRelation[];
   onBack: () => void;
+  /** opens the product's own flow (PDP) — «خرید محصول» */
   onOpenProduct: (productId: string) => void;
+  /** opens the EXISTING Style Builder entered at this product — «ساخت استایل جدید» */
+  onBuildWith?: (productId: string, colorId?: string) => void;
+  /** opens the try-on surface for this product; rendered only when eligible — «پرو آنلاین لباس» */
+  onTryOn?: (productId: string) => void;
   onPersonalize: () => void;
   /** validated + merged by the EXISTING cart rules; failures come back named */
   onAddToCart: (adds: StyleAdd[]) => { ok: boolean; failures?: LineFailure[] };
@@ -131,6 +197,9 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
     () => (style.items.length >= 2 ? previewCompatibility(style, catalogue, relations) : null),
     [style, catalogue, relations],
   );
+  const installmentHint = style.installments.installmentEnabled && preview.installments.mode !== "none" && preview.installments.perInstallment > 0
+    ? `۴ × ${fmtMoney(preview.installments.perInstallment)}`
+    : null;
 
   const toggle = (productId: string) => {
     setDisabled((prev) => {
@@ -170,11 +239,21 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
         <p className="kv-style-eyebrow">استایل آمادهٔ کلبه</p>
         <h1 className="kv-style-heading">{style.title}</h1>
         {style.description && <p className="kv-style-desc mt-2">{style.description}</p>}
+        {/* live style summary — same preview the panel below computes */}
+        <div className="kv-style-summary" role="group" aria-label="خلاصهٔ استایل">
+          <span className="kv-style-chip tabular-nums">{fmtNum(preview.activeCount)} از {fmtNum(preview.totalCount)} قطعه فعال</span>
+          <span className="kv-style-chip">
+            پرداخت کامل <b className="tabular-nums">{fmtMoney(preview.payable)}</b>
+            {preview.discount.eligible && <s className="tabular-nums">{fmtMoney(preview.subtotal)}</s>}
+          </span>
+          {preview.discount.eligible && <span className="kv-style-chip kv-style-chip-good tabular-nums">تخفیف استایل −{fmtMoney(preview.discount.discount)}</span>}
+          {installmentHint && <span className="kv-style-chip tabular-nums">اقساط {installmentHint}</span>}
+        </div>
       </header>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
         {/* items */}
-        <ol className="space-y-3">
+        <ol className="kv-style-list">
           {ordered.map((item) => {
             const product = catalogue.find((p) => p.id === item.productId);
             if (!product) return null;
@@ -182,26 +261,43 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
             const media = product.colorMedia?.[pinned?.id ?? ""]?.[0] ?? product.images[0];
             const off = disabled.has(item.productId);
             const sizeChoices = sizesOf(product);
+            const soldOut = product.stock < 1;
+            const tryOnOk = tryOnEligible(product);
             return (
               <li key={item.id} className={cn("kv-style-item", off && "kv-style-item-off")}>
-                <button type="button" onClick={() => onOpenProduct(item.productId)} className="kv-style-item-media" aria-label={`مشاهده ${product.name}`}>
-                  <img src={media} alt={product.name} loading="lazy" className="h-full w-full object-cover" />
-                </button>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <button type="button" onClick={() => onOpenProduct(item.productId)} className="kv-style-item-name">{product.name}</button>
-                      <p className="kv-style-item-role">{ROLE_LABEL[item.role as OutfitRole] ?? item.role}</p>
+                <div className="kv-style-item-top">
+                  <button type="button" onClick={() => onOpenProduct(item.productId)} className="kv-style-item-media" aria-label={`مشاهده ${product.name}`}>
+                    <img src={media} alt={product.name} loading="lazy" className="h-full w-full object-cover" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <button type="button" onClick={() => onOpenProduct(item.productId)} className="kv-style-item-name">{product.name}</button>
+                        <p className="kv-style-item-role"><span className="kv-style-role">{ROLE_LABEL[item.role as OutfitRole] ?? item.role}</span></p>
+                      </div>
                     </div>
-                    <label className="kv-style-switch">
-                      <input type="checkbox" checked={!off} onChange={() => toggle(item.productId)} aria-label={`فعال بودن ${product.name}`} />
-                      <span>{off ? "غیرفعال" : "فعال"}</span>
-                    </label>
+                    {/* pinned colour is ADMIN-fixed: display-only, never a control */}
+                    <p className="kv-style-pinned">
+                      <span className="kv-style-dot" style={{ background: pinned?.hex }} aria-hidden="true" />
+                      رنگ {pinned?.name}
+                      <span className="kv-style-pinned-note"><Lock size={11} aria-hidden="true" /> برای این استایل ثابت است</span>
+                    </p>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <p className="kv-style-item-price tabular-nums">{fmtMoney(product.retailPrice)}</p>
+                      <p className="kv-sf-stock" data-available={soldOut ? "false" : "true"}>
+                        <i aria-hidden="true" />
+                        {soldOut ? "ناموجود" : "موجود"}
+                      </p>
+                    </div>
                   </div>
-                  <p className="kv-style-pinned">
-                    <span className="kv-style-dot" style={{ background: pinned?.hex }} />
-                    رنگ {pinned?.name} <span className="text-[var(--kv-faint)]">(برای این استایل ثابت است)</span>
-                  </p>
+                </div>
+
+                {/* selection controls: the toggle and the size row stay together */}
+                <div className="kv-style-item-controls">
+                  <label className="kv-style-switch">
+                    <input type="checkbox" checked={!off} onChange={() => toggle(item.productId)} aria-label={`فعال بودن ${product.name}`} />
+                    <span>{off ? "غیرفعال" : "فعال"}</span>
+                  </label>
                   {sizeChoices.length > 0 ? (
                     <div className="kv-style-sizes" role="group" aria-label={`سایز ${product.name}`}>
                       {sizeChoices.map((size) => (
@@ -216,8 +312,24 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
                   ) : (
                     <p className="text-[11px] text-[var(--kv-muted)]">بدون سایزبندی — یک سایز</p>
                   )}
-                  <p className="kv-style-item-price tabular-nums">{fmtMoney(product.retailPrice)}</p>
                 </div>
+
+                {/* per-item actions: buy its flow · build around it · try it on (business-eligibility only) */}
+                <div className="kv-style-item-actions" role="group" aria-label={`اقدامات ${product.name}`}>
+                  <button type="button" onClick={() => onOpenProduct(item.productId)} className="kv-style-act">خرید محصول</button>
+                  {onBuildWith && (
+                    <button type="button" onClick={() => onBuildWith(item.productId, pinned?.id)} className="kv-style-act">
+                      <Shirt size={13} aria-hidden="true" /> ساخت استایل جدید
+                    </button>
+                  )}
+                  {onTryOn && tryOnOk && (
+                    <button type="button" onClick={() => onTryOn(item.productId)} className="kv-style-act">
+                      <ScanFace size={13} aria-hidden="true" /> پرو آنلاین لباس
+                    </button>
+                  )}
+                </div>
+
+                <StyleItemFacts product={product} />
               </li>
             );
           })}
