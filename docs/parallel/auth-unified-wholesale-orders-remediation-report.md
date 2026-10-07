@@ -246,8 +246,13 @@ Local stack for the PO's UAT (already running in this workspace):
   with `--force-with-lease`; the previous remote head `08abd42` — which still contained the forbidden
   storefront commit `be7b818` — was replaced, so the branch history no longer carries storefront content.
 * `origin/main` untouched at `3cd9dac`.
-* This report + the pending-applicant seed step are committed on top of `31774e8`; final SHA and the
-  `local == remote` / clean-tree confirmation are returned in the completion answer.
+* Commit chain on `arena/01a10ace-kolbevintage`: `31774e8` (remediation) → `1114c5d` (report + pending-applicant
+  seed) → `eaf1351` (ordinary non-VIP UAT customer + corrected credentials table) → `31c4bd2` (OMS-IA
+  evidence matrix, live E2E auth transcript, UAT rate-limit note) → this final report-pinning commit.
+  **The branch tip is the authoritative final SHA** and is returned in the completion answer.
+* Verified at the end of the session: `git rev-parse HEAD` = `origin/arena/01a10ace-kolbevintage`
+  (**local == remote**), working tree **clean**, `origin/main` still `3cd9dac`, and the forbidden storefront
+  commit is neither reachable nor present as an object.
 
 ## §60 Verdict
 
