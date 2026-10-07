@@ -1,4 +1,4 @@
-/* KOLBE — Curated-style storefront (Phase 3, Non-Core workstream)
+/* KOLBE · Curated-style storefront (Phase 3, Non-Core workstream)
  *
  * The customer-facing side of the admin-authored styles:
  *  - CuratedStyleCard: an EDITORIAL card, deliberately distinct from a product
@@ -9,10 +9,10 @@
  *  - CuratedStyleDetail: pinned colours are fixed and shown READ-ONLY; the
  *    shopper picks SIZES and may enable/disable any item; totals, discount
  *    eligibility and the installment plan update live from the ONE pricing
- *    pipeline (§48–§56). Every item exposes three actions — خرید محصول
+ *    pipeline (§48–§56). Every item exposes three actions · خرید محصول
  *    (its own product flow), ساخت استایل جدید (the existing Style Builder
  *    entered at that product) and پرو آنلاین لباس (the try-on surface, only
- *    when `tryOnEligible` says so — unsupported products never get a dead
+ *    when `tryOnEligible` says so · unsupported products never get a dead
  *    entry point), plus a field-driven «جزئیات» fold reusing the PDP's
  *    sections pattern so each product can be inspected properly.
  *
@@ -22,7 +22,7 @@
  * in the store (server-side in production). Nothing here executes a payment.
  */
 import { useMemo, useState } from "react";
-import { ArrowRight, Layers, Lock, ScanFace, ShieldCheck, Shirt, Sparkles } from "lucide-react";
+import { ArrowRight, Layers, Lock, Minus, Plus, ScanFace, ShieldCheck, Shirt, Sparkles } from "lucide-react";
 import { fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { FAILURE_TEXT, type LineFailure } from "../data/cart";
 import {
@@ -36,7 +36,7 @@ import { cn } from "../utils/cn";
 export type StyleAdd = { productId: string; colorId: string; size: string; qty: number };
 
 /* ============================================================
-   Card — homepage «استایل‌های آماده»
+   Card · homepage «استایل‌های آماده»
    ============================================================ */
 
 export function CuratedStyleCard({ style, catalogue, relations, onOpen, onPersonalize }: {
@@ -88,7 +88,7 @@ export function CuratedStyleCard({ style, catalogue, relations, onOpen, onPerson
 }
 
 /* ============================================================
-   Public grid — published styles only (the lens is publicCuratedStyles)
+   Public grid · published styles only (the lens is publicCuratedStyles)
    ============================================================ */
 
 export function CuratedStyleGrid({ styles, catalogue, relations, onOpen, onPersonalize }: {
@@ -100,8 +100,16 @@ export function CuratedStyleGrid({ styles, catalogue, relations, onOpen, onPerso
 }) {
   const published = publicCuratedStyles(styles);
   if (!published.length) return null;
+  /* the grid always composes intentionally: one style reads as a feature
+     card (never one card floating beside two empty columns), two styles
+     form a balanced pair, three or more keep the editorial 1/2/3 grid. */
+  const gridClass = published.length === 1
+    ? "mx-auto w-full max-w-[440px]"
+    : published.length === 2
+      ? "mx-auto grid w-full max-w-[920px] gap-5 sm:grid-cols-2"
+      : "grid gap-5 sm:grid-cols-2 lg:grid-cols-3";
   return (
-    <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+    <div className={gridClass}>
       {published.map((style) => (
         <CuratedStyleCard key={style.id} style={style} catalogue={catalogue} relations={relations}
           onOpen={() => onOpen(style.slug)}
@@ -112,13 +120,13 @@ export function CuratedStyleGrid({ styles, catalogue, relations, onOpen, onPerso
 }
 
 /* ============================================================
-   Detail — pinned colours, per-item sizes, live composition
+   Detail · pinned colours, per-item sizes, live composition
    ============================================================ */
 
 /**
  * Field-driven per-item facts, built with the SAME rule as the PDP: a section
  * exists only when a real catalogue field fills it (ProductDetail.tsx). No
- * size-guide table is invented — the contract does not exist yet, so the fold
+ * size-guide table is invented · the contract does not exist yet, so the fold
  * lists the offered sizes instead and says nothing more.
  */
 function StyleItemFacts({ product }: { product: Product }) {
@@ -164,17 +172,22 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
   catalogue: Product[];
   relations: VariantRelation[];
   onBack: () => void;
-  /** opens the product's own flow (PDP) — «خرید محصول» */
+  /** opens the product's own flow (PDP) · «خرید محصول» */
   onOpenProduct: (productId: string) => void;
-  /** opens the EXISTING Style Builder entered at this product — «ساخت استایل جدید» */
+  /** opens the EXISTING Style Builder entered at this product · «ساخت استایل جدید» */
   onBuildWith?: (productId: string, colorId?: string) => void;
-  /** opens the try-on surface for this product; rendered only when eligible — «پرو آنلاین لباس» */
+  /** opens the try-on surface for this product; rendered only when eligible · «پرو آنلاین لباس» */
   onTryOn?: (productId: string) => void;
   onPersonalize: () => void;
   /** validated + merged by the EXISTING cart rules; failures come back named */
   onAddToCart: (adds: StyleAdd[]) => { ok: boolean; failures?: LineFailure[] };
 }) {
   const [disabled, setDisabled] = useState<Set<string>>(() => new Set());
+  /* per-item quantity: the composition preview and the cart lines both read
+     the ONE pipeline, so the stepper only feeds real inputs (stock-capped) */
+  const [qtys, setQtys] = useState<Record<string, number>>({});
+  /* per-item gallery index: the detail borrows the PDP's image-first voice */
+  const [imgIdx, setImgIdx] = useState<Record<string, number>>({});
   const [sizes, setSizes] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
     for (const item of style.items) {
@@ -190,8 +203,8 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
     [style.items, disabled],
   );
   const preview = useMemo(
-    () => priceStyle(style, catalogue, { activeProductIds, sizes: new Map(Object.entries(sizes)), qtys: new Map() }),
-    [style, catalogue, activeProductIds, sizes],
+    () => priceStyle(style, catalogue, { activeProductIds, sizes: new Map(Object.entries(sizes)), qtys: new Map(Object.entries(qtys).map(([id, qty]) => [id, Math.max(1, qty)])) }),
+    [style, catalogue, activeProductIds, sizes, qtys],
   );
   const compatibility = useMemo(
     () => (style.items.length >= 2 ? previewCompatibility(style, catalogue, relations) : null),
@@ -213,9 +226,9 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
 
   const ordered = [...style.items].sort((a, b) => a.sortOrder - b.sortOrder);
   /* editorial cover for the detail: the admin-picked cover, else the first
-     item's first image — the same rule the grid card uses */
+     item's first image · the same rule the grid card uses */
   const cover = style.cover ?? catalogue.find((p) => p.id === ordered[0]?.productId)?.images[0];
-  /* only items that actually OFFER sizes can be missing one — one-size
+  /* only items that actually OFFER sizes can be missing one · one-size
      products (no series composition) are added with the empty size, exactly
      like the product card's quick add */
   const missingSizes = preview.lines.filter((line) => sizesOf(line.product).length > 0 && !sizes[line.item.productId]).length;
@@ -225,7 +238,7 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
     setError(null);
     const adds: StyleAdd[] = preview.lines
       .filter((line) => sizesOf(line.product).length === 0 || !!sizes[line.item.productId])
-      .map((line) => ({ productId: line.item.productId, colorId: line.item.colorId, size: sizes[line.item.productId] ?? "", qty: 1 }));
+      .map((line) => ({ productId: line.item.productId, colorId: line.item.colorId, size: sizes[line.item.productId] ?? "", qty: Math.max(1, qtys[line.item.productId] ?? 1) }));
     const result = onAddToCart(adds);
     if (!result.ok && result.failures?.length) {
       setError(result.failures.map((f) => `«${catalogue.find((p) => p.id === f.productId)?.name ?? f.productId}»: ${FAILURE_TEXT[f.reason]}`).join(" · "));
@@ -253,7 +266,7 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
         <p className="kv-style-eyebrow">استایل آمادهٔ کلبه</p>
         <h1 className="kv-style-heading">{style.title}</h1>
         {style.description && <p className="kv-style-desc mt-2">{style.description}</p>}
-        {/* live style summary — same preview the panel below computes */}
+        {/* live style summary · same preview the panel below computes */}
         <div className="kv-style-summary" role="group" aria-label="خلاصهٔ استایل">
           <span className="kv-style-chip tabular-nums">{fmtNum(preview.activeCount)} از {fmtNum(preview.totalCount)} قطعه فعال</span>
           <span className="kv-style-chip">
@@ -277,11 +290,16 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
             const sizeChoices = sizesOf(product);
             const soldOut = product.stock < 1;
             const tryOnOk = tryOnEligible(product);
+            const gallery = product.images.filter(Boolean);
+            const activeImage = gallery[Math.min(imgIdx[item.productId] ?? 0, gallery.length - 1)] ?? media;
+            const qtyCap = Math.max(1, Math.min(product.stock, 9));
+            const qty = Math.max(1, Math.min(qtys[item.productId] ?? 1, qtyCap));
+            const setQty = (next: number) => { setQtys((prev) => ({ ...prev, [item.productId]: Math.max(1, Math.min(next, qtyCap)) })); setError(null); };
             return (
               <li key={item.id} className={cn("kv-style-item", off && "kv-style-item-off")}>
                 <div className="kv-style-item-top">
                   <button type="button" onClick={() => onOpenProduct(item.productId)} className="kv-style-item-media" aria-label={`مشاهده ${product.name}`}>
-                    <img src={media} alt={product.name} loading="lazy" className="h-full w-full object-cover" />
+                    <img src={activeImage} alt={product.name} loading="lazy" className="h-full w-full object-cover" />
                   </button>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-3">
@@ -297,7 +315,7 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
                       <span className="kv-style-pinned-note"><Lock size={11} aria-hidden="true" /> برای این استایل ثابت است</span>
                     </p>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <p className="kv-style-item-price tabular-nums">{fmtMoney(product.retailPrice)}</p>
+                      <p className="kv-style-item-price tabular-nums">{fmtMoney(product.retailPrice * qty)}{qty > 1 && <span className="kv-style-item-price-x"> {fmtNum(qty)} × {fmtMoney(product.retailPrice)}</span>}</p>
                       <p className="kv-sf-stock" data-available={soldOut ? "false" : "true"}>
                         <i aria-hidden="true" />
                         {soldOut ? "ناموجود" : "موجود"}
@@ -312,6 +330,11 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
                     <input type="checkbox" checked={!off} onChange={() => toggle(item.productId)} aria-label={`فعال بودن ${product.name}`} />
                     <span>{off ? "غیرفعال" : "فعال"}</span>
                   </label>
+                  <div className="kv-style-qty" role="group" aria-label={`تعداد ${product.name}`}>
+                    <button type="button" disabled={off || qty <= 1} onClick={() => setQty(qty - 1)} aria-label={`کاهش تعداد ${product.name}`} className="kv-style-qty-btn"><Minus size={13} aria-hidden="true" /></button>
+                    <span className="kv-style-qty-n tabular-nums" aria-live="polite">{fmtNum(qty)}</span>
+                    <button type="button" disabled={off || qty >= qtyCap} onClick={() => setQty(qty + 1)} aria-label={`افزایش تعداد ${product.name}`} className="kv-style-qty-btn"><Plus size={13} aria-hidden="true" /></button>
+                  </div>
                   {sizeChoices.length > 0 ? (
                     <div className="kv-style-sizes" role="group" aria-label={`سایز ${product.name}`}>
                       {sizeChoices.map((size) => (
@@ -324,9 +347,23 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
                       ))}
                     </div>
                   ) : (
-                    <p className="text-[11px] text-[var(--kv-muted)]">بدون سایزبندی — یک سایز</p>
+                    <p className="text-[11px] text-[var(--kv-muted)]">بدون سایزبندی · یک سایز</p>
                   )}
                 </div>
+
+                {/* per-item gallery: same image-first voice as the PDP, only
+                    when the catalogue actually carries more than one photo */}
+                {gallery.length > 1 && (
+                  <div className="kv-style-thumbs" role="group" aria-label={`تصاویر ${product.name}`}>
+                    {gallery.slice(0, 4).map((src, index) => (
+                      <button key={`${src}-${index}`} type="button" aria-pressed={(imgIdx[item.productId] ?? 0) === index}
+                        aria-label={`تصویر ${(index + 1).toLocaleString("fa-IR")} ${product.name}`} onClick={() => setImgIdx((prev) => ({ ...prev, [item.productId]: index }))}
+                        className={cn("kv-style-thumb", (imgIdx[item.productId] ?? 0) === index && "kv-style-thumb-on")}>
+                        <img src={src} alt="" loading="lazy" />
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 {/* per-item actions: buy its flow · build around it · try it on (business-eligibility only) */}
                 <div className="kv-style-item-actions" role="group" aria-label={`اقدامات ${product.name}`}>
@@ -387,7 +424,7 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
           <button type="button" onClick={onPersonalize} className="kv-style-cta kv-style-cta-quiet">
             <Sparkles size={14} className="inline" /> ساخت استایل شخصی با همین قطعات
           </button>
-          <p className="kv-style-fineprint">موجودی، قیمت و تخفیف در لحظهٔ افزودن به سبد دوباره کنترل می‌شود؛ سبداً همیشه خط واقعیِ محصول است.</p>
+          <p className="kv-style-fineprint">موجودی، قیمت و تخفیف در لحظهٔ افزودن به سبد دوباره کنترل می‌شود؛ سبد همیشه خط واقعی محصول را نشان می‌دهد.</p>
         </aside>
       </div>
     </div>

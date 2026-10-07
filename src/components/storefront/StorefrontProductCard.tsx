@@ -7,12 +7,12 @@ import { useCartToast } from "./CartToast";
 import { SizeRow, hasOwnMedia, mediaForColor, sizesOf } from "./shared";
 
 const ADDED_MS = 2000;
-/** One card reveals its purchase controls at a time — keeps a grid of cards calm. */
+/** One card reveals its purchase controls at a time · keeps a grid of cards calm. */
 const EXPAND_EVENT = "kv-sf-card-expand";
 
 /**
  * Image-first product cell: the photograph leads, the purchase controls live
- * below it and reveal inline — no popover, no bottom sheet, nothing leaves the grid.
+ * below it and reveal inline · no popover, no bottom sheet, nothing leaves the grid.
  *
  * Flow: pick a colour -> the photograph follows that colour, the card expands and
  * shows the sizes that colour actually has -> pick a size -> the action enables ->
@@ -32,7 +32,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
    * point and the studio keeps login and usage rules authoritative. Rendered as
    * a quiet text action inside the already-expanded purchase area, so the
    * collapsed card keeps its approved geometry and no second CTA is added.
-   * Whether the action appears at all is business logic (`tryOnEligible`) —
+   * Whether the action appears at all is business logic (`tryOnEligible`) ·
    * unsupported products never show a dead entry point.
    */
   onTryOn?: () => void;
@@ -65,7 +65,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
   const frameLabel = `${(Math.min(frame, media.length - 1) + 1).toLocaleString("fa-IR")} از ${media.length.toLocaleString("fa-IR")}`;
 
   useEffect(() => () => { if (addedTimer.current) window.clearTimeout(addedTimer.current); }, []);
-  /* only a colour with photographs of its own moves the gallery — otherwise the
+  /* only a colour with photographs of its own moves the gallery · otherwise the
      product gallery stays exactly where the shopper left it */
   useEffect(() => { if (hasOwnMedia(p, color?.id)) setFrame(0); }, [p, color?.id]);
 
@@ -107,7 +107,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
     const accepted = onAdd(size, color?.name ?? "");
     if (!accepted) {
       setAdded(false);
-      setNotice("افزودن ممکن نشد — موجودی این محصول برای این تعداد کافی نیست.");
+      setNotice("افزودن ممکن نشد · موجودی این محصول برای این تعداد کافی نیست.");
       return;
     }
     setNotice("");
@@ -140,7 +140,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
     <article className="kv-sf-cell" ref={rootRef} data-expanded={expanded ? "true" : "false"}>
       {/* ---------- media ---------- */}
       <div className="kv-sf-cell-figure" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-        <button onClick={onOpen} className="kv-sf-cell-shot" aria-label={`${p.name} — دیدن جزئیات محصول`}>
+        <button onClick={onOpen} className="kv-sf-cell-shot" aria-label={`${p.name} · دیدن جزئیات محصول`}>
           {current
             ? (
               <img
@@ -162,7 +162,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
               onClick={() => step(-1)}
               disabled={frame === 0}
               data-side="start"
-              aria-label={`تصویر قبلی ${p.name} — ${frameLabel}`}
+              aria-label={`تصویر قبلی ${p.name} · ${frameLabel}`}
               className="kv-sf-nav"
             >
               <ChevronRight size={16} />
@@ -172,7 +172,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
               onClick={() => step(1)}
               disabled={frame >= media.length - 1}
               data-side="end"
-              aria-label={`تصویر بعدی ${p.name} — ${frameLabel}`}
+              aria-label={`تصویر بعدی ${p.name} · ${frameLabel}`}
               className="kv-sf-nav"
             >
               <ChevronLeft size={16} />
@@ -212,7 +212,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
         <div className="kv-sf-cell-variant">
           <div className="kv-sf-cell-row">
             <p className="kv-sf-cell-label" id={`${p.id}-color-label`}>
-              رنگ{color ? <span className="kv-sf-cell-chosen"> — {color.name}</span> : null}
+              رنگ{color ? <span className="kv-sf-cell-chosen"> · {color.name}</span> : null}
             </p>
             {expanded && (
               <button type="button" onClick={collapse} className="kv-sf-cell-collapse" aria-label={`بستن انتخاب ${p.name}`}>
@@ -233,7 +233,7 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
           <div className="kv-sf-cell-purchase">
             {sizes.length ? (
               <>
-                <p className="kv-sf-cell-label">سایز{size ? <span className="kv-sf-cell-chosen"> — {size}</span> : null}</p>
+                <p className="kv-sf-cell-label">سایز{size ? <span className="kv-sf-cell-chosen"> · {size}</span> : null}</p>
                 <SizeRow
                   sizes={sizes} value={size} idPrefix={`cell-${p.id}`}
                   onChange={(next) => { setSize(next); setNotice(""); }}

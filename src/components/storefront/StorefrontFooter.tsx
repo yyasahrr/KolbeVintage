@@ -29,7 +29,7 @@ export default function StorefrontFooter({ onShop, onJournal, onStudio, onVip, o
   onJournal: () => void;
   onStudio: () => void;
   onVip: () => void;
-  /** development / preview only — absent in a production build */
+  /** development / preview only · absent in a production build */
   onDemo?: () => void;
   dark: boolean;
   onToggleDark: () => void;

@@ -62,7 +62,7 @@ export default function App() {
     document.title =
       site === "supplier" ? "مرکز تأمین‌کنندگان کلبه" :
       site === "admin" ? "کنسول مدیریت کلبه" :
-      "کلبه وینتج — فروشگاه پوشاک کلاسیک و مدرن";
+      "کلبه وینتج | فروشگاه پوشاک کلاسیک و مدرن";
   }, [site]);
 
   return (
@@ -597,7 +597,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           }}>
             <p className="text-[17px] font-extrabold">کد تأیید ورود</p>
             <p className="text-[13px] leading-7 text-[var(--kv-muted)]">ورود دومرحله‌ای برای این حساب فعال است. کد ۶ رقمی پیامک‌شده را وارد کنید.</p>
-            {twoFactor.devCode && <p className="rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه — کد: <b dir="ltr">{twoFactor.devCode}</b></p>}
+            {twoFactor.devCode && <p className="rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-900">محیط توسعه · کد: <b dir="ltr">{twoFactor.devCode}</b></p>}
             <label className="block text-[13px] font-semibold">کد تأیید
               <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={twoFactor.code} onChange={(e) => setTwoFactor({ ...twoFactor, code: e.target.value.replace(/\D/g, ""), error: "" })}
                 className="mt-2 h-12 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] text-center text-lg font-bold tracking-[0.3em] outline-none focus:border-[var(--kv-accent)]" dir="ltr" />

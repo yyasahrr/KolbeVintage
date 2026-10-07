@@ -12,7 +12,7 @@ export type ListingFacets = {
 };
 
 /**
- * Product-list filters — a FROST panel on every width (bottom sheet on touch,
+ * Product-list filters · a FROST panel on every width (bottom sheet on touch,
  * side-anchored panel from 1024px up), so the grid always owns the page and no
  * permanent filter column eats the content width.
  *

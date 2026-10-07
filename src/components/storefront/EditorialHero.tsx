@@ -23,7 +23,7 @@ export type HeroFocalPoint = { mobilePosition?: string; desktopPosition?: string
 type HeroWithFocalPoint = HeroConfig & HeroFocalPoint;
 
 /**
- * Full-viewport editorial hero — a presentation adapter over the existing CMS
+ * Full-viewport editorial hero · a presentation adapter over the existing CMS
  * `HeroConfig` contract. It reads the same fields the CMS renderer does
  * (title/subtitle/eyebrow/CTAs/media/overlay/slides/video) and composes them as
  * one full-bleed fashion frame instead of a card.

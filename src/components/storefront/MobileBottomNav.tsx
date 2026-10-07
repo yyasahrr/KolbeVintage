@@ -4,7 +4,7 @@ export type BottomNavItem = { id: string; label: string; icon: ReactNode; active
 
 /**
  * Floating LIQUID bottom navigation for touch widths (<1024px).
- * Search and cart deliberately stay in the top bar — no duplicated primary actions.
+ * Search and cart deliberately stay in the top bar · no duplicated primary actions.
  */
 export default function MobileBottomNav({ items }: { items: BottomNavItem[] }) {
   return (

@@ -30,7 +30,7 @@ export function Swatches({ colors, selectedId, onSelect, productName, unavailabl
             type="button"
             onClick={() => !unavailable && onSelect?.(color)}
             aria-pressed={selectedId === color.id}
-            aria-label={`${productName} — رنگ ${color.name}${unavailable ? " (ناموجود)" : ""}`}
+            aria-label={`${productName} · رنگ ${color.name}${unavailable ? " (ناموجود)" : ""}`}
             data-unavailable={unavailable ? "true" : undefined}
             className="kv-sf-swatch"
             title={color.name}

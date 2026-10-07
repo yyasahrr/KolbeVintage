@@ -25,7 +25,7 @@ export default function FloatingHeader({ links, menuItems, cartCount, wishlistCo
   onOpenCart: () => void;
   onWishlist: () => void;
   onAuth: () => void;
-  /** development / preview only — absent in a production build */
+  /** development / preview only · absent in a production build */
   onDemo?: () => void;
   dark: boolean;
   onToggleDark: () => void;
@@ -63,7 +63,7 @@ export default function FloatingHeader({ links, menuItems, cartCount, wishlistCo
     <header className="kv-sf-header" data-scrolled={scrolled ? "true" : "false"}>
       <div className="kv-sf-header-bar kv-liquid">
         {/* brand */}
-        <button onClick={onHome} className="kv-sf-press flex shrink-0 items-center gap-2.5 rounded-full px-2 py-1.5 text-start" aria-label="کلبه وینتج — خانه">
+        <button onClick={onHome} className="kv-sf-press flex shrink-0 items-center gap-2.5 rounded-full px-2 py-1.5 text-start" aria-label="کلبه وینتج · خانه">
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--kvaf-charcoal)] text-[14px] font-bold text-[var(--kvaf-bone)] dark:bg-[var(--kvaf-bone)] dark:text-[var(--kvaf-charcoal)]">
             <span className="kvaf-latin tracking-normal">K</span>
           </span>
@@ -73,7 +73,7 @@ export default function FloatingHeader({ links, menuItems, cartCount, wishlistCo
           </span>
         </button>
 
-        {/* primary nav — desktop only */}
+        {/* primary nav · desktop only */}
         <nav className="ms-3 hidden items-center gap-0.5 lg:flex" aria-label="ناوبری اصلی">
           {links.map((link) => (
             <button
@@ -104,7 +104,7 @@ export default function FloatingHeader({ links, menuItems, cartCount, wishlistCo
             {dark ? <Sun size={17} /> : <Moon size={17} />}
           </button>
 
-          <button onClick={onWishlist} data-from="lg" className="kv-sf-iconbtn relative" aria-label={`علاقه‌مندی‌ها${wishlistCount ? ` — ${wishlistCount.toLocaleString("fa-IR")} مورد` : ""}`}>
+          <button onClick={onWishlist} data-from="lg" className="kv-sf-iconbtn relative" aria-label={`علاقه‌مندی‌ها${wishlistCount ? ` · ${wishlistCount.toLocaleString("fa-IR")} مورد` : ""}`}>
             <Heart size={17} />
             {wishlistCount > 0 && <span className="absolute inset-block-start-2 inset-inline-start-[18px] h-1.5 w-1.5 rounded-full bg-[var(--kvaf-brass-deep)]" aria-hidden="true" />}
           </button>
@@ -113,7 +113,7 @@ export default function FloatingHeader({ links, menuItems, cartCount, wishlistCo
             <Search size={18} /><span className="hidden text-[12.5px] font-semibold xl:inline">جست‌وجو</span>
           </button>
 
-          <button onClick={onOpenCart} className="kv-sf-iconbtn relative" aria-label={`سبد خرید — ${cartCount.toLocaleString("fa-IR")} قلم`}>
+          <button onClick={onOpenCart} className="kv-sf-iconbtn relative" aria-label={`سبد خرید · ${cartCount.toLocaleString("fa-IR")} قلم`}>
             <ShoppingBag size={18} />
             <CartCountBadge count={cartCount} />
           </button>

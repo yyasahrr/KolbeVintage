@@ -7,7 +7,7 @@ type CartToastItem = CartToastInput & { id: number; leaving?: boolean };
 const ToastCtx = createContext<(toast: CartToastInput) => void>(() => {});
 
 /** Fires the storefront "added to bag" confirmation. The cart itself stays owned by
-    the store state — this only announces what already happened. */
+    the store state · this only announces what already happened. */
 export const useCartToast = () => useContext(ToastCtx);
 
 const AUTO_DISMISS = 4200;

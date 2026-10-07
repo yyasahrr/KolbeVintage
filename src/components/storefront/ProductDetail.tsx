@@ -10,7 +10,7 @@ import { Fold, SizeRow, hasOwnMedia, mediaForColor, preferredSize, sizesOf, useC
 import { complementsOf, similarTo } from "./recommendations";
 
 /**
- * Product detail page — Archive Fluid.
+ * Product detail page · Archive Fluid.
  *
  * The top is a focused purchase interface: what the product is, what it costs,
  * which colour and size, whether it can be bought, and the three actions. Every
@@ -19,7 +19,7 @@ import { complementsOf, similarTo } from "./recommendations";
  * Nothing on this page is invented. A row, a badge or a claim only appears when
  * the catalogue or the live configuration actually carries it:
  *   - stock is stated as presence, never a quantity (there is no colour×size
- *     availability contract yet — see docs/storefront-archive-fluid.md);
+ *     availability contract yet · see docs/storefront-archive-fluid.md);
  *   - shipping lines come from the store's active shipping methods;
  *   - there is no returns or authenticity claim because no policy source exists;
  *   - the size guide control is gone until a sizeGuide contract exists.
@@ -34,7 +34,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
   /** existing cart + stock rules; returns whether the line was accepted */
   onAdd: (size: string, color: string) => boolean;
   onBack: () => void;
-  /** published retail products — the recommendation rails are derived from this */
+  /** published retail products · the recommendation rails are derived from this */
   catalogue?: Product[];
   wishlist?: string[];
   onToggleWish?: (id: string) => void;
@@ -137,7 +137,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
           <dl className="m-0">
             {delivery.map((method) => (
               <div key={method.id}>
-                <dt>{method.name} — {method.zones}</dt>
+                <dt>{method.name} · {method.zones}</dt>
                 <dd>
                   {method.eta}
                   {method.freeAbove !== null && method.freeAbove > 0
@@ -204,7 +204,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
 
           <div className="mt-6">
             <p className="mb-1.5 text-[13px] font-bold text-[var(--kvaf-ink)]">
-              رنگ{color ? <span className="font-medium text-[var(--kvaf-muted)]"> — {color.name}</span> : null}
+              رنگ{color ? <span className="font-medium text-[var(--kvaf-muted)]"> · {color.name}</span> : null}
             </p>
             <Swatches colors={p.colors} selectedId={color?.id} onSelect={setColor} productName={p.name} max={8} />
           </div>
@@ -243,7 +243,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
 
           {/* try-on and «+ استایل» stay secondary: quiet buttons below the
               primary action, rendered once for every width. Whether try-on
-              appears is business logic (`tryOnEligible`) — unsupported products
+              appears is business logic (`tryOnEligible`) · unsupported products
               never show a dead entry point. Both hand off to their own studio
               surfaces, where login and usage rules stay authoritative. */}
           {(tryOnOffered || onAddToStyle) && (
@@ -268,7 +268,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
           <div className="kv-sf-scrollx kv-sf-pdp-strip snap-x" aria-label={`تصاویر ${p.name}`}>
             {media.map((image, index) => (
               <img
-                key={image + index} src={image} alt={`${p.name} — نمای ${(index + 1).toLocaleString("fa-IR")}`}
+                key={image + index} src={image} alt={`${p.name} · نمای ${(index + 1).toLocaleString("fa-IR")}`}
                 className="aspect-[4/5] w-[74vw] max-w-[380px] shrink-0 snap-start rounded-[20px] object-cover"
                 loading={index === 0 ? "eager" : "lazy"}
               />
@@ -277,7 +277,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
 
           <div className="kv-sf-gallery">
             <div className="kv-sf-gallery-main">
-              <img key={fade.key} src={media[shot]} alt={`${p.name}${color ? ` — ${color.name}` : ""}`} />
+              <img key={fade.key} src={media[shot]} alt={`${p.name}${color ? ` · ${color.name}` : ""}`} />
               {p.badge && <span className="kv-sf-cell-flag">{p.badge}</span>}
             </div>
             {media.length > 1 && (
@@ -358,7 +358,7 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
         </section>
       )}
 
-      {/* mobile purchase bar — the primary action stays reachable while scrolling */}
+      {/* mobile purchase bar · the primary action stays reachable while scrolling */}
       <div className="kv-sf-buybar kv-liquid">
         <button onClick={submit} disabled={soldOut} data-added={added ? "true" : undefined} className="kv-sf-action flex-1">
           {added ? <><Check size={17} strokeWidth={3} />به سبد اضافه شد</> : <><Plus size={17} />افزودن به سبد</>}

@@ -5,7 +5,7 @@ import { useFocusTrap, useScrollLock } from "./shared";
 
 /**
  * Storefront search over the live catalogue: products by name/brand/category and
- * categories by name. No recents or trending lists — the app does not store any,
+ * categories by name. No recents or trending lists · the app does not store any,
  * and inventing analytics would be fake data.
  */
 export default function StorefrontSearch({ open, onClose, products, categories, onOpenProduct, onPickCategory }: {

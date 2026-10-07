@@ -192,7 +192,7 @@ export function Fold({ title, children, defaultOpen = false, icon }: {
 /* ---------- product helpers (presentation only, no pricing logic) ---------- */
 
 /**
- * Sizes offered to retail buyers — the storefront's existing size list.
+ * Sizes offered to retail buyers · the storefront's existing size list.
  *
  * NOTE for Core Commerce: this is a size *list*, not an availability signal.
  * Retail colour×size availability must come from the variant contract described
@@ -206,7 +206,7 @@ export function sizesOf(p: Product): string[] {
 
 /**
  * Media shown for a colourway.
- * Only `Product.colorMedia` — photographs actually captured for that colour —
+ * Only `Product.colorMedia` · photographs actually captured for that colour ·
  * may change the image. When a colour has no dedicated media the product
  * gallery is returned unchanged: an unrelated photograph is never presented as
  * that colour, and the gallery is never reordered to fake a change.
@@ -221,7 +221,7 @@ export function mediaForColor(p: Product, colorId?: string): string[] {
  *
  * `CartLine.color` is the colour *name* the storefront writes at add-to-cart
  * time (there is no variantId in the cart identity yet), so the name is resolved
- * back to a colourway and its own media when — and only when — that colour was
+ * back to a colourway and its own media when · and only when · that colour was
  * actually photographed. With no dedicated media the product's first frame is
  * used, which is the honest fallback: never a photo of a different colour
  * presented as the chosen one.
@@ -238,7 +238,7 @@ export const hasOwnMedia = (p: Product, colorId?: string): boolean =>
 
 export const preferredSize = (sizes: string[]) => sizes.includes("M") ? "M" : sizes[0] ?? "";
 
-/** Size chips — shared by the product card's inline purchase area and the PDP. */
+/** Size chips · shared by the product card's inline purchase area and the PDP. */
 export function SizeRow({ sizes, value, onChange, idPrefix }: {
   sizes: string[]; value: string; onChange: (size: string) => void; idPrefix: string;
 }) {

@@ -1961,12 +1961,12 @@ html[data-surface="storefront"] body { background-color: transparent; }
   font-size: 11.5px;
   color: var(--kvaf-muted);
 }
-/* ONE action row: wide primary (~70%) + narrow quiet secondary (~30%).
-   Under 640px the split eases toward 63/37 so the longer Persian label
-   of the secondary still fits on one line without wrapping. */
+/* ONE action row, sized by content not by a fixed ratio: the primary fills
+   the remaining width, the secondary takes exactly its label width. Under
+   375px the pair stacks so neither label ever wraps or clips. */
 .kv-style-ctas {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
+  display: flex;
+  align-items: stretch;
   gap: 8px;
   margin-top: 10px;
 }
@@ -1976,7 +1976,7 @@ html[data-surface="storefront"] body { background-color: transparent; }
   justify-content: center;
   gap: 5px;
   min-width: 0;
-  padding: 11px 8px;
+  padding: 11px 14px;
   border: 0;
   border-radius: 11px;
   background: var(--kvaf-ink);
@@ -1987,18 +1987,19 @@ html[data-surface="storefront"] body { background-color: transparent; }
   cursor: pointer;
   transition: opacity 0.2s ease, transform 0.15s ease;
 }
+.kv-style-cta-card:first-child { flex: 1 1 auto; }
 .kv-style-cta-card:hover { opacity: 0.9; }
 .kv-style-cta-card:active { transform: scale(0.985); }
 .kv-style-cta-card-alt {
+  flex: 0 0 auto;
   background: none;
   border: 1px solid var(--kvaf-line);
   color: var(--kvaf-ink);
-  font-size: clamp(10.5px, 2.9vw, 12px);
 }
 .kv-style-cta-card-alt:hover { border-color: var(--kvaf-ink-2, #4A5568); opacity: 1; }
-@media (max-width: 639px) {
-  .kv-style-ctas { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 6px; }
-  .kv-style-cta-card { padding: 10px 6px; }
+@media (max-width: 374px) {
+  .kv-style-ctas { flex-direction: column; gap: 6px; }
+  .kv-style-cta-card { padding: 10px 12px; }
 }
 
 /* ---- reader (style detail) ---- */
@@ -2142,6 +2143,61 @@ html[data-surface="storefront"] body { background-color: transparent; }
   padding-top: 10px;
   border-top: 1px dashed var(--kvaf-line);
 }
+.kv-style-item-price-x { font-size: 11px; font-weight: 600; color: var(--kvaf-muted); }
+/* per-item quantity: quiet stepper beside the enable toggle; caps are
+   real stock (max 9 per line), matching the cart's own line limits */
+.kv-style-qty {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--kvaf-line);
+  border-radius: 999px;
+  padding: 2px;
+  background: var(--kvaf-paper);
+}
+.kv-style-qty-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--kvaf-ink-2, #4A5568);
+  cursor: pointer;
+}
+.kv-style-qty-btn:hover:not(:disabled) { background: var(--kvaf-sand); color: var(--kvaf-ink); }
+.kv-style-qty-btn:disabled { opacity: 0.35; cursor: default; }
+.kv-style-qty-n {
+  min-width: 22px;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--kvaf-ink);
+}
+/* per-item gallery thumbs: the PDP's image-first voice in miniature */
+.kv-style-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.kv-style-thumb {
+  width: 46px;
+  height: 58px;
+  padding: 0;
+  overflow: hidden;
+  border: 1.5px solid var(--kvaf-line);
+  border-radius: 9px;
+  background: var(--kvaf-sand);
+  cursor: pointer;
+  opacity: 0.72;
+}
+.kv-style-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.kv-style-thumb-on { border-color: var(--kvaf-ink); opacity: 1; }
+.kv-style-thumb:focus-visible { outline: 2px solid var(--kvaf-clay, #C1613B); outline-offset: 2px; }
+
 .kv-style-item-actions {
   display: flex;
   gap: 6px;

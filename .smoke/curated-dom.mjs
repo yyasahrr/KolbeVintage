@@ -36,20 +36,37 @@ check("the discounted card strikes the full total and shows the percent badge", 
   !!$(".kv-style-price-was", card) && (card?.textContent ?? "").includes("٪"));
 check("the installment-enabled card carries the per-quarter hint", () =>
   (card?.textContent ?? "").includes("۴ قسطِ"));
-check("the two card CTAs sit in one 70/30 row", () => {
+check("the two card CTAs sit in one row sized by content (no fixed 70/30)", () => {
   const row = $(".kv-style-ctas", card);
   if (!row || row.children.length !== 2) return false;
   const primary = row.children[0], secondary = row.children[1];
-  if ((primary.textContent ?? "").trim() !== "مشاهده استایل") return false;
-  if (!(secondary.textContent ?? "").includes("ساخت استایل شخصی")) return false;
-  const gridTemplate = ".kv-style-ctas{display:grid;grid-template-columns:minmax(0,7fr)minmax(0,3fr)"; // minifier drops the inter-function space
-  const distCss = (() => { const t = fs.readFileSync("dist/index.html", "utf8"); return t.slice(t.indexOf("<style"), t.lastIndexOf("</style>")); })();
-  return distCss.replace(/\s+/g, "").includes(gridTemplate);
+  if ((primary.textContent ?? "").trim() !== "\u0645\u0634\u0627\u0647\u062f\u0647 \u0627\u0633\u062a\u0627\u06cc\u0644") return false;
+  if (!(secondary.textContent ?? "").includes("\u0633\u0627\u062e\u062a \u0627\u0633\u062a\u0627\u06cc\u0644 \u0634\u062e\u0635\u06cc")) return false;
+  /* the revoked ratio must be gone from the shipped CSS entirely; the row is
+     flex, the primary fills, the secondary takes its label width */
+  const flat = (() => { const t = fs.readFileSync("dist/index.html", "utf8"); return t.slice(t.indexOf("<style"), t.lastIndexOf("</style>")); })().replace(/\s+/g, "");
+  if (flat.includes("grid-template-columns:minmax(0,7fr)minmax(0,3fr)")) return "70/30 ratio still shipped";
+  const rule = flat.match(/\.kv-style-ctas\{[^}]*\}/)?.[0] ?? "";
+  return rule.includes("display:flex") && /\.kv-style-cta-card:first-child\{flex:1/.test(flat) && /\.kv-style-cta-card-alt\{flex:0/.test(flat);
 });
-check("the card carries both card-level actions, no size selector", () => !!byText(".kv-style-card button", "مشاهده استایل") && !!byText(".kv-style-card button", "ساخت استایل شخصی"));
+check("both card CTAs stay on one line (white-space: nowrap) and keep equal type size", () => {
+  const flatCss = (() => { const t = fs.readFileSync("dist/index.html", "utf8"); return t.slice(t.indexOf("<style"), t.lastIndexOf("</style>")); })().replace(/\s+/g, "");
+  const base = flatCss.match(/\.kv-style-cta-card\{[^}]*\}/)?.[0] ?? "";
+  return base.includes("white-space:nowrap") && !/\.kv-style-cta-card-alt\{[^}]*font-size:clamp/.test(flatCss);
+});check("the card carries both card-level actions, no size selector", () => !!byText(".kv-style-card button", "مشاهده استایل") && !!byText(".kv-style-card button", "ساخت استایل شخصی"));
 
-check("style cards keep the editorial grid (1/2/3 columns by width)", () =>
-  !!$$(".grid").find((node) => node.querySelector(".kv-style-card") && /sm:grid-cols-2/.test(node.className) && /lg:grid-cols-3/.test(node.className)));
+check("the styles grid composes intentionally for the published count (no empty columns)", () => {
+  const cards = $$(".kv-style-card");
+  const wrapper = cards[0]?.parentElement;
+  if (!wrapper) return false;
+  if (cards.length === 1) {
+    /* one published style reads as a feature card, centered, never a lone
+       column beside two empty ones */
+    return /max-w-\[440px\]/.test(wrapper.className) && /mx-auto/.test(wrapper.className);
+  }
+  if (cards.length === 2) return /sm:grid-cols-2/.test(wrapper.className) && /max-w-\[920px\]/.test(wrapper.className);
+  return /sm:grid-cols-2/.test(wrapper.className) && /lg:grid-cols-3/.test(wrapper.className);
+});
 check("the card cover zoom is wired (hover group + transform class)", () =>
   /\bgroup\b/.test(card.className) && !!$(".kv-style-cover img[class*='group-hover']"));
 /* style cards leak no supplier identity — pre-existing baseline
@@ -66,7 +83,7 @@ check("guest favorites shows an explicit combined ورود / ثبت‌نام CTA
 check("guest favorites explains device-local saving honestly", () =>
   ($('[data-testid="wishlist-guest-auth"]')?.textContent ?? "").includes("همین دستگاه"));
 check("guest favorites page stays usable (no broken empty state)", () => env.errors.length === 0 && !!$(".kv-sf-shell"));
-await click($('.kv-sf-header button[aria-label="کلبه وینتج — خانه"]'));
+await click($('.kv-sf-header button[aria-label="کلبه وینتج · خانه"]'));
 
 /* ── the reader (style detail) ── */
 await click(byText(".kv-style-card button", "مشاهده استایل"));
@@ -84,6 +101,35 @@ check("the document title reflects the open style", () => (d.title ?? "").includ
 check("pinned colours are marked as fixed for this style", () => inMain().includes("ثابت است"));
 check("each item offers its own size row", () => $$(".kv-style-item .kv-style-sizes").length >= 2);
 check("the live composition panel renders totals", () => inMain().includes("ترکیب استایل شما") && inMain().includes("مبلغ قابل پرداخت"));
+check("each item carries a stock-capped quantity stepper that feeds the live totals", () => {
+  const steppers = $$(".kv-style-qty");
+  if (steppers.length < 2) return false;
+  const plus = $(".kv-style-qty-btn:last-child", steppers[0]);
+  const before = inMain();
+  if (!plus || plus.hasAttribute("disabled")) return false;
+  return !!$(".kv-style-qty-n", steppers[0]) && !!plus.getAttribute("aria-label");
+});
+/* stepper interaction: raise, verify the live math followed, restore */
+await click($$(".kv-style-qty .kv-style-qty-btn")[1]);
+check("raising quantity updates the item line price in the live DOM", () => inMain().includes("۲ ×"));
+check("the qty readout reflects the raise", () => ($$(".kv-style-qty .kv-style-qty-n")[0]?.textContent ?? "") === "۲");
+await click($$(".kv-style-qty .kv-style-qty-btn")[0]); // restore qty 1
+/* gallery interaction: tap the second thumb, verify pressed state moved, restore */
+const thumbRow = $(".kv-style-thumbs");
+if (thumbRow && $$(".kv-style-thumb", thumbRow)[1]) {
+  await click($$(".kv-style-thumb", thumbRow)[1]);
+  check("tapping a gallery thumb moves the pressed state", () =>
+    $$(".kv-style-thumb", thumbRow)[1].getAttribute("aria-pressed") === "true"
+      && $$(".kv-style-thumb", thumbRow)[0].getAttribute("aria-pressed") === "false");
+  await click($$(".kv-style-thumb", thumbRow)[0]); // restore
+}
+check("items with more than one photo expose a gallery thumb row", () => {
+  const thumbs = $$(".kv-style-thumbs");
+  if (!thumbs.length) return "no galleries rendered";
+  const firstThumb = $(".kv-style-thumb", thumbs[0]);
+  return !!firstThumb && firstThumb.getAttribute("aria-pressed") === "true";
+});
+
 check("the eligible style discount shows in the panel", () => inMain().includes("تخفیف استایل"));
 check("the whole-style CTA is present and enabled", () => (texts(".kv-style-cta")[0] ?? "").includes("افزودن کل استایل به سبد") && !$(".kv-style-cta[disabled]"));
 check("the reader leaks no supplier identity", () => !SUPPLIERS.some((name) => inMain().includes(name)));
@@ -118,9 +164,10 @@ check("each item carries a field-driven details fold", () => {
    no real browser exists in this environment: the width matrix is enforced on
    the shipped stylesheet exactly like the storefront suite's viewport audits */
 const distCssFlat = (() => { const t = fs.readFileSync("dist/index.html", "utf8"); return t.slice(t.indexOf("<style"), t.lastIndexOf("</style>")).replace(/\s+/g, ""); })();
-check("card CTA row: 70/30 from 640px, eased 63/37 below so 360px never wraps", () =>
-  distCssFlat.includes(".kv-style-ctas{display:grid;grid-template-columns:minmax(0,7fr)minmax(0,3fr)")
-  && distCssFlat.includes("@media(max-width:639px){.kv-style-ctas{grid-template-columns:minmax(0,1.7fr)minmax(0,1fr)"));
+check("card CTA row: flex one-line from 375px, stacks below so 360px never wraps", () =>
+  distCssFlat.includes(".kv-style-ctas{display:flex;align-items:stretch;gap:8px")
+  && distCssFlat.includes("padding:11px14px") /* cssnano strips the unit gap in flat form */
+  && distCssFlat.includes("@media(max-width:374px){.kv-style-ctas{flex-direction:column;gap:6px}.kv-style-cta-card{padding:10px12px}}"));
 check("item cards tighten media and action labels at small widths (360/390)", () =>
   distCssFlat.includes("@media(max-width:480px){.kv-style-item-media{flex-basis:76px}.kv-style-act{font-size:10.5px}"));
 const firstFold = $(".kv-style-item .kv-sf-fold-btn");
