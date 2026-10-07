@@ -1,6 +1,34 @@
 import { IMG, PRODUCTS } from "./catalog";
 
-export type RetailCartLine = { id: string; qty: number; size: string; color: string };
+/**
+ * A cart line is ALWAYS a real product-variant line. Curated-style purchases
+ * add two read-only metadata fields that GROUP the lines they came from —
+ * the cart itself never grows a "style" entity (§66).
+ */
+export type RetailCartLine = {
+  id: string; qty: number; size: string; color: string;
+  /** the curated style this line was added from */
+  curatedStyleId?: string;
+  /** one shared id per style add — groups the lines for pricing/snapshot */
+  stylePurchaseGroupId?: string;
+};
+
+/** Order-time snapshot of one curated style purchase inside an order (§67). */
+export type StyleOrderSnapshot = {
+  styleId: string;
+  styleTitle: string;
+  purchaseGroupId: string;
+  paymentMode: "cash" | "manual_installments" | "automatic_installments";
+  /** total style discount allocated across the group's lines */
+  discount: number;
+  /** the amount the customer pays for this group (may be an admin-pinned manual total) */
+  payable: number;
+  perInstallment: number;
+  lines: {
+    productId: string; name: string; color: string; size: string; qty: number;
+    unitPrice: number; allocatedDiscount: number; effectivePaid: number;
+  }[];
+};
 export type CustomerAddress = {
   id: string;
   title: string;
@@ -63,6 +91,8 @@ export type RetailOrder = {
   events: { title: string; time: string; by?: string; note?: string }[];
   tracking?: string;
   returnRequest?: { reason: string; createdAt: string; status: "در انتظار بررسی" | "تأیید شد" | "رد شد" };
+  /** curated-style purchases carried by this order (server-recomputed, §67) */
+  styleSnapshots?: StyleOrderSnapshot[];
 };
 
 export const digitsOnly = (value: string) => value
