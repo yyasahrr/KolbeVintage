@@ -442,6 +442,15 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     return (
       <div className="kv-sf-shell pb-20">
         <Section title="علاقه‌مندی‌ها" latin="Saved" desc="چیزهایی که چشم‌تان را گرفته؛ هر وقت آماده بودید به سبد اضافه کنید." />
+        {!account && (
+          <div className="mb-6 flex flex-col items-start justify-between gap-3 rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 sm:flex-row sm:items-center" data-testid="wishlist-guest-auth">
+            <div className="min-w-0">
+              <p className="text-[14px] font-bold">برای ذخیرهٔ ماندگاری علاقه‌مندی‌ها وارد شوید یا ثبت‌نام کنید</p>
+              <p className="mt-1 text-[12.5px] leading-5 text-[var(--kv-muted)]">انتخاب‌های فعلی روی همین دستگاه نگه داشته می‌شوند؛ با ورود به حساب، فهرست شما ماندگار و همراه شما می‌شود.</p>
+            </div>
+            <Btn variant="accent" size="sm" className="shrink-0" onClick={onLogin}>ورود / ثبت‌نام</Btn>
+          </div>
+        )}
         {items.length === 0 ? <Empty title="هنوز چیزی ذخیره نکرده‌اید" desc="روی قلب هر محصول بزنید تا اینجا ذخیره شود." action={<Btn variant="accent" size="sm" onClick={() => setView("shop")}>کشف محصولات</Btn>} /> : (
           <ProductGrid>{items.map((p) => <StorefrontProductCard key={p.id} p={p} wished onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} onAddToStyle={(colorId) => onStudio("builder", p.id, colorId)} />)}</ProductGrid>
         )}

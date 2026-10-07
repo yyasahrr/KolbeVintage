@@ -439,6 +439,20 @@ check("the look rail documents itself as a curated heuristic", () => {
   return /not\*\* a relationship the catalogue declares|curated styling heuristic|curated styling opinion/.test(source) &&
     /productRelations/.test(source) || "heuristic note missing";
 });
+/* CMS-uploaded hero media persists as a relative /api/v1/media/<uuid> URL; the
+   storefront heroes must resolve it through the API base, never request it raw */
+check("editorial hero resolves CMS media through the API base", () => {
+  const hero = fs.readFileSync("src/components/storefront/EditorialHero.tsx", "utf8");
+  return hero.includes("ResponsiveImg") && /mediaSrc\(h\.video\)/.test(hero) && /mediaSrc\(h\.poster/.test(hero) || "hero media unresolved";
+});
+check("legacy ops hero video resolves through the API base too", () => {
+  const render = fs.readFileSync("src/components/cms-render.tsx", "utf8");
+  return /VideoBg src=\{mediaSrc\(h\.video\) \?\? ""\}/.test(render) || "VideoBg unresolved";
+});
+check("fullviewport CMS heroes render their video like the admin promises", () => {
+  const cmsHero = fs.readFileSync("src/components/cms-hero.tsx", "utf8");
+  return /\(template === "video" \|\| template === "fullviewport"\) && str\(p\.video\)/.test(cmsHero) || "fullviewport video gate missing";
+});
 check("demo/preview controls are absent from the production DOM", () =>
   !/تست پنل‌ها|پیش‌نمایش پنل‌ها/.test(d.body.textContent) || "demo control rendered");
 check("the preview affordances are gated on the dev flag in source", () => {

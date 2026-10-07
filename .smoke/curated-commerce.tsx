@@ -11,6 +11,7 @@ import {
 import type { RetailCartLine } from "../src/data/customer";
 import type { Product } from "../src/data/catalog";
 import { CuratedStyleDetail, type StyleAdd } from "../src/portals/style-storefront";
+import { srcSetFor, variantUrl } from "../src/components/responsive-img";
 
 /**
  * Curated-commerce probe (Phase 3). Two rigs:
@@ -69,6 +70,21 @@ function OrderProbe() {
 
     /* ── public lens at the storefront boundary ── */
     report.lens = JSON.stringify(publicCuratedStyles([style, { ...style, id: "d", status: "draft" as const }])) === JSON.stringify([style]);
+
+    /* ── CMS-uploaded hero media resolves client-side (mediaSrc chain) ── */
+    const kolbeId = "0f1e2d3c-4b5a-4978-8a9b-0c1d2e3f4a5b";
+    const resolved = variantUrl(`/api/v1/media/${kolbeId}`, 480);
+    report.mediaHero = {
+      /* relative /api/v1/media/<uuid> resolves against the API origin and gains
+         the breakpoint variant — the exact form CMS uploads persist */
+      kolbeVariant: !!resolved && resolved.startsWith(window.location.origin)
+        && resolved.endsWith(`/api/v1/media/${kolbeId}?w=480&fmt=webp`),
+      /* foreign CDNs (e.g. pexels hero seeds) pass through unchanged */
+      pexelsPassthrough: variantUrl("https://images.pexels.com/photos/1.jpeg?auto=compress", 480) === null,
+      /* unsplash gets width params without breaking the URL */
+      unsplashWidth: (variantUrl("https://images.unsplash.com/photo-1?q=80", 640) ?? "").includes("w=640"),
+      srcSetListsBreakpoints: (srcSetFor(`/api/v1/media/${kolbeId}`) ?? "").includes("1600w"),
+    };
 
     /* ── wholesale rejection + stale-price honesty ── */
     const wholesaleOnly = retail.map((p) => (p.id === B.id ? { ...p, retailPrice: 0 } : p));

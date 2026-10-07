@@ -38,6 +38,12 @@ check("disabling an item drops eligibility honestly", () => data().halfActive ==
 /* ── public lens (§39) ── */
 check("only published styles pass the public lens", () => data().lens === true);
 
+/* ── CMS-uploaded hero media resolves client-side (mediaSrc chain) ── */
+check("kolbe media (/api/v1/media/<uuid>) resolves to the API origin with breakpoint variants", () => data().mediaHero?.kolbeVariant === true);
+check("foreign CDN media passes through unchanged (hero keeps its source)", () => data().mediaHero?.pexelsPassthrough === true);
+check("unsplash media gains width params without breaking the URL", () => data().mediaHero?.unsplashWidth === true);
+check("kolbe media srcset lists the full breakpoint ladder", () => data().mediaHero?.srcSetListsBreakpoints === true);
+
 /* ── retail-only + honesty boundaries (§65) ── */
 check("wholesale-only products are rejected by the shared cart validation", () => data().wholesaleRejected === true);
 check("cart lines carry no client-side price", () => data().stalePriceIgnored === true);

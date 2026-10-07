@@ -2,6 +2,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
 import type { HeroConfig } from "../../data/ops";
 import type { NavTarget } from "../cms-render";
+import { mediaSrc } from "../../data/experience-api";
+import { ResponsiveImg } from "../responsive-img";
 import { usePrefersReducedMotion, useScrollOffset } from "./shared";
 import { cn } from "../../utils/cn";
 
@@ -67,9 +69,14 @@ export default function EditorialHero({ h, onNav }: { h: HeroWithFocalPoint; onN
       aria-label={isCarousel ? "اسلایدهای کمپین" : undefined}
     >
       <div className="kv-sf-hero-media">
+        {/* CMS-uploaded media is stored as a relative `/api/v1/media/<id>` URL;
+            mediaSrc() resolves it against the API base so the hero never
+            requests the wrong origin. ResponsiveImg adds the backed `?w=&fmt=`
+            srcset for kolbe media while still rendering a plain <img>, so the
+            `.kv-sf-hero-media img` stylesheet keeps ownership of the crop. */}
         {h.template === "video" && h.video
-          ? <HeroVideo src={h.video} poster={h.poster || h.image} reduced={reduced} />
-          : <img src={image} alt="" fetchPriority="high" decoding="async" />}
+          ? <HeroVideo src={mediaSrc(h.video) ?? ""} poster={mediaSrc(h.poster || h.image || "") ?? ""} reduced={reduced} />
+          : <ResponsiveImg src={image} alt="" priority sizes="100vw" />}
       </div>
       <div
         className="kv-sf-hero-scrim"

@@ -2016,6 +2016,33 @@ html[data-surface="storefront"] body { background-color: transparent; }
   cursor: pointer;
 }
 .kv-style-back:hover { color: var(--kvaf-ink); }
+/* Detail hero — the style's cover as one editorial band, so the detail opens
+   like a PDP (image first, then title/copy) instead of a bare text header. */
+.kv-style-hero {
+  position: relative;
+  margin: 16px 0 0;
+  overflow: hidden;
+  border: 1px solid var(--kvaf-line);
+  border-radius: 20px;
+  aspect-ratio: 21 / 9;
+  background: var(--kvaf-surface-2, var(--kv-surface-2));
+}
+.kv-style-hero img { width: 100%; height: 100%; object-fit: cover; }
+.kv-style-hero-veil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(20, 20, 15, 0.42) 0%, rgba(20, 20, 15, 0.06) 46%, rgba(20, 20, 15, 0) 70%);
+}
+.kv-style-hero-caption {
+  position: absolute;
+  bottom: 12px;
+  inset-inline-start: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.kv-style-hero-caption .kv-style-flag { position: static; }
+@media (max-width: 639px) { .kv-style-hero { aspect-ratio: 16 / 9; border-radius: 16px; } }
 .kv-style-eyebrow {
   font-size: 11px;
   font-weight: 800;

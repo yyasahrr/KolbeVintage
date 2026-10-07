@@ -6,6 +6,7 @@ import { fmtMoney } from "../data/catalog";
 import { Btn } from "./primitives";
 import { cn } from "../utils/cn";
 import { ResponsiveImg } from "./responsive-img";
+import { mediaSrc } from "../data/experience-api";
 
 export type NavTarget = NonNullable<BlockProps["target"]>;
 const TONE: Record<string, string> = {
@@ -112,7 +113,7 @@ export function HeroRenderer({ h, onNav, preview, priority = true }: { h: HeroCo
   return (
     <section className={cn("relative overflow-hidden rounded-[24px] kv-shadow-md", minH)}>
       {h.template === "video" && h.video
-        ? <VideoBg src={h.video} poster={h.poster || h.image} />
+        ? <VideoBg src={mediaSrc(h.video) ?? ""} poster={mediaSrc(h.poster || h.image || "") ?? ""} />
         : <ResponsiveImg src={h.image} alt="" priority={eager} sizes="100vw" className="absolute inset-0 h-full w-full object-cover" />}
       <div className="absolute inset-0" style={{ background: overlay }} />
       <div className={cn("relative flex h-full flex-col justify-center p-8 text-white md:p-14", minH, center && "items-center text-center")}>

@@ -309,6 +309,7 @@ export function MediaInput({ label, kind, value, onChange, pickers, flash }: { l
         {uploadMessage&&!busy&&<p role="status" className="text-xs leading-5 text-[var(--kv-success)]">{uploadMessage}</p>}
         <Input value={value} onChange={onChange} placeholder="یا نشانی https:// / ‎/api/v1/media/…" />
         {value && kind === "media" && /^(https:\/\/|\/api\/v1\/media\/)/.test(value) && <img src={mediaSrc(value)} alt="" className="h-20 w-32 rounded-[8px] object-cover" />}
+        {value && kind === "video" && /^(https:\/\/|\/api\/v1\/media\/)/.test(value) && <video src={mediaSrc(value)} controls preload="metadata" className="w-48 rounded-[8px]" aria-label="پیش‌نمایش ویدیو" />}
       </div>
     </Field>
   );

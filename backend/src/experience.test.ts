@@ -757,3 +757,72 @@ test('CMS starter content is created only by the admin bootstrap and is idempote
     await pool.end();
   }
 });
+
+test('CMS hero upload chain end to end: file → asset → public media → hero payload (image and video)', { skip: !enabled }, async () => {
+  const app = await buildApp(config);
+  const pool = createPool(config);
+  try {
+    const suffix = randomUUID().slice(0, 8);
+    const hash = await argon2.hash('Password-123456!');
+    const id = randomUUID();
+    await pool.query('INSERT INTO users(id,email,phone,password_hash,display_name) VALUES ($1,$2,$3,$4,$5)', [id, `hero-${suffix}@example.test`, null, hash, 'hero-admin']);
+    await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2)', [id, 'admin']);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { identity: `hero-${suffix}@example.test`, password: 'Password-123456!' },
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0' } });
+    assert.equal(login.statusCode, 200, login.body);
+    const admin = { headers: { authorization: `Bearer ${login.json().accessToken as string}` } };
+
+    /* 1 — image upload exactly as MediaInput performs it (files POST, then createAsset with the fileId) */
+    const png = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#1B2A4A' } }).png().toBuffer();
+    const fileUp = await app.inject({ method: 'POST', url: '/api/v1/files', headers: admin.headers, payload: { originalName: 'hero.png', mime: 'image/png', dataBase64: png.toString('base64') } });
+    assert.equal(fileUp.statusCode, 201, fileUp.body);
+    const fileId = fileUp.json().id as string;
+    const asset = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/assets', headers: admin.headers,
+      payload: { fileId, title: 'هیرو آپلودی', assetType: 'image', folder: 'sections' } });
+    assert.equal(asset.statusCode, 201, asset.body);
+    assert.equal(asset.json().url, `/api/v1/media/${fileId}`, 'asset url is the relative media path the storefront resolves');
+
+    /* 2 — creating the asset whitelists the private file for /media immediately */
+    const served = await app.inject({ method: 'GET', url: `/api/v1/media/${fileId}` });
+    assert.equal(served.statusCode, 200, `uploaded hero image must be publicly servable right after createAsset (got ${served.statusCode})`);
+    assert.match(String(served.headers['content-type'] ?? ''), /image\/png/);
+    const variant = await app.inject({ method: 'GET', url: `/api/v1/media/${fileId}?w=640&fmt=webp` });
+    assert.equal(variant.statusCode, 200, 'breakpoint variant (?w=&fmt=webp) must serve for the srcset ladder');
+
+    /* 3 — the relative media URL passes the hero field schema and lands in a hero section payload */
+    const page = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/landing-pages', headers: admin.headers,
+      payload: { code: `hero-${suffix}`, title: `هیرو آپلود ${suffix}`, path: `/hero-upload-${suffix}`, pageType: 'campaign', template: 'campaign' } });
+    assert.equal(page.statusCode, 201, page.body);
+    const pageId = page.json().id as string;
+    const draft = await app.inject({ method: 'GET', url: `/api/v1/admin/cms/pages/${pageId}/draft`, headers: admin.headers });
+    const heroSection = draft.json().sections.find((s: { component_code: string }) => ['hero', 'image_hero', 'video_hero'].includes(s.component_code));
+    assert.ok(heroSection, 'starter page carries a hero section');
+    const patched = await app.inject({ method: 'PATCH', url: `/api/v1/admin/cms/sections/${heroSection.id}`, headers: admin.headers,
+      payload: { payload: { ...heroSection.payload, image: `/api/v1/media/${fileId}` } } });
+    assert.equal(patched.statusCode, 200, patched.body);
+    const preview = await app.inject({ method: 'GET', url: `/api/v1/admin/cms/pages/${pageId}/preview`, headers: admin.headers });
+    assert.equal(preview.json().sections.find((s: { id: string }) => s.id === heroSection.id).payload.image, `/api/v1/media/${fileId}`, 'uploaded image persists in the hero payload');
+
+    /* 4 — the same chain for VIDEO: mp4 upload → video asset → public media (MediaInput video path) */
+    const mp4 = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]), Buffer.alloc(256, 7)]);
+    const videoUp = await app.inject({ method: 'POST', url: '/api/v1/files', headers: admin.headers, payload: { originalName: 'hero.mp4', mime: 'video/mp4', dataBase64: mp4.toString('base64') } });
+    assert.equal(videoUp.statusCode, 201, videoUp.body);
+    const videoId = videoUp.json().id as string;
+    const videoAsset = await app.inject({ method: 'POST', url: '/api/v1/admin/cms/assets', headers: admin.headers,
+      payload: { fileId: videoId, title: 'هیرو ویدیویی', assetType: 'video', folder: 'sections' } });
+    assert.equal(videoAsset.statusCode, 201, videoAsset.body);
+    assert.equal(videoAsset.json().url, `/api/v1/media/${videoId}`);
+    const videoPatched = await app.inject({ method: 'PATCH', url: `/api/v1/admin/cms/sections/${heroSection.id}`, headers: admin.headers,
+      payload: { payload: { ...heroSection.payload, template: 'fullviewport', video: `/api/v1/media/${videoId}`, image: `/api/v1/media/${fileId}` } } });
+    assert.equal(videoPatched.statusCode, 200, videoPatched.body);
+    const videoServed = await app.inject({ method: 'GET', url: `/api/v1/media/${videoId}` });
+    assert.equal(videoServed.statusCode, 200, `uploaded hero video must be publicly servable after createAsset (got ${videoServed.statusCode})`);
+    assert.match(String(videoServed.headers['content-type'] ?? ''), /video\/mp4/);
+    const preview2 = await app.inject({ method: 'GET', url: `/api/v1/admin/cms/pages/${pageId}/preview`, headers: admin.headers });
+    const hero2 = preview2.json().sections.find((s: { id: string }) => s.id === heroSection.id);
+    assert.equal(hero2.payload.video, `/api/v1/media/${videoId}`, 'uploaded video persists in the hero payload');
+  } finally {
+    await app.close();
+    await pool.end();
+  }
+});

@@ -50,14 +50,35 @@ check("the card carries both card-level actions, no size selector", () => !!byTe
 
 check("style cards keep the editorial grid (1/2/3 columns by width)", () =>
   !!$$(".grid").find((node) => node.querySelector(".kv-style-card") && /sm:grid-cols-2/.test(node.className) && /lg:grid-cols-3/.test(node.className)));
-/* the CURATED surfaces keep supplier identity out — pre-existing baseline
+check("the card cover zoom is wired (hover group + transform class)", () =>
+  /\bgroup\b/.test(card.className) && !!$(".kv-style-cover img[class*='group-hover']"));
+/* style cards leak no supplier identity — pre-existing baseline
    journal/CMS teasers elsewhere on the homepage are out of Phase-3 scope */
 check("style cards leak no supplier identity", () =>
   !$$(".kv-style-card").some((card) => SUPPLIERS.some((name) => (card.textContent ?? "").includes(name))));
 
+/* ── guest favorites: the auth CTA must be obvious, the page stays usable ── */
+await click($('.kv-sf-header button[aria-label^="علاقه‌مندی‌ها"]'));
+check("guest favorites shows an explicit combined ورود / ثبت‌نام CTA", () => {
+  const note = $('[data-testid="wishlist-guest-auth"]');
+  return !!note && !!byText("button", "ورود / ثبت‌نام") && (note.textContent ?? "").includes("ماندگار");
+});
+check("guest favorites explains device-local saving honestly", () =>
+  ($('[data-testid="wishlist-guest-auth"]')?.textContent ?? "").includes("همین دستگاه"));
+check("guest favorites page stays usable (no broken empty state)", () => env.errors.length === 0 && !!$(".kv-sf-shell"));
+await click($('.kv-sf-header button[aria-label="کلبه وینتج — خانه"]'));
+
 /* ── the reader (style detail) ── */
 await click(byText(".kv-style-card button", "مشاهده استایل"));
 check("the style reader opens", () => !!$(".kv-style-detail"));
+check("the reader opens on an editorial cover band (PDP-like)", () => {
+  const hero = $(".kv-style-hero");
+  return !!hero && !!$(".kv-style-hero img", hero) && !$(".kv-style-hero .kv-sf-size", hero);
+});
+check("the cover band carries the discount/count flags, no controls", () => {
+  const hero = $(".kv-style-hero");
+  return !!hero && (hero.textContent ?? "").includes("قطعه") && !$("button", hero);
+});
 check("the reader carries the style title as its heading", () => ($(".kv-style-heading")?.textContent ?? "").includes("ست ترنچ و پیراهن کلبه"));
 check("the document title reflects the open style", () => (d.title ?? "").includes("ست ترنچ و پیراهن کلبه"));
 check("pinned colours are marked as fixed for this style", () => inMain().includes("ثابت است"));

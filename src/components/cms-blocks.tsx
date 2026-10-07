@@ -482,7 +482,7 @@ export function CmsPageView({ code, onNav, onOpenProduct, onQuickAdd }: { code: 
   useEffect(() => { void load(); window.scrollTo({ top: 0 }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [code]);
   useEffect(() => () => resetSeo(), []);
   return (
-    <div className="mx-auto w-full max-w-[1400px] px-4 pb-20 pt-6 md:px-8">
+    <div className="kv-sf-shell pb-20 pt-6">
       {error && <ErrorState message={error} onRetry={load} />}
       {missing && <Empty title="این صفحه منتشر نشده است" desc="ممکن است زمان‌بندی انتشار آن هنوز نرسیده یا به پایان رسیده باشد." action={<Btn variant="accent" size="sm" onClick={() => onNav("home")}>بازگشت به خانه</Btn>} />}
       {!page && !error && !missing && <LoadingState label="در حال بارگذاری صفحه…" />}

@@ -176,7 +176,7 @@ export function CmsHero({ section, eager, onNav, onOpenProduct }: HeroProps) {
     default:
       return shell(
         <>
-          <div className="absolute inset-0">{template === "video" && str(p.video) ? <HeroVideo payload={p} poster={image} /> : <Media />}</div>
+          <div className="absolute inset-0">{(template === "video" || template === "fullviewport") && str(p.video) ? <HeroVideo payload={p} poster={image} /> : <Media />}</div>
           <div className="absolute inset-0" style={{ background: overlay }} />
           <div className={cn("relative flex h-full flex-col justify-center p-8 text-white md:p-14", height, textAlign, enter)}><Title light />{priceLine}<Ctas light /></div>
           {template === "fullviewport" && <Scroll />}

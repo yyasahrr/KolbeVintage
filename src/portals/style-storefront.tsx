@@ -56,7 +56,7 @@ export function CuratedStyleCard({ style, catalogue, relations, onOpen, onPerson
     ? `یا ۴ قسطِ ${fmtMoney(preview.installments.perInstallment)}`
     : null;
   return (
-    <article className="kv-style-card" aria-label={style.title}>
+    <article className="kv-style-card group" aria-label={style.title}>
       <button type="button" onClick={onOpen} className="kv-style-cover" aria-label={`مشاهده استایل ${style.title}`}>
         {cover ? <img src={cover} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.03]" /> : <span className="flex h-full w-full items-center justify-center bg-[var(--kv-surface-2)]"><Layers size={28} className="text-[var(--kv-muted)]" /></span>}
         <span className="kv-style-cover-veil" aria-hidden="true" />
@@ -212,6 +212,9 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
   };
 
   const ordered = [...style.items].sort((a, b) => a.sortOrder - b.sortOrder);
+  /* editorial cover for the detail: the admin-picked cover, else the first
+     item's first image — the same rule the grid card uses */
+  const cover = style.cover ?? catalogue.find((p) => p.id === ordered[0]?.productId)?.images[0];
   /* only items that actually OFFER sizes can be missing one — one-size
      products (no series composition) are added with the empty size, exactly
      like the product card's quick add */
@@ -234,6 +237,17 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
       <button type="button" onClick={onBack} className="kv-style-back">
         <ArrowRight size={15} /> بازگشت به فروشگاه
       </button>
+
+      {cover && (
+        <figure className="kv-style-hero">
+          <img src={cover} alt={`کاور استایل ${style.title}`} fetchPriority="high" decoding="async" />
+          <span className="kv-style-hero-veil" aria-hidden="true" />
+          <figcaption className="kv-style-hero-caption">
+            {preview.discount.eligible && <span className="kv-style-flag">تخفیف استایل</span>}
+            <span className="kv-style-flag kv-style-flag-quiet tabular-nums">{fmtNum(preview.totalCount)} قطعه</span>
+          </figcaption>
+        </figure>
+      )}
 
       <header className="mt-4 max-w-[62ch]">
         <p className="kv-style-eyebrow">استایل آمادهٔ کلبه</p>
