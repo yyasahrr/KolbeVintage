@@ -174,8 +174,8 @@ the VIP coverage strip — they contain counts only, no supplier identity, no id
 | Identity | Credentials | Expected result |
 | --- | --- | --- |
 | Admin (separate surface, no public registration) | `admin@kolbe.ir` / `ChangeMe-Admin-123456` | admin workspace |
-| Ordinary customer | `uat.mobile@kolbe.ir` / mobile `09990000007` (+ password `UatOtp123456!`) | customer account without VIP entitlement |
-| **VIP customer** (customer + active membership) | `seed.customer@kolbe.ir` / `Seed-Customer-123456` | VIP workspace on the SAME account |
+| **Ordinary customer** (no entitlement) | `demo.customer@kolbe.ir` / `Demo-Customer-123456` — seeded with an explicit assertion that it holds **no** active membership (`isWholesaleMember:false`, `membership:null`) | signed in, sees the membership-required state instead of VIP features; its wholesale list is empty (no leak) |
+| **VIP customer** (customer + active membership) | `seed.customer@kolbe.ir` / `Seed-Customer-123456` | VIP workspace on the SAME account (`isWholesaleMember:true`, plan «عضویت عمده نمونه») |
 | Approved supplier | `seed.supplier@kolbe.ir` / `Seed-Supplier-123456` | supplier portal (`cooperation_status=approved`) |
 | **Pending supplier applicant** | mobile `09990000009` (any password) / `pending.supplier@example.test` | `403 SUPPLIER_APPLICATION_PENDING` + «درخواست عضویت تأمین‌کننده شما در حال بررسی است» — never an operational portal |
 | Mixed-source wholesale Master Order | — | `MV-2000` (کلبه 2 / تأمین‌کننده نزد کلبه 2 / نیازمند تأمین 2) in ONE list, ONE order |
@@ -189,7 +189,11 @@ No new auth or order tables, no data reset, deterministic and idempotent, covere
 ## 11. Browser status and local UAT instructions
 
 No real browser is available in this environment (bounded check: no Chromium/Chrome binary, no Playwright
-runtime, no browser package in either manifest) ⇒ **LOCAL BROWSER UAT REQUIRED**. What was verified instead
+runtime, no browser package in either manifest) ⇒ **LOCAL BROWSER UAT REQUIRED**. A bounded UI/UX skill
+check was also performed: no skill/marketplace source is mounted in this environment, therefore
+**“Relevant UI/UX skills unavailable; repository design system used.”** — the auth and order surfaces are
+built from the existing primitives (`Input`, `Btn`, `Card`, `Segmented`, `Drawer`) and the repository's
+design tokens. What was verified instead
 for the new HEAD: Vite serves the app and every changed module transforms without error through the preview
 host, the API proxy answers exactly as the browser would, and the live API evidence in §5 was captured
 against the seeded stack.

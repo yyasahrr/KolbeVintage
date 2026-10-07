@@ -192,6 +192,18 @@ async function seed(app: FastifyInstance, pool: DbPool) {
     demoCustomers.push({ ...input, id: account.id, token: await login(app, input.email, password), targetOrders: 1 });
   }
 
+  /* §52: the ORDINARY customer identity (same canonical account, NO membership). Documented so the
+     VIP gate can be exercised by contrast: a signed-in customer without entitlement must see the
+     membership-required state — never a login loop and never a demo VIP flag. Created as its own
+     account (not pushed into demoCustomers) so retail demo order generation stays unchanged. */
+  const plainEmail = 'demo.customer@kolbe.ir';
+  const plainPassword = 'Demo-Customer-123456';
+  const plain = await ensureUser(pool, { email: plainEmail, password: plainPassword, displayName: 'مشتری بدون عضویت', phone: '09120000021' });
+  if (plain.created) step(`مشتری بدون عضویت ${plainEmail} ساخته شد.`);
+  const plainMembership = await pool.query(`SELECT id FROM memberships WHERE user_id = $1 AND status = 'active'`, [plain.id]);
+  if (plainMembership.rows[0]) throw new Error(`ordinary customer ${plainEmail} must not hold an active membership`);
+  await login(app, plainEmail, plainPassword);
+
   /* ------------------------------- supplier ------------------------------- */
   const supplier = await ensureSupplierAccount(app, pool, adminToken, { email: supplierEmail, password: supplierPassword,
     displayName: 'کارگاه نیلگون', phone: '09120000002', brand: 'نیلگون', city: 'اصفهان' });
@@ -706,9 +718,11 @@ async function seed(app: FastifyInstance, pool: DbPool) {
   }
 
   console.log('\nSeed credentials:');
-  console.log(`  admin    : ${adminEmail} / ${adminPassword}`);
-  console.log(`  customer : ${customerEmail} / ${customerPassword}`);
-  console.log(`  supplier : ${supplierEmail} / ${supplierPassword}`);
+  console.log(`  admin    : ${adminEmail} / ${adminPassword}                 (separate admin surface, no public registration)`);
+  console.log(`  customer : ${customerEmail} / ${customerPassword}  (VIP: customer + ACTIVE wholesale membership)`);
+  console.log(`  plain    : ${plainEmail} / ${plainPassword}      (ordinary customer, NO membership)`);
+  console.log(`  supplier : ${supplierEmail} / ${supplierPassword} (approved cooperation)`);
+  console.log(`  pending  : mobile 09990000009 · any password               (supplier applicant awaiting review)`);
 }
 
 await main();
