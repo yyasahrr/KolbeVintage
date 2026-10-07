@@ -128,23 +128,76 @@ const SEED_CURATED_STYLES: CuratedStyle[] = [
       styleItem("csi-1", "p6", "sand", "outerwear", 1),
       styleItem("csi-2", "p2", "cream", "top", 2),
     ],
+    media: [
+      { kind: "image", url: IMG.trenchWhite },
+      { kind: "image", url: IMG.trenchArch },
+      { kind: "video", url: "https://videos.pexels.com/video-files/5822173/5822173-hd_1920_1080_25fps.mp4", poster: IMG.trenchHero },
+      { kind: "image", url: IMG.whiteShirts },
+      { kind: "image", url: IMG.hijabTrench },
+    ],
+    cover: IMG.trenchWhite,
     pricing: { ...DEFAULT_PRICING, discountType: "percentage", discountValue: 10, minimumActiveItems: 2 },
     installments: { ...DEFAULT_INSTALLMENTS, installmentEnabled: true, installmentPricingMode: "automatic", applyStyleDiscountToInstallments: true },
-    createdAt: "۱۴۰۴/۰۷/۱۲", updatedAt: "۱۴۰۴/۰۷/۱۲",
+    createdAt: "۱۴۰۴/۰۷/۱۲", updatedAt: "۱۴۰۴/۰۸/۰۲",
   },
   {
     id: "cs-demo-2", slug: "formal-half-set", title: "نیم‌ست رسمی پالتو و شومیز",
     description: "پالتوی بلند طراح‌دار با شومیز کتان سفید؛ انتخاب کلبه برای قرارهای رسمی و مراسم.",
-    status: "draft",
+    status: "published",
     items: [
       styleItem("csi-3", "p5", "burgundy", "outerwear", 1),
       styleItem("csi-4", "p4", "white", "top", 2),
     ],
+    media: [
+      { kind: "image", url: IMG.redCoat },
+      { kind: "video", url: "https://videos.pexels.com/video-files/8485166/8485166-hd_1920_1080_25fps.mp4", poster: IMG.burgundyCoat },
+      { kind: "image", url: IMG.lakeCoat },
+      { kind: "image", url: IMG.neutralRack },
+    ],
+    cover: IMG.redCoat,
     pricing: { ...DEFAULT_PRICING, discountType: "fixed", discountValue: 1500000, minimumActiveItems: 2 },
     installments: { ...DEFAULT_INSTALLMENTS, installmentEnabled: true, installmentPricingMode: "manual", manualInstallmentTotal: 27_000_000, applyStyleDiscountToInstallments: false },
-    createdAt: "۱۴۰۴/۰۷/۱۴", updatedAt: "۱۴۰۴/۰۷/۱۴",
+    createdAt: "۱۴۰۴/۰۷/۱۴", updatedAt: "۱۴۰۴/۰۸/۰۲",
   },
-];
+  {
+    id: "cs-demo-3", slug: "linen-blazer-check", title: "ست کت لینن و پیراهن چهارخانه",
+    description: "کت لینن شنی با پیراهن چهارخانهٔ مشکی؛ ترکیب اداری کلبه برای روزهای کاری و قرارهای نیمه‌رسمی.",
+    status: "published",
+    items: [
+      styleItem("csi-5", "p3", "sand", "outerwear", 1),
+      styleItem("csi-6", "p8", "black", "top", 2),
+    ],
+    media: [
+      { kind: "image", url: IMG.blazerDuo },
+      { kind: "image", url: IMG.pastelBlazer },
+      { kind: "image", url: IMG.blackSuit },
+      { kind: "image", url: IMG.neutralRack },
+    ],
+    cover: IMG.blazerDuo,
+    pricing: { ...DEFAULT_PRICING },
+    installments: { ...DEFAULT_INSTALLMENTS, installmentEnabled: true, installmentPricingMode: "automatic", applyStyleDiscountToInstallments: true },
+    createdAt: "۱۴۰۴/۰۸/۰۲", updatedAt: "۱۴۰۴/۰۸/۰۲",
+  },
+  {
+    id: "cs-demo-4", slug: "light-coat-blouse", title: "مانتو و شومیز روشن",
+    description: "مانتو بارانی کرم با شومیز کتان شنی؛ ست روشن و روزمره برای نیم‌فصل‌ها.",
+    status: "published",
+    items: [
+      styleItem("csi-7", "p1", "cream", "outerwear", 1),
+      styleItem("csi-8", "p4", "sand", "top", 2),
+    ],
+    media: [
+      { kind: "image", url: IMG.hijabTrench },
+      { kind: "image", url: IMG.trenchHero },
+      { kind: "image", url: IMG.blueShirt },
+      { kind: "image", url: IMG.whiteShirts },
+    ],
+    cover: IMG.hijabTrench,
+    pricing: { ...DEFAULT_PRICING, discountType: "percentage", discountValue: 15, minimumActiveItems: 2 },
+    installments: { ...DEFAULT_INSTALLMENTS, installmentEnabled: true, installmentPricingMode: "automatic", applyStyleDiscountToInstallments: true },
+    createdAt: "۱۴۰۴/۰۸/۰۲", updatedAt: "۱۴۰۴/۰۸/۰۲",
+  },
+];;
 
 /**
  * Order-time style recompute (§65): the cart only carries group ids; every

@@ -1858,15 +1858,86 @@ html[data-surface="storefront"] body { background-color: transparent; }
   overflow: hidden;
   padding: 0;
   border: 0;
+  /* loading placeholder only: a theme surface, never a dark band */
   background: var(--kvaf-sand);
   cursor: pointer;
 }
-.kv-style-cover-veil {
+.kv-style-media { position: relative; }
+.kv-style-cover-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* slider controls sit OUTSIDE the open-button (no nested buttons) */
+.kv-style-media-nav {
   position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(27, 42, 74, 0) 55%, rgba(27, 42, 74, 0.42) 100%);
+  top: 50%;
+  inset-inline-start: 10px;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--kvaf-line);
+  border-radius: 999px;
+  background: rgba(249, 246, 241, 0.92);
+  color: var(--kvaf-ink);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.kv-style-media-nav-end { inset-inline-start: auto; inset-inline-end: 10px; }
+.kv-style-media-nav:hover { background: var(--kvaf-paper); }
+.kv-style-media-nav:focus-visible { outline: 2px solid var(--kvaf-clay, #C1613B); outline-offset: 2px; }
+.kv-style-dots {
+  position: absolute;
+  bottom: 10px;
+  inset-inline: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  gap: 5px;
   pointer-events: none;
 }
+.kv-style-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 1px solid rgba(27, 42, 74, 0.35);
+  border-radius: 999px;
+  background: rgba(249, 246, 241, 0.9);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.kv-style-dot[data-on="true"] {
+  width: 18px;
+  border-color: var(--kvaf-ink);
+  background: var(--kvaf-ink);
+}
+.kv-style-dot:focus-visible { outline: 2px solid var(--kvaf-clay, #C1613B); outline-offset: 2px; }
+.kv-style-play-hit {
+  position: absolute;
+  top: 50%;
+  inset-inline-start: 50%;
+  transform: translate(50%, -50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid rgba(27, 42, 74, 0.2);
+  border-radius: 999px;
+  background: rgba(249, 246, 241, 0.92);
+  color: var(--kvaf-ink);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.kv-style-play-hit:hover { background: var(--kvaf-paper); }
+.kv-style-play-hit:focus-visible { outline: 2px solid var(--kvaf-clay, #C1613B); outline-offset: 2px; }
 .kv-style-flag {
   position: absolute;
   top: 12px;
@@ -1970,6 +2041,11 @@ html[data-surface="storefront"] body { background-color: transparent; }
   gap: 8px;
   margin-top: 10px;
 }
+@media (max-width: 480px) {
+  .kv-style-body { padding: 12px 12px 14px; }
+  .kv-style-title { font-size: 15px; }
+  .kv-style-price-now { font-size: 16.5px; }
+}
 .kv-style-cta-card {
   display: inline-flex;
   align-items: center;
@@ -2017,33 +2093,48 @@ html[data-surface="storefront"] body { background-color: transparent; }
   cursor: pointer;
 }
 .kv-style-back:hover { color: var(--kvaf-ink); }
-/* Detail hero — the style's cover as one editorial band, so the detail opens
-   like a PDP (image first, then title/copy) instead of a bare text header. */
+/* Detail hero - the style's media as one editorial gallery band (image/video,
+   then title/copy). No dark veil: flags live in their own pill row UNDER the
+   frame, so the media never carries a gradient strip. */
 .kv-style-hero {
-  position: relative;
   margin: 16px 0 0;
+}
+.kv-style-hero-frame {
+  position: relative;
   overflow: hidden;
   border: 1px solid var(--kvaf-line);
   border-radius: 20px;
   aspect-ratio: 21 / 9;
   background: var(--kvaf-surface-2, var(--kv-surface-2));
 }
-.kv-style-hero img { width: 100%; height: 100%; object-fit: cover; }
-.kv-style-hero-veil {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(to top, rgba(20, 20, 15, 0.42) 0%, rgba(20, 20, 15, 0.06) 46%, rgba(20, 20, 15, 0) 70%);
+.kv-style-hero-frame img,
+.kv-style-hero-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
-.kv-style-hero-caption {
-  position: absolute;
+.kv-style-hero-play {
+  top: auto;
   bottom: 12px;
-  inset-inline-start: 14px;
+  inset-inline-start: 12px;
+  transform: none;
+  width: auto;
+  height: auto;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  font-weight: 800;
+}
+.kv-style-hero-dots { bottom: 14px; }
+.kv-style-hero-flags {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-top: 10px;
 }
-.kv-style-hero-caption .kv-style-flag { position: static; }
-@media (max-width: 639px) { .kv-style-hero { aspect-ratio: 16 / 9; border-radius: 16px; } }
+.kv-style-hero-flags .kv-style-flag { position: static; }
+@media (max-width: 639px) {
+  .kv-style-hero-frame { aspect-ratio: 16 / 9; border-radius: 16px; }
+}
 .kv-style-eyebrow {
   font-size: 11px;
   font-weight: 800;

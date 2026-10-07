@@ -10,6 +10,7 @@ import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
 import { BlockRenderer, type NavTarget } from "../components/cms-render";
 import { CuratedStyleDetail, CuratedStyleGrid } from "./style-storefront";
+import { publicCuratedStyles, styleMedia } from "../data/curated";
 import type { CuratedStyle, VariantRelation } from "../data/curated";
 import { Btn, Card, Empty, Field, Input } from "../components/primitives";
 import EditorialHero from "../components/storefront/EditorialHero";
@@ -76,7 +77,7 @@ function JournalCard({ entry, onOpen }: { entry: typeof JOURNAL[number]; onOpen?
 }
 
 /* ============ MAIN RETAIL ============ */
-export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success" | "style";
+export type RetailView = "home" | "shop" | "styles" | "checkout" | "journal" | "wishlist" | "account" | "success" | "style";
 
 export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [], styles = [], relations = [], styleSlug, openStyle, personalizeStyle, addStyleToCart, onOpenProductFromStyle, shopCategory }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
@@ -122,6 +123,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   const [sort, setSort] = useState("پیشنهاد کلبه");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [journalCat, setJournalCat] = useState("همه");
+  const [styleFilter, setStyleFilter] = useState<"all" | "discount" | "installment">("all");
   /* listing facets — every group below is backed by a real product field */
   const [facets, setFacets] = useState<{ colors: string[]; sizes: string[]; brands: string[]; maxPrice: number | null; inStock: boolean }>({
     colors: [], sizes: [], brands: [], maxPrice: null, inStock: false,
@@ -437,6 +439,52 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     );
   }
 
+  /* dedicated styles listing · same shell/toolbar language as the shop, scoped to styles */
+  if (view === "styles") {
+    const published = publicCuratedStyles(styles);
+    const filtered = published.filter((style) => {
+      if (styleFilter === "discount") return style.pricing.discountType !== "none" && style.pricing.discountValue > 0;
+      if (styleFilter === "installment") return style.installments.installmentEnabled;
+      return true;
+    });
+    const hasVideo = (style: (typeof published)[number]) => styleMedia(style).some((m) => m.kind === "video");
+    return (
+      <div className="kv-sf-shell pb-24">
+        <header>
+          <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+            <h1 className="kvaf-feature-title min-w-0 text-[var(--kvaf-ink)]">استایل‌های آماده</h1>
+            <p className="kvaf-num text-[12.5px] text-[var(--kvaf-muted)]">
+              {fmtNum(published.length)} استایل · رنگ‌ها ثابت، سایز دست شما
+            </p>
+          </div>
+          <p className="kvaf-body mt-2.5 max-w-[58ch] text-[13.5px] text-[var(--kvaf-muted)]">
+            ست‌های کامل چیده‌شده از همین قفسه؛ هر استایل را با همان قیمت‌ها و تخفیفش یک‌جا به سبد بدهید یا نقطهٔ شروع شخصی‌سازی‌تان باشد.
+          </p>
+          <div className="kv-sf-toolbar" role="group" aria-label="پالودهٔ استایل‌ها">
+            {([["all", "همه استایل‌ها"], ["discount", "تخفیف‌دار"], ["installment", "اقساطی"]] as const).map(([key, label]) => (
+              <button key={key} onClick={() => setStyleFilter(key)} data-on={styleFilter === key ? "true" : "false"} aria-pressed={styleFilter === key} className="kv-sf-chip">
+                {label}
+              </button>
+            ))}
+            <LinkToShop onClick={() => setView("shop")}>خرید تکی محصولات</LinkToShop>
+          </div>
+        </header>
+        {filtered.length === 0 ? (
+          <Empty title="استایلی با این پالوده نیست" desc="پالودهٔ دیگری را امتحان کنید یا همهٔ استایل‌ها را ببینید." action={<Btn variant="accent" size="sm" onClick={() => setStyleFilter("all")}>همه استایل‌ها</Btn>} />
+        ) : (
+          <CuratedStyleGrid
+            styles={filtered} catalogue={retailProducts} relations={relations}
+            onOpen={(slug) => openStyle?.(slug)}
+            onPersonalize={(style) => personalizeStyle?.(style)}
+          />
+        )}
+        {published.some(hasVideo) && styleFilter === "all" && (
+          <p className="mt-6 text-[11.5px] text-[var(--kv-muted)]">استایل‌های نشان‌دار، ویدیوی کمپین دارند؛ در کارت استایل پخش کنید.</p>
+        )}
+      </div>
+    );
+  }
+
   if (view === "wishlist") {
     const items = retailProducts.filter((p) => wishlist.includes(p.id));
     return (
@@ -626,7 +674,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           <Section
             title="استایل‌های آماده" latin="Ready styles"
             desc="ست‌هایی که تیم کلبه از همین قفسه چیده است؛ رنگ‌ها ثابت‌اند، سایز دست شماست."
-            action={<LinkToShop onClick={() => setView("shop")}>فروشگاه</LinkToShop>}
+            action={<LinkToShop onClick={() => { setView("styles"); window.scrollTo({ top: 0 }); }}>مشاهده همه استایل‌ها</LinkToShop>}
           />
           <CuratedStyleGrid
             styles={styles} catalogue={retailProducts} relations={relations}

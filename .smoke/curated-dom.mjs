@@ -25,7 +25,9 @@ check("homepage renders the ready-styles section", () => inMain().includes("اس
 
 /* the published seed style shows; the draft seed never leaks */
 check("the published curated style is on the homepage", () => inMain().includes("ست ترنچ و پیراهن کلبه"));
-check("the draft curated style never reaches the storefront", () => !inMain().includes("نیم‌ست رسمی پالتو و شومیز"));
+check("the homepage style section shows four published styles", () =>
+  ["ست ترنچ و پیراهن کلبه", "نیم‌ست رسمی پالتو و شومیز", "ست کت لینن و پیراهن چهارخانه", "مانتو و شومیز روشن"]
+    .every((title) => inMain().includes(title)));
 
 /* the style card is an editorial object, NOT a product card */
 const card = $(".kv-style-card");
@@ -65,7 +67,9 @@ check("the styles grid composes intentionally for the published count (no empty 
     return /max-w-\[440px\]/.test(wrapper.className) && /mx-auto/.test(wrapper.className);
   }
   if (cards.length === 2) return /sm:grid-cols-2/.test(wrapper.className) && /max-w-\[920px\]/.test(wrapper.className);
-  return /sm:grid-cols-2/.test(wrapper.className) && /lg:grid-cols-3/.test(wrapper.className);
+  if (cards.length === 3) return /sm:grid-cols-2/.test(wrapper.className) && /lg:grid-cols-3/.test(wrapper.className);
+  /* 4+ follows the product-grid rhythm: 2-up mobile, 2x2 at lg, one row of 4 at xl */
+  return /grid-cols-2/.test(wrapper.className) && /lg:grid-cols-2/.test(wrapper.className) && /xl:grid-cols-4/.test(wrapper.className);
 });
 check("the card cover zoom is wired (hover group + transform class)", () =>
   /\bgroup\b/.test(card.className) && !!$(".kv-style-cover img[class*='group-hover']"));
@@ -73,6 +77,47 @@ check("the card cover zoom is wired (hover group + transform class)", () =>
    journal/CMS teasers elsewhere on the homepage are out of Phase-3 scope */
 check("style cards leak no supplier identity", () =>
   !$$(".kv-style-card").some((card) => SUPPLIERS.some((name) => (card.textContent ?? "").includes(name))));
+
+/* ── card media: slider + video, with the black-strip regression pinned ── */
+check("the black-media-strip regression stays fixed: no dark veil ships over style media", () => {
+  const flat = (() => { const t = fs.readFileSync("dist/index.html", "utf8"); return t.slice(t.indexOf("<style"), t.lastIndexOf("</style>")); })().replace(/\s+/g, "");
+  if (flat.includes(".kv-style-cover-veil") || flat.includes(".kv-style-hero-veil")) return "dark veil rule still shipped";
+  const cover = flat.match(/\.kv-style-cover\{[^}]*\}/)?.[0] ?? "";
+  return cover.includes("background:var(--kvaf-sand)");
+});
+check("card media exposes labeled prev/next arrows and dot tabs", () => {
+  const zone = $(".kv-style-media", card);
+  const dots = $$(".kv-style-dot", zone);
+  return !!$(".kv-style-media-nav", zone) && !!$(".kv-style-media-nav-end", zone)
+    && dots.length >= 2 && $$(".kv-style-media-nav", zone).every((b) => !!b.getAttribute("aria-label"))
+    && dots.every((d) => !!d.getAttribute("aria-label"));
+});
+const mediaZone = $(".kv-style-media", card);
+await click($(".kv-style-media-nav-end", mediaZone));
+check("advancing the slider moves the active dot", () => $$(".kv-style-dot", mediaZone)[1]?.getAttribute("data-on") === "true");
+await click($(".kv-style-media-nav", mediaZone));
+check("restoring the slider returns to the cover dot", () => $$(".kv-style-dot", mediaZone)[0]?.getAttribute("data-on") === "true");
+const videoDot = $$(".kv-style-dot", mediaZone).find((d) => (d.getAttribute("aria-label") ?? "").startsWith("ویدیو"));
+await click(videoDot);
+check("the video slide shows a labeled play control on its poster", () =>
+  $(".kv-style-play-hit", mediaZone)?.getAttribute("aria-label") === "پخش ویدیوی استایل");
+await click($(".kv-style-play-hit", mediaZone));
+check("playing swaps in a real <video> and the control turns to stop", () =>
+  !!$(".kv-style-cover-video", mediaZone) && $(".kv-style-play-hit", mediaZone)?.getAttribute("aria-label") === "توقف ویدیو");
+await click($(".kv-style-play-hit", mediaZone));
+await click($$(".kv-style-dot", mediaZone)[0]); // restore the cover slide
+
+/* ── the dedicated styles listing page (like the shop, scoped to styles) ── */
+await click(byText(".kv-sf-navlink", "استایل‌ها"));
+check("the header nav opens the dedicated styles listing", () =>
+  inMain().includes("استایل‌های آماده") && $$(".kv-style-card").length === 4);
+await click(byText(".kv-sf-chip", "تخفیف‌دار"));
+check("the discount chip narrows the listing to the 3 discounted styles", () => $$(".kv-style-card").length === 3);
+await click(byText(".kv-sf-chip", "اقساطی"));
+check("the installment chip keeps all four styles", () => $$(".kv-style-card").length === 4);
+await click(byText(".kv-sf-chip", "همه استایل‌ها"));
+check("resetting the filter restores the full listing", () => $$(".kv-style-card").length === 4);
+await click($('.kv-sf-header button[aria-label="کلبه وینتج · خانه"]'));
 
 /* ── guest favorites: the auth CTA must be obvious, the page stays usable ── */
 await click($('.kv-sf-header button[aria-label^="علاقه‌مندی‌ها"]'));
@@ -92,10 +137,22 @@ check("the reader opens on an editorial cover band (PDP-like)", () => {
   const hero = $(".kv-style-hero");
   return !!hero && !!$(".kv-style-hero img", hero) && !$(".kv-style-hero .kv-sf-size", hero);
 });
-check("the cover band carries the discount/count flags, no controls", () => {
+check("the cover band carries the count flags outside the frame and only labeled media controls", () => {
   const hero = $(".kv-style-hero");
-  return !!hero && (hero.textContent ?? "").includes("قطعه") && !$("button", hero);
+  return !!hero && (hero.textContent ?? "").includes("قطعه")
+    && !!$(".kv-style-hero-flags", hero) && !$("button", $(".kv-style-hero-flags", hero))
+    && !$(".kv-sf-size", hero)
+    && $$("button", $(".kv-style-hero-frame", hero)).every((b) => !!b.getAttribute("aria-label"));
 });
+const heroFrame = $(".kv-style-hero-frame");
+const heroVideoDot = $$(".kv-style-dot", heroFrame).find((dot) => (dot.getAttribute("aria-label") ?? "").startsWith("ویدیو"));
+await click(heroVideoDot);
+check("the hero video slide offers a labeled poster-first play control", () =>
+  $(".kv-style-hero-play", heroFrame)?.getAttribute("aria-label") === "پخش ویدیوی استایل");
+await click($(".kv-style-hero-play", heroFrame));
+check("the hero plays a real <video> with poster fallback behind it", () => !!$(".kv-style-hero-video", heroFrame));
+await click($(".kv-style-hero-play", heroFrame));
+await click($$(".kv-style-dot", heroFrame)[0]); // restore the cover slide
 check("the reader carries the style title as its heading", () => ($(".kv-style-heading")?.textContent ?? "").includes("ست ترنچ و پیراهن کلبه"));
 check("the document title reflects the open style", () => (d.title ?? "").includes("ست ترنچ و پیراهن کلبه"));
 check("pinned colours are marked as fixed for this style", () => inMain().includes("ثابت است"));

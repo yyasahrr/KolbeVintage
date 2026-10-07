@@ -58,9 +58,9 @@ await click(definedToggle());
 /* ══════════ 2. Curated Style studio ══════════ */
 
 check("seeded styles list renders with titles", () => (text("#curated") ?? "").includes("ست ترنچ و پیراهن کلبه"));
-check("status chips distinguish published vs draft", () => (text("#curated") ?? "").includes("منتشر شده") && (text("#curated") ?? "").includes("پیش‌نویس"));
+check("seed styles render their status chips", () => (text("#curated") ?? "").includes("منتشر شده"));
 check("installment preview shows in the list", () => (text("#curated") ?? "").includes("۴ ×"));
-check("drafts never leak to the public lens", () => report().publicStyles === 1 && report().styles.length === 2);
+check("the four seeded styles are all published and public", () => report().publicStyles === 4 && report().styles.length === 4);
 
 /* live pricing resolves from real products */
 check("demo style subtotal equals the live product sum", () => report().seedDemo1.subtotal > 0);
@@ -84,9 +84,19 @@ titleInput.dispatchEvent(new env.window.Event("input", { bubbles: true }));
 await wait(120);
 check("validation clears once the title exists", () => !(text("#curated") ?? "").includes("عنوان استایل الزامی است."));
 
+/* media editor: candidates from the picked item, ordering badges, honest video form */
+check("the media section lists gallery candidates from the item's real images", () => (text("#curated") ?? "").includes("افزودن از تصاویر قطعات"));
+const mediaAdd = $("#curated button[aria-label='افزودن تصویر به گالری']");
+await click(mediaAdd);
+check("adding an image creates the ordered cover entry", () => !!$("#curated button[aria-label='حذف رسانه ۱']") && !!$("#curated button[aria-label='جابه‌جایی به جلو ۱']"));
+check("the video form refuses non-https input", () => {
+  const btn = byText("#curated button", "افزودن ویدیو به گالری");
+  return !!btn && btn.hasAttribute("disabled");
+});
+
 await click(byText("#curated button", "انتشار در فروشگاه"));
-check("publish persists a third style", () => report().styles.length === 3);
-check("the new style is published and now public", () => report().publicStyles === 2);
+check("publish persists a fifth style", () => report().styles.length === 5);
+check("the new style is published and now public", () => report().publicStyles === 5);
 check("flash confirms the publish", () => ($("#flash").textContent || "").includes("منتشر شد"));
 await click(byText("#curated button", "بستن ویرایشگر"));
 check("the published style appears in the list", () => (text("#curated") ?? "").includes("استایل تستی سوییت"));
@@ -98,6 +108,6 @@ setter.call($("#curated input[placeholder^='مثلاً']"), "آرشیو تستی
 $("#curated input[placeholder^='مثلاً']").dispatchEvent(new env.window.Event("input", { bubbles: true }));
 await wait(120);
 await click(byText("#curated button", "ذخیره پیش‌نویس"));
-check("draft save keeps the style out of the public lens", () => report().styles.length === 4 && report().publicStyles === 2);
+check("draft save keeps the style out of the public lens", () => report().styles.length === 6 && report().publicStyles === 5);
 
 process.exit(done({}) ? 1 : 0);

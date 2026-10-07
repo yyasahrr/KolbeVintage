@@ -143,6 +143,13 @@ export type CuratedStyleInstallments = {
   applyStyleDiscountToInstallments: boolean;
 };
 
+/**
+ * Ordered media for a style (§H): images and, when the merchandiser has one,
+ * a video with poster. The first entry is the cover. `cover` stays for
+ * backward compatibility with definitions authored before media existed.
+ */
+export type CuratedStyleMedia = { kind: "image" | "video"; url: string; poster?: string };
+
 export type CuratedStyle = {
   id: string;
   slug: string;
@@ -151,10 +158,19 @@ export type CuratedStyle = {
   status: CuratedStyleStatus;
   items: CuratedStyleItem[];
   cover?: string;
+  /** ordered gallery; the first entry is the cover (falls back to `cover`) */
+  media?: CuratedStyleMedia[];
   pricing: CuratedStylePricing;
   installments: CuratedStyleInstallments;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Ordered, valid gallery for any style — old definitions degrade gracefully. */
+export const styleMedia = (style: Pick<CuratedStyle, "cover" | "media">): CuratedStyleMedia[] => {
+  const list = (style.media ?? []).filter((m) => !!m.url && (m.kind === "image" || m.kind === "video"));
+  if (list.length) return list;
+  return style.cover ? [{ kind: "image", url: style.cover }] : [];
 };
 
 export const DEFAULT_PRICING: CuratedStylePricing = {

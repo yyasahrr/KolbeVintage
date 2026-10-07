@@ -22,13 +22,14 @@
  * in the store (server-side in production). Nothing here executes a payment.
  */
 import { useMemo, useState } from "react";
-import { ArrowRight, Layers, Lock, Minus, Plus, ScanFace, ShieldCheck, Shirt, Sparkles } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight, Layers, Lock, Minus, Pause, Play, Plus, ScanFace, ShieldCheck, Shirt, Sparkles } from "lucide-react";
 import { fmtMoney, fmtNum, type Product } from "../data/catalog";
 import { FAILURE_TEXT, type LineFailure } from "../data/cart";
 import {
-  CURATED_ROLES, priceStyle, previewCompatibility, publicCuratedStyles,
+  CURATED_ROLES, priceStyle, previewCompatibility, publicCuratedStyles, styleMedia,
   type CuratedStyle, type VariantRelation,
 } from "../data/curated";
+import { mediaSrc } from "../data/experience-api";
 import { ROLE_LABEL, tryOnEligible, type OutfitRole } from "../data/styling";
 import { Fold, preferredSize, sizesOf } from "../components/storefront/shared";
 import { cn } from "../utils/cn";
@@ -47,7 +48,16 @@ export function CuratedStyleCard({ style, catalogue, relations, onOpen, onPerson
   onPersonalize: () => void;
 }) {
   const preview = useMemo(() => priceStyle(style, catalogue), [style, catalogue]);
-  const cover = style.cover ?? catalogue.find((p) => p.id === style.items[0]?.productId)?.images[0];
+  const media = useMemo(() => {
+    const list = styleMedia(style);
+    if (list.length) return list;
+    const fallback = catalogue.find((p) => p.id === style.items[0]?.productId)?.images[0];
+    return fallback ? [{ kind: "image" as const, url: fallback }] : [];
+  }, [style, catalogue]);
+  const [slide, setSlide] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const active = media[Math.min(slide, media.length - 1)];
+  const activeImage = active?.kind === "image" ? active.url : active?.poster ?? "";
   const compatibility = style.items.length >= 2 ? previewCompatibility(style, catalogue, relations) : null;
   const discountPercent = style.pricing.discountType === "percentage" && style.pricing.discountValue > 0
     ? fmtNum(style.pricing.discountValue)
@@ -57,12 +67,36 @@ export function CuratedStyleCard({ style, catalogue, relations, onOpen, onPerson
     : null;
   return (
     <article className="kv-style-card group" aria-label={style.title}>
-      <button type="button" onClick={onOpen} className="kv-style-cover" aria-label={`مشاهده استایل ${style.title}`}>
-        {cover ? <img src={cover} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.03]" /> : <span className="flex h-full w-full items-center justify-center bg-[var(--kv-surface-2)]"><Layers size={28} className="text-[var(--kv-muted)]" /></span>}
-        <span className="kv-style-cover-veil" aria-hidden="true" />
-        {preview.discount.eligible && <span className="kv-style-flag">تخفیف استایل</span>}
-        {style.installments.installmentEnabled && <span className="kv-style-flag kv-style-flag-quiet">خرید اقساطی</span>}
-      </button>
+      <div className="kv-style-media">
+        <button type="button" onClick={onOpen} className="kv-style-cover" aria-label={`مشاهده استایل ${style.title}`}>
+          {active && (active.kind === "video" && playing ? (
+            <video key={active.url} src={mediaSrc(active.url) ?? active.url} poster={mediaSrc(active.poster ?? "") ?? active.poster} autoPlay muted loop playsInline preload="none" className="kv-style-cover-video" aria-label={`ویدیوی استایل ${style.title}`} />
+          ) : activeImage ? (
+            <img src={mediaSrc(activeImage) ?? activeImage} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.03]" />
+          ) : (
+            <span className="flex h-full w-full items-center justify-center bg-[var(--kv-surface-2)]"><Layers size={28} className="text-[var(--kv-muted)]" /></span>
+          ))}
+          {preview.discount.eligible && <span className="kv-style-flag">تخفیف استایل</span>}
+        </button>
+        {active?.kind === "video" && (
+          <button type="button" onClick={() => setPlaying((v) => !v)} className="kv-style-play-hit" aria-label={playing ? "توقف ویدیو" : "پخش ویدیوی استایل"} title={playing ? "توقف ویدیو" : "پخش ویدیوی استایل"}>
+            {playing ? <Pause size={17} aria-hidden="true" /> : <Play size={17} aria-hidden="true" />}
+          </button>
+        )}
+        {media.length > 1 && (
+          <>
+            <button type="button" onClick={() => { setSlide((i) => (i - 1 + media.length) % media.length); setPlaying(false); }} className="kv-style-media-nav" aria-label="رسانه قبلی"><ChevronRight size={15} aria-hidden="true" /></button>
+            <button type="button" onClick={() => { setSlide((i) => (i + 1) % media.length); setPlaying(false); }} className="kv-style-media-nav kv-style-media-nav-end" aria-label="رسانه بعدی"><ChevronLeft size={15} aria-hidden="true" /></button>
+            <div className="kv-style-dots" role="tablist" aria-label="رسانه‌های استایل">
+              {media.map((m, index) => (
+                <button key={`${m.url}-${index}`} type="button" role="tab" aria-selected={index === Math.min(slide, media.length - 1)}
+                  aria-label={`${m.kind === "video" ? "ویدیو" : "تصویر"} ${(index + 1).toLocaleString("fa-IR")}`}
+                  onClick={() => { setSlide(index); setPlaying(false); }} className="kv-style-dot" data-on={index === Math.min(slide, media.length - 1) ? "true" : "false"} />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
       <div className="kv-style-body">
         <h3 className="kv-style-title">{style.title}</h3>
         {style.description && <p className="kv-style-desc">{style.description}</p>}
@@ -107,7 +141,9 @@ export function CuratedStyleGrid({ styles, catalogue, relations, onOpen, onPerso
     ? "mx-auto w-full max-w-[440px]"
     : published.length === 2
       ? "mx-auto grid w-full max-w-[920px] gap-5 sm:grid-cols-2"
-      : "grid gap-5 sm:grid-cols-2 lg:grid-cols-3";
+      : published.length === 3
+        ? "grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
+        : "grid grid-cols-2 items-start gap-x-[var(--kvaf-grid-gap)] gap-y-[var(--kvaf-grid-gap-y)] lg:grid-cols-2 xl:grid-cols-4";
   return (
     <div className={gridClass}>
       {published.map((style) => (
@@ -225,9 +261,18 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
   };
 
   const ordered = [...style.items].sort((a, b) => a.sortOrder - b.sortOrder);
-  /* editorial cover for the detail: the admin-picked cover, else the first
+  /* editorial gallery for the detail: the admin media list, else the first
      item's first image · the same rule the grid card uses */
-  const cover = style.cover ?? catalogue.find((p) => p.id === ordered[0]?.productId)?.images[0];
+  const gallery = useMemo(() => {
+    const list = styleMedia(style);
+    if (list.length) return list;
+    const fallback = catalogue.find((p) => p.id === ordered[0]?.productId)?.images[0];
+    return fallback ? [{ kind: "image" as const, url: fallback }] : [];
+  }, [style, catalogue]);
+  const [heroSlide, setHeroSlide] = useState(0);
+  const [heroPlaying, setHeroPlaying] = useState(false);
+  const heroActive = gallery[Math.min(heroSlide, gallery.length - 1)];
+  const heroImage = heroActive?.kind === "image" ? heroActive.url : heroActive?.poster ?? "";
   /* only items that actually OFFER sizes can be missing one · one-size
      products (no series composition) are added with the empty size, exactly
      like the product card's quick add */
@@ -251,11 +296,34 @@ export function CuratedStyleDetail({ style, catalogue, relations, onBack, onOpen
         <ArrowRight size={15} /> بازگشت به فروشگاه
       </button>
 
-      {cover && (
+      {heroImage && (
         <figure className="kv-style-hero">
-          <img src={cover} alt={`کاور استایل ${style.title}`} fetchPriority="high" decoding="async" />
-          <span className="kv-style-hero-veil" aria-hidden="true" />
-          <figcaption className="kv-style-hero-caption">
+          <div className="kv-style-hero-frame">
+            {heroActive?.kind === "video" && heroPlaying ? (
+              <video key={heroActive.url} src={mediaSrc(heroActive.url) ?? heroActive.url} poster={mediaSrc(heroActive.poster ?? "") ?? heroActive.poster} autoPlay muted loop playsInline preload="metadata" className="kv-style-hero-video" aria-label={`ویدیوی استایل ${style.title}`} />
+            ) : (
+              <img src={mediaSrc(heroImage) ?? heroImage} alt={`کاور استایل ${style.title}`} fetchPriority="high" decoding="async" />
+            )}
+            {heroActive?.kind === "video" && (
+              <button type="button" onClick={() => setHeroPlaying((v) => !v)} className="kv-style-media-nav kv-style-hero-play" aria-label={heroPlaying ? "توقف ویدیو" : "پخش ویدیوی استایل"}>
+                {heroPlaying ? "توقف" : <Play size={16} aria-hidden="true" />}
+              </button>
+            )}
+            {gallery.length > 1 && (
+              <>
+                <button type="button" onClick={() => { setHeroSlide((i) => (i - 1 + gallery.length) % gallery.length); setHeroPlaying(false); }} className="kv-style-media-nav" aria-label="رسانه قبلی"><ChevronRight size={16} aria-hidden="true" /></button>
+                <button type="button" onClick={() => { setHeroSlide((i) => (i + 1) % gallery.length); setHeroPlaying(false); }} className="kv-style-media-nav kv-style-media-nav-end" aria-label="رسانه بعدی"><ChevronLeft size={16} aria-hidden="true" /></button>
+                <div className="kv-style-dots kv-style-hero-dots" role="tablist" aria-label="رسانه‌های استایل">
+                  {gallery.map((m, index) => (
+                    <button key={`${m.url}-${index}`} type="button" role="tab" aria-selected={index === Math.min(heroSlide, gallery.length - 1)}
+                      aria-label={`${m.kind === "video" ? "ویدیو" : "تصویر"} ${(index + 1).toLocaleString("fa-IR")}`}
+                      onClick={() => { setHeroSlide(index); setHeroPlaying(false); }} className="kv-style-dot" data-on={index === Math.min(heroSlide, gallery.length - 1) ? "true" : "false"} />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          <figcaption className="kv-style-hero-flags">
             {preview.discount.eligible && <span className="kv-style-flag">تخفیف استایل</span>}
             <span className="kv-style-flag kv-style-flag-quiet tabular-nums">{fmtNum(preview.totalCount)} قطعه</span>
           </figcaption>

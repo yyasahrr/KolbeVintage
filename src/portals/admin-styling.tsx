@@ -24,7 +24,7 @@ import {
   CURATED_ROLES, CURATED_STATUS_LABEL, DEFAULT_INSTALLMENTS, DEFAULT_PRICING,
   RELATION_LABEL, curatableProduct, previewCompatibility, resolveLines, subtotalOf,
   assessDiscount, assessInstallments, validateCuratedStyle,
-  type CuratedStyle, type CuratedStyleItem, type RelationLevel, type VariantRef,
+  type CuratedStyle, type CuratedStyleItem, type CuratedStyleMedia, type RelationLevel, type VariantRef,
 } from "../data/curated";
 import { Btn, Card, Field, Input, SearchBox, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -240,6 +240,8 @@ export function CuratedStyleStudio({ flash }: { flash: F }) {
   const catalogue = useMemo(() => products.filter(curatableProduct), [products]);
 
   const [draft, setDraft] = useState<CuratedStyle | null>(null);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [videoPoster, setVideoPoster] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
 
@@ -250,6 +252,9 @@ export function CuratedStyleStudio({ flash }: { flash: F }) {
   const installments = useMemo(() => (draft && priced && discount ? assessInstallments(draft, priced.lines, discount) : null), [draft, priced, discount]);
 
   const patch = (p: Partial<CuratedStyle>) => setDraft((d) => (d ? { ...d, ...p } : d));
+  const mediaOf = (d: CuratedStyle | null): CuratedStyleMedia[] =>
+    d ? (d.media ?? (d.cover ? [{ kind: "image" as const, url: d.cover }] : [])) : [];
+  const setMedia = (list: CuratedStyleMedia[]) => patch({ media: list, cover: list.find((m) => m.kind === "image")?.url });
   const patchItem = (id: string, p: Partial<CuratedStyleItem>) => setDraft((d) => (d ? { ...d, items: d.items.map((i) => (i.id === id ? { ...i, ...p } : i)) } : d));
 
   const addItem = (product: Product) => {
@@ -507,18 +512,55 @@ export function CuratedStyleStudio({ flash }: { flash: F }) {
               )}
             </Card>
 
-            {/* ۸ کاور */}
+            {/* ۸ رسانه‌ها: گالری چندتایی + ویدیوی اختیاری؛ مدیای اول کاور است */}
             <Card className="p-4">
-              <p className="mb-3 text-[13px] font-extrabold">۸. کاور استایل</p>
-              {draft.items.length === 0 ? <p className="text-[11.5px] text-[var(--kv-muted)]">ابتدا محصولات را انتخاب کنید؛ کاور از تصاویر همین قطعات انتخاب می‌شود.</p> : (
-                <div className="flex flex-wrap gap-2">
-                  {[...new Set(draft.items.map((i) => catalogue.find((p) => p.id === i.productId)?.images[0]).filter(Boolean))].map((img) => (
-                    <button key={img} onClick={() => patch({ cover: img })} aria-pressed={draft.cover === img}
-                      className={cn("kv-press overflow-hidden rounded-[10px] border-2", draft.cover === img ? "border-[var(--kv-accent)]" : "border-transparent")}>
-                      <img src={img} alt="" className="h-20 w-16 object-cover" />
-                    </button>
-                  ))}
-                </div>
+              <p className="text-[13px] font-extrabold">۸. رسانه‌های استایل</p>
+              <p className="mb-3 mt-1 text-[11.5px] leading-5 text-[var(--kv-muted)]">ترتیب همان ترتیب گالری فروشگاه است و مدیای اول کاور می‌شود. ویدیو اختیاری است و برای نمایش درست به پوستر نیاز دارد.</p>
+              {draft.items.length === 0 ? <p className="text-[11.5px] text-[var(--kv-muted)]">ابتدا محصولات را انتخاب کنید؛ رسانه‌ها از تصاویر همین قطعات ساخته می‌شوند.</p> : (
+                <>
+                  <ul className="mb-4 flex flex-wrap gap-2" aria-label="رسانه‌های فعلی استایل">
+                    {mediaOf(draft).map((m, idx) => (
+                      <li key={`${m.kind}-${m.url}-${idx}`} className="w-[72px] space-y-1">
+                        <div className="relative overflow-hidden rounded-[8px] border border-[var(--kv-line)]">
+                          <img src={m.kind === "video" ? m.poster : m.url} alt="" className="h-20 w-full object-cover" />
+                          <span className="absolute right-1 top-1 rounded-full bg-[#1B2A4A]/85 px-1.5 py-0.5 text-[9px] font-bold text-white">{m.kind === "video" ? "ویدیو" : fmtNum(idx + 1)}</span>
+                        </div>
+                        <div className="flex justify-center gap-1">
+                          <button disabled={idx === 0} onClick={() => { const list = [...mediaOf(draft)]; [list[idx - 1], list[idx]] = [list[idx]!, list[idx - 1]!]; setMedia(list); }} aria-label={`جابه‌جایی به عقب ${fmtNum(idx + 1)}`} className="rounded-[6px] border border-[var(--kv-line)] px-1.5 text-[11px] disabled:opacity-35">→</button>
+                          <button disabled={idx === mediaOf(draft).length - 1} onClick={() => { const list = [...mediaOf(draft)]; [list[idx + 1], list[idx]] = [list[idx]!, list[idx + 1]!]; setMedia(list); }} aria-label={`جابه‌جایی به جلو ${fmtNum(idx + 1)}`} className="rounded-[6px] border border-[var(--kv-line)] px-1.5 text-[11px] disabled:opacity-35">←</button>
+                          <button onClick={() => setMedia(mediaOf(draft).filter((_, j) => j !== idx))} aria-label={`حذف رسانه ${fmtNum(idx + 1)}`} className="rounded-[6px] border border-[var(--kv-line)] px-1.5 text-[11px] text-[var(--kv-danger)]">حذف</button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {(() => {
+                    const inList = new Set(mediaOf(draft).map((m) => m.url));
+                    const candidates = [...new Set(draft.items.map((i) => catalogue.find((p) => p.id === i.productId)).flatMap((p) => p?.images ?? []))].filter((img) => !inList.has(img));
+                    return candidates.length ? (
+                      <div className="mb-4">
+                        <p className="mb-1.5 text-[11.5px] font-bold text-[var(--kv-muted)]">افزودن از تصاویر قطعات:</p>
+                        <div className="flex flex-wrap gap-2">
+                          {candidates.map((img) => (
+                            <button key={img} onClick={() => setMedia([...mediaOf(draft), { kind: "image", url: img }])} aria-label={`افزودن تصویر به گالری`} className="kv-press overflow-hidden rounded-[8px] border-2 border-transparent hover:border-[var(--kv-accent)]">
+                              <img src={img} alt="" className="h-16 w-[52px] object-cover" />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null;
+                  })()}
+                  <div className="space-y-2 rounded-[10px] border border-dashed border-[var(--kv-line)] p-3">
+                    <p className="text-[11.5px] font-bold text-[var(--kv-muted)]">افزودن ویدیو (MP4/WebM با نشانی کامل):</p>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <Input value={videoUrl} onChange={setVideoUrl} placeholder="نشانی ویدیو (https://…)" ariaLabel="نشانی ویدیوی استایل" />
+                      <Input value={videoPoster} onChange={setVideoPoster} placeholder="نشانی پوستر ویدیو (https://…)" ariaLabel="نشانی پوستر ویدیو" />
+                    </div>
+                    <Btn size="sm" variant="soft" disabled={!videoUrl.trim().startsWith("https://") || !videoPoster.trim().startsWith("https://")}
+                      onClick={() => { setMedia([...mediaOf(draft), { kind: "video", url: videoUrl.trim(), poster: videoPoster.trim() }]); setVideoUrl(""); setVideoPoster(""); }}>
+                      افزودن ویدیو به گالری
+                    </Btn>
+                  </div>
+                </>
               )}
             </Card>
           </div>

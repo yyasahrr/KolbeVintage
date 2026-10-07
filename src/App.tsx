@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ShoppingBag, Heart, User, Crown, ArrowLeft, LogOut, Package, Store,
   ShieldCheck, Home, LayoutGrid, Shirt,
+  Layers,
 } from "lucide-react";
 import RetailExperience, { type CartLine, type RetailView, type ShopSeed } from "./portals/retail";
 import VipExperience from "./portals/vip";
@@ -336,6 +337,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const links: HeaderLink[] = [
     { id: "home", label: "خانه", active: section === "retail" && view === "home" && !selectedId, onClick: () => go("retail", "home") },
     { id: "shop", label: "فروشگاه", active: section === "retail" && (view === "shop" || !!selectedId), onClick: () => go("retail", "shop") },
+    { id: "styles", label: "استایل‌ها", active: section === "retail" && (view === "styles" || view === "style"), onClick: () => go("retail", "styles") },
     { id: "studio", label: "پرو مجازی", active: section === "studio" && studioSurface === "tryon", onClick: () => openStudio("tryon") },
     { id: "journal", label: "مجله", active: section === "retail" && view === "journal", onClick: () => go("retail", "journal") },
     { id: "vip", label: "بازارچه عمده", active: section === "vip", onClick: () => go("vip"), vip: true },
@@ -343,6 +345,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
 
   const menuItems: HeaderMenuItem[] = [
     ...(role === "vip" ? [{ id: "vip-orders", label: "سفارش‌های عمده و سبد عمده", icon: <Crown size={15} />, onClick: () => go("vip") }] : []),
+    { id: "styles", label: "فروشگاه استایل", icon: <Layers size={15} />, onClick: () => go("retail", "styles") },
     { id: "builder", label: "ساخت استایل", icon: <Shirt size={15} />, onClick: () => openStudio("builder") },
     { id: "account", label: "پنل حساب من", icon: <Package size={15} />, onClick: () => openAccount() },
     { id: "orders", label: "سفارش‌های خرده", icon: <ShoppingBag size={15} />, onClick: () => openAccount("orders") },
@@ -377,6 +380,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
     }
     if (target === "shop" || target.startsWith("collection:")) { setShopCategory(null); return go("retail", "shop"); }
     if (target === "journal") return go("retail", "journal");
+    if (target === "styles") return go("retail", "styles");
     if (target === "vip") return go("vip");
     if (target === "tryon") return openStudio("tryon");
     if (target === "builder") return openStudio("builder");
