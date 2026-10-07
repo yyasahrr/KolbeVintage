@@ -8,17 +8,6 @@ import { viteSingleFile } from "vite-plugin-singlefile";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/**
- * Extra hostnames the dev server may answer to, comma separated:
- *   KV_PREVIEW_HOSTS=.e2b.app npm run dev
- * Sandbox and tunnel previews set this at launch. Nothing is allow-listed by
- * default, so no preview host is baked into the repository.
- */
-const previewHosts = (process.env.KV_PREVIEW_HOSTS ?? "")
-  .split(",")
-  .map((host) => host.trim())
-  .filter(Boolean);
-
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
@@ -28,10 +17,14 @@ export default defineConfig({
     },
   },
   server: {
-    // `host` only binds the dev server to all interfaces so phones on the same
-    // network — and the dev-only preview harness — can reach it.
+    // Any host: the sandbox preview proxy serves the dev server under its own hostname.
+    allowedHosts: true,
     host: true,
-    ...(previewHosts.length ? { allowedHosts: previewHosts } : {}),
-    proxy: { "/api": "http://127.0.0.1:4000" },
+    // Default local API; override with KV_API_PROXY_TARGET when the smoke stack uses another port.
+    proxy: {
+      "/api": process.env.KV_API_PROXY_TARGET ?? "http://127.0.0.1:4000",
+      "/sitemap.xml": process.env.KV_API_PROXY_TARGET ?? "http://127.0.0.1:4000",
+      "/robots.txt": process.env.KV_API_PROXY_TARGET ?? "http://127.0.0.1:4000",
+    },
   },
 });

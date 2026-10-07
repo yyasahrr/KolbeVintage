@@ -2,6 +2,7 @@
 import { IMG } from "./catalog";
 
 export const KOLBE = { id: "kolbe", name: "کلبه وینتیج" };
+export const KOLBE_CENTRAL_WAREHOUSE_ADDRESS = "انبار مرکزی کلبه — تهران، شهرک صنعتی، سوله دریافت و کنترل کیفیت کلبه (ارسال مستقیم به مشتری VIP ممنوع است)";
 export const BUYER_DEMO = "بوتیک آوا — تهران";
 export const BUYER_ADDRESS = "تهران، بازار بزرگ، پاساژ آوا، پلاک ۱۲";
 
@@ -12,45 +13,66 @@ export const SUB_STATUS: Record<SubStatus, { label: string; step: number }> = {
   pending_supplier: { label: "در انتظار تأیید تأمین‌کننده", step: 1 },
   approved: { label: "تأیید شد · در انتظار پرداخت", step: 2 },
   paid: { label: "پرداخت شد", step: 3 },
-  preparing: { label: "در حال آماده‌سازی", step: 4 },
-  ready_to_ship: { label: "آماده ارسال", step: 5 },
-  in_transit: { label: "در حال ارسال", step: 6 },
-  shipped: { label: "ارسال شد", step: 7 },
+  preparing: { label: "در حال آماده‌سازی برای انبار کلبه", step: 4 },
+  ready_to_ship: { label: "ارسال شده به انبار مرکزی کلبه", step: 5 },
+  in_transit: { label: "دریافت و کنترل کیفیت (QC) در کلبه", step: 6 },
+  shipped: { label: "تجمیع‌شده و ارسال از انبار کلبه به VIP", step: 7 },
   delivered: { label: "تحویل شد", step: 8 },
   rejected: { label: "رد شد", step: 0 },
   cancelled: { label: "لغو شد", step: 0 },
 };
-export const SUB_STEPS = ["ثبت سفارش", "تأیید تأمین‌کننده", "پرداخت", "آماده‌سازی", "آماده ارسال", "در حال ارسال", "ارسال شد", "تحویل"];
+export const SUB_STEPS = [
+  "ثبت سفارش",
+  "تأیید تأمین",
+  "پرداخت",
+  "آماده‌سازی تأمین‌کننده",
+  "ارسال به انبار کلبه",
+  "کنترل کیفیت (QC) کلبه",
+  "تجمیع و ارسال به VIP",
+  "تحویل نهایی",
+];
 export const isTerminal = (s: SubStatus) => s === "delivered" || s === "rejected" || s === "cancelled";
 export const canTransitionSub = (from: SubStatus, to: SubStatus) => {
   const next: Record<SubStatus, SubStatus[]> = {
     pending_supplier: ["approved", "rejected", "cancelled"], approved: ["paid", "cancelled"],
     paid: ["preparing", "cancelled"], preparing: ["ready_to_ship", "cancelled"],
-    ready_to_ship: ["in_transit", "cancelled"], in_transit: ["shipped", "delivered"],
+    ready_to_ship: ["in_transit", "cancelled"], in_transit: ["shipped", "rejected"],
     shipped: ["delivered"], delivered: [], rejected: [], cancelled: [],
   };
   return next[from].includes(to);
 };
 
 export const EVENT_TEXT: Record<SubStatus, string> = {
-  pending_supplier: "سفارش ثبت و برای تأمین‌کننده ارسال شد",
-  approved: "تأمین‌کننده امکان تأمین را تأیید کرد",
+  pending_supplier: "سفارش ثبت و درخواست تأمین در سیستم کلبه ایجاد شد",
+  approved: "ظرفیت تأمین کالا تأیید شد",
   paid: "پرداخت انجام شد",
-  preparing: "آماده‌سازی سفارش آغاز شد",
-  ready_to_ship: "محصول آماده ارسال شد",
-  in_transit: "محصول در حال ارسال است",
-  shipped: "تحویل باربری شد",
-  delivered: "سفارش تحویل داده شد",
-  rejected: "تأمین‌کننده امکان تأمین ندارد",
+  preparing: "آماده‌سازی کالا برای ارسال به انبار مرکزی کلبه آغاز شد",
+  ready_to_ship: "محموله به مقصد انبار مرکزی کلبه ارسال شد",
+  in_transit: "محموله در انبار کلبه دریافت و کنترل کیفیت (QC) تأیید شد",
+  shipped: "سفارش در انبار کلبه تجمیع و به مقصد مشتری VIP ارسال شد",
+  delivered: "سفارش تحویل مشتری VIP داده شد",
+  rejected: "کالا در بررسی تأمین یا کنترل کیفیت رد شد",
   cancelled: "سفارش لغو شد",
 };
 
 export type OrderLine = { productId: string; name: string; image: string; seriesName: string; color: string; qtySeries: number; pieces: number; pricePerSeries: number };
 export type OrderEvent = { t: string; time: string; by: string };
+export type QcSummary = {
+  expected: number;
+  received: number;
+  accepted: number;
+  rejected: number;
+  damaged: number;
+  missing: number;
+  receiptRef?: string;
+  note?: string;
+};
 export type SubOrder = {
   id: string; supplierId: string; supplierName: string; status: SubStatus;
   lines: OrderLine[]; total: number; events: OrderEvent[];
   note?: string; tracking?: string; eta?: string;
+  inboundTracking?: string;
+  qcSummary?: QcSummary;
 };
 export type ParentOrder = { id: string; buyer: string; accountId?: string; createdAt: string; shippingMethod: string; address: string; subOrders: SubOrder[] };
 export type WholesaleCartLine = { accountId?: string; productId: string; seriesId: string; color: string; qtySeries: number };

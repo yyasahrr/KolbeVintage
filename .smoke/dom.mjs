@@ -11,7 +11,7 @@ export function makeDom({ mobile = false } = {}) {
 
   const dom = new JSDOM(
     `<!doctype html><html dir="rtl" lang="fa"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>`,
-    { url: "https://kolbe.test/", pretendToBeVisual: true, runScripts: "outside-only", virtualConsole },
+    { url: "https://kolbe.test/?demo", pretendToBeVisual: true, runScripts: "outside-only", virtualConsole },
   );
   const { window } = dom;
   /* capability detection only — the desktop bundle is the pointer/min-1024 one */

@@ -1,6 +1,8 @@
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useId } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronLeft, Minus, Plus, Search, X } from "lucide-react";
 import { cn } from "../utils/cn";
+import { useDialogFocus } from "./focus-trap";
 
 /* ---------- Button ---------- */
 export function Btn({
@@ -105,12 +107,13 @@ export function Field({ label, children, hint }: { label: string; children: Reac
   );
 }
 
-export function Input({ placeholder, value, onChange, icon, className, type = "text" }: { placeholder?: string; value?: string; onChange?: (v: string) => void; icon?: ReactNode; className?: string; type?: string }) {
+export function Input({ placeholder, value, onChange, icon, className, type = "text", ariaLabel }: { placeholder?: string; value?: string; onChange?: (v: string) => void; icon?: ReactNode; className?: string; type?: string; ariaLabel?: string }) {
   return (
     <div className={cn("relative", className)}>
       {icon && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--kv-faint)]">{icon}</span>}
-      <input type={type}
-        value={value} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
+      <input type={type} aria-label={ariaLabel}
+        // `undefined` keeps the field uncontrolled; a null value made React warn on every render.
+        value={value ?? ""} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
         className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 text-sm text-[var(--kv-ink)] outline-none transition-all placeholder:text-[var(--kv-faint)] focus:border-[var(--kv-accent)] focus:ring-2 focus:ring-[var(--kv-accent)]/15"
         style={icon ? { paddingRight: 42 } : undefined}
       />
@@ -122,24 +125,24 @@ export function SearchBox({ placeholder = "جست‌وجو…", value, onChange 
   return <Input placeholder={placeholder} value={value} onChange={onChange} icon={<Search size={17} />} />;
 }
 
-export function Select({ options, value, onChange, className }: { options: string[]; value?: string; onChange?: (v: string) => void; className?: string }) {
+export function Select({ options, value, onChange, className, labels }: { options: string[]; value?: string; onChange?: (v: string) => void; className?: string; labels?: Record<string, string> }) {
   return (
     <div className={cn("relative", className)}>
       <select
         value={value} onChange={(e) => onChange?.(e.target.value)}
         className="h-11 w-full appearance-none rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 pl-9 text-sm font-medium text-[var(--kv-ink)] outline-none transition-all focus:border-[var(--kv-accent)] cursor-pointer"
       >
-        {options.map((o) => <option key={o}>{o}</option>)}
+        {options.map((o) => <option key={o} value={o}>{labels?.[o] ?? o}</option>)}
       </select>
       <ChevronLeft size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 rotate-[-90deg] text-[var(--kv-faint)]" />
     </div>
   );
 }
 
-export function Switch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+export function Switch({ on, onToggle, label }: { on: boolean; onToggle: () => void; label?: string }) {
   return (
     <button
-      onClick={onToggle} role="switch" aria-checked={on}
+      onClick={onToggle} role="switch" aria-checked={on} aria-label={label}
       className={cn("relative h-6 w-11 rounded-full transition-colors", on ? "bg-[var(--kv-success)]" : "bg-[var(--kv-surface-3)]")}
     >
       <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all", on ? "right-[22px]" : "right-0.5")} />
@@ -214,20 +217,16 @@ export function Skeleton({ className }: { className?: string }) {
 
 /* ---------- Overlays ---------- */
 export function Drawer({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
+  const ref = useDialogFocus<HTMLElement>(open, onClose);
+  const titleId = useId();
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[70]">
-      <div className="absolute inset-0 bg-[#0E1527]/45 backdrop-blur-[2px] animate-[fadeIn_0.25s_ease]" onClick={onClose} />
-      <aside role="dialog" aria-modal="true" aria-label={title} className={cn("absolute left-0 top-0 flex h-full flex-col bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[drawerIn_0.3s_cubic-bezier(0.22,1,0.36,1)]", wide ? "w-full max-w-[560px]" : "w-full max-w-[420px]")}>
+      <div className="absolute inset-0 bg-[#0E1527]/45 backdrop-blur-[2px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <aside ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} className={cn("absolute left-0 top-0 flex h-full flex-col bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[drawerIn_0.3s_cubic-bezier(0.22,1,0.36,1)]", wide ? "w-full max-w-[560px]" : "w-full max-w-[420px]")}>
         <div className="flex items-center justify-between border-b border-[var(--kv-line)] px-6 py-4">
-          <h3 className="text-[16px] font-bold">{title}</h3>
-          <button autoFocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+          <h3 id={titleId} className="text-[16px] font-bold">{title}</h3>
+          <button data-autofocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
         </div>
         <div className="kv-scroll flex-1 overflow-y-auto p-6">{children}</div>
       </aside>
@@ -236,20 +235,55 @@ export function Drawer({ open, onClose, title, children, wide }: { open: boolean
 }
 
 export function Modal({ open, onClose, children, max = "max-w-[560px]", title = "پنجره" }: { open: boolean; onClose: () => void; children: ReactNode; max?: string; title?: string }) {
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-[#0E1527]/50 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label={title} className={cn("relative w-full rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-7 shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)]", max)}>
-        <button autoFocus onClick={onClose} className="kv-press absolute left-5 top-5 flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+      <div className="absolute inset-0 bg-[#0E1527]/50 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <div ref={ref} role="dialog" aria-modal="true" aria-label={title} className={cn("relative w-full rounded-[24px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-7 shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)]", max)}>
+        <button data-autofocus onClick={onClose} className="kv-press absolute left-5 top-5 flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
         {children}
       </div>
+    </div>
+  );
+}
+
+/** §60: LARGE operational editors live in a centered workspace modal — ~90vw (max 1360px) × ~90vh,
+ *  fixed header, scrollable body, full-screen on mobile. Right-side drawers are forbidden for these. */
+export function WorkspaceModal({ open, onClose, title, subtitle, children, footer }: {
+  open: boolean; onClose: () => void; title: string; subtitle?: string; children: ReactNode; footer?: ReactNode;
+}) {
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose);
+  if (!open) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[85] flex items-center justify-center sm:p-4">
+      <div className="absolute inset-0 bg-[#0E1527]/55 backdrop-blur-[3px] animate-[fadeIn_0.25s_ease]" onClick={onClose} aria-hidden="true" />
+      <div ref={ref} role="dialog" aria-modal="true" aria-label={title}
+        className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--kv-surface)] shadow-[var(--shadow-soft-lg)] animate-[scaleIn_0.28s_cubic-bezier(0.22,1,0.36,1)] sm:h-[90vh] sm:w-[90vw] sm:max-w-[1360px] sm:rounded-[24px] sm:border sm:border-[var(--kv-line)]">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--kv-line)] px-5 py-4">
+          <div>
+            <h2 className="text-sm font-bold">{title}</h2>
+            {subtitle && <p className="mt-0.5 text-[11.5px] leading-5 text-[var(--kv-muted)]">{subtitle}</p>}
+          </div>
+          <button data-autofocus onClick={onClose} className="kv-press flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]" aria-label="بستن"><X size={18} /></button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+        {footer && <div className="shrink-0 border-t border-[var(--kv-line)] px-5 py-3">{footer}</div>}
+      </div>
+    </div>, document.body
+  );
+}
+
+/** Full-screen media viewer with the same dialog focus rules (trap, Escape, restore); arrow keys via onKey. */
+export function Lightbox({ open, onClose, label, children, onKey, caption, z = "z-[80]" }: { open: boolean; onClose: () => void; label: string; children: ReactNode;
+  onKey?: (event: KeyboardEvent) => void; caption?: ReactNode; z?: string }) {
+  const ref = useDialogFocus<HTMLDivElement>(open, onClose, { onKey });
+  if (!open) return null;
+  return (
+    <div ref={ref} role="dialog" aria-modal="true" aria-label={label} className={cn("fixed inset-0 flex items-center justify-center bg-black/85 p-4", z)} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="contents">{children}</div>
+      <button data-autofocus onClick={onClose} aria-label="بستن" className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white focus-visible:outline-2 focus-visible:outline-white"><X size={20} /></button>
+      {caption && <p className="absolute bottom-4 text-[12px] text-white/80" aria-live="polite">{caption}</p>}
     </div>
   );
 }
@@ -257,7 +291,8 @@ export function Modal({ open, onClose, children, max = "max-w-[560px]", title = 
 /* ---------- Segmented ---------- */
 export function Segmented<T extends string>({ options, value, onChange }: { options: { v: T; label: string }[]; value: T; onChange: (v: T) => void }) {
   return (
-    <div className="inline-flex rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/70 p-1">
+    /* max-w-full + flex-wrap: روی موبایل (۳۶۰px) تب‌ها می‌شکنند و از صفحه بیرون نمی‌زنند (§40) */
+    <div className="inline-flex max-w-full flex-wrap rounded-full border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/70 p-1">
       {options.map((o) => (
         <button
           key={o.v} onClick={() => onChange(o.v)}
@@ -295,7 +330,7 @@ export function Timeline({ items }: { items: { t: string; d: string; time: strin
 export function Textarea({ placeholder, value, onChange, rows = 3 }: { placeholder?: string; value?: string; onChange?: (v: string) => void; rows?: number }) {
   return (
     <textarea
-      rows={rows} value={value} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
+      rows={rows} value={value ?? ""} onChange={(e) => onChange?.(e.target.value)} placeholder={placeholder}
       className="w-full resize-y rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-4 py-3 text-sm leading-6 text-[var(--kv-ink)] outline-none transition-all placeholder:text-[var(--kv-faint)] focus:border-[var(--kv-accent)] focus:ring-2 focus:ring-[var(--kv-accent)]/15"
     />
   );
@@ -307,5 +342,32 @@ export function Checkbox({ checked, onChange, label }: { checked: boolean; onCha
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 accent-[#C1613B]" />
       {label}
     </label>
+  );
+}
+
+/* ---------- Server-state helpers: Loading / Error / Empty / Permission ---------- */
+export function LoadingState({ label = "در حال بارگذاری…" }: { label?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-6 py-10 text-center animate-[fadeIn_0.3s_ease]">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--kv-line-strong)] border-t-[var(--kv-accent)]" aria-label="loading" />
+      <p className="mt-3 text-[13px] font-medium text-[var(--kv-muted)]">{label}</p>
+    </div>
+  );
+}
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-[var(--kv-danger)]/20 bg-[var(--kv-danger)]/[0.04] px-6 py-10 text-center">
+      <p className="text-[13px] font-bold text-[var(--kv-danger)]">خطا در بارگذاری</p>
+      <p className="mt-1.5 max-w-[40ch] text-[12.5px] leading-6 text-[var(--kv-muted)]">{message}</p>
+      {onRetry && <Btn variant="soft" size="sm" className="mt-4" onClick={onRetry}>تلاش دوباره</Btn>}
+    </div>
+  );
+}
+export function PermissionDenied({ message = "دسترسی لازم را ندارید." }: { message?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-[16px] border border-dashed border-[var(--kv-line-strong)] bg-[var(--kv-surface)] px-6 py-10 text-center">
+      <p className="text-[14px] font-bold">دسترسی محدود</p>
+      <p className="mt-1.5 text-[12.5px] text-[var(--kv-muted)]">{message}</p>
+    </div>
   );
 }

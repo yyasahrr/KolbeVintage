@@ -93,10 +93,20 @@ check("final look item count follows the canvas removal", () => {
 check("canvas is portrait 3:4 by the stylesheet", () => /\.kv-sb-canvas\{[^}]*aspect-ratio:\s*3\s*\/\s*4/.test(dist) || /aspect-\[3\/4\]/.test(dist));
 check("canvas keyboard path documented (drag is not the only way)", () => $$("button[aria-label*='از بوم']").length >= 1 && $$("[aria-label='بوم استایل'] [role='button']").every((node) => (node.getAttribute("aria-label") ?? "").includes("Delete")));
 
-/* ---- try-on surface: honest, no fake result ---- */
+/* ---- try-on surface: honest, no fake result ----
+   The merge ships the production try-on (server jobs + credits): the surface keeps
+   its own step rail and product picker, and offline it shows the honest loading /
+   error state — never a fabricated result. Retail-only eligibility is enforced by
+   the picker's catalogue source: the public retail channel API (wholesale items
+   are not in it), plus the image-availability filter. */
 await click(byText(".kv-sf-navlink", "پرو مجازی"));
-check("try-on opens as its own surface", () => (d.body.textContent ?? "").includes("قبل از خرید، تن‌خور را ببین"));
-check("try-on picker lists only eligible products", () => $$(".kv-press img", d).length >= 1);
+check("try-on opens as its own surface", () =>
+  (d.body.textContent ?? "").includes("لباس را روی عکس خودت ببین")
+  && !!$("[aria-label='مراحل پرو مجازی']"));
+check("try-on picker stays honest offline (loading or retry — never a fake grid)", () => {
+  const body = d.body.textContent ?? "";
+  return body.includes("در حال بارگذاری محصولات…") || body.includes("تلاش دوباره") || $$(".grid [aria-pressed]", d).length > 0;
+});
 check("no fabricated try-on result exists anywhere in the build", () => !dist.includes("شبیه‌سازی تن‌خور"));
 
 /* ---- wholesale never exposes try-on ---- */

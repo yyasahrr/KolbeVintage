@@ -1,7 +1,9 @@
-/* Operations store: CMS, finance/wallet, supplier onboarding, restrictions, support, SMS, CRM, promotions.
-   Persisted locally and synced across tabs — a stand-in for the platform backend. */
+/* Operations store: now delegates to server APIs (/api/v1/*) for CMS, finance, CRM, coupons, etc.
+   localStorage is retained only for non-sensitive UI prefs; authoritative operations state lives in PostgreSQL. */
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
 import { IMG } from "./catalog";
+import { apiClient } from "./api";
+import { TICKET_STATUSES, TICKET_STATUS_LABEL, TICKET_PRIORITY_LABEL, type TicketStatus, type TicketPriority } from "./contracts";
 
 /* ---------------- CMS ---------------- */
 export type HeroTemplate = "split" | "fullbleed" | "video" | "carousel" | "minimal" | "mosaic";
@@ -39,7 +41,7 @@ export const channelHref = (c: QuickChannel) => {
 
 /* ---------------- Series templates ---------------- */
 export type SeriesCategory = "لباس" | "شلوار" | "کفش" | "اکسسوری" | "سایر";
-export type SeriesTemplate = { id: string; ownerId: string; name: string; category?: SeriesCategory; composition: Record<string, number>; defaultMoq: number; note?: string };
+export type SeriesTemplate = { id: string; ownerId: string; name: string; category?: SeriesCategory; productTypeId?: string; composition: Record<string, number>; defaultMoq: number; note?: string };
 
 /* ---------------- Supplier finance ---------------- */
 export type SupplierBank = {
@@ -64,16 +66,17 @@ export const NO_FLAGS: RestrictionFlags = { block: false, noOrder: false, noWhol
 export type TicketMessage = { from: "user" | "agent"; name: string; text: string; at: string };
 export type TicketAttachment = { name: string; dataUrl: string; size: number };
 export type TicketEvent = { at: string; by: string; action: string };
+export type { TicketStatus, TicketPriority };
 export type Ticket = {
   id: string; ownerType: "customer" | "supplier"; ownerId: string; ownerName: string; subject: string; category: string;
-  priority: "low" | "normal" | "high"; status: "open" | "reviewing" | "answered" | "waiting" | "escalated" | "resolved" | "closed";
+  priority: TicketPriority; status: TicketStatus;
   orderRef?: string; createdAt: string; messages: TicketMessage[]; department?: string; assignee?: string;
   slaDueAt?: string; attachments?: TicketAttachment[]; events?: TicketEvent[];
 };
-export const TICKET_STATUS: Record<Ticket["status"], string> = {
-  open: "جدید", reviewing: "در حال بررسی", answered: "پاسخ داده شد", waiting: "در انتظار پاسخ کاربر",
-  escalated: "ارجاع شده", resolved: "حل شده", closed: "بسته شد",
-};
+/** Single source of truth for statuses (backend enum) and their UI labels. */
+export const TICKET_STATUSES_LIST = TICKET_STATUSES;
+export const TICKET_STATUS = TICKET_STATUS_LABEL;
+export const TICKET_PRIORITY = TICKET_PRIORITY_LABEL;
 export type ReturnReq = {
   id: string; channel: "retail" | "wholesale"; orderId: string; ownerId: string; ownerName: string; items: string; reason: string;
   resolution: "refund" | "exchange" | "credit"; status: "requested" | "approved" | "received" | "refunded" | "rejected"; amount: number; createdAt: string; events: { t: string; at: string }[];
@@ -87,6 +90,165 @@ export type SmsCampaign = { id: string; name: string; audience: string; recipien
 /* ---------------- Promotions ---------------- */
 export type Coupon = { id: string; code: string; type: "percent" | "fixed" | "freeShip"; value: number; minOrder: number; maxUses: number; used: number; channel: "retail" | "wholesale"; expires: string; active: boolean };
 export type Festival = { id: string; name: string; starts: string; ends: string; discountPercent: number; categories: string[]; active: boolean; bannerText: string };
+export type PromotionTargetType = "product" | "color" | "size" | "variant";
+export type PromotionRule = {
+  id: string;
+  name: string;
+  targetType: PromotionTargetType;
+  productId: string;
+  colorId?: string;
+  sizeCode?: string;
+  discountType: "percent" | "fixed";
+  discountValue: number;
+  starts?: string;
+  ends?: string;
+  priority: number;
+  active: boolean;
+  /** DEC-PRICING-001 (Option A): a rule suspended by a festival stays dormant until explicit reactivation. */
+  suspendedByPromotionId?: string | null;
+};
+
+export type ResolvedPromotionPrice = {
+  basePrice: number;
+  matchedRule: {
+    id: string;
+    name: string;
+    targetType: PromotionTargetType | "festival";
+    priority: number;
+  } | null;
+  discountType: "percent" | "fixed" | null;
+  discountValue: number | null;
+  discountAmount: number;
+  finalPrice: number;
+  startsAt: string | null;
+  endsAt: string | null;
+  source: "promotion_rule" | "festival" | "none";
+};
+
+const COLOR_NORMALIZE: Record<string, string> = {
+  black: "black", "مشکی": "black",
+  orange: "orange", "نارنجی آجری": "orange", "نارنجی": "orange",
+  cream: "cream", "کرمی": "cream",
+  olive: "olive", "زیتونی": "olive",
+  sand: "sand", "شنی": "sand",
+  navy: "navy", "سرمه‌ای": "navy",
+  white: "white", "سفید": "white",
+  burgundy: "burgundy", "زرشکی": "burgundy",
+  brown: "brown", "قهوه‌ای": "brown",
+  gray: "gray", "طوسی": "gray",
+};
+
+const normColor = (v?: string) => {
+  if (!v) return "";
+  const k = v.trim().toLowerCase();
+  return COLOR_NORMALIZE[k] ?? k;
+};
+const normSize = (v?: string) => (v ? v.trim().toUpperCase() : "");
+
+const targetSpecificity = (t: PromotionTargetType) =>
+  t === "variant" ? 40 : t === "color" ? 30 : t === "size" ? 20 : 10;
+
+export function resolveVariantPromotion(
+  product: { id: string; category: string; retailPrice: number; installmentPrice?: number },
+  colorIdOrName: string | undefined,
+  sizeCode: string | undefined,
+  rules: PromotionRule[],
+  festivals: Festival[],
+  paymentMode: "cash" | "four_installments" = "cash",
+): ResolvedPromotionPrice {
+  const basePrice = paymentMode === "four_installments"
+    ? (product.installmentPrice ?? product.retailPrice)
+    : product.retailPrice;
+  const today = new Date().toISOString().slice(0, 10);
+  const cKey = normColor(colorIdOrName);
+  const sKey = normSize(sizeCode);
+
+  const matchingRules = (rules ?? []).filter((r) => {
+    if (!r.active) return false;
+    // DEC-PRICING-001 (Option A): festival-suspended rules never price the storefront.
+    if (r.suspendedByPromotionId || (r as unknown as Record<string, unknown>).suspended_by_promotion_id) return false;
+    if (r.starts && r.starts > today) return false;
+    if (r.ends && r.ends < today) return false;
+    if (r.productId !== product.id) return false;
+    if (r.targetType === "variant") {
+      return normColor(r.colorId) === cKey && normSize(r.sizeCode) === sKey;
+    }
+    if (r.targetType === "color") {
+      return normColor(r.colorId) === cKey;
+    }
+    if (r.targetType === "size") {
+      return normSize(r.sizeCode) === sKey;
+    }
+    return r.targetType === "product";
+  });
+
+  if (matchingRules.length > 0) {
+    const sorted = [...matchingRules].sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      const spec = targetSpecificity(b.targetType) - targetSpecificity(a.targetType);
+      if (spec !== 0) return spec;
+      const amtA = a.discountType === "percent" ? Math.round((basePrice * a.discountValue) / 100) : Math.min(basePrice, a.discountValue);
+      const amtB = b.discountType === "percent" ? Math.round((basePrice * b.discountValue) / 100) : Math.min(basePrice, b.discountValue);
+      return amtB - amtA;
+    });
+    const winner = sorted[0]!;
+    const discountAmount = winner.discountType === "percent"
+      ? Math.round((basePrice * Math.min(95, winner.discountValue)) / 100)
+      : Math.min(basePrice, winner.discountValue);
+    return {
+      basePrice,
+      matchedRule: {
+        id: winner.id,
+        name: winner.name,
+        targetType: winner.targetType,
+        priority: winner.priority,
+      },
+      discountType: winner.discountType,
+      discountValue: winner.discountValue,
+      discountAmount,
+      finalPrice: Math.max(0, basePrice - discountAmount),
+      startsAt: winner.starts ?? null,
+      endsAt: winner.ends ?? null,
+      source: "promotion_rule",
+    };
+  }
+
+  const liveFestivals = (festivals ?? []).filter(
+    (f) => f.active && f.starts <= today && f.ends >= today && f.categories.includes(product.category),
+  );
+  if (liveFestivals.length > 0) {
+    const bestFest = [...liveFestivals].sort((a, b) => b.discountPercent - a.discountPercent)[0]!;
+    const discountAmount = Math.round((basePrice * bestFest.discountPercent) / 100);
+    return {
+      basePrice,
+      matchedRule: {
+        id: bestFest.id,
+        name: bestFest.name,
+        targetType: "festival",
+        priority: 0,
+      },
+      discountType: "percent",
+      discountValue: bestFest.discountPercent,
+      discountAmount,
+      finalPrice: Math.max(0, basePrice - discountAmount),
+      startsAt: bestFest.starts,
+      endsAt: bestFest.ends,
+      source: "festival",
+    };
+  }
+
+  return {
+    basePrice,
+    matchedRule: null,
+    discountType: null,
+    discountValue: null,
+    discountAmount: 0,
+    finalPrice: basePrice,
+    startsAt: null,
+    endsAt: null,
+    source: "none",
+  };
+}
 
 /* ---------------- CRM ---------------- */
 export type LeadStage = "new" | "contacted" | "qualified" | "won" | "lost";
@@ -99,7 +261,7 @@ export type OpsState = {
   seriesTemplates: SeriesTemplate[]; banks: Record<string, SupplierBank>; withdrawals: Withdrawal[]; commissions: Record<string, number>;
   applicationForm: ApplicationForm; applications: Application[]; extraSuppliers: ExtraSupplier[];
   restrictions: Restriction[]; tickets: Ticket[]; returns: ReturnReq[];
-  sms: SmsConfig; smsCampaigns: SmsCampaign[]; coupons: Coupon[]; festivals: Festival[];
+  sms: SmsConfig; smsCampaigns: SmsCampaign[]; coupons: Coupon[]; festivals: Festival[]; promotionRules: PromotionRule[];
   leads: Lead[]; tasks: CrmTask[]; notes: CrmNote[]; tags: Record<string, string[]>;
 };
 
@@ -108,7 +270,8 @@ const inDays = (d: number) => new Date(Date.now() + d * 86400000).toISOString().
 export const HERO_VIDEO = "https://videos.pexels.com/video-files/5822173/5822173-hd_1920_1080_25fps.mp4";
 export const HERO_VIDEO_ALT = "https://videos.pexels.com/video-files/8485166/8485166-hd_1920_1080_25fps.mp4";
 
-const seed = (): OpsState => ({
+const USE_DEMO_SEED_OPS = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+const seed = (): OpsState => USE_DEMO_SEED_OPS ? ({
   hero: {
     template: "split", eyebrow: "کالکشن پاییز ۱۴۰۴", title: "سبک‌های ماندگار\nبرای امروز و فردا",
     subtitle: "منتخب پوشاک کلاسیک و مدرن از بهترین تأمین‌کنندگان؛ با ضمانت اصالت، برگشت آسان و ارسال به سراسر کشور.",
@@ -185,7 +348,7 @@ const seed = (): OpsState => ({
       { from: "user", name: "سارا محمدی", text: "سلام، سفارشم کی ارسال می‌شود؟", at: "امروز ۱۱:۲۰" },
       { from: "agent", name: "پشتیبانی کلبه", text: "سلام سارا جان، سفارش در حال بسته‌بندی است و تا عصر امروز تحویل پست می‌شود.", at: "امروز ۱۱:۴۲" },
     ] },
-    { id: "TK-5097", ownerType: "supplier", ownerId: "s1", ownerName: "نیلگون", subject: "تأخیر در تسویه هفته گذشته", category: "مالی و تسویه", priority: "high", status: "open", createdAt: "دیروز", messages: [
+    { id: "TK-5097", ownerType: "supplier", ownerId: "s1", ownerName: "نیلگون", subject: "تأخیر در تسویه هفته گذشته", category: "مالی و تسویه", priority: "high", status: "new", createdAt: "دیروز", messages: [
       { from: "user", name: "نیلگون", text: "تسویه شنبه گذشته هنوز به حساب ما نرسیده است.", at: "دیروز ۱۶:۰۵" },
     ] },
   ],
@@ -204,6 +367,11 @@ const seed = (): OpsState => ({
   festivals: [
     { id: "fs1", name: "جشنواره پاییزه", starts: inDays(-2).slice(0, 10), ends: inDays(3).slice(0, 10), discountPercent: 15, categories: ["مانتو و بارانی", "پالتو"], active: true, bannerText: "۱۵٪ تخفیف بارانی و پالتو" },
   ],
+  promotionRules: [
+    { id: "pr-variant-xl-orange", name: "تخفیف تک‌سایز XL رنگ نارنجی آجری", targetType: "variant", productId: "p1", colorId: "orange", sizeCode: "XL", discountType: "percent", discountValue: 25, starts: inDays(-5).slice(0, 10), ends: inDays(14).slice(0, 10), priority: 100, active: true },
+    { id: "pr-color-orange", name: "تخفیف ویژه رنگ نارنجی آجری", targetType: "color", productId: "p1", colorId: "orange", discountType: "percent", discountValue: 18, starts: inDays(-5).slice(0, 10), ends: inDays(14).slice(0, 10), priority: 80, active: true },
+    { id: "pr-size-2xl", name: "تخفیف سایز 2XL ژاکت کشباف", targetType: "size", productId: "p4", sizeCode: "2XL", discountType: "fixed", discountValue: 350000, starts: inDays(-3).slice(0, 10), ends: inDays(10).slice(0, 10), priority: 70, active: true },
+  ],
   leads: [
     { id: "ld1", name: "بوتیک رز — کرج", phone: "09129804567", source: "فرم عضویت عمده", stage: "qualified", value: 120000000, owner: "نیلوفر", note: "علاقه‌مند به سری کامل پیراهن", createdAt: "۳ روز پیش" },
     { id: "ld2", name: "فروشگاه نیک‌پوش — تبریز", phone: "09145501234", source: "اینستاگرام", stage: "contacted", value: 60000000, owner: "آرش", note: "", createdAt: "هفته پیش" },
@@ -218,12 +386,36 @@ const seed = (): OpsState => ({
   ],
   notes: [{ id: "n1", customerId: "c1", text: "سایز M در بارانی و L در پیراهن؛ رنگ‌های خنثی را ترجیح می‌دهد.", at: "هفته پیش" }],
   tags: { c1: ["VIP بالقوه", "رنگ خنثی"], c7: ["پرخرج"] },
+}) : ({
+  hero: { template: "split", eyebrow: "", title: "", subtitle: "", ctaLabel: "", ctaTarget: "shop", secondaryLabel: "", secondaryTarget: "shop", image: "", video: "", poster: "", overlay: 0, align: "right", slides: [], mosaic: [] },
+  blocks: [],
+  quickSupport: { enabled: false, title: "", hours: "", channels: [] },
+  n8n: { webhookUrl: "", enabled: false },
+  seriesTemplates: [],
+  banks: {},
+  withdrawals: [],
+  commissions: {},
+  applicationForm: { title: "", intro: "", active: false, fields: [] },
+  applications: [],
+  extraSuppliers: [],
+  restrictions: [],
+  tickets: [],
+  returns: [],
+  sms: { provider: "", apiKey: "", sender: "", connected: false, pricePerPart: 0 },
+  smsCampaigns: [],
+  coupons: [],
+  festivals: [],
+  promotionRules: [],
+  leads: [],
+  tasks: [],
+  notes: [],
+  tags: {},
 });
 
 type ListKey = { [K in keyof OpsState]: OpsState[K] extends { id: string }[] ? K : never }[keyof OpsState];
 type ItemOf<K extends ListKey> = OpsState[K] extends (infer U)[] ? U : never;
 
-type Ops = OpsState & {
+type Ops = OpsState & { loading: boolean; error: string | null; clearError: () => void;
   set: <K extends keyof OpsState>(key: K, value: OpsState[K]) => void;
   upsert: <K extends ListKey>(key: K, item: ItemOf<K>, prepend?: boolean) => void;
   remove: <K extends ListKey>(key: K, id: string) => void;
@@ -235,39 +427,132 @@ const Ctx = createContext<Ops | null>(null);
 const KEY = "kolbe-ops-v1";
 
 export function OpsProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<OpsState>(() => {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as OpsState;
-        return { ...seed(), ...saved, sms: { ...saved.sms, apiKey: "", connected: false } };
-      }
-    } catch { /* ignore */ }
-    return seed();
-  });
+  // Operations state is authoritative in PostgreSQL. This provider is a facade cache over /api/v1/admin/*.
+  // No business data is produced/edited independently; every mutation is request → backend → cache.
+  // Demo mode ?demo=1 uses in-memory seed; normal runtime hydrates from server and shows loading/error.
+  const [state, setState] = useState<OpsState>(() => seed());
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    try {
-      const next = JSON.stringify({ ...state, sms: { ...state.sms, apiKey: "", connected: false } });
-      if (localStorage.getItem(KEY) !== next) localStorage.setItem(KEY, next);
-    } catch { /* quota */ }
-  }, [state]);
+    if (USE_DEMO_SEED_OPS) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        const [cmsPages, coupons, festivals, promotionRules, tickets, crmContacts] = await Promise.all([
+          apiClient.get<{ items: unknown[] }>("/admin/cms/pages").catch(() => null),
+          apiClient.get<{ items: Coupon[] }>("/admin/coupons").catch(() => null),
+          apiClient.get<{ items: Festival[] }>("/admin/festivals").catch(() => null),
+          apiClient.get<{ items: PromotionRule[] }>("/promotions/rules").catch(() => null),
+          apiClient.get<{ items: unknown[] }>("/tickets").catch(() => null),
+          apiClient.get<{ items: Lead[] }>("/admin/crm/contacts").catch(() => null),
+        ]);
+        if (cancelled) return;
+        setState((s) => ({
+          ...s,
+          blocks: (cmsPages as any)?.items?.[0]?.blocks ?? s.blocks,
+          hero: (cmsPages as any)?.items?.[0]?.hero ?? s.hero,
+          coupons: (coupons as any)?.items ?? s.coupons,
+          festivals: (festivals as any)?.items ?? s.festivals,
+          promotionRules: (promotionRules as any)?.items ?? s.promotionRules,
+          tickets: (tickets as any)?.items ?? s.tickets,
+          leads: (crmContacts as any)?.items ?? s.leads,
+        }));
+      } catch (e) { if (!cancelled) setError(e instanceof Error ? e.message : "خطا در بارگذاری ops"); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => {
-    const on = (e: StorageEvent) => { if (e.key === KEY && e.newValue) { try { setState(JSON.parse(e.newValue)); } catch { /* ignore */ } } };
+    const on = (e: StorageEvent) => { if (USE_DEMO_SEED_OPS && e.key === KEY && e.newValue) { try { setState(JSON.parse(e.newValue)); } catch { /* ignore */ } } };
     window.addEventListener("storage", on);
     return () => window.removeEventListener("storage", on);
   }, []);
 
   const value: Ops = {
-    ...state,
-    set: (key, v) => setState((s) => ({ ...s, [key]: v })),
-    upsert: (key, item, prepend) => setState((s) => {
-      const list = s[key] as unknown as { id: string }[];
+    ...state, loading, error, clearError: () => setError(null),
+    set: (key, v) => {
+      if (USE_DEMO_SEED_OPS) { setState((s) => ({ ...s, [key]: v })); return; }
+      // Map known keys to backend; otherwise treat as transient local (not business authoritative)
+      const map: Record<string,string> = {
+        hero: "/admin/cms/pages", blocks: "/admin/cms/pages",
+        quickSupport: "/admin/site-settings/support-widget",
+      };
+      const path = map[key as string];
+      if (!path) { // no backend mapping — keep local but warn
+        console.warn(`ops.set ${String(key)} has no backend mapping — treating as local UI pref`);
+        setState((s) => ({ ...s, [key]: v }));
+        return;
+      }
+      const body = key === "quickSupport" ? v : { hero: key === "hero" ? v : undefined, blocks: key === "blocks" ? v : undefined };
+      apiClient.request(path, { method: key === "quickSupport" ? "PUT" : "PATCH", body: JSON.stringify(body) })
+        .then(() => setState((s) => ({ ...s, [key]: v })))
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
+    },
+    upsert: (key, item, prepend) => {
+      if (USE_DEMO_SEED_OPS) {
+        setState((s) => {
+          const list = s[key] as unknown as { id: string }[];
+          const it = item as unknown as { id: string };
+          const exists = list.some((x) => x.id === it.id);
+          const next = exists ? list.map((x) => (x.id === it.id ? it : x)) : prepend ? [it, ...list] : [...list, it];
+          return { ...s, [key]: next };
+        });
+        return;
+      }
       const it = item as unknown as { id: string };
+      const list = state[key] as unknown as { id: string }[];
       const exists = list.some((x) => x.id === it.id);
-      const next = exists ? list.map((x) => (x.id === it.id ? it : x)) : prepend ? [it, ...list] : [...list, it];
-      return { ...s, [key]: next };
-    }),
-    remove: (key, id) => setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })),
+      const endpoint: Record<string,{ create: string; update: (id:string)=>string }> = {
+        coupons: { create: "/admin/coupons", update: (id) => `/admin/coupons/${id}` },
+        festivals: { create: "/admin/festivals", update: (id) => `/admin/festivals/${id}` },
+        promotionRules: { create: "/promotions/rules", update: (id) => `/promotions/rules/${id}` },
+        tickets: { create: "/tickets", update: (id) => `/tickets/${id}` },
+        returns: { create: "/returns", update: (id) => `/returns/${id}/inspect` },
+        applications: { create: "/cooperation-requests", update: (id) => `/admin/cooperation-requests/${id}/review` },
+        leads: { create: "/admin/crm/contacts", update: (id) => `/admin/crm/contacts/${id}` },
+      };
+      const ep = endpoint[key as string];
+      if (!ep) {
+        console.warn(`ops.upsert ${String(key)} has no backend mapping — local only`);
+        setState((s) => {
+          const list2 = s[key] as unknown as { id: string }[];
+          const next = exists ? list2.map((x) => (x.id === it.id ? it : x)) : prepend ? [it, ...list2] : [...list2, it];
+          return { ...s, [key]: next };
+        });
+        return;
+      }
+      const path = exists ? ep.update(it.id) : ep.create;
+      const method = exists ? "PATCH" : "POST";
+      apiClient.request(path, { method, body: JSON.stringify(item) })
+        .then((res: any) => {
+          const returnedId = res?.id ?? it.id;
+          setState((s) => {
+            const list2 = s[key] as unknown as { id: string }[];
+            const next = exists ? list2.map((x) => (x.id === it.id ? { ...it, id: returnedId } : x)) : prepend ? [{ ...it, id: returnedId }, ...list2] : [...list2, { ...it, id: returnedId }];
+            return { ...s, [key]: next };
+          });
+        })
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
+    },
+    remove: (key, id) => {
+      if (USE_DEMO_SEED_OPS) { setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })); return; }
+      const delMap: Record<string,string> = {
+        coupons: `/admin/coupons/${id}/deactivate`,
+        festivals: `/admin/festivals/${id}`,
+        promotionRules: `/promotions/rules/${id}`,
+        tickets: `/tickets/${id}`,
+      };
+      const path = delMap[key as string];
+      if (!path) {
+        console.warn(`ops.remove ${String(key)} has no backend mapping`);
+        setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) }));
+        return;
+      }
+      apiClient.request(path, { method: key === "coupons" ? "POST" : "DELETE" })
+        .then(() => setState((s) => ({ ...s, [key]: (s[key] as unknown as { id: string }[]).filter((x) => x.id !== id) })))
+        .catch((e) => { setError(e instanceof Error ? e.message : "خطا"); throw e; });
+    },
     restrictionFor: (type, id) => {
       const today = new Date().toISOString().slice(0, 10);
       const active = state.restrictions.filter((r) => r.subjectType === type && r.subjectId === id && (!r.until || r.until >= today));

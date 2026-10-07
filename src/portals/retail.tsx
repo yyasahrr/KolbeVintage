@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
 import {
   ArrowLeft, ArrowUpDown, Truck, Check, Minus, Plus, Search, Trash2, CreditCard, MapPin, SlidersHorizontal, X,
 } from "lucide-react";
@@ -78,7 +78,7 @@ function JournalCard({ entry, onOpen }: { entry: typeof JOURNAL[number]; onOpen?
 /* ============ MAIN RETAIL ============ */
 export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success" | "style";
 
-export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [], styles = [], relations = [], styleSlug, openStyle, personalizeStyle, addStyleToCart, onOpenProductFromStyle }: {
+export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [], styles = [], relations = [], styleSlug, openStyle, personalizeStyle, addStyleToCart, onOpenProductFromStyle, shopCategory }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
@@ -99,6 +99,8 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   personalizeStyle?: (style: CuratedStyle) => void;
   addStyleToCart?: (style: CuratedStyle, adds: { productId: string; colorId: string; size: string; qty: number }[]) => { ok: boolean; failures?: { productId: string; reason: "not_found" | "not_retail" | "out_of_stock" | "insufficient_stock" }[] };
   onOpenProductFromStyle?: (productId: string) => void;
+  /** CMS `category:<slug>` targets preselect the shop category (shell-resolved display name). */
+  shopCategory?: { name: string; nonce: number } | null;
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
   /* the shell hands over a category or query picked from search / category medallions */
@@ -108,6 +110,14 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
     if (shopSeed.q !== undefined) setQ(shopSeed.q);
   }, [shopSeed]);
   const [cat, setCat] = useState("همه");
+  /* a CMS category target preselects the shop filter once per pick (§shell contract) */
+  const appliedShopCategory = useRef<{ name: string; nonce: number } | null>(null);
+  useEffect(() => {
+    if (!shopCategory || !shopCategory.name) return;
+    if (appliedShopCategory.current?.nonce === shopCategory.nonce) return;
+    appliedShopCategory.current = shopCategory;
+    setCat(shopCategory.name);
+  }, [shopCategory]);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("پیشنهاد کلبه");
   const [filtersOpen, setFiltersOpen] = useState(false);

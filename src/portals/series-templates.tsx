@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Copy, Layers, Pencil, Plus, Trash2 } from "lucide-react";
 import { fmtMoney, fmtNum, type Colorway, type SeriesDef } from "../data/catalog";
 import { useOps, type SeriesCategory, type SeriesTemplate } from "../data/ops";
 import { Btn, Drawer, Empty, Field, Input, Select, Switch, Textarea } from "../components/primitives";
+import { productStructureApi } from "../data/api";
+import { normalizeProductTypes, type ProductType } from "../data/contracts";
 import { cn } from "../utils/cn";
 
 const SIZE_OPTIONS: Record<SeriesCategory, string[]> = {
@@ -25,10 +27,27 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
   const mine = ops.seriesTemplates.filter((t) => t.ownerId === ownerId);
   const [edit, setEdit] = useState<SeriesTemplate | null>(null);
   const [error, setError] = useState("");
-  const blank = (): SeriesTemplate => ({ id: `tpl-${ownerId}-${Date.now()}`, ownerId, name: "", category: "لباس", composition: { S: 0, M: 0, L: 0, XL: 0, "2XL": 0 }, defaultMoq: 1, note: "" });
+  const isDemoTpl = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  const [types, setTypes] = useState<ProductType[]>([]);
+  useEffect(() => {
+    let live = true;
+    productStructureApi.types().then(normalizeProductTypes)
+      .then((list) => { if (live) setTypes(list.filter((t) => t.active)); })
+      .catch(() => { if (live) setTypes([]); });
+    return () => { live = false; };
+  }, []);
+  const typeOf = (template: SeriesTemplate | null) => types.find((t) => t.id === template?.productTypeId);
+  /** Item 9: template sizes come from the Product Type size system — never a fixed list. */
+  const sizesFor = (template: SeriesTemplate): { code: string; label: string }[] => {
+    const type = typeOf(template);
+    if (type) return type.sizes.filter((s) => s.active).map((s) => ({ code: s.code, label: s.label }));
+    return SIZE_OPTIONS[template.category ?? "لباس"].map((s) => ({ code: s, label: s }));
+  };
+  const blank = (): SeriesTemplate => ({ id: `tpl-${ownerId}-${Date.now()}`, ownerId, name: "", category: "لباس", productTypeId: types[0]?.id ?? "", composition: { S: 0, M: 0, L: 0, XL: 0, "2XL": 0 }, defaultMoq: 1, note: "" });
   const save = () => {
     if (!edit) return;
     if (!edit.name.trim()) return setError("نام قالب را وارد کنید.");
+    if (!isDemoTpl && !edit.productTypeId) return setError("نوع محصول را انتخاب کنید — سایزها فقط از نوع محصول می‌آیند.");
     if (mine.some((t) => t.id !== edit.id && t.name.trim() === edit.name.trim())) return setError("قالب دیگری با همین نام دارید.");
     if (pieces(edit.composition) < 1) return setError("دست‌کم یک تکه در ترکیب سایز لازم است.");
     if (edit.defaultMoq < 1) return setError("حداقل سفارش پیش‌فرض باید حداقل ۱ سری باشد.");
@@ -46,7 +65,7 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
           {mine.map((t) => (
             <div key={t.id} className="rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4">
               <div className="flex items-start justify-between gap-2">
-                <div><p className="text-[14px] font-extrabold">{t.name}</p><p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">{t.category ?? "لباس"} · {fmtNum(pieces(t.composition))} تکه در هر سری · حداقل {fmtNum(t.defaultMoq)} سری</p></div>
+                <div><p className="text-[14px] font-extrabold">{t.name}</p><p className="mt-0.5 text-[12px] text-[var(--kv-muted)]">{typeOf(t)?.name ?? t.category ?? "لباس"} · {fmtNum(pieces(t.composition))} تکه در هر سری · حداقل {fmtNum(t.defaultMoq)} سری</p></div>
                 <Layers size={18} className="text-[var(--kv-accent)]" />
               </div>
               <div className="mt-3 flex flex-wrap gap-1.5">{Object.entries(t.composition).filter(([, n]) => n > 0).map(([s, n]) => <span key={s} className="rounded-md border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 px-2 py-1 text-[11.5px] font-bold tabular-nums">{s} <span className="text-[var(--kv-accent)]">×{fmtNum(n)}</span></span>)}</div>
@@ -64,19 +83,37 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
         {edit && (
           <div className="space-y-4">
             <Field label="نام قالب"><Input value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="مثلاً سری کامل ۱۲ تایی" /></Field>
-            <Field label="نوع محصول"><Select options={Object.keys(SIZE_OPTIONS)} value={edit.category ?? "لباس"} onChange={(value) => setEdit({ ...edit, category: value as SeriesCategory, composition: Object.fromEntries(SIZE_OPTIONS[value as SeriesCategory].map((size) => [size, 0])) })} /></Field>
+            <Field label="نوع محصول" hint="سایزها از سیستم سایز همین نوع محصول می‌آیند">
+              <Select
+                options={isDemoTpl ? ["بدون نوع (قدیمی)", ...types.map((t) => t.name)] : ["— انتخاب نوع محصول —", ...types.map((t) => t.name)]}
+                value={typeOf(edit)?.name ?? (isDemoTpl ? "بدون نوع (قدیمی)" : "— انتخاب نوع محصول —")}
+                onChange={(label) => {
+                  const found = types.find((t) => t.name === label);
+                  const composition = found
+                    ? Object.fromEntries(found.sizes.filter((s) => s.active).map((s) => [s.code, edit.composition[s.code] ?? edit.composition[s.label] ?? 0]))
+                    : Object.fromEntries(SIZE_OPTIONS[edit.category ?? "لباس"].map((size) => [size, edit.composition[size] ?? 0]));
+                  setEdit({ ...edit, productTypeId: found?.id ?? "", composition });
+                }}
+              />
+            </Field>
+            {isDemoTpl && !typeOf(edit) && (
+              <Field label="دسته‌بندی قدیمی"><Select options={Object.keys(SIZE_OPTIONS)} value={edit.category ?? "لباس"} onChange={(value) => setEdit({ ...edit, category: value as SeriesCategory, composition: Object.fromEntries(SIZE_OPTIONS[value as SeriesCategory].map((size) => [size, 0])) })} /></Field>
+            )}
             <div>
-              <p className="mb-2 text-[13px] font-semibold text-[var(--kv-ink-2)]">ترکیب سایز در هر سری</p>
+              <p className="mb-2 text-[13px] font-semibold text-[var(--kv-ink-2)]">ترکیب سایز در هر سری{typeOf(edit) ? ` — ${typeOf(edit)!.sizes.filter((s) => s.active).length.toLocaleString("fa-IR")} سایز فعال نوع «${typeOf(edit)!.name}»` : ""}</p>
+              {!isDemoTpl && !typeOf(edit) ? <p className="rounded-[10px] border border-dashed border-[var(--kv-line-strong)] p-3 text-[12.5px] text-[var(--kv-muted)]">ابتدا نوع محصول را انتخاب کنید تا سایزهای سرور نمایش داده شود.</p> :
+              sizesFor(edit).length === 0 ? <p className="text-[12.5px] text-[var(--kv-muted)]">این نوع محصول سایز فعالی ندارد؛ از «ساختار محصولات» سایز اضافه کنید.</p> : (
               <div className="grid grid-cols-2 gap-2">
-                {SIZE_OPTIONS[edit.category ?? "لباس"].map((s) => { const n = edit.composition[s] ?? 0; return (
-                  <div key={s} className="flex items-center justify-between rounded-[10px] border border-[var(--kv-line)] px-2 py-1">
-                    <b className="w-10 text-[12.5px]">{s}</b>
-                    <button aria-label={`کاهش ${s}`} onClick={() => setEdit({ ...edit, composition: { ...edit.composition, [s]: Math.max(0, n - 1) } })} className="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]">−</button>
+                {sizesFor(edit).map(({ code, label }) => { const n = edit.composition[code] ?? 0; return (
+                  <div key={code} className="flex items-center justify-between rounded-[10px] border border-[var(--kv-line)] px-2 py-1">
+                    <b className="min-w-10 text-[12.5px]" title={label !== code ? label : undefined}>{label}</b>
+                    <button aria-label={`کاهش ${label}`} onClick={() => setEdit({ ...edit, composition: { ...edit.composition, [code]: Math.max(0, n - 1) } })} className="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]">−</button>
                     <b className="w-6 text-center tabular-nums">{fmtNum(n)}</b>
-                    <button aria-label={`افزایش ${s}`} onClick={() => setEdit({ ...edit, composition: { ...edit.composition, [s]: n + 1 } })} className="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]">+</button>
+                    <button aria-label={`افزایش ${label}`} onClick={() => setEdit({ ...edit, composition: { ...edit.composition, [code]: n + 1 } })} className="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[var(--kv-surface-2)]">+</button>
                   </div>
                 ); })}
               </div>
+              )}
               <p className="mt-2 text-[12px] text-[var(--kv-muted)]">جمع: <b className="text-[var(--kv-ink)] tabular-nums">{fmtNum(pieces(edit.composition))} تکه</b></p>
             </div>
             <Field label="حداقل سفارش پیش‌فرض (سری)" hint="هنگام انتخاب قالب در محصول قابل تغییر است"><Input value={String(edit.defaultMoq)} onChange={(v) => setEdit({ ...edit, defaultMoq: Number(v.replace(/\D/g, "")) || 0 })} /></Field>
@@ -91,11 +128,12 @@ export function SeriesTemplateManager({ ownerId, ownerLabel, readOnly }: { owner
 }
 
 /* ================= Picker: choose templates while defining a product ================= */
-export function SeriesTemplatePicker({ ownerId, category, colors, value, onChange, onManage }: {
-  ownerId: string; category: string; colors: Colorway[]; value: SeriesDef[]; onChange: (v: SeriesDef[]) => void; onManage?: () => void;
+export function SeriesTemplatePicker({ ownerId, category, colors, value, onChange, onManage, productTypeId }: {
+  ownerId: string; category: string; colors: Colorway[]; value: SeriesDef[]; onChange: (v: SeriesDef[]) => void; onManage?: () => void; productTypeId?: string;
 }) {
   const ops = useOps();
-  const templates = ops.seriesTemplates.filter((t) => t.ownerId === ownerId && (t.category ?? "لباس") === seriesCategoryOf(category));
+  const templates = ops.seriesTemplates.filter((t) => t.ownerId === ownerId
+    && (productTypeId ? t.productTypeId === productTypeId : (t.category ?? "لباس") === seriesCategoryOf(category)));
   const idOf = (t: SeriesTemplate) => `from-${t.id}`;
   const toggle = (t: SeriesTemplate) => {
     const exists = value.some((s) => s.id === idOf(t));
@@ -105,7 +143,7 @@ export function SeriesTemplatePicker({ ownerId, category, colors, value, onChang
     }]);
   };
   const patch = (id: string, p: Partial<SeriesDef>) => onChange(value.map((s) => (s.id === id ? { ...s, ...p } : s)));
-  if (!templates.length) return <Empty title="هنوز قالب سری ندارید" desc="ابتدا در بخش «قالب‌های سری» ترکیب‌های پرکاربرد را تعریف کنید." action={onManage && <Btn variant="accent" size="sm" onClick={onManage}>تعریف قالب سری</Btn>} />;
+  if (!templates.length) return <Empty title={productTypeId ? "برای این نوع محصول قالبی نیست" : "هنوز قالب سری ندارید"} desc={productTypeId ? "در بخش «قالب‌های سری» یک قالب برای همین نوع محصول بسازید." : "ابتدا در بخش «قالب‌های سری» ترکیب‌های پرکاربرد را تعریف کنید."} action={onManage && <Btn variant="accent" size="sm" onClick={onManage}>تعریف قالب سری</Btn>} />;
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2"><p className="text-[13px] font-bold">سری‌های قابل عرضه برای این محصول</p>{onManage && <button onClick={onManage} className="text-[12px] font-bold text-[var(--kv-accent)]">مدیریت قالب‌ها</button>}</div>

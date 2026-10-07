@@ -1,186 +1,195 @@
-/* KOLBE — Virtual Try-On (Phase 1, Non-Core workstream)
- *
- * Answers: «این محصول روی من چطور به نظر می‌رسد؟» — a different customer job
- * from the Style Builder (which answers what products work together). It has
- * its own surface and is entered from eligible retail Product Cards and PDPs.
- *
- * Provider honesty (§8): the pipeline is Product → Try-On → authentication →
- * quota/credit verification → provider → result. No real provider integration
- * exists in this repository, so after the shopper picks an eligible product
- * and prepares their photo, the flow states plainly that the service is not
- * connected yet. It NEVER fabricates a "result" image, never simulates
- * processing, and implements no client-side quota — those belong to the
- * server side of the boundary in `data/styling.ts` when a provider lands.
- *
- * The photo upload is real: a local file, previewed only, never stored or
- * transmitted anywhere (there is no endpoint to send it to).
- */
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, PersonStanding, Plug, ScanFace, Upload, X } from "lucide-react";
-import { fmtMoney, type Product } from "../data/catalog";
-import { TRYON_PROVIDER, tryOnEligible } from "../data/styling";
+import { ArrowLeft, Camera, Check, Download, Eye, Loader2, RotateCcw, Shirt, Sparkles, Upload, Wand2 } from "lucide-react";
 import { Btn, Card } from "../components/primitives";
+import { fmtMoney } from "../data/catalog";
+import { apiClient, catalogApi, isAuthenticated, tryonCreditApi, type CatalogItem } from "../data/api";
 import { cn } from "../utils/cn";
 
-export default function TryOn({ initialProductId, catalogue, onOpenProduct }: {
-  /** presentation context: opened from a card/PDP on this product */
-  initialProductId?: string;
-  /** published retail products — eligibility is business logic, not CSS */
-  catalogue: Product[];
-  /** jump to a product's PDP */
-  onOpenProduct?: (id: string) => void;
-}) {
-  const eligible = catalogue.filter(tryOnEligible);
-  const [product, setProduct] = useState<Product | undefined>(
-    () => catalogue.find((p) => p.id === initialProductId && tryOnEligible(p)) ?? eligible[0],
-  );
-  /* arriving with a product skips the picker — the shopper already chose (§6) */
-  const [step, setStep] = useState<"product" | "photo" | "provider">(
-    initialProductId && catalogue.some((p) => p.id === initialProductId && tryOnEligible(p)) ? "photo" : "product",
-  );
-  const [photo, setPhoto] = useState<{ url: string; name: string } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const objectUrl = useRef<string | null>(null);
+type TryOnJob = { jobToken?: string; status: "processing" | "ready" | "failed"; percent: number | null; outputUrl: string | null; message: string | null };
+type TryOnProduct = CatalogItem & { image: string };
 
-  /* revoke the object URL when replaced/unmounted — nothing leaks, nothing persists */
-  useEffect(() => () => { if (objectUrl.current) URL.revokeObjectURL(objectUrl.current); }, []);
+function productImage(item: CatalogItem): string | null {
+  const images = item.metadata?.images;
+  const first = Array.isArray(images) ? images[0] : null;
+  const url = typeof first === "string" ? first : first && typeof first.url === "string" ? first.url : null;
+  return typeof url === "string" && url.startsWith("https://") ? url : null;
+}
 
-  const onFile = (file: File | undefined) => {
-    if (!file || !file.type.startsWith("image/")) return;
-    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-    const url = URL.createObjectURL(file);
-    objectUrl.current = url;
-    setPhoto({ url, name: file.name });
+export function TryOn({ onLogin }: { onLogin: () => void }) {
+  const [products, setProducts] = useState<TryOnProduct[]>([]);
+  const [productId, setProductId] = useState("");
+  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [catalogRetry, setCatalogRetry] = useState(0);
+  const [step, setStep] = useState(0);
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [preview, setPreview] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [jobToken, setJobToken] = useState("");
+  const [percent, setPercent] = useState<number | null>(null);
+  const [resultUrl, setResultUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [credits, setCredits] = useState<{ salesEnabled: boolean; freeQuota: number; freeGranted: boolean; balance: number; packages: { id: string; name: string; credits: number; price_rial: string }[] } | null>(null);
+  const [buying, setBuying] = useState("");
+  const [purchaseNote, setPurchaseNote] = useState("");
+  const product = products.find((item) => item.id === productId);
+
+  const loadCredits = async () => {
+    if (!isAuthenticated()) { setCredits(null); return; }
+    try { setCredits(await tryonCreditApi.packages()); } catch { /* keep previous state */ }
+  };
+  useEffect(() => { void loadCredits(); }, []);
+
+  /** §42-§47: buying a pack creates a purchase + ONE canonical payment intent; credits arrive after verified payment. */
+  const buyPack = async (packageId: string) => {
+    setBuying(packageId); setPurchaseNote("");
+    try {
+      const purchase = await tryonCreditApi.purchase(packageId);
+      setPurchaseNote(`درخواست پرداخت ${purchase.reference} ثبت شد — پس از تأیید پرداخت درگاه، اعتبار به حساب شما اضافه می‌شود.`);
+      await loadCredits();
+    } catch (cause) { setPurchaseNote(cause instanceof Error ? cause.message : "ثبت خرید ناموفق بود."); }
+    finally { setBuying(""); }
   };
 
-  const steps = [
-    { id: "product", label: "انتخاب محصول" },
-    { id: "photo", label: "آماده‌سازی عکس" },
-    { id: "provider", label: "سرویس پرو" },
-  ] as const;
-  const stepIndex = steps.findIndex((s) => s.id === step);
+  useEffect(() => {
+    let live = true;
+    setLoadingProducts(true);
+    catalogApi.list({ limit: 60 }).then(({ items }) => {
+      if (!live) return;
+      const order: Record<string, number> = { "کت و پالتو": 0, "پیراهن و شومیز": 1, "شلوار": 2, "بافت و هودی": 3, "کفش و بوت": 4, "اکسسوری": 5 };
+      const available = items.flatMap((item) => { const image = productImage(item); return image ? [{ ...item, image }] : []; })
+        .sort((a, b) => (order[a.category] ?? 9) - (order[b.category] ?? 9));
+      setProducts(available);
+      setProductId((current) => current && available.some((item) => item.id === current) ? current : available[0]?.id ?? "");
+      setError("");
+    }).catch((cause) => { if (live) setError(cause instanceof Error ? cause.message : "بارگذاری محصولات ناموفق بود."); })
+      .finally(() => { if (live) setLoadingProducts(false); });
+    return () => { live = false; };
+  }, [catalogRetry]);
 
-  return (
-    <div className="mx-auto w-full max-w-[1000px] px-4 pb-16 pt-6 md:px-8">
-      <p className="flex items-center gap-1.5 text-[13px] font-bold text-[var(--kv-accent)]"><ScanFace size={14} />پرو مجازی کلبه</p>
-      <h1 className="kv-editorial-title mt-1.5 text-[24px] md:text-[28px]">قبل از خرید، تن‌خور را ببین</h1>
+  useEffect(() => {
+    if (!photo) { setPreview(""); return; }
+    const url = URL.createObjectURL(photo);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [photo]);
 
-      <div className="mt-6 flex items-center gap-1 overflow-x-auto kv-no-scrollbar" role="tablist" aria-label="گام‌های پرو مجازی">
-        {steps.map((s, i) => (
-          <div key={s.id} className="flex flex-1 items-center gap-2">
-            <button role="tab" aria-selected={step === s.id} onClick={() => { if (i < stepIndex) setStep(s.id); }}
-              className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all",
-                stepIndex >= i ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>
-              {stepIndex > i ? <Check size={15} /> : i + 1}
-            </button>
-            <span className={cn("whitespace-nowrap text-[12.5px] font-bold", stepIndex >= i ? "" : "text-[var(--kv-muted)]")}>{s.label}</span>
-            {i < steps.length - 1 && <span className="mx-2 h-px min-w-4 flex-1 bg-[var(--kv-line)]" />}
-          </div>
-        ))}
-      </div>
+  useEffect(() => {
+    if (step !== 2 || !jobToken) return;
+    let live = true;
+    let checking = false;
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const job = await apiClient.post<TryOnJob>("/tryon/jobs/status", { token: jobToken });
+        if (!live) return;
+        setPercent(job.percent);
+        setError("");
+        if (job.status === "ready") {
+          if (!job.outputUrl) throw new Error("تصویر خروجی از سرویس دریافت نشد.");
+          setResultUrl(job.outputUrl);
+          setStep(3);
+        } else if (job.status === "failed") {
+          setError(job.message || "ساخت تصویر ناموفق بود. دوباره تلاش کنید.");
+          setStep(1);
+        }
+      } catch (cause) { if (live) setError(cause instanceof Error ? cause.message : "پیگیری وضعیت ناموفق بود."); }
+      finally { checking = false; }
+    };
+    const timer = window.setInterval(() => void check(), 4000);
+    return () => { live = false; window.clearInterval(timer); };
+  }, [jobToken, step]);
 
-      <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_320px]">
-        <Card className="min-h-[320px] p-6">
-          {step === "product" && (
-            <div>
-              <p className="mb-3 text-sm font-bold">کدام محصول را می‌خواهی پرو کنی؟</p>
-              {eligible.length === 0 ? (
-                <p className="rounded-[12px] bg-[var(--kv-surface-2)]/60 p-4 text-[13px] leading-7 text-[var(--kv-muted)]">
-                  فعلاً محصولی برای پرو مجازی آماده نیست.
-                </p>
-              ) : (
-                <>
-                  <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-                    {eligible.slice(0, 9).map((p) => (
-                      <button key={p.id} onClick={() => { setProduct(p); }} aria-pressed={product?.id === p.id}
-                        className={cn("kv-press overflow-hidden rounded-[14px] border text-right transition-all", product?.id === p.id ? "border-[var(--kv-accent)] ring-2 ring-[var(--kv-accent)]/20" : "border-[var(--kv-line)]")}>
-                        <img src={p.images[0]} alt="" loading="lazy" className="aspect-[3/4] w-full object-cover" />
-                        <p className="truncate p-2 text-[12px] font-bold">{p.name}</p>
-                      </button>
-                    ))}
-                  </div>
-                  <Btn variant="accent" className="mt-4" disabled={!product} onClick={() => setStep("photo")} icon={<ArrowLeft size={16} />}>
-                    ادامه با {product?.name ?? "…"}
-                  </Btn>
-                </>
-              )}
-            </div>
-          )}
+  const choosePhoto = (file: File | undefined) => {
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) { setError("فرمت عکس باید JPG، PNG یا WebP باشد."); return; }
+    if (file.size > 5 * 1024 * 1024) { setError("حجم عکس نباید بیش از ۵ مگابایت باشد."); return; }
+    setPhoto(file);
+    setError("");
+  };
 
-          {step === "photo" && product && (
-            <div>
-              <p className="mb-3 text-sm font-bold">یک عکس تمام‌قد آماده کن</p>
-              {!photo ? (
-                <button onClick={() => fileRef.current?.click()}
-                  className="flex w-full flex-col items-center gap-2.5 rounded-[16px] border border-dashed border-[var(--kv-line-strong)] py-14 text-[13.5px] font-bold text-[var(--kv-muted)] hover:border-[var(--kv-accent)] hover:text-[var(--kv-accent)]">
-                  <Upload size={24} />انتخاب عکس از دستگاه
-                  <span className="max-w-[40ch] text-xs font-normal leading-6">بهترین نتیجه: نور طبیعی، پس‌زمینه ساده، ایستاده و روبه‌رو. عکس شما فقط روی همین دستگاه پیش‌نمایش می‌شود؛ جایی ارسال یا ذخیره نمی‌شود.</span>
-                </button>
-              ) : (
-                <div className="flex flex-col gap-4 sm:flex-row">
-                  <img src={photo.url} alt="پیش‌نمایش عکس شما" className="h-64 w-48 rounded-[14px] border border-[var(--kv-line)] object-cover" />
-                  <div className="flex flex-col justify-center gap-2.5">
-                    <p className="flex items-center gap-1.5 text-[13px] font-bold text-[var(--kv-success)]"><Check size={15} />عکس آماده است</p>
-                    <p className="max-w-[36ch] text-[12px] leading-6 text-[var(--kv-muted)]">{photo.name}</p>
-                    <Btn variant="soft" size="sm" icon={<X size={14} />} onClick={() => { if (objectUrl.current) URL.revokeObjectURL(objectUrl.current); objectUrl.current = null; setPhoto(null); }}>عکس دیگر</Btn>
-                    <Btn variant="accent" size="sm" onClick={() => setStep("provider")} icon={<ArrowLeft size={15} />}>ادامه</Btn>
-                  </div>
-                </div>
-              )}
-              <input ref={fileRef} type="file" accept="image/*" className="sr-only" aria-label="انتخاب عکس تمام‌قد"
-                onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
-              <div className="mt-4 flex gap-2">
-                <Btn variant="soft" size="sm" onClick={() => setStep("product")} icon={<ArrowRight size={15} />}>محصول دیگر</Btn>
-              </div>
-            </div>
-          )}
+  const start = async () => {
+    if (!product || !photo || !consent) { setError("محصول، عکس و تأیید ارسال عکس را بررسی کنید."); return; }
+    if (!isAuthenticated()) { onLogin(); return; }
+    const form = new FormData();
+    form.append("productId", product.id);
+    form.append("photo", photo, photo.name);
+    setError(""); setBusy(true); setStep(2); setPercent(null); setResultUrl(""); setJobToken("");
+    try {
+      const job = await apiClient.upload<TryOnJob>("/tryon/jobs", form);
+      if (job.status === "ready" && job.outputUrl) { setResultUrl(job.outputUrl); setStep(3); }
+      else if (job.status === "processing" && job.jobToken) { setJobToken(job.jobToken); setPercent(job.percent); }
+      else throw new Error(job.message || "پاسخ سرویس پرو مجازی معتبر نبود.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "شروع پرو مجازی ناموفق بود.");
+      setStep(1);
+    } finally { setBusy(false); void loadCredits(); }
+  };
 
-          {step === "provider" && product && (
-            <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
-              <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--kv-surface-2)] text-[var(--kv-muted)]"><Plug size={26} /></span>
-              <p className="mt-4 text-[15px] font-extrabold">سرویس پرو مجازی هنوز به کلبه وصل نیست</p>
-              <p className="mt-2 max-w-[46ch] text-[13px] leading-7 text-[var(--kv-muted)]">
-                انتخاب محصول و عکس شما آماده شد، اما «{TRYON_PROVIDER.label}» به سرویس‌دهنده‌ای نیاز دارد که هنوز به فروشگاه متصل نشده است.
-                به همین دلیل نتیجه‌ای نمایش داده نمی‌شود — ما نتیجهٔ پرو را شبیه‌سازی نمی‌کنیم.
-                وقتی سرویس متصل شد، همین مسیر با بررسی حساب و سهمیهٔ پرو (سمت سرور) ادامه پیدا می‌کند.
-              </p>
-              <div className="mt-5 flex flex-wrap justify-center gap-2.5">
-                <Btn variant="soft" size="sm" icon={<ArrowRight size={15} />} onClick={() => setStep("photo")}>بازگشت به عکس</Btn>
-                <Btn variant="soft" size="sm" onClick={() => setStep("product")}>محصول دیگر</Btn>
-              </div>
-            </div>
-          )}
-        </Card>
+  const reset = () => { setStep(0); setJobToken(""); setPercent(null); setResultUrl(""); setError(""); };
+  const steps = [{ label: "انتخاب محصول", icon: Shirt }, { label: "عکس شما", icon: Camera }, { label: "پردازش", icon: Wand2 }, { label: "نتیجه", icon: Eye }];
 
-        <div className="space-y-4">
-          <Card className="p-5">
-            <p className="text-sm font-bold">محصول انتخاب‌شده</p>
-            {product ? (
-              <div className="mt-3 flex gap-3">
-                <img src={product.images[0]} alt="" className="h-20 w-16 rounded-[10px] object-cover" />
-                <div>
-                  {onOpenProduct ? (
-                    <button onClick={() => onOpenProduct(product.id)} className="text-start text-[13.5px] font-bold hover:text-[var(--kv-accent)]">{product.name}</button>
-                  ) : (
-                    <p className="text-[13.5px] font-bold">{product.name}</p>
-                  )}
-                  <p className="mt-1 text-[13px] font-extrabold tabular-nums">{fmtMoney(product.retailPrice)}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-2 text-[12.5px] text-[var(--kv-muted)]">هنوز محصولی انتخاب نشده است.</p>
-            )}
-          </Card>
-          <Card className="p-5">
-            <p className="flex items-center gap-1.5 text-sm font-bold"><PersonStanding size={16} className="text-[var(--kv-accent)]" />راهنمای تن‌خور</p>
-            <ul className="mt-3 space-y-2 text-[12.5px] leading-6 text-[var(--kv-muted)]">
-              <li>· پرو مجازی فقط برای محصولاتی فعال است که کلبه آن را پشتیبانی می‌کند.</li>
-              <li>· بهترین نتیجه با عکس تمام‌قد، رو به دوربین و در نور یکنواخت به دست می‌آید.</li>
-              <li>· عکس شما پردازش یا ذخیره نمی‌شود؛ تا وصل‌شدن سرویس، همین‌طور روی دستگاه شما می‌ماند.</li>
-            </ul>
-          </Card>
-        </div>
-      </div>
+  return <div className="mx-auto w-full max-w-[1040px] px-4 pb-16 pt-6 md:px-8">
+    <p className="flex items-center gap-1.5 text-[13px] font-bold text-[var(--kv-accent)]"><Wand2 size={14} />پرو مجازی کلبه</p>
+    <h1 className="kv-editorial-title mt-1.5 text-[24px] md:text-[28px]">لباس را روی عکس خودت ببین</h1>
+    <p className="mt-2 max-w-[62ch] text-[13px] leading-7 text-[var(--kv-muted)]">یک محصول و عکس واضح از خودت انتخاب کن. تصویر با هوش مصنوعی ساخته می‌شود و ممکن است با تن‌خور واقعی تفاوت داشته باشد.</p>
+
+    <ol className="mt-6 flex gap-2 overflow-x-auto kv-no-scrollbar" aria-label="مراحل پرو مجازی">
+      {steps.map(({ label, icon: Icon }, index) => <li key={label} className="flex min-w-0 flex-1 items-center gap-2 whitespace-nowrap text-xs font-bold">
+        <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-full", step >= index ? "bg-[var(--kv-action)] text-white" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>
+          {step > index ? <Check size={15} /> : <Icon size={15} />}</span><span className={step >= index ? "" : "text-[var(--kv-muted)]"}>{label}</span>
+      </li>)}
+    </ol>
+
+    {error && <div role="alert" className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
+    <div className="mt-6 grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+      <Card className="min-h-[380px] p-5 md:p-6">
+        {step === 0 && <div>
+          <h2 className="mb-4 text-sm font-bold">کدام محصول را می‌خواهی پرو کنی؟</h2>
+          {loadingProducts ? <p role="status" className="text-sm text-[var(--kv-muted)]">در حال بارگذاری محصولات…</p> : products.length === 0 ?
+            <div className="text-sm text-[var(--kv-muted)]">محصول عکس‌دار در دسترس نیست. <button className="mr-2 font-bold text-[var(--kv-accent)] underline" onClick={() => setCatalogRetry((n) => n + 1)}>تلاش دوباره</button></div> :
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{products.map((item) => <button key={item.id} type="button" onClick={() => setProductId(item.id)} aria-pressed={item.id === productId}
+              className={cn("overflow-hidden rounded-lg border text-right transition-colors", item.id === productId ? "border-[var(--kv-accent)] bg-[var(--kv-accent)]/[0.04]" : "border-[var(--kv-line)] hover:border-[var(--kv-line-strong)]") }>
+              <img src={item.image} alt="" loading="lazy" className="aspect-[3/4] w-full object-cover"/><span className="block truncate px-2.5 py-2 text-xs font-bold">{item.name}</span></button>)}</div>}
+          <Btn variant="accent" className="mt-5" disabled={!product} onClick={() => isAuthenticated() ? setStep(1) : onLogin()} icon={<ArrowLeft size={16}/>}>{isAuthenticated() ? "ادامه" : "ورود برای پرو مجازی"}</Btn>
+        </div>}
+
+        {step === 1 && <div>
+          <h2 className="text-sm font-bold">عکس تمام‌قد یا نیم‌تنهٔ واضح انتخاب کن</h2>
+          <p className="mt-1 text-xs leading-6 text-[var(--kv-muted)]">نور مناسب، روبه‌روی دوربین و پس‌زمینهٔ ساده نتیجه را بهتر می‌کند. JPG، PNG یا WebP تا ۵ مگابایت.</p>
+          <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" aria-label="انتخاب عکس شخص" onChange={(event) => { choosePhoto(event.target.files?.[0]); event.target.value = ""; }}/>
+          {preview ? <div className="mt-5 flex flex-wrap items-center gap-4"><img src={preview} alt="پیش‌نمایش عکس انتخاب‌شده" className="h-56 w-44 rounded-lg object-cover"/><Btn variant="soft" size="sm" onClick={() => fileInput.current?.click()} icon={<RotateCcw size={15}/>}>تعویض عکس</Btn></div> :
+            <button type="button" onClick={() => fileInput.current?.click()} className="mt-5 flex min-h-48 w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--kv-line-strong)] text-sm font-bold text-[var(--kv-muted)] hover:border-[var(--kv-accent)] hover:text-[var(--kv-accent)]"><Upload size={23}/>انتخاب عکس از دستگاه</button>}
+          <label className="mt-5 flex cursor-pointer items-start gap-2 text-xs leading-6 text-[var(--kv-muted)]"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} className="mt-1 accent-[var(--kv-accent)]"/><span>موافقم عکس من و تصویر محصول برای پردازش به سرویس آلفا فرستاده شود. کلبه عکس من را در پایگاه‌داده ذخیره نمی‌کند.</span></label>
+          <div className="mt-5 flex flex-wrap gap-2"><Btn variant="accent" disabled={!photo || !consent || busy} onClick={() => void start()} icon={<Wand2 size={15}/>}>{isAuthenticated() ? "شروع پرو مجازی" : "ورود و شروع پرو مجازی"}</Btn><Btn variant="soft" onClick={() => setStep(0)}>بازگشت</Btn></div>
+        </div>}
+
+        {step === 2 && <div className="flex min-h-[320px] flex-col items-center justify-center text-center" role="status" aria-live="polite">
+          <span className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]"><Loader2 size={24} className="animate-spin"/></span>
+          <h2 className="mt-4 text-base font-bold">{busy ? "در حال فرستادن عکس…" : "در حال ساخت تصویر شما…"}</h2>
+          <p className="mt-2 text-xs leading-6 text-[var(--kv-muted)]">پردازش ممکن است چند دقیقه طول بکشد. این صفحه را باز نگه دار.</p>
+          {percent !== null ? <div className="mt-5 w-full max-w-xs"><div className="h-2 overflow-hidden rounded-full bg-[var(--kv-surface-3)]"><div className="h-full bg-[var(--kv-accent)] transition-[width]" style={{ width: `${percent}%` }}/></div><p className="mt-2 text-xs tabular-nums">{percent.toLocaleString("fa-IR")}٪</p></div> : <p className="mt-5 text-xs text-[var(--kv-muted)]">در انتظار گزارش پیشرفت از سرویس…</p>}
+        </div>}
+
+        {step === 3 && resultUrl && <div>
+          <h2 className="flex items-center gap-2 text-sm font-bold"><Sparkles size={16} className="text-[var(--kv-accent)]"/>نتیجهٔ پرو مجازی</h2>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2"><div><p className="mb-2 text-xs text-[var(--kv-muted)]">عکس شما</p><img src={preview} alt="عکس اصلی" className="aspect-[3/4] w-full rounded-lg object-cover"/></div><div><p className="mb-2 text-xs text-[var(--kv-muted)]">تصویر ساخته‌شده</p><img src={resultUrl} alt={`پرو مجازی ${product?.name ?? "محصول"}`} className="aspect-[3/4] w-full rounded-lg object-cover"/></div></div>
+          <div className="mt-5 flex flex-wrap items-center gap-2"><a href={resultUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-[var(--kv-action)] px-4 py-2 text-sm font-bold text-white"><Download size={15}/>باز کردن و ذخیرهٔ تصویر</a><Btn variant="soft" size="sm" onClick={reset} icon={<RotateCcw size={15}/>}>پرو محصول دیگر</Btn></div>
+          <p className="mt-3 text-xs leading-6 text-[var(--kv-muted)]">نشانی خروجی ممکن است موقت باشد؛ اگر تصویر را می‌خواهی، همین حالا ذخیره‌اش کن.</p>
+        </div>}
+      </Card>
+      <div className="space-y-4"><Card className="p-5"><h2 className="text-sm font-bold">محصول انتخاب‌شده</h2>{product ? <div className="mt-3 flex gap-3"><img src={product.image} alt="" className="h-20 w-16 rounded-lg object-cover"/><div className="min-w-0"><p className="text-sm font-bold">{product.name}</p><p className="mt-1 text-xs text-[var(--kv-muted)]">{fmtMoney(Number(product.cashPriceRial))}</p></div></div> : <p className="mt-3 text-xs text-[var(--kv-muted)]">محصولی انتخاب نشده است.</p>}</Card>
+        {credits && credits.salesEnabled && <Card className="p-5"><h2 className="text-sm font-bold">اعتبار پرو مجازی</h2>
+          <p className="mt-2 text-xs leading-6 text-[var(--kv-muted)]">موجودی شما: <b className="text-[var(--kv-ink)]">{credits.balance.toLocaleString("fa-IR")} اعتبار</b>{!credits.freeGranted && credits.freeQuota > 0 && <span> + {credits.freeQuota.toLocaleString("fa-IR")} پروی رایگان اولین استفاده</span>}</p>
+          <div className="mt-3 space-y-2">{credits.packages.map((pack) => <div key={pack.id} className="flex items-center justify-between gap-2 rounded-lg border border-[var(--kv-line)] px-3 py-2">
+            <div className="min-w-0"><p className="truncate text-xs font-bold">{pack.name}</p><p className="mt-0.5 text-[11px] text-[var(--kv-muted)]">{pack.credits.toLocaleString("fa-IR")} ساخت تصویر · {fmtMoney(Number(pack.price_rial))}</p></div>
+            <Btn size="sm" variant="soft" disabled={buying === pack.id} onClick={() => void buyPack(pack.id)}>{buying === pack.id ? "در حال ثبت…" : "خرید"}</Btn>
+          </div>)}</div>
+          {purchaseNote && <p role="status" className="mt-3 text-[11px] leading-5 text-[var(--kv-accent)]">{purchaseNote}</p>}
+        </Card>}
+        <Card className="p-5"><h2 className="text-sm font-bold">دربارهٔ نتیجه</h2><p className="mt-2 text-xs leading-6 text-[var(--kv-muted)]">تصویر با مدل ویرایش تصویر آلفا ساخته می‌شود. رنگ، فرم و اندازه ممکن است دقیقاً با کالای واقعی یکی نباشد؛ برای انتخاب سایز از مشخصات محصول استفاده کن.</p></Card></div>
     </div>
-  );
+  </div>;
 }

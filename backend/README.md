@@ -6,6 +6,8 @@ TypeScript, Node.js, Fastify, PostgreSQL, Redis/BullMQ. The API is a modular mon
 
 ## Local startup
 
+For a populated development preview, run `npm run demo:stack` in `backend` and `npm run dev -- --host 127.0.0.1` at the repository root. See [the Persian demo-data guide](../docs/DEMO_DATA_FA.md). This creates fictional sample data in an ephemeral local database; it never runs in production.
+
 1. Install Node.js 22+ and PostgreSQL 16+. Redis is needed for the worker and for production rate limiting.
 2. `cd backend && npm ci`
 3. Copy `.env.example` to `.env` and set `DATABASE_URL`, a random 32+ character `JWT_SECRET`, and `PUBLIC_ORIGIN`. Set `REDIS_URL` when running the worker. Set `API_PUBLIC_URL` to the public HTTPS API origin for gateway callbacks.
@@ -27,6 +29,12 @@ All routes have prefix `/api/v1` except `/health/live` and `/health/ready`.
 | Catalog | `GET /products`, `/wholesale/products`; `POST /products`, `PATCH /products/:id/status` |
 | Warehouse/stock | `POST /warehouses`, `/inventory/adjustments`; `GET /inventory` |
 | Orders | `POST /orders`, `/orders/:id/transitions`; `GET /orders`, `/orders/:id` |
+| Invoices | `POST /invoices`, `/invoices/:id/payments`, `/invoices/:id/cancel`, `/invoices/:id/revisions`; `GET /invoices`, `/invoices/:id` |
+| Wallet/withdrawals | `GET /wallet`, `/wallet/entries`, `/wallet/withdrawals`; `POST /wallet/withdrawals`; admin `GET /admin/withdrawals`, `POST /admin/withdrawals/:id/status` |
+| Settlements | `GET /settlements`; `POST /settlements`, `/settlements/:id/settle` |
+| Suppliers | `GET/PATCH /supplier-profile`, `/supplier-profile/versions`, `POST /supplier-profile/documents`; public `GET /cooperation-form`, `POST /cooperation-requests`; admin supplier list/status, cooperation review, form management |
+| Coupons/festivals | `POST /coupons/validate`; admin coupon and festival CRUD with audiences, scopes, windows and usage limits |
+| CRM | admin contacts, activities, automations (birthday SMS with generated coupon), automation runs |
 | Plans/membership | `GET /plans`; `POST /plans`, `/memberships` |
 | Payments | `POST /payments/:id/checkout` and `GET /payments/callback` when Zibal is configured |
 | Support | `POST /tickets`, `/tickets/:id/messages`; `GET /tickets`, `/tickets/:id`; status management |
@@ -57,3 +65,5 @@ Example checkout body:
 The backend provides the core data and transaction layer. It is **not yet a production payment system**. Zibal and NextPay are wired for cash retail and cash wholesale respectively, and MeliPayamak SMS is wired to the worker, but no live merchant credentials or sandbox callbacks have been tested. The admin console now uses server authentication and exposes a real order list and status transitions. Its other modules and the customer/supplier portals still use local demo data. DigiPay and SnappPay installment checkout, Vandar wallet/IBAN settlement, refund/reconciliation jobs, and the remaining frontend API replacement still need implementation and provider-specific acceptance tests. A pending payment never becomes paid without a verified provider response. Use the provider contract and keys issued to this merchant before enabling those flows.
 
 In development, Vite proxies `/api` to `http://127.0.0.1:4000`. In deployment, route `/api` to the backend at the reverse proxy or set `VITE_API_BASE_URL` to the public API origin when building the frontend.
+
+[راهنمای اتصال پرو مجازی به API آلفا](../docs/ALPHA_TRYON_FA.md)

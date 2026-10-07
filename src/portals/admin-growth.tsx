@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { Check, MessageSquare, Phone, Plug, Plus, Send, Tag, Ticket as TicketIcon, Trash2, Users, CalendarClock, Megaphone } from "lucide-react";
 import { SUPPLIERS, fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
-import { SEED_CUSTOMERS } from "../data/platform";
-import { useOps, opsNow, smsParts, type Coupon, type Festival, type Lead, type LeadStage } from "../data/ops";
+import { useOps, opsNow, smsParts, resolveVariantPromotion, type Coupon, type Festival, type PromotionRule, type PromotionTargetType, type Lead, type LeadStage } from "../data/ops";
+import { useEffect } from "react";
+import { adminApi, crmApi, integrationsApi } from "../data/api";
 import { BarList, Kpi } from "../components/charts";
 import { Btn, Card, Checkbox, Drawer, Empty, Field, Input, Segmented, Select, Status, Switch, Textarea } from "../components/primitives";
 import { cn } from "../utils/cn";
@@ -11,28 +12,64 @@ import { cn } from "../utils/cn";
 type F = (m: string) => void;
 const faDigits = (s: string) => s.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
 
-/* Unified customer view: CRM seed + real storefront accounts with their actual orders */
+/* Unified customer view: CRM server + real storefront accounts — SEED removed, server is source of truth */
 function useCustomers() {
   const { accounts, retailOrders } = useStore();
+  const [serverContacts, setServerContacts] = useState<any[] | null>(null);
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  useEffect(() => {
+    if (isDemo) return;
+    crmApi.contacts().then((res) => setServerContacts(res.items ?? [])).catch(()=> setServerContacts([]));
+  }, [isDemo]);
   return useMemo(() => {
     const fromAccounts = accounts.map((a) => {
       const orders = retailOrders.filter((o) => o.accountId === a.id);
       const spent = orders.reduce((s, o) => s + o.total, 0);
       return { id: a.id, name: a.name, phone: a.phone, city: a.addresses[0]?.city ?? "—", orders: orders.length, spent, last: orders[0]?.createdAt ?? "—", source: "حساب سایت" };
     });
+    const crmContacts = (serverContacts ?? []).map((c:any)=> ({ id: c.id, name: c.name ?? c.display_name, phone: c.phone ?? c.phone_number ?? "", city: c.city ?? "—", orders: Number(c.orders_count ?? 0), spent: Number(c.ltv_rial ?? c.spent ?? 0), last: c.last_order_at ?? "—", source: "CRM" }));
     const known = new Set(fromAccounts.map((c) => c.phone));
-    const seeded = SEED_CUSTOMERS.filter((c) => !known.has(faDigits(c.phone).replace(/\s/g, ""))).map((c) => ({ ...c, source: "CRM" }));
-    return [...fromAccounts, ...seeded].map((c) => ({ ...c, segment: c.orders >= 7 ? "وفادار" : c.spent >= 30000000 ? "پرخرج" : c.orders <= 1 ? "جدید" : "فعال" }));
-  }, [accounts, retailOrders]);
+    const filtered = crmContacts.filter((c) => !known.has(faDigits(c.phone).replace(/\s/g, "")));
+    const merged = isDemo ? [...fromAccounts] : [...fromAccounts, ...filtered];
+    return merged.map((c) => ({ ...c, segment: c.orders >= 7 ? "وفادار" : c.spent >= 30000000 ? "پرخرج" : c.orders <= 1 ? "جدید" : "فعال" }));
+  }, [accounts, retailOrders, serverContacts, isDemo]);
 }
 
 /* ================= SMS ================= */
 const PROVIDERS = ["کاوه‌نگار", "ملی‌پیامک", "قاصدک", "SMS.ir", "فراز اس‌ام‌اس", "آی‌پی‌پنل"];
+const CAMPAIGN_STATUS_LABEL: Record<string, string> = { draft: "پیش‌نویس", scheduled: "زمان‌بندی‌شده", queued: "در صف ارسال", sent: "ارسال شد", failed: "ناموفق" };
+const AUDIENCE_MAP: Record<string, "all" | "retail" | "wholesale" | "vip" | "suppliers"> = {
+  "همه مشتریان": "all", "مشتریان وفادار": "retail", "مشتریان پرخرج": "vip", "مشتریان جدید": "retail",
+  "خریداران عمده فعال": "wholesale", "تأمین‌کنندگان": "suppliers", "شماره‌های دستی": "all",
+};
 
 export function SmsCenter({ flash }: { flash: F }) {
   const ops = useOps();
   const { buyers } = useStore();
   const customers = useCustomers();
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  // Server campaigns are the canonical source of truth (draft/scheduled/queued/sent/failed).
+  const [campaigns, setCampaigns] = useState<any[] | null>(null);
+  const [smsConfig, setSmsConfig] = useState<{ id: string; enabled: boolean; code: string } | null>(null);
+  const loadCampaigns = () => {
+    if (isDemo) return;
+    adminApi.smsCampaigns().then((r) => setCampaigns(r.items)).catch(() => setCampaigns([]));
+    integrationsApi.list().then((r) => {
+      const hit = (r.items ?? []).find((i: any) => ["sms", "melipayamak"].includes(i.code));
+      setSmsConfig(hit ? { id: hit.id, enabled: Boolean(hit.enabled), code: hit.code } : null);
+    }).catch(() => setSmsConfig(null));
+  };
+  useEffect(loadCampaigns, [isDemo]);
+  const serverSend = async () => {
+    if (!name.trim() || text.trim().length < 5 || recipients < 1) return;
+    try {
+      const created = await adminApi.createSmsCampaign({ title: name.trim(), message: body, audience: AUDIENCE_MAP[audience] ?? "all", scheduledAt: schedule ? new Date(schedule).toISOString() : null, activate: true }) as { id: string; status: string };
+      const sent = await adminApi.sendSmsCampaign(created.id);
+      loadCampaigns();
+      flash(sent.status === "sent" ? `پیامک برای ${fmtNum(sent.recipients ?? recipients)} نفر ارسال شد` : `کمپین در وضعیت ${sent.status} ثبت شد${sent.reason === "provider_not_configured" ? " — سرویس‌دهنده پیامک پیکربندی نشده است" : ""}`);
+      setName(""); setText("{name} عزیز، "); setSchedule("");
+    } catch (e) { flash(e instanceof Error ? e.message : "خطا در ثبت کمپین"); }
+  };
   const [tab, setTab] = useState<"send" | "connect" | "history">(ops.sms.connected ? "send" : "connect");
   const [cfg, setCfg] = useState(ops.sms);
   const [audience, setAudience] = useState("همه مشتریان");
@@ -59,17 +96,18 @@ export function SmsCenter({ flash }: { flash: F }) {
     setTab("send");
   };
   const send = () => {
+    if (!isDemo) { void serverSend(); return; }
     if (!ops.sms.connected) { setTab("connect"); return; }
     if (!name.trim() || text.trim().length < 5 || recipients < 1) return;
     ops.upsert("smsCampaigns", { id: `SMS-${Date.now().toString().slice(-4)}`, name: name.trim(), audience, recipients, message: body, parts, cost, status: schedule ? "scheduled" : "sent", at: schedule ? new Date(schedule).toLocaleString("fa-IR") : opsNow() }, true);
-    flash(schedule ? "ارسال زمان‌بندی شد" : `پیامک برای ${fmtNum(recipients)} نفر در صف ارسال قرار گرفت`);
+    flash(schedule ? "ارسال زمان‌بندی شد (demo)" : `پیامک برای ${fmtNum(recipients)} نفر در صف ارسال قرار گرفت (demo)`);
     setName(""); setText("{name} عزیز، "); setSchedule("");
   };
   return (
     <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Segmented<"send" | "connect" | "history"> options={[{ v: "send", label: "ارسال همگانی" }, { v: "connect", label: "اتصال پنل پیامکی" }, { v: "history", label: "سوابق ارسال" }]} value={tab} onChange={setTab} />
-        <Status value={ops.sms.connected ? "متصل" : "قطع"} />
+        <Status value={!isDemo && smsConfig ? (smsConfig.enabled ? "سرویس‌دهنده متصل (سرور)" : "سرویس‌دهنده تنظیم‌نشده (سرور)") : (ops.sms.connected ? "متصل (demo)" : "قطع")} />
       </div>
       {tab === "connect" && (
         <Card className="max-w-[640px] p-5">
@@ -98,7 +136,7 @@ export function SmsCenter({ flash }: { flash: F }) {
               <Field label="متن پیامک" hint="متغیر {name} با نام هر مخاطب جایگزین می‌شود"><Textarea rows={5} value={text} onChange={setText} /></Field>
               <Checkbox checked={optOut} onChange={setOptOut} label="افزودن «لغو۱۱» (الزام مقررات پیامک تبلیغاتی)" />
               <Field label="زمان‌بندی (اختیاری)"><input type="datetime-local" value={schedule} onChange={(e) => setSchedule(e.target.value)} className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px] text-[var(--kv-ink)] outline-none focus:border-[var(--kv-accent)]" /></Field>
-              <Btn variant="accent" disabled={!name.trim() || text.trim().length < 5 || recipients < 1} onClick={send} icon={<Send size={15} />}>{!ops.sms.connected ? "ابتدا پنل پیامکی را متصل کنید" : schedule ? "زمان‌بندی ارسال" : "ارسال"}</Btn>
+              <Btn variant="accent" disabled={!name.trim() || text.trim().length < 5 || recipients < 1} onClick={send} icon={<Send size={15} />}>{!isDemo && smsConfig && !smsConfig.enabled ? "ارسال (سرویس‌دهنده تنظیم‌نشده — ثبت ناموفق)" : isDemo && !ops.sms.connected ? "ابتدا پنل پیامکی را متصل کنید (demo)" : schedule ? "زمان‌بندی ارسال" : "ارسال"}</Btn>
             </div>
           </Card>
           <div className="space-y-4">
@@ -116,8 +154,21 @@ export function SmsCenter({ flash }: { flash: F }) {
         </div>
       )}
       {tab === "history" && (
-        <Card className="overflow-hidden"><div className="kv-scroll overflow-x-auto"><table className="kv-table min-w-[720px]"><thead><tr><th>کمپین</th><th>مخاطبان</th><th>گیرنده</th><th>بخش</th><th>هزینه</th><th>زمان</th><th>وضعیت</th></tr></thead><tbody>
-          {ops.smsCampaigns.map((c) => <tr key={c.id}><td><b>{c.name}</b><p className="max-w-[260px] truncate text-[11px] text-[var(--kv-muted)]">{c.message}</p></td><td>{c.audience}</td><td className="tabular-nums">{fmtNum(c.recipients)}</td><td className="tabular-nums">{fmtNum(c.parts)}</td><td className="tabular-nums">{fmtMoney(c.cost)}</td><td className="text-[var(--kv-muted)]">{c.at}</td><td><Status value={c.status === "sent" ? "ارسال شد" : c.status === "scheduled" ? "در انتظار" : "پیش‌نویس"} /></td></tr>)}
+        <Card className="overflow-hidden">
+          <div className="flex items-center justify-between gap-2 p-5 pb-3">
+            <p className="text-[14px] font-extrabold">سوابق کمپین‌ها {!isDemo && <span className="text-[11px] font-medium text-[var(--kv-muted)]">(سرور)</span>}</p>
+            {!isDemo && <Btn size="sm" variant="soft" onClick={loadCampaigns}>به‌روزرسانی</Btn>}
+          </div>
+          <div className="kv-scroll overflow-x-auto"><table className="kv-table min-w-[820px]"><thead><tr><th>کمپین</th><th>مخاطبان</th><th>گیرنده</th><th>وضعیت</th><th>سرویس‌دهنده</th><th>زمان</th><th></th></tr></thead><tbody>
+          {!isDemo && (campaigns ?? []).map((c) => <tr key={c.id}>
+            <td><b>{c.title}</b><p className="max-w-[260px] truncate text-[11px] text-[var(--kv-muted)]">{c.message}</p></td>
+            <td>{c.audience}</td><td className="tabular-nums">{fmtNum(c.recipients)}</td>
+            <td><Status value={CAMPAIGN_STATUS_LABEL[c.status] ?? c.status} />{c.failureReason === "provider_not_configured" && <p className="text-[11px] text-[var(--kv-danger)]">سرویس‌دهنده پیکربندی نشده</p>}</td>
+            <td className="text-[var(--kv-muted)]">{c.provider ?? "—"}</td><td className="text-[var(--kv-muted)]">{String(c.createdAt ?? "").slice(0, 16).replace("T", " ")}</td>
+            <td>{c.status !== "sent" && <Btn size="sm" variant="ghost" onClick={async () => { try { await adminApi.updateSmsCampaign(c.id, { status: "queued" }); loadCampaigns(); } catch (e) { flash(e instanceof Error ? e.message : "خطا"); } }}>صف ارسال</Btn>}</td>
+          </tr>)}
+          {isDemo && ops.smsCampaigns.map((c) => <tr key={c.id}><td><b>{c.name}</b><p className="max-w-[260px] truncate text-[11px] text-[var(--kv-muted)]">{c.message}</p></td><td>{c.audience}</td><td className="tabular-nums">{fmtNum(c.recipients)}</td><td><Status value={c.status === "sent" ? "ارسال شد" : c.status === "scheduled" ? "در انتظار" : "پیش‌نویس"} /></td><td>—</td><td className="text-[var(--kv-muted)]">{c.at}</td><td></td></tr>)}
+          {!isDemo && (campaigns ?? []).length === 0 && <tr><td colSpan={7} className="py-8 text-center text-[var(--kv-muted)]">کمپینی ثبت نشده است.</td></tr>}
         </tbody></table></div></Card>
       )}
     </div>
@@ -257,23 +308,178 @@ export function CrmCenter({ flash }: { flash: F }) {
 }
 
 /* ================= Promotions ================= */
+const TARGET_TYPE_LABELS: Record<PromotionTargetType, string> = {
+  variant: "واریانت دقیق (رنگ + سایز)",
+  color: "سطح رنگ (همه سایزهای یک رنگ)",
+  size: "سطح سایز (همه رنگ‌های یک سایز)",
+  product: "کل محصول (همه واریانت‌ها)",
+};
+
 export function PromoCenter({ flash }: { flash: F }) {
   const ops = useOps();
   const { products } = useStore();
   const cats = Array.from(new Set(products.map((p) => p.category)));
-  const [tab, setTab] = useState<"coupons" | "festivals">("coupons");
+  const [tab, setTab] = useState<"rules" | "coupons" | "festivals">("rules");
   const [cp, setCp] = useState<Coupon | null>(null);
   const [fs, setFs] = useState<Festival | null>(null);
+  const [pr, setPr] = useState<PromotionRule | null>(null);
+  const [simProductId, setSimProductId] = useState(products[0]?.id ?? "p1");
+  const simProduct = products.find((p) => p.id === simProductId) ?? products[0];
+  const simSizes = useMemo(
+    () => Array.from(new Set((simProduct?.series ?? []).flatMap((s) => Object.keys(s.composition)))),
+    [simProduct],
+  );
+  const [simColorId, setSimColorId] = useState(simProduct?.colors[0]?.id ?? "black");
+  const [simSize, setSimSize] = useState(simSizes[0] ?? "M");
+  const simResult = simProduct
+    ? resolveVariantPromotion(simProduct, simColorId, simSize, ops.promotionRules, ops.festivals)
+    : null;
   const today = new Date().toISOString().slice(0, 10);
+
   return (
     <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Segmented<"coupons" | "festivals"> options={[{ v: "coupons", label: "کوپن‌ها" }, { v: "festivals", label: "جشنواره‌ها" }]} value={tab} onChange={setTab} />
-        {tab === "coupons"
-          ? <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setCp({ id: `cp-${Date.now()}`, code: "", type: "percent", value: 10, minOrder: 0, maxUses: 100, used: 0, channel: "retail", expires: new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10), active: true })}>کوپن جدید</Btn>
-          : <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setFs({ id: `fs-${Date.now()}`, name: "", starts: today, ends: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10), discountPercent: 10, categories: [], active: true, bannerText: "" })}>جشنواره جدید</Btn>}
+        <Segmented<"rules" | "coupons" | "festivals">
+          options={[
+            { v: "rules", label: "قوانین تخفیف هدفمند (محصول / رنگ / سایز / واریانت)" },
+            { v: "coupons", label: "کوپن‌ها" },
+            { v: "festivals", label: "جشنواره‌ها" },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+        {tab === "rules" ? (
+          <Btn
+            size="sm"
+            variant="accent"
+            icon={<Plus size={14} />}
+            onClick={() =>
+              setPr({
+                id: `pr-${Date.now()}`,
+                name: "",
+                targetType: "variant",
+                productId: products[0]?.id ?? "p1",
+                colorId: products[0]?.colors[0]?.id ?? "black",
+                sizeCode: "XL",
+                discountType: "percent",
+                discountValue: 15,
+                starts: today,
+                ends: new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10),
+                priority: 5,
+                active: true,
+              })
+            }
+          >
+            قانون تخفیف جدید
+          </Btn>
+        ) : tab === "coupons" ? (
+          <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setCp({ id: `cp-${Date.now()}`, code: "", type: "percent", value: 10, minOrder: 0, maxUses: 100, used: 0, channel: "retail", expires: new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10), active: true })}>کوپن جدید</Btn>
+        ) : (
+          <Btn size="sm" variant="accent" icon={<Plus size={14} />} onClick={() => setFs({ id: `fs-${Date.now()}`, name: "", starts: today, ends: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10), discountPercent: 10, categories: [], active: true, bannerText: "" })}>جشنواره جدید</Btn>
+        )}
       </div>
-      {tab === "coupons" ? (
+
+      {tab === "rules" ? (
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <Card className="overflow-hidden">
+            <div className="border-b border-[var(--kv-line)] bg-[var(--kv-surface-2)]/40 px-4 py-3 text-xs text-[var(--kv-muted)]">
+              ترتیب اولویت قطعی موتور تخفیف (Promotion Resolver): ابتدا <b>اولویت عددی (Priority)</b>، سپس دقت هدف‌گذاری: <b>واریانت دقیق (Variant) &gt; رنگ (Color) &gt; سایز (Size) &gt; کل محصول (Product) &gt; جشنواره (Festival)</b>.
+            </div>
+            <div className="kv-scroll overflow-x-auto">
+              <table className="kv-table min-w-[820px]">
+                <thead>
+                  <tr>
+                    <th>عنوان قانون</th>
+                    <th>سطح هدف‌گذاری</th>
+                    <th>محصول / رنگ / سایز</th>
+                    <th>مقدار تخفیف</th>
+                    <th>اولویت</th>
+                    <th>بازه اعتبار</th>
+                    <th>فعال</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(ops.promotionRules ?? []).map((r) => {
+                    const prod = products.find((p) => p.id === r.productId);
+                    const colorName = prod?.colors.find((c) => c.id === r.colorId)?.name ?? r.colorId;
+                    return (
+                      <tr key={r.id}>
+                        <td><b className="text-[13px]">{r.name}</b></td>
+                        <td><Status value={TARGET_TYPE_LABELS[r.targetType]} /></td>
+                        <td className="text-xs">
+                          <b>{prod?.name ?? r.productId}</b>
+                          {r.targetType === "color" && <span className="mr-1.5 text-[var(--kv-muted)]">· رنگ: {colorName}</span>}
+                          {r.targetType === "size" && <span className="mr-1.5 text-[var(--kv-muted)]">· سایز: {r.sizeCode}</span>}
+                          {r.targetType === "variant" && <span className="mr-1.5 text-[var(--kv-muted)]">· {colorName} / {r.sizeCode}</span>}
+                        </td>
+                        <td className="font-extrabold tabular-nums text-[var(--kv-accent)]">
+                          {r.discountType === "percent" ? `${fmtNum(r.discountValue)}٪` : fmtMoney(r.discountValue)}
+                        </td>
+                        <td className="tabular-nums">{fmtNum(r.priority)}</td>
+                        <td className="text-xs text-[var(--kv-muted)]">
+                          {r.starts ? new Date(r.starts).toLocaleDateString("fa-IR") : "—"} تا {r.ends ? new Date(r.ends).toLocaleDateString("fa-IR") : "—"}
+                        </td>
+                        <td><Switch on={r.active} onToggle={() => ops.upsert("promotionRules", { ...r, active: !r.active })} /></td>
+                        <td><Btn size="sm" variant="ghost" onClick={() => setPr(r)}>ویرایش</Btn></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card className="h-fit p-5 space-y-4">
+            <div>
+              <p className="text-[14.5px] font-extrabold">شبیه‌ساز لحظه‌ای موتور قیمت‌گذاری (Pricing Resolver)</p>
+              <p className="mt-1 text-xs text-[var(--kv-muted)]">انتخاب محصول، رنگ و سایز برای بررسی قانون برنده و قیمت نهایی در PDP و Checkout</p>
+            </div>
+            <Field label="محصول">
+              <select
+                value={simProductId}
+                onChange={(e) => {
+                  const nextProd = products.find((p) => p.id === e.target.value);
+                  setSimProductId(e.target.value);
+                  if (nextProd?.colors[0]) setSimColorId(nextProd.colors[0].id);
+                }}
+                className="h-10 w-full rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-sm"
+              >
+                {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="رنگ (Color)">
+                <select
+                  value={simColorId}
+                  onChange={(e) => setSimColorId(e.target.value)}
+                  className="h-10 w-full rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-sm"
+                >
+                  {(simProduct?.colors ?? []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.id})</option>)}
+                </select>
+              </Field>
+              <Field label="سایز (Size)">
+                <select
+                  value={simSize}
+                  onChange={(e) => setSimSize(e.target.value)}
+                  className="h-10 w-full rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-sm"
+                >
+                  {simSizes.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+            </div>
+            {simResult && (
+              <div className="rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/60 p-4 space-y-2 text-[13px]">
+                <div className="flex justify-between"><span className="text-[var(--kv-muted)]">قیمت پایه (basePrice):</span><b className="tabular-nums">{fmtMoney(simResult.basePrice)}</b></div>
+                <div className="flex justify-between"><span className="text-[var(--kv-muted)]">قانون منطبق (matchedRule):</span><b>{simResult.matchedRule ? simResult.matchedRule.name : "بدون تخفیف"}</b></div>
+                <div className="flex justify-between"><span className="text-[var(--kv-muted)]">سطح هدف (targetType):</span><span dir="ltr" className="font-mono text-xs">{simResult.matchedRule?.targetType ?? "none"}</span></div>
+                <div className="flex justify-between text-[var(--kv-success)]"><span>مبلغ کسر شده (discountAmount):</span><b className="tabular-nums">−{fmtMoney(simResult.discountAmount)}</b></div>
+                <div className="flex justify-between border-t border-[var(--kv-line)] pt-2 text-[15px] font-extrabold"><span>قیمت نهایی (finalPrice):</span><span className="tabular-nums text-[var(--kv-accent)]">{fmtMoney(simResult.finalPrice)}</span></div>
+              </div>
+            )}
+          </Card>
+        </div>
+      ) : tab === "coupons" ? (
         <Card className="overflow-hidden"><div className="kv-scroll overflow-x-auto"><table className="kv-table min-w-[800px]"><thead><tr><th>کد</th><th>نوع</th><th>کانال</th><th>حداقل خرید</th><th>مصرف</th><th>انقضا</th><th>فعال</th><th></th></tr></thead><tbody>
           {ops.coupons.map((c) => <tr key={c.id}>
             <td><b className="tabular-nums" dir="ltr">{c.code}</b></td>
@@ -299,6 +505,92 @@ export function PromoCenter({ flash }: { flash: F }) {
           {ops.festivals.length === 0 && <Empty title="جشنواره‌ای تعریف نشده" desc="بازه زمانی، درصد و دسته‌ها را تعریف کنید." />}
         </div>
       )}
+      <Drawer open={!!pr} onClose={() => setPr(null)} title={pr?.name || "تعریف قانون تخفیف هدفمند"}>
+        {pr && (() => {
+          const targetProd = products.find((p) => p.id === pr.productId) ?? products[0];
+          const targetSizes = Array.from(new Set((targetProd?.series ?? []).flatMap((s) => Object.keys(s.composition))));
+          return (
+            <div className="space-y-4">
+              <Field label="عنوان قانون تخفیف"><Input value={pr.name} onChange={(v) => setPr({ ...pr, name: v })} placeholder="مثلاً: تخفیف ویژه مشکی سایز XL" /></Field>
+              <Field label="سطح هدف‌گذاری (Target Scope)">
+                <select
+                  value={pr.targetType}
+                  onChange={(e) => setPr({ ...pr, targetType: e.target.value as PromotionTargetType })}
+                  className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                >
+                  <option value="variant">۱. واریانت دقیق (رنگ + سایز مشخص)</option>
+                  <option value="color">۲. سطح رنگ (همه سایزهای یک رنگ در محصول)</option>
+                  <option value="size">۳. سطح سایز (همه رنگ‌های یک سایز در محصول)</option>
+                  <option value="product">۴. کل محصول (همه رنگ‌ها و سایزهای محصول)</option>
+                </select>
+              </Field>
+              <Field label="محصول هدف">
+                <select
+                  value={pr.productId}
+                  onChange={(e) => {
+                    const nextP = products.find((p) => p.id === e.target.value);
+                    setPr({ ...pr, productId: e.target.value, colorId: nextP?.colors[0]?.id ?? "black" });
+                  }}
+                  className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                >
+                  {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+                </select>
+              </Field>
+              {(pr.targetType === "color" || pr.targetType === "variant") && (
+                <Field label="رنگ هدف (Color)">
+                  <select
+                    value={pr.colorId ?? ""}
+                    onChange={(e) => setPr({ ...pr, colorId: e.target.value })}
+                    className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                  >
+                    {(targetProd?.colors ?? []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.id})</option>)}
+                  </select>
+                </Field>
+              )}
+              {(pr.targetType === "size" || pr.targetType === "variant") && (
+                <Field label="سایز هدف (Size)">
+                  <select
+                    value={pr.sizeCode ?? "M"}
+                    onChange={(e) => setPr({ ...pr, sizeCode: e.target.value })}
+                    className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]"
+                  >
+                    {(targetSizes.length ? targetSizes : ["S", "M", "L", "XL", "2XL"]).map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </Field>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="نوع تخفیف">
+                  <Select options={["درصدی", "مبلغ ثابت"]} value={pr.discountType === "percent" ? "درصدی" : "مبلغ ثابت"} onChange={(v) => setPr({ ...pr, discountType: v === "درصدی" ? "percent" : "fixed" })} />
+                </Field>
+                <Field label={pr.discountType === "percent" ? "درصد تخفیف (۱ تا ۹۵)" : "مبلغ تخفیف (تومان)"}>
+                  <Input value={String(pr.discountValue)} onChange={(v) => setPr({ ...pr, discountValue: Number(faDigits(v).replace(/\D/g, "")) || 0 })} />
+                </Field>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="اولویت (Priority)">
+                  <Input value={String(pr.priority)} onChange={(v) => setPr({ ...pr, priority: Number(faDigits(v).replace(/[^\d-]/g, "")) || 0 })} />
+                </Field>
+                <Field label="شروع"><input type="date" value={pr.starts ?? ""} onChange={(e) => setPr({ ...pr, starts: e.target.value })} className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]" /></Field>
+                <Field label="پایان"><input type="date" value={pr.ends ?? ""} onChange={(e) => setPr({ ...pr, ends: e.target.value })} className="h-11 w-full rounded-[11px] border border-[var(--kv-line)] bg-[var(--kv-surface)] px-3 text-[13px]" /></Field>
+              </div>
+              <div className="flex gap-2">
+                <Btn
+                  variant="accent"
+                  disabled={!pr.name.trim() || pr.discountValue <= 0 || (pr.discountType === "percent" && pr.discountValue > 95)}
+                  onClick={() => {
+                    ops.upsert("promotionRules", pr, true);
+                    setPr(null);
+                    flash(`قانون تخفیف «${pr.name}» ذخیره شد`);
+                  }}
+                >
+                  ذخیره قانون تخفیف
+                </Btn>
+                <Btn variant="ghost" onClick={() => { ops.remove("promotionRules", pr.id); setPr(null); }}>حذف</Btn>
+              </div>
+            </div>
+          );
+        })()}
+      </Drawer>
       <Drawer open={!!cp} onClose={() => setCp(null)} title={cp?.code ? `کوپن ${cp.code}` : "کوپن جدید"}>
         {cp && <div className="space-y-4">
           <Field label="کد"><Input value={cp.code} onChange={(v) => setCp({ ...cp, code: v.toUpperCase().replace(/[^A-Z0-9]/g, "") })} placeholder="SUMMER10" /></Field>

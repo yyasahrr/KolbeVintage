@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { reporter } from "./dom.mjs";
 
 const dom = new JSDOM(`<!doctype html><html dir="rtl"><body><div id="root"></div><pre id="out"></pre></body></html>`, {
-  url: "https://kolbe.test/", runScripts: "outside-only",
+  url: "https://kolbe.test/?demo", runScripts: "outside-only", // the probe needs the seeded catalogue fixture
 });
 dom.window.eval(fs.readFileSync(".smoke/out/units.js", "utf8"));
 /* the probe writes its report from an effect, so let React flush first */

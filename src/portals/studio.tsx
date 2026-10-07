@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { ChevronLeft, Lock, ShieldCheck, Store, User } from "lucide-react";
 import StyleBuilder, { type BuilderEntry } from "./style-builder";
-import TryOn from "./try-on";
+import { TryOn } from "./try-on";
 import { digitsOnly } from "../data/customer";
 import type { Product } from "../data/catalog";
 import type { LineFailure } from "../data/cart";
@@ -19,7 +19,7 @@ import { cn } from "../utils/cn";
 
 export type StudioSurface = "tryon" | "builder";
 
-export function StudioExperience({ surface, accountId, catalogue, entry, onEntryConsumed, onLogin, onAddOutfit, onOpenProduct }: {
+export function StudioExperience({ surface, accountId, entry, onEntryConsumed, onLogin, onAddOutfit }: {
   surface: StudioSurface;
   accountId?: string;
   catalogue: Product[];
@@ -40,13 +40,10 @@ export function StudioExperience({ surface, accountId, catalogue, entry, onEntry
       />
     );
   }
-  return (
-    <TryOn
-      initialProductId={entry?.productId}
-      catalogue={catalogue}
-      onOpenProduct={onOpenProduct}
-    />
-  );
+  // the integrated server-backed try-on (credits + real provider) — it
+  // fetches its own catalogue; the entry-product preselect from the PDP
+  // cards is an accepted integration gap until that contract grows one
+  return <TryOn onLogin={onLogin} />;
 }
 
 export default StudioExperience;

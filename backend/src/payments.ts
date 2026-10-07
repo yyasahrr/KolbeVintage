@@ -7,18 +7,35 @@ import { one, transaction, type DbPool } from './db.js';
 import { asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { issueInvoiceForOrder } from './invoices.js';
+import { ACCOUNTS, postJournalEntry } from './ledger.js';
+import { applyChildPaymentAllocations } from './wholesale-oms.js';
+import { grantTryonCredits } from './tryon-commerce.js';
+import { earnCashbackOnPaid } from './cashback.js';
 
 const limitsSchema = z.object({
   sources: z.enum(['all', 'kolbe']).default('all'),
   maxOrdersPerMonth: z.number().int().min(0).nullable().default(null),
   maxOrderValueRial: z.string().regex(/^\d+$/).nullable().default(null),
+  minOrderValueRial: z.string().regex(/^\d+$/).nullable().default(null),
   maxSuppliersPerOrder: z.number().int().min(1).nullable().default(null),
+  maxOrderLines: z.number().int().min(1).nullable().default(null),
+  maxQuantityPerLine: z.number().int().min(1).nullable().default(null),
   discountPercent: z.number().int().min(0).max(90).default(0),
   prioritySupport: z.boolean().default(false),
+  installmentAccess: z.boolean().default(false),
 }).strict();
 const planBody = z.object({
   code: z.string().regex(/^[a-z0-9_-]{3,40}$/), title: z.string().trim().min(2).max(120),
+  description: z.string().max(1000).default(''),
   annualPriceRial: z.string().regex(/^\d+$/), limits: limitsSchema,
+  features: z.array(z.string().trim().regex(/^[a-z0-9_-]{2,40}$/)).max(50).default([]),
+  permissions: z.array(z.string().trim().regex(/^[a-z0-9:_-]{2,60}$/)).max(100).default([]),
+  // Membership lifecycle (items 15-17): tier drives upgrade/downgrade decisions and
+  // the policy states how a downgrade takes effect on the server side.
+  tier: z.number().int().min(1).max(10).default(1),
+  billingCycle: z.enum(['annual', 'monthly']).default('annual'),
+  upgradePolicy: z.record(z.string(), z.unknown()).default({}),
 });
 
 export type VerifiedPayment = {
@@ -56,14 +73,11 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
     await client.query(
       `UPDATE payment_intents SET provider = $2, provider_reference = $3, status = 'succeeded', succeeded_at = $4 WHERE id = $1`,
       [intent.id, payment.provider, payment.providerReference, payment.paidAt]);
-    const entryId = randomUUID();
-    await client.query('INSERT INTO journal_entries(id,reference,source_type,source_id) VALUES ($1,$2,$3,$4)',
-      [entryId, `JE-${intent.reference}`, 'payment', intent.id]);
-    await client.query(
-      `INSERT INTO journal_lines(id,entry_id,account_id,debit_rial,credit_rial) VALUES
-       ($1,$3,'00000000-0000-4000-8000-000000000001',$4,0),
-       ($2,$3,'00000000-0000-4000-8000-000000000002',0,$4)`,
-      [randomUUID(), randomUUID(), entryId, amount.toString()]);
+    await postJournalEntry(client, { sourceType: 'payment', sourceId: intent.id, reference: `JE-${intent.reference}`,
+      lines: [
+        { account: ACCOUNTS.paymentClearing, debit: amount },
+        { account: ACCOUNTS.customerPrepayment, credit: amount },
+      ] });
     if (intent.order_id) {
       const order = await one<{ status: string }>(client, 'SELECT status FROM orders WHERE id = $1 FOR UPDATE', [intent.order_id]);
       if (order?.status !== 'pending_payment') throw conflict('سفارش در انتظار پرداخت نیست.');
@@ -71,16 +85,53 @@ export async function applyVerifiedPayment(pool: DbPool, payment: VerifiedPaymen
       await client.query("INSERT INTO order_events(id,order_id,from_status,to_status,note) VALUES ($1,$2,'pending_payment','paid',$3)",
         [randomUUID(), intent.order_id, `پرداخت تأیید شد: ${payment.providerReference}`]);
       await outbox(client, 'order.paid', 'order', intent.order_id, { orderId: intent.order_id, paymentIntentId: intent.id });
+      await issueInvoiceForOrder(client, intent.order_id);
+      // Retail cashback: earn on paid (idempotent — duplicate gateway callbacks are no-ops).
+      await earnCashbackOnPaid(client, intent.order_id);
     }
     if (intent.membership_id) {
-      const membership = await one<{ user_id: string; status: string }>(client,
-        'SELECT user_id,status FROM memberships WHERE id = $1 FOR UPDATE', [intent.membership_id]);
+      const membership = await one<{ user_id: string; status: string; source: string }>(client,
+        'SELECT user_id,status,source FROM memberships WHERE id = $1 FOR UPDATE', [intent.membership_id]);
       if (membership?.status !== 'pending_payment') throw conflict('عضویت در انتظار پرداخت نیست.');
-      await client.query("UPDATE memberships SET status = 'expired' WHERE user_id = $1 AND status = 'active'", [membership.user_id]);
+      // Requirement 17: a renewal stacks on the remaining paid days; an upgrade or a
+      // brand-new plan replaces the current term (credit was already priced in).
+      const previous = await one<{ id: string; ends_at: Date | null }>(client,
+        `SELECT id, ends_at FROM memberships WHERE user_id = $1 AND status = 'active' AND id <> $2 AND ends_at > $3 FOR UPDATE`,
+        [membership.user_id, intent.membership_id, payment.paidAt]);
+      const renewal = membership.source === 'renewal' && previous?.ends_at;
+      const endsAt = renewal
+        ? new Date(new Date(previous!.ends_at!).getTime() + 365 * 86_400_000)
+        : new Date(payment.paidAt.getTime() + 365 * 86_400_000);
       await client.query(
-        `UPDATE memberships SET status = 'active', starts_at = $2,
-         ends_at = $2::timestamptz + interval '1 year' WHERE id = $1`, [intent.membership_id, payment.paidAt]);
-      await outbox(client, 'membership.activated', 'membership', intent.membership_id, { membershipId: intent.membership_id, userId: membership.user_id });
+        renewal
+          ? "UPDATE memberships SET status = 'renewed' WHERE user_id = $1 AND status = 'active' AND id <> $2"
+          : "UPDATE memberships SET status = 'expired' WHERE user_id = $1 AND status = 'active' AND id <> $2",
+        [membership.user_id, intent.membership_id]);
+      await client.query(
+        `UPDATE memberships SET status = 'active', starts_at = $2, ends_at = $3 WHERE id = $1`,
+        [intent.membership_id, payment.paidAt, endsAt]);
+      await client.query(
+        `INSERT INTO membership_events(id,membership_id,user_id,event_type,from_status,to_status,amount_rial,note,actor_id)
+         VALUES ($1,$2,$3,$4,'pending_payment','active',$5,$6,NULL)`,
+        [randomUUID(), intent.membership_id, membership.user_id, renewal ? 'renewed' : 'activated', amount.toString(),
+          renewal ? `تمدید با انباشت دوره تا ${endsAt.toISOString()}` : 'فعال‌سازی پس از تأیید پرداخت درگاه']);
+      await outbox(client, renewal ? 'membership.renewed' : 'membership.activated', 'membership', intent.membership_id,
+        { membershipId: intent.membership_id, userId: membership.user_id, endsAt: endsAt.toISOString() });
+      await outbox(client, 'membership.activated', 'membership', intent.membership_id,
+        { membershipId: intent.membership_id, userId: membership.user_id, endsAt: endsAt.toISOString(), renewal: Boolean(renewal) });
+    }
+    if (!intent.order_id && !intent.membership_id) {
+      // Prompt 4 (§199): try-on credit purchases ride the SAME verified-payment path.
+      const tryonPurchase = await one<{ id: string }>(client,
+        'SELECT id FROM tryon_credit_purchases WHERE payment_intent_id = $1', [intent.id]);
+      if (tryonPurchase) {
+        await grantTryonCredits(client, tryonPurchase.id, payment.paidAt);
+      } else {
+        // Prompt 2 (§57-§62): master-flow intents target children via payment_allocations.
+        await applyChildPaymentAllocations(client, {
+          intentId: intent.id, providerReference: payment.providerReference, paidAt: payment.paidAt,
+        });
+      }
     }
     await audit(client, null, 'payment.verified', 'payment_intent', intent.id, { status: 'pending' },
       { status: 'succeeded', provider: payment.provider, providerReference: payment.providerReference });
@@ -97,23 +148,78 @@ export interface PaymentProviderAdapter {
 }
 
 export function registerPaymentRoutes(app: FastifyInstance, pool: DbPool, config: Config, adapters: Record<string, PaymentProviderAdapter> = {}) {
-  app.get('/api/v1/plans', async () => {
-    const rows = await pool.query('SELECT id,code,title,annual_price_rial,limits FROM membership_plans WHERE active ORDER BY annual_price_rial');
+  app.get('/api/v1/plans', async (request) => {
+    const user = await principal(request, pool, config).catch(() => null);
+    const privileged = !!user && (user.permissions.includes('plans:manage') || user.permissions.includes('users:manage'));
+    const columns = privileged
+      ? 'id,code,title,description,annual_price_rial,limits,features,permissions,active,tier,billing_cycle,upgrade_policy'
+      : `id,code,title,description,annual_price_rial,
+         jsonb_build_object('sources', limits->'sources', 'discountPercent', limits->'discountPercent',
+           'maxOrdersPerMonth', limits->'maxOrdersPerMonth', 'maxOrderValueRial', limits->'maxOrderValueRial',
+           'prioritySupport', limits->'prioritySupport', 'installmentAccess', limits->'installmentAccess') AS limits,
+         features`;
+    const rows = await pool.query(`SELECT ${columns} FROM membership_plans WHERE active ORDER BY annual_price_rial`);
     return { items: rows.rows.map((row) => ({ ...row, annual_price_rial: asRial(row.annual_price_rial) })) };
   });
 
+  app.get('/api/v1/membership/current', async (request) => {
+    const user = await principal(request, pool, config);
+    const row = await one<{ id: string; status: string; starts_at: Date; ends_at: Date; plan_id: string;
+      code: string; title: string; description: string; limits: Record<string, unknown>; features: string[]; permissions: string[] }>(pool,
+      `SELECT m.id,m.status,m.starts_at,m.ends_at,p.id AS plan_id,p.code,p.title,p.description,p.limits,p.features,p.permissions,
+              p.tier,p.billing_cycle
+       FROM memberships m JOIN membership_plans p ON p.id = m.plan_id
+       WHERE m.user_id = $1 AND m.status = 'active' AND m.starts_at <= now() AND m.ends_at > now()
+       ORDER BY m.created_at DESC LIMIT 1`, [user.id]);
+    if (!row) return { membership: null };
+    return { membership: row };
+  });
+
   app.post('/api/v1/plans', async (request, reply) => {
-    const user = await principal(request, pool, config); requirePermission(user, 'users:manage');
+    const user = await principal(request, pool, config); requirePermission(user, 'plans:manage');
     const body = planBody.parse(request.body);
     rial(body.annualPriceRial);
     if (body.limits.maxOrderValueRial !== null) rial(body.limits.maxOrderValueRial);
+    if (body.limits.minOrderValueRial !== null) rial(body.limits.minOrderValueRial);
     const id = randomUUID();
     await transaction(pool, async (client) => {
-      await client.query('INSERT INTO membership_plans(id,code,title,annual_price_rial,limits) VALUES ($1,$2,$3,$4,$5)',
-        [id, body.code, body.title, body.annualPriceRial, JSON.stringify(body.limits)]);
+      await client.query(
+        `INSERT INTO membership_plans(id,code,title,description,annual_price_rial,limits,features,permissions,
+           tier,billing_cycle,upgrade_policy)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [id, body.code, body.title, body.description, body.annualPriceRial, JSON.stringify(body.limits),
+          JSON.stringify(body.features), body.permissions, body.tier, body.billingCycle,
+          JSON.stringify(body.upgradePolicy)]);
       await audit(client, user.id, 'plan.created', 'membership_plan', id, undefined, body, request.ip);
     });
     return reply.code(201).send({ id, ...body });
+  });
+
+  app.patch('/api/v1/plans/:id', async (request) => {
+    const user = await principal(request, pool, config); requirePermission(user, 'plans:manage');
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = planBody.omit({ code: true }).partial().parse(request.body);
+    return transaction(pool, async (client) => {
+      const before = await one<Record<string, unknown>>(client, 'SELECT * FROM membership_plans WHERE id = $1 FOR UPDATE', [id]);
+      if (!before) throw notFound();
+      if (body.annualPriceRial !== undefined) rial(body.annualPriceRial);
+      if (body.limits?.maxOrderValueRial != null) rial(body.limits.maxOrderValueRial);
+      if (body.limits?.minOrderValueRial != null) rial(body.limits.minOrderValueRial);
+      await client.query(
+        `UPDATE membership_plans SET title = COALESCE($2, title), description = COALESCE($3, description),
+           annual_price_rial = COALESCE($4, annual_price_rial), limits = COALESCE($5, limits),
+           features = COALESCE($6, features), permissions = COALESCE($7, permissions),
+           tier = COALESCE($8, tier), billing_cycle = COALESCE($9, billing_cycle),
+           upgrade_policy = COALESCE($10, upgrade_policy)
+         WHERE id = $1`,
+        [id, body.title ?? null, body.description ?? null, body.annualPriceRial ?? null,
+          body.limits ? JSON.stringify(body.limits) : null,
+          body.features ? JSON.stringify(body.features) : null, body.permissions ?? null,
+          body.tier ?? null, body.billingCycle ?? null,
+          body.upgradePolicy ? JSON.stringify(body.upgradePolicy) : null]);
+      await audit(client, user.id, 'plan.updated', 'membership_plan', id, before, body, request.ip);
+      return { id, ...body };
+    });
   });
 
   app.post('/api/v1/memberships', async (request, reply) => {
@@ -154,17 +260,21 @@ export function registerPaymentRoutes(app: FastifyInstance, pool: DbPool, config
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        const intent = await one<{ id: string; reference: string; amount_rial: string; status: string; provider: string; provider_reference: string | null; buyer_id: string | null; membership_user_id: string | null; order_type: string | null; payment_mode: string | null }>(client,
-          `SELECT p.id,p.reference,p.amount_rial,p.status,p.provider,p.provider_reference,o.buyer_id,m.user_id AS membership_user_id,o.order_type,o.payment_mode
+        const intent = await one<{ id: string; reference: string; amount_rial: string; status: string; provider: string; provider_reference: string | null; buyer_id: string | null; membership_user_id: string | null; order_type: string | null; payment_mode: string | null; purpose: string; master_buyer_id: string | null }>(client,
+          `SELECT p.id,p.reference,p.amount_rial,p.status,p.provider,p.provider_reference,o.buyer_id,m.user_id AS membership_user_id,o.order_type,o.payment_mode,p.purpose,mo.buyer_id AS master_buyer_id
            FROM payment_intents p LEFT JOIN orders o ON o.id = p.order_id
-           LEFT JOIN memberships m ON m.id = p.membership_id WHERE p.id = $1 FOR UPDATE OF p`, [id]);
-        if (!intent || (intent.buyer_id !== user.id && intent.membership_user_id !== user.id)) throw notFound();
+           LEFT JOIN memberships m ON m.id = p.membership_id
+           LEFT JOIN master_orders mo ON mo.id = p.master_order_id WHERE p.id = $1 FOR UPDATE OF p`, [id]);
+        if (!intent || (intent.buyer_id !== user.id && intent.membership_user_id !== user.id && intent.master_buyer_id !== user.id)) throw notFound();
         if (intent.status !== 'pending') throw conflict('درخواست پرداخت فعال نیست.');
         const adapter = adapters[intent.provider];
         if (!adapter) throw conflict('درگاه این روش پرداخت هنوز فعال نیست.');
-        if (adapter.providerCode === 'zibal' && (intent.order_type !== 'retail' || intent.payment_mode !== 'cash'))
+        // Prompt 2: child/batch intents are wholesale cash by construction (§57).
+        const effectiveOrderType = intent.order_type ?? (intent.purpose === 'child_order' || intent.purpose === 'child_batch' ? 'wholesale' : null);
+        const effectivePaymentMode = intent.payment_mode ?? (intent.purpose === 'child_order' || intent.purpose === 'child_batch' ? 'cash' : null);
+        if (adapter.providerCode === 'zibal' && (effectiveOrderType !== 'retail' || effectivePaymentMode !== 'cash'))
           throw conflict('زیبال فقط برای خرید نقدی خرده‌فروشی فعال است.');
-        if (adapter.providerCode === 'nextpay' && (intent.order_type !== 'wholesale' || intent.payment_mode !== 'cash'))
+        if (adapter.providerCode === 'nextpay' && (effectiveOrderType !== 'wholesale' || effectivePaymentMode !== 'cash'))
           throw conflict('نکست‌پی فقط برای خرید نقدی عمده فعال است.');
         if (intent.provider_reference) {
           await client.query('COMMIT');

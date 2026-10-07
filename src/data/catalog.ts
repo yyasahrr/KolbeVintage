@@ -2,6 +2,8 @@
 
 export type Colorway = { id: string; name: string; hex: string };
 export type SeriesDef = {
+  pricingMode?: "series_total" | "component_sum";
+  componentPrices?: Record<string, number>;
   id: string;
   name: string;
   pieces: number;
@@ -19,6 +21,8 @@ export const STATUS_LABEL: Record<ProductStatus, string> = {
   rejected: "رد شد",
 };
 
+export type ProductVideo = { id: string; src: string; title: string; kind: "youtube" | "direct"; thumbnail?: string; purpose: string; colorId?: string; duration?: number };
+export type ProductImageMeta = { alt?: string; title?: string; caption?: string; width?: number; height?: number; fileName?: string };
 export type Product = {
   status?: ProductStatus;
   video?: string;
@@ -31,6 +35,13 @@ export type Product = {
    * changes. Wholesale-only records are never eligible regardless of this flag.
    */
   tryOn?: boolean;
+  videos?: ProductVideo[];
+  imageMeta?: ProductImageMeta[];
+  gender?: string;
+  seasons?: string[];
+  vibes?: string[];
+  attributes?: Record<string, string | string[]>;
+  discountPercent?: number;
   cutout?: { status: "none" | "queued" | "processing" | "ready" | "failed"; src?: string; source?: "n8n" | "local"; note?: string };
   id: string;
   sku: string;
@@ -70,10 +81,16 @@ export type Product = {
   soldNote?: string;
   fabric: string;
   desc: string;
+  /** Server catalogue: real variant sizes/ids (retail picks sizes from here, not from wholesale series). */
+  sizes?: string[];
+  /** Items 245-247: audience taxonomy codes ride the server catalog rows (absent in demo seed). */
+  genderCode?: string | null;
+  /** Server variant rows (hydrated catalog only) — checkout resolves the exact variant. */
+  variants?: { id: string; sku: string; size: string | null; color: string | null; available?: number }[];
 };
 
-export const fmtMoney = (n: number) =>
-  n.toLocaleString("fa-IR") + " تومان";
+export const fmtMoney = (n: number | null | undefined) =>
+  Number.isFinite(Number(n)) ? Number(n).toLocaleString("fa-IR") + " تومان" : "—";
 
 export const fourPaymentAmount = (product: Product) => Math.ceil((product.installmentPrice ?? product.retailPrice) / 4);
 
@@ -89,7 +106,10 @@ export const nextSku = (products: Product[], supplierId: string, category: strin
   return `${prefix}${String(highest + 1).padStart(4, "0")}`;
 };
 
-export const fmtNum = (n: number) => n.toLocaleString("fa-IR");
+// Null-safe: rows coming from the server may not carry every optional numeric field, and a
+// missing field must render as «—» instead of crashing the module that displays it.
+export const fmtNum = (n: number | null | undefined) =>
+  Number.isFinite(Number(n)) ? Number(n).toLocaleString("fa-IR") : "—";
 
 export const IMG = {
   trenchHero:

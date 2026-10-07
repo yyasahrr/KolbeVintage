@@ -1,79 +1,102 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  Radar, Package, ClipboardList, Store, Wallet, Headset, Bell, Menu, AlertTriangle, Check, X, Ban, Eye,
-  ShieldCheck, Sun, Moon, LogOut, Warehouse, Users, Crown, ShoppingBag, Tags, Truck, Contact,
-  LayoutTemplate, BellRing, Plug, Settings, Plus, Pencil, Trash2, Wand2,
+  Radar, ClipboardList, Store, Wand2, Wallet, Headset, Bell, Menu, AlertTriangle, Check,
+  ShieldCheck, Sun, Moon, LogOut, Warehouse, Crown, Contact,
+  LayoutTemplate, BellRing, Plug, Settings, Workflow, Star, Sparkles,
 } from "lucide-react";
-import { SUPPLIERS, STATUS_LABEL, fmtMoney, fmtNum } from "../data/catalog";
+import { fmtMoney, fmtNum } from "../data/catalog";
 import { useStore } from "../data/store";
-import { KOLBE, SUB_STATUS, isTerminal, type SubStatus, type VipPlan } from "../data/platform";
-import { ParentOrderCard, SubOrderDesk, SupplierChip } from "../components/orders";
-import { CuratedStyleStudio } from "./admin-styling";
-import { Btn, Card, Status, SearchBox, Empty, Timeline, Field, Input, Select, Switch, Drawer, Segmented, Textarea, Checkbox } from "../components/primitives";
-import { RetailOrders, ShippingAdmin, NotifAdmin, IntegrationsAdmin } from "./admin-retail";
-import { ProductStudio } from "./admin-product";
-import { FinanceCenter, PlansCenter, RestrictionsCenter, ApplicationsCenter, SupportHub } from "./admin-ops";
-import { SmsCenter, CrmCenter, PromoCenter } from "./admin-growth";
-import { CmsCenter } from "./admin-cms";
+import { KOLBE, SUB_STATUS, isTerminal } from "../data/platform";
+import { Btn, Card, Status, SearchBox, Timeline, Field, Input, Segmented } from "../components/primitives";
+import { ShippingAdmin } from "./admin-retail";
+import { PlansCenter, RestrictionsCenter, ApplicationsCenter, SupportHub } from "./admin-ops";
+import { SmsCenter } from "./admin-growth";
+
 import { SeriesTemplateManager } from "./series-templates";
 import { useOps } from "../data/ops";
-import { Layers, FileSignature, ShieldAlert, MessageSquareText, TicketPercent } from "lucide-react";
+import { Layers, FileSignature, ShieldAlert, TicketPercent, Boxes, FileText, Download, Globe2, FileVideo2 } from "lucide-react";
 import { cn } from "../utils/cn";
-import { AdminApiError, apiCall, refreshAdminToken, type ApiRequest } from "../data/admin-api";
+import { AdminApiError, apiClient, isAuthenticated, inventoryApi, onAuthExpired, shippingApi, type ApiRequest } from "../data/api";
+import { normalizeWarehouses } from "../data/contracts";
 import { AdminServerOrders } from "./admin-server-orders";
+import { OrdersHub } from "./orders-hub";
+import { WarehouseHub } from "./warehouse-hub";
+import { AuditLogPanel } from "../components/audit-log-panel";
+import { CrmRetailPanel } from "../components/crm-retail-panel";
+import { CrmSuppliersPanel } from "../components/crm-suppliers-panel";
+import { UsersDirectoryPanel } from "../components/users-directory";
+import { PromoPanel } from "../components/promo-panel";
+import { CmsCenter } from "./admin-cms";
+import { SupplierChangeReview } from "./supplier-profile-settings";
+import { authApi } from "../data/api";
+import { IntegrationsPanel } from "../components/integrations-panel";
+import { ServerConnectionState } from "../components/server-connection";
+import { ModuleBoundary, moduleBoundary } from "../components/boundary";
+import { CuratedStyleStudio } from "./admin-styling";
+import { NotificationsPanel } from "../components/notifications-panel";
+import { useDialogFocus } from "../components/focus-trap";
+import { ProductStructurePanel } from "../components/product-structure-panel";
+import { CatalogHub } from "../components/catalog-hub";
+import { ImportCenterPanel } from "../components/import-center-panel";
+import { SupplierCrmWorkspace } from "../components/supplier-crm-workspace";
+import { InvoiceDocumentsPanel } from "../components/invoice-docs";
+import { FinanceOpsPanel } from "../components/finance-ops";
+import { ReceiptText, Coins } from "lucide-react";
+import { CashbackCenter } from "../components/cashback-center";
+import { Buyer360Panel } from "../components/buyer-360-panel";
+import { CrmCenter } from "../components/crm-center";
+import { CrmRelationshipCenter } from "../components/crm-relationship-center";
+import { AutomationCenter } from "../components/automation-center";
+import { ReviewsCenter } from "../components/reviews-center";
+import { RecommendationsPanel } from "../components/recommendations-panel";
+import { PromoSafetyPanel } from "../components/promo-safety-panel";
+import SEOCenter from "./seo-center";
+import ContentMediaCenter from "./content-media";
 
 /* ====== Standalone app: KOLBE Admin Console (internal; never linked from the public site) ====== */
 export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
-  const [token, setToken] = useState<string | null>(null);
-  const tokenRef = useRef<string | null>(null);
+  const [signedIn, setSignedIn] = useState(false);
   const [checking, setChecking] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const saveToken = (value: string | null) => { tokenRef.current = value; setToken(value); };
   useEffect(() => {
     if (sessionStorage.getItem("kolbe-admin-auth") !== "1") { setChecking(false); return; }
     let active = true;
-    refreshAdminToken().then(async ({ accessToken }) => {
-      const me = await apiCall<{ permissions: string[] }>("/auth/me", {}, accessToken);
-      if (active && me.permissions.includes("orders:read")) saveToken(accessToken);
+    // The shared client owns the token, refresh and retry; the console only gates on permissions.
+    apiClient.get<{ permissions: string[] }>("/auth/me").then((me) => {
+      if (active && isAuthenticated() && me.permissions.includes("orders:read")) setSignedIn(true);
     }).catch(() => { sessionStorage.removeItem("kolbe-admin-auth"); }).finally(() => { if (active) setChecking(false); });
     return () => { active = false; };
   }, []);
-  const request = useCallback<ApiRequest>(async (path, init) => {
-    let current = tokenRef.current;
-    if (!current) throw new AdminApiError("نشست مدیریت منقضی شده است.", 401);
-    try { return await apiCall(path, init, current); }
-    catch (error) {
-      if (!(error instanceof AdminApiError) || error.status !== 401) throw error;
-      try {
-        current = (await refreshAdminToken()).accessToken;
-        tokenRef.current = current;
-        setToken(current);
-        return await apiCall(path, init, current);
-      } catch (retryError) {
-        tokenRef.current = null; setToken(null); sessionStorage.removeItem("kolbe-admin-auth");
-        throw retryError;
-      }
-    }
-  }, []);
+  // Console requests go through the shared authenticated client (one place for token + single refresh + retry).
+  useEffect(() => onAuthExpired(() => { setSignedIn(false); sessionStorage.removeItem("kolbe-admin-auth"); }), []);
+
+  const request = useCallback(<T,>(path: string, init?: RequestInit) => {
+    if (!isAuthenticated()) return Promise.reject(new AdminApiError("نشست مدیریت منقضی شده است.", 401));
+    return apiClient.request<T>(path, init).catch((error: unknown) => {
+        if (error instanceof AdminApiError && error.status === 401) { sessionStorage.removeItem("kolbe-admin-auth"); }
+        throw error;
+      });
+  }, []) as ApiRequest;
+
   const login = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setSubmitting(true); setAuthError(null);
     try {
-      const result = await apiCall<{ accessToken: string }>("/auth/login", { method: "POST", body: JSON.stringify({ identity: email.trim(), password }) });
-      const me = await apiCall<{ permissions: string[] }>("/auth/me", {}, result.accessToken);
+      await authApi.login({ identity: email.trim(), password });
+      const me = await apiClient.get<{ permissions: string[] }>("/auth/me");
       if (!me.permissions.includes("orders:read")) throw new Error("این حساب دسترسی مدیریت سفارش‌ها را ندارد.");
-      saveToken(result.accessToken); sessionStorage.setItem("kolbe-admin-auth", "1"); setPassword("");
+      setSignedIn(true); sessionStorage.setItem("kolbe-admin-auth", "1"); setPassword("");
     } catch (error) { setAuthError(error instanceof Error ? error.message : "ورود ناموفق بود."); }
     finally { setSubmitting(false); }
   };
   const logout = async () => {
-    await apiCall("/auth/logout", { method: "POST" }).catch(() => undefined);
-    saveToken(null); sessionStorage.removeItem("kolbe-admin-auth"); setPassword("");
+    await authApi.logout().catch(() => undefined);
+    setSignedIn(false); sessionStorage.removeItem("kolbe-admin-auth"); setPassword("");
   };
   if (checking) return <div role="status" className="flex min-h-screen items-center justify-center text-sm text-[var(--kv-muted)]">در حال بررسی نشست مدیریت…</div>;
-  if (!token) {
+  if (!signedIn) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--kv-bg)] px-4">
         <div className="w-full max-w-[400px]">
@@ -100,93 +123,204 @@ export default function AdminApp({ dark, setDark }: { dark: boolean; setDark: (v
 
 type NavItem = { g: string } | { v: string; label: string; icon: React.ReactNode; badge?: number };
 
+/**
+ * §1.8 backward compatibility: legacy tab keys (old bookmarks, Control-Tower
+ * shortcuts, internal links) are transparently redirected to their canonical hub.
+ * The sidebar no longer shows the legacy entries, but nothing crashes.
+ */
+const TAB_REDIRECT: Record<string, string> = {
+  "server-ops": "wms",          // QC/transfers/server-promotions moved into their domains
+  worders: "server-orders",      // demo wholesale orders → OrdersHub (عمده کلبه/تأمین‌کنندگان)
+  kolbe: "server-orders",        // demo Kolbe ops desk → OrdersHub consolidation/dispatch + WMS QC
+  rorders: "server-orders",      // demo retail orders → OrdersHub (سفارشات خرده)
+  "manual-sales": "server-orders", // manual sales live inside مرکز سفارشات
+  shipping: "settings",          // shipping CONFIG belongs to settings
+  tracking: "server-orders",     // operational tracking belongs to the Orders hub
+  "finance-ledger": "finance", "finance-wallet": "finance",
+  "promo-safety": "promo",
+  series: "structure",           // series templates = product structure configuration
+  // ---- CRM consolidation (master phase §1): one top-level «مرکز CRM» ----
+  users: "crm:contacts:customers", // فهرست کاربران → CRM / مخاطبان / مشتریان خرده
+  buyers: "crm:contacts:vip",      // خریداران عمده → CRM / مخاطبان / خریداران VIP
+  suppliers: "crm:contacts:suppliers", // تأمین‌کنندگان → CRM / مخاطبان / تأمین‌کنندگان
+  sms: "integrations:sms",       // پنل پیامک → سیستم / یکپارچه‌سازی‌ها (پیکربندی ارسال)
+  "crm-center": "crm:marketing", buyers360: "crm:contacts:vip",
+  // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
+  wproducts: "wms:wholesale-review",
+  mreview: "wms:wholesale-review",
+  // ---- Product Studio owns product definition; preserve old product bookmarks ----
+  rproducts: "wms:goods",
+};
+
+/** Small canonical-hub shell: one business capability, sub-tabs inside (§1).
+ *  `initial` enables legacy-route deep links (e.g. users → crm:customers). */
+function HubTabs({ tabs, initial }: { tabs: { v: string; label: string; node: React.ReactNode }[]; initial?: string | null }) {
+  const [active, setActive] = useState(initial && tabs.some((t) => t.v === initial) ? initial : tabs[0]!.v);
+  useEffect(() => { if (initial && tabs.some((t) => t.v === initial)) setActive(initial); }, [initial]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="space-y-4 animate-[fadeUp_0.35s_ease]">
+      <Segmented options={tabs.map(({ v, label }) => ({ v, label }))} value={active} onChange={setActive} />
+      {(tabs.find((t) => t.v === active) ?? tabs[0]!).node}
+    </div>
+  );
+}
+
 function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; setDark: (v: boolean) => void; request: ApiRequest; onLogout: () => void }) {
   const store = useStore();
-  const { products, orders, buyers, plans, accounts, setStatus, transitionSub, setBuyer, upsertPlan, removePlan, setTicketStatus } = store;
+  const { products, orders, buyers } = store;
   const pending = products.filter((p) => p.status === "pending");
-  const allSubs = orders.flatMap((o) => o.subOrders.map((sub) => ({ parent: o, sub })));
-  const kolbeSubs = allSubs.filter((i) => i.sub.supplierId === KOLBE.id);
-  const kolbePending = kolbeSubs.filter((i) => i.sub.status === "pending_supplier" || i.sub.status === "paid" || i.sub.status === "preparing");
+  const allSubs = orders.flatMap((o) => (o.subOrders ?? []).map((sub) => ({ parent: o, sub })));
+  const kolbeSubs = allSubs.filter(
+    (i) =>
+      i.sub.supplierId === KOLBE.id ||
+      ["ready_to_ship", "in_transit", "shipped"].includes(i.sub.status),
+  );
+  const kolbePending = kolbeSubs.filter(
+    (i) =>
+      i.sub.status === "pending_supplier" ||
+      i.sub.status === "paid" ||
+      i.sub.status === "preparing" ||
+      i.sub.status === "ready_to_ship" ||
+      i.sub.status === "in_transit",
+  );
   const activeSubs = allSubs.filter((i) => !isTerminal(i.sub.status));
   const awaitingPay = allSubs.filter((i) => i.sub.status === "approved");
   const pendingBuyers = buyers.filter((b) => b.status === "در انتظار تأیید");
   const ops = useOps();
-  const customerTickets = accounts.flatMap((account) => account.tickets.map((ticket) => ({ account, ticket })));
+  const isDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
+  // Settings reads the real warehouses and the configured default fulfillment warehouse.
+  const [settingsWarehouses, setSettingsWarehouses] = useState<{ id: string; code: string; name: string }[] | null>(null);
+  const [shippingSettings, setShippingSettings] = useState<{ defaultWarehouseId: string | null } | null>(null);
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const [list, settings] = await Promise.all([inventoryApi.warehouses(), shippingApi.settings()]);
+        if (!active) return;
+        setSettingsWarehouses(normalizeWarehouses(list));
+        setShippingSettings(settings);
+      } catch { if (active) setSettingsWarehouses([]); }
+    })();
+    return () => { active = false; };
+  }, []);
+  // Server-backed dashboard summary — canonical source for sidebar badges (item 12)
+  const [summary, setSummary] = useState<{ pendingProducts: number; activeOrders: number; pendingSupplierActions: number; pendingMemberships: number; openTickets: number; pendingReturns: number; pendingWithdrawals: number } | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  useEffect(() => {
+    if (isDemo) return;
+    let live = true;
+    apiClient.get<{ pendingProducts: number; activeOrders: number; pendingSupplierActions: number; pendingMemberships: number; openTickets: number; pendingReturns: number; pendingWithdrawals: number }>("/admin/dashboard/summary")
+      .then((r) => { if (live) setSummary(r); })
+      .catch((e) => { if (live) setSummaryError(e instanceof Error ? e.message : "خطا در دریافت خلاصه داشبورد"); });
+    return () => { live = false; };
+  }, [isDemo]);
+  const badge = (server: number | undefined, local: number): number | undefined => {
+    const value = server ?? local;
+    return value || undefined;
+  };
 
-  const [tab, setTab] = useState("server-orders");
-  const [drawer, setDrawer] = useState(false);
-  const [side, setSide] = useState<string | null>(null);
+  const [tab, setTab] = useState("tower"); // landing = نمای کلی (برج کنترل)
+  // deep-link sub-tab inside a hub (legacy redirects like users → crm:customers)
+  const [hubSub, setHubSub] = useState<string | null>(null);
+  const go = useCallback((next: string) => {
+    const target = TAB_REDIRECT[next] ?? next;
+    const [hub, ...rest] = target.split(":");
+    setTab(hub!); setHubSub(rest.length ? rest.join(":") : null);
+  }, []);
+  const [drawer, setDrawer] = useState(false); const drawerRef = useDialogFocus<HTMLElement>(drawer, () => setDrawer(false));
   const [toast, setToast] = useState<string | null>(null);
-  const [oq, setOq] = useState("");
-  const [of, setOf] = useState<"all" | "active" | "done">("all");
-  const [buyerSel, setBuyerSel] = useState<string | null>(null);
-  const [planEdit, setPlanEdit] = useState<VipPlan | null>(null);
-  const [supStatus, setSupStatus] = useState<Record<string, string>>({});
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
+  // Hub-based navigation: one business capability = one entry. Tab keys are unchanged so every
+  // legacy deep-link (`#hub` or `hub:sub`) keeps resolving; only grouping and labels moved.
   const nav: NavItem[] = [
-    { g: "دادهٔ واقعی" },
-    { v: "server-orders", label: "سفارش‌های سرور", icon: <ClipboardList size={17} /> },
     { g: "نمای کلی" },
-    { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: pending.length + kolbePending.length + pendingBuyers.length || undefined },
-    { g: "بازار عمده" },
-    { v: "worders", label: "سفارش‌های عمده", icon: <ClipboardList size={17} />, badge: activeSubs.length || undefined },
-    { v: "kolbe", label: "میز عملیات کلبه", icon: <Warehouse size={17} />, badge: kolbePending.length || undefined },
-    { v: "wproducts", label: "محصولات و بازبینی", icon: <Package size={17} />, badge: pending.length || undefined },
-    { v: "series", label: "قالب‌های سری کلبه", icon: <Layers size={17} /> },
-    { v: "suppliers", label: "تأمین‌کنندگان", icon: <Store size={17} /> },
-    { v: "applications", label: "درخواست همکاری", icon: <FileSignature size={17} />, badge: ops.applications.filter((a) => a.status === "new").length || undefined },
-    { v: "buyers", label: "خریداران عمده", icon: <Users size={17} />, badge: pendingBuyers.length || undefined },
-    { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
-    { g: "خرده‌فروشی" },
-    { v: "rorders", label: "سفارش‌های خرده", icon: <ShoppingBag size={17} /> },
-    { v: "rproducts", label: "تعریف محصول", icon: <Tags size={17} /> },
+    { v: "tower", label: "برج کنترل", icon: <Radar size={17} />, badge: badge(summary ? summary.pendingProducts + summary.pendingSupplierActions + summary.pendingMemberships : undefined, pending.length + kolbePending.length + pendingBuyers.length) },
+    { g: "فروش و سفارش" },
+    { v: "server-orders", label: "مرکز سفارشات", icon: <ClipboardList size={17} /> },
+    { v: "promo", label: "تخفیف و جشنواره", icon: <TicketPercent size={17} /> },
+    { g: "محصول و انبار" },
+    { v: "wms:goods", label: "استودیو محصول", icon: <Store size={17} /> },
     { v: "cstyles", label: "استایل‌های آماده", icon: <Wand2 size={17} /> },
-    { v: "shipping", label: "حمل‌ونقل", icon: <Truck size={17} /> },
+    { v: "structure", label: "ساختار محصولات و سری‌ها", icon: <Layers size={17} /> },
+    { v: "wms", label: "انبار و موجودی (WMS)", icon: <Boxes size={17} /> },
+    { g: "مشتریان و پشتیبانی" },
     { v: "crm", label: "مشتریان (CRM)", icon: <Contact size={17} /> },
-    { v: "promo", label: "کوپن و جشنواره", icon: <TicketPercent size={17} /> },
+    { v: "support", label: "پشتیبانی و مرجوعی", icon: <Headset size={17} />, badge: badge(summary ? summary.openTickets + summary.pendingReturns : undefined, ops.tickets.filter((t) => t.status !== "closed").length + ops.returns.filter((r) => r.status === "requested").length) },
+    { v: "reviews", label: "نظرات و امتیازها", icon: <Star size={17} /> },
+    { g: "بازار عمده" },
+    { v: "applications", label: "درخواست همکاری", icon: <FileSignature size={17} />, badge: badge(summary?.pendingSupplierActions, ops.applications.filter((a) => a.status === "new").length) },
+    { v: "plans", label: "پلن‌های عضویت", icon: <Crown size={17} /> },
+    { g: "مالی" },
+    { v: "finance", label: "مرکز مالی", icon: <Wallet size={17} /> },
+    { v: "cashback", label: "کیف پول کش‌بک", icon: <Coins size={17} /> },
+    { v: "supplier-docs", label: "اسناد و صورت‌حساب", icon: <ReceiptText size={17} /> },
+    { g: "محتوا و رشد" },
     { v: "cms", label: "محتوا (CMS)", icon: <LayoutTemplate size={17} /> },
-    { v: "sms", label: "پنل پیامک", icon: <MessageSquareText size={17} /> },
-    { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
-    { v: "finance", label: "مالی و تسویه", icon: <Wallet size={17} />, badge: ops.withdrawals.filter((w) => w.status === "requested").length + Object.values(ops.banks).filter((b) => b.status === "pending").length || undefined },
-    { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
+    { v: "seo", label: "مرکز SEO", icon: <Globe2 size={17} /> },
+    { v: "media", label: "مرکز رسانه", icon: <FileVideo2 size={17} /> },
+    { v: "recs", label: "توصیه‌گر هوشمند", icon: <Sparkles size={17} /> },
     { g: "سیستم" },
-    { v: "support", label: "تیکت و مرجوعی", icon: <Headset size={17} />, badge: ops.tickets.filter((t) => t.status === "open").length + ops.returns.filter((r) => r.status === "requested").length || undefined },
+    { v: "notifs", label: "اعلان‌ها", icon: <BellRing size={17} /> },
+    { v: "automation", label: "اتوماسیون و n8n", icon: <Workflow size={17} /> },
+    { v: "integrations", label: "یکپارچه‌سازی‌ها", icon: <Plug size={17} /> },
+    { v: "imports", label: "مرکز ورود داده", icon: <Download size={17} /> },
+    { v: "audit", label: "گزارش حسابرسی", icon: <FileText size={17} /> },
     { v: "restrictions", label: "محدودیت کاربران", icon: <ShieldAlert size={17} /> },
     { v: "settings", label: "تنظیمات و دسترسی", icon: <Settings size={17} /> },
   ];
   const titles: Record<string, [string, string]> = {
-    "server-orders": ["سفارش‌های واقعی", "خواندن و مدیریت سفارش‌های ثبت‌شده در PostgreSQL"],
+    "server-orders": ["مرکز سفارشات", "سه نمای عملیاتی: خرده، عمده کلبه و عمده تأمین‌کنندگان + رهگیری و فروش دستی — داده واقعی PostgreSQL"],
     tower: ["برج کنترل عملیات", "همه صف‌ها بر اساس فوریت"],
     worders: ["سفارش‌های عمده در جریان", "سفارش مادر و زیرسفارش‌های هر تأمین‌کننده"],
     kolbe: ["میز عملیات کلبه", "تأیید، آماده‌سازی و ارسال زیرسفارش‌های محصولات خود کلبه"],
     wproducts: ["محصولات بازارچه و بازبینی", "تأیید محصولات تأمین‌کنندگان برای ورود به بازارچه عمده"],
-    suppliers: ["مدیریت تأمین‌کنندگان", "احراز، کارمزد و عملکرد"],
+    mreview: ["بازبینی بازارچه (داده سرور)", "صف واقعی بازبینی با دلیل رد، سوابق تصمیم و ارسال مجدد"],
+    imports: ["مرکز ورود و مهاجرت داده", "آپلود، نگاشت هوشمند، بررسی آزمایشی و اجرای پس‌زمینه"],
+    structure: ["ساختار محصولات", "انواع محصول، سایز، جنسیت/فصل، مشخصات فنی و راهنمای سایز"],
+    suppliers: ["تأمین‌کنندگان ۳۶۰°", "وضعیت فعالیت، محدودیت‌ها، عملکرد و حساب مالی هر تأمین‌کننده"],
+    "supplier-docs": ["اسناد و صورت‌حساب", "قالب‌های نسخه‌دار، صدور/ابطال/بازپرداخت و صورت‌حساب تأمین‌کننده"],
+    "finance-wallet": ["کیف پول، کارمزد و برداشت", "نمای عملیاتی پرداخت‌های تأمین‌کننده و تأیید برداشت‌ها"],
     buyers: ["مدیریت خریداران عمده", "تأیید عضویت، پلن و وضعیت حساب"],
     plans: ["پلن‌های عضویت عمده", "تعریف سطوح، اعتبار و قابلیت‌ها"],
     rorders: ["سفارش‌های خرده", "آماده‌سازی، ارسال، مرجوعی"],
+    "manual-sales": ["فروش دستی و خارج از سایت", "ثبت فروش اینستاگرام/حضوری/تلفنی با پرداخت کارت‌به‌کارت و کسر موجودی واقعی"],
+    users: ["فهرست کاربران", "جست‌وجو و فیلتر سمت سرور روی نقش، وضعیت، شهر و سوابق خرید"],
     rproducts: ["تعریف محصول", "کاتالوگ کامل، واریانت‌ها، سئو و کانال‌های فروش"],
-    cstyles: ["استایل‌های آماده", "ساخت ست‌های فروشگاهی، هماهنگی رنگ و تنظیم اقساط"],
     shipping: ["حمل‌ونقل", "روش‌های ارسال خرده و عمده"],
+    wms: ["انبار و موجودی (WMS)", "موجودی قابل فروش، رزرو، ورودی و آسیب‌دیده — انتقال و رسید"],
     crm: ["مدیریت ارتباط با مشتری", "بخش‌بندی، پروفایل ۳۶۰ و کمپین"],
     cms: ["مدیریت محتوا", "صفحات، بنرها و مجله"],
+    seo: ["مرکز SEO", "متادیتا، ساختار سایت، ریدایرکت و ممیزی فنی"],
+    media: ["مجله و Media Library", "مدیریت مقاله، ویدیو و رسانه‌های محصولات"],
     notifs: ["سیستم اعلان", "قالب‌های رویدادی و ارسال دستی"],
-    finance: ["سیستم مالی", "تراکنش‌ها، کارمزد و تسویه تأمین‌کنندگان"],
+    finance: ["مرکز عملیات مالی", "دفتر کل دوسویه، حساب تأمین‌کنندگان، تسویه، مغایرت‌یابی، پیش‌پرداخت، گزارش و دوره‌ها"],
+    cashback: ["کیف پول کش‌بک", "اعتبار وفاداری خرید خرده — قوانین تعلق، کیف پول مشتریان، دفترکل و انقضا"],
+    "finance-ledger": ["دفتر کل", "روزنامه، حساب‌ها، بدهکار/بستانکار و مغایرت"],
     integrations: ["یکپارچه‌سازی‌ها", "CRM، حسابداری، پیامک، پرداخت و لجستیک"],
     support: ["پشتیبانی و تیکت‌ها", "SLA و صف پاسخ‌گویی"],
+    audit: ["گزارش حسابرسی", "تمام عملیات حساس با actor, IP, مقدار قبلی/جدید"],
     settings: ["تنظیمات و دسترسی", "نقش‌ها، انبارها و اطلاعات فروشگاه"],
     series: ["قالب‌های سری کلبه", "یک‌بار تعریف کنید، در تعریف محصول انتخاب کنید"],
     applications: ["درخواست‌های همکاری تأمین‌کنندگان", "طراحی فرم و بررسی درخواست‌ها"],
     promo: ["کوپن و جشنواره", "کدهای تخفیف خرده و عمده و جشنواره‌های زمان‌دار"],
     sms: ["پنل پیامک", "اتصال سرویس‌دهنده و ارسال همگانی"],
     restrictions: ["محدودیت کاربران", "مسدودسازی و محدودیت دسترسی تأمین‌کنندگان و کاربران"],
+    buyers360: ["پرونده ۳۶۰° خریداران", "حساب، کسب‌وکار، خرید، مالی، پشتیبانی و CRM در یک صفحه"],
+    "crm-center": ["مرکز رشد CRM", "برچسب‌ها، قواعد، سگمنت‌ها، تایم‌لاین و کمپین"],
+    automation: ["اتوماسیون و n8n", "اتصال‌ها، جریان‌های کاری، صف رویداد و تلاش مجدد"],
+    tracking: ["رهگیری مرسوله‌ها", "کد رهگیری، صف بازبینی ورود خودکار و تایم‌لاین حمل"],
+    reviews: ["نظرات و امتیازها", "بازبینی، گزارش‌ها و تحلیل امتیاز واقعی"],
+    recs: ["توصیه‌گر هوشمند", "جایگاه‌ها، استراتژی‌ها و تحلیل نمایش/کلیک/تبدیل"],
+    "promo-safety": ["ایمنی تخفیف و کوپن شخصی", "قواعد سقف‌دار، تست خشک، قالب کمپین و کوپن اختصاصی"],
   };
-  const [t, d] = titles[tab] ?? titles.tower;
+  // Composite keys (hub:sub) get their own header so e.g. «استودیو محصول» is not titled as WMS.
+  const compositeTitles: Record<string, [string, string]> = {
+    "wms:goods": ["استودیو محصول", "تعریف و ویرایش محصولات کلبه — کاتالوگ، واریانت، قیمت و کانال فروش (بدون دستکاری موجودی)"],
+    cstyles: ["استایل‌های آماده", "ساخت ست‌های فروشگاهی، هماهنگی رنگ و تنظیم اقساط"],
+  };
+  const [t, d] = (hubSub ? compositeTitles[`${tab}:${hubSub}`] : undefined) ?? titles[tab] ?? titles.tower;
 
-  const kolbeTransition = (pid: string, sid: string, status: SubStatus, extra?: { note?: string; tracking?: string; eta?: string }) => {
-    transitionSub(pid, sid, status, "تیم عملیات کلبه", extra);
-    flash(`${sid}: ${SUB_STATUS[status].label}`);
-  };
 
   const sidebar = (
     <div className="flex h-full flex-col">
@@ -195,11 +329,13 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
         <div><p className="text-sm font-extrabold">کنسول مدیریت</p><p className="text-[11.5px] text-[var(--kv-muted)]">دسترسی کامل · ادمین ارشد</p></div>
       </div>
       <nav className="kv-scroll flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
+        {summaryError && !isDemo && <p role="alert" className="px-3 py-1 text-[10.5px] leading-5 text-[var(--kv-muted)]">خلاصه سرور در دسترس نیست — اعداد محلی موقت است.</p>}
         {nav.map((n, i) =>
           "g" in n ? <p key={i} className="px-3 pb-1 pt-4 text-[11px] font-bold text-[var(--kv-faint)]">{n.g}</p> : (
-            <button key={n.v} onClick={() => { setTab(n.v); setDrawer(false); setSide(null); }}
+            <button key={n.v} onClick={() => { go(n.v); setDrawer(false); }}
               className={cn("kv-press flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-[13px] font-semibold",
-                tab === n.v ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
+                (n.v.includes(":") ? n.v === `${tab}:${hubSub ?? ""}` : tab === n.v && !nav.some((m) => "v" in m && m.v === `${tab}:${hubSub ?? ""}`))
+                  ? "bg-[var(--kv-action)] text-[var(--kv-bg)] dark:text-[#0E1527] shadow" : "text-[var(--kv-ink-2)] hover:bg-[var(--kv-surface-2)]")}>
               {n.icon}{n.label}
               {n.badge && <span className="mr-auto rounded-full bg-[var(--kv-danger)] px-2 py-0.5 text-[10.5px] font-bold text-white tabular-nums">{fmtNum(n.badge)}</span>}
             </button>
@@ -214,13 +350,22 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     </div>
   );
 
-  const queues = [
-    { t: "زیرسفارش‌های کلبه نیازمند اقدام", d: kolbePending.length ? `${fmtNum(kolbePending.length)} مورد: تأیید، آماده‌سازی یا ارسال` : "صف خالی است", n: kolbePending.length, tone: "terracotta", tab: "kolbe" },
+  /* ADM-TOWER-001: queue cards read the SERVER dashboard summary (retail + wholesale, clickable,
+     numbers never contradict the destination). Demo-store queues remain only as offline fallback. */
+  const queues = summary ? [
+    { t: "سفارش‌های فعال (خرده و عمده)", d: "در جریان: پرداخت‌شده تا تحویل", n: summary.activeOrders, tone: "terracotta", tab: "server-orders" },
+    { t: "مرجوعی در انتظار بررسی", d: "درخواست‌های ثبت‌شده مشتریان خرده", n: summary.pendingReturns, tone: "brick", tab: "support" },
+    { t: "تیکت باز پشتیبانی", d: "خرده و عمده — صف پاسخ‌گویی", n: summary.openTickets, tone: "brick", tab: "support" },
+    { t: "بازبینی محصول تأمین‌کنندگان", d: "منتظر ورود به بازارچه عمده", n: summary.pendingProducts, tone: "ochre", tab: "wproducts" },
+    { t: "اقدامات تأمین‌کننده در انتظار", d: "درخواست همکاری و تغییرات حساس", n: summary.pendingSupplierActions, tone: "ochre", tab: "applications" },
+    { t: "درخواست عضویت عمده", d: "منتظر تأیید کلبه", n: summary.pendingMemberships, tone: "navy", tab: "buyers" },
+  ] : [
+    { t: "زیرسفارش‌های کلبه نیازمند اقدام", d: kolbePending.length ? `${fmtNum(kolbePending.length)} مورد: تأیید، آماده‌سازی یا ارسال` : "صف خالی است", n: kolbePending.length, tone: "terracotta", tab: "server-orders" },
     { t: "بازبینی محصول تأمین‌کنندگان", d: pending.length ? `${fmtNum(pending.length)} محصول منتظر ورود به بازارچه` : "صف خالی است", n: pending.length, tone: "ochre", tab: "wproducts" },
     { t: "درخواست عضویت عمده", d: pendingBuyers.length ? pendingBuyers.map((b) => b.name.split(" — ")[0]).join("، ") : "درخواستی نیست", n: pendingBuyers.length, tone: "navy", tab: "buyers" },
-    { t: "منتظر پرداخت خریدار", d: `${fmtNum(awaitingPay.length)} زیرسفارش تأیید شده · یادآوری خودکار ۲۴ ساعته`, n: awaitingPay.length, tone: "navy", tab: "worders" },
-    { t: "زیرسفارش در جریان", d: "همه تأمین‌کنندگان و کلبه", n: activeSubs.length, tone: "ochre", tab: "worders" },
-    { t: "تیکت نزدیک به نقض SLA", d: "پشتیبانی خرده و عمده", n: 5, tone: "brick", tab: "support" },
+    { t: "منتظر پرداخت خریدار", d: `${fmtNum(awaitingPay.length)} زیرسفارش تأیید شده · یادآوری خودکار ۲۴ ساعته`, n: awaitingPay.length, tone: "navy", tab: "server-orders" },
+    { t: "زیرسفارش در جریان", d: "همه تأمین‌کنندگان و کلبه", n: activeSubs.length, tone: "ochre", tab: "server-orders" },
+    { t: "تیکت باز پشتیبانی", d: "پشتیبانی خرده و عمده", n: ops.tickets.filter((x) => x.status !== "closed").length, tone: "brick", tab: "support" },
   ];
   const toneBg: Record<string, string> = {
     terracotta: "bg-[var(--kv-accent)]/10 text-[var(--kv-accent)]",
@@ -228,15 +373,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
     ochre: "bg-[#B98A2F]/10 text-[#8A6420] dark:text-[#D6A94E]",
     brick: "bg-[#A8483C]/10 text-[#8A3B30] dark:text-[#D07A6A]",
   };
-  const feed = allSubs.flatMap((i) => i.sub.events.map((e) => ({ ...e, sub: i.sub.id, buyer: i.parent.buyer }))).slice(-7).reverse();
+  const feed = allSubs.flatMap((i) => (i.sub.events ?? []).map((e) => ({ ...e, sub: i.sub.id, buyer: i.parent.buyer }))).slice(-7).reverse();
 
-  const filteredOrders = orders.filter((o) => {
-    const q = oq.trim();
-    if (q && !o.id.includes(q) && !o.buyer.includes(q) && !o.subOrders.some((s) => s.supplierName.includes(q))) return false;
-    if (of === "active") return o.subOrders.some((s) => !isTerminal(s.status));
-    if (of === "done") return o.subOrders.every((s) => isTerminal(s.status));
-    return true;
-  });
 
   return (
     <div className="mx-auto w-full max-w-[1600px] pb-16 md:px-5">
@@ -244,8 +382,8 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
         <aside className="sticky top-4 hidden h-[calc(100vh-32px)] w-[250px] shrink-0 overflow-hidden rounded-[18px] border border-[var(--kv-line)] bg-[var(--kv-surface)] kv-shadow-sm lg:block">{sidebar}</aside>
         {drawer && (
           <div className="fixed inset-0 z-[70] lg:hidden">
-            <div className="absolute inset-0 bg-black/45" onClick={() => setDrawer(false)} />
-            <aside className="absolute right-0 top-0 h-full w-[270px] bg-[var(--kv-surface)]">{sidebar}</aside>
+            <div className="absolute inset-0 bg-black/45" onClick={() => setDrawer(false)} aria-hidden="true" />
+            <aside ref={drawerRef} role="dialog" aria-modal="true" aria-label="منوی پنل" className="absolute right-0 top-0 h-full overflow-y-auto w-[270px] bg-[var(--kv-surface)]">{sidebar}</aside>
           </div>
         )}
 
@@ -255,19 +393,20 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
             <div className="min-w-0"><h1 className="truncate text-[15px] font-extrabold">{t}</h1><p className="hidden truncate text-xs text-[var(--kv-muted)] sm:block">{d}</p></div>
             <div className="mr-auto flex items-center gap-2">
               <div className="hidden w-64 md:block"><SearchBox placeholder="جست‌وجوی سراسری: سفارش، محصول، کاربر… (⌘K)" /></div>
-              <button onClick={() => setTab("tower")} className="kv-press relative flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)]" aria-label="اعلان‌ها"><Bell size={16} />{(pending.length + kolbePending.length) > 0 && <span className="absolute left-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--kv-danger)] px-1 text-[9px] font-bold text-white tabular-nums">{fmtNum(pending.length + kolbePending.length)}</span>}</button>
+              <button onClick={() => go("tower")} className="kv-press relative flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--kv-line)] bg-[var(--kv-surface)]" aria-label="اعلان‌ها"><Bell size={16} />{(pending.length + kolbePending.length) > 0 && <span className="absolute left-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--kv-danger)] px-1 text-[9px] font-bold text-white tabular-nums">{fmtNum(pending.length + kolbePending.length)}</span>}</button>
             </div>
           </div>
 
-          {tab !== "server-orders" && <div role="note" className="mb-4 rounded-lg border border-[var(--kv-line)] bg-[var(--kv-surface-2)] px-4 py-2 text-xs font-semibold text-[var(--kv-muted)]">پیش‌نمایش رابط: اطلاعات این بخش هنوز به سرور متصل نیست.</div>}
-          {tab === "server-orders" && <AdminServerOrders request={request} />}
+          {moduleBoundary("وضعیت اتصال", <ServerConnectionState tab={tab} key={tab} />)}
+          <ModuleBoundary name={t} key={tab}>
+          {tab === "server-orders" && <OrdersHub />}
 
           {/* ---------- Tower ---------- */}
           {tab === "tower" && (
             <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {queues.map((q) => (
-                  <button key={q.t} onClick={() => setTab(q.tab)} className="kv-press flex items-center gap-3.5 rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 text-right kv-shadow-sm hover:border-[var(--kv-line-strong)]">
+                  <button key={q.t} onClick={() => go(q.tab)} className="kv-press flex items-center gap-3.5 rounded-[16px] border border-[var(--kv-line)] bg-[var(--kv-surface)] p-4 text-right kv-shadow-sm hover:border-[var(--kv-line-strong)]">
                     <span className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] text-lg font-extrabold tabular-nums", toneBg[q.tone])}>{fmtNum(q.n)}</span>
                     <span className="min-w-0"><span className="block text-[13.5px] font-extrabold">{q.t}</span><span className="mt-0.5 block truncate text-xs text-[var(--kv-muted)]">{q.d}</span></span>
                   </button>
@@ -278,21 +417,21 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                   <p className="p-5 pb-3 text-[14px] font-extrabold">اقدامات فوری</p>
                   <div className="kv-scroll max-h-[400px] space-y-2 overflow-y-auto px-5 pb-5">
                     {kolbePending.map(({ parent, sub }) => (
-                      <button key={sub.id} onClick={() => setTab("kolbe")} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
+                      <button key={sub.id} onClick={() => go("kolbe")} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
                         <span className="h-8 w-1 shrink-0 rounded-full bg-[var(--kv-accent)]" />
-                        <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">{sub.id} · {parent.buyer}</p><p className="truncate text-xs text-[var(--kv-muted)]">{sub.lines.map((l) => l.name).join("، ")} · {fmtMoney(sub.total)}</p></div>
+                        <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">{sub.id} · {parent.buyer}</p><p className="truncate text-xs text-[var(--kv-muted)]">{(sub.lines ?? []).map((l) => l.name).join("، ")} · {fmtMoney(sub.total)}</p></div>
                         <Status value={SUB_STATUS[sub.status].label} />
                       </button>
                     ))}
                     {pending.map((p) => (
-                      <button key={p.id} onClick={() => { setTab("wproducts"); setSide(p.id); }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
+                      <button key={p.id} onClick={() => go("wproducts")} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
                         <span className="h-8 w-1 shrink-0 rounded-full bg-[#D6A94E]" />
                         <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">بازبینی «{p.name}»</p><p className="truncate text-xs text-[var(--kv-muted)]">{p.supplier} · {fmtMoney(p.wholesaleFrom)} / سری</p></div>
                         <Status value="در انتظار تأیید" />
                       </button>
                     ))}
                     {pendingBuyers.map((b) => (
-                      <button key={b.id} onClick={() => { setTab("buyers"); setBuyerSel(b.id); }} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
+                      <button key={b.id} onClick={() => go("buyers")} className="flex w-full items-center gap-3 rounded-[12px] border border-[var(--kv-line)] px-4 py-3 text-right hover:border-[var(--kv-line-strong)]">
                         <span className="h-8 w-1 shrink-0 rounded-full bg-[#1B2A4A]" />
                         <div className="min-w-0 flex-1"><p className="truncate text-[13px] font-bold">عضویت عمده «{b.name}»</p><p className="truncate text-xs text-[var(--kv-muted)]">{b.city} · مدارک بارگذاری شده</p></div>
                         <Status value="در انتظار تأیید" />
@@ -302,297 +441,81 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                   </div>
                 </Card>
                 <Card className="p-5">
-                  <p className="text-[14px] font-extrabold">فعالیت زنده بازارچه</p>
-                  <div className="mt-4"><Timeline items={feed.map((e) => ({ t: e.t, d: `${e.sub} · ${e.buyer} · ${e.by}`, time: e.time, done: true }))} /></div>
+                  <p className="text-[14px] font-extrabold">فعالیت بازارچه</p>
+                  {feed.length > 0
+                    ? <div className="mt-4"><Timeline items={feed.map((e) => ({ t: e.t, d: `${e.sub} · ${e.buyer} · ${e.by}`, time: e.time, done: true }))} /></div>
+                    : <p className="mt-4 text-[12.5px] leading-6 text-[var(--kv-muted)]">رویدادی ثبت نشده است. با جریان گرفتن زیرسفارش‌های عمده، آخرین رویدادها اینجا دیده می‌شوند؛ تاریخچه کامل در «حسابرسی» است.</p>}
                 </Card>
               </div>
             </div>
           )}
 
-          {/* ---------- Wholesale orders ---------- */}
-          {tab === "worders" && (
-            <div className="animate-[fadeUp_0.35s_ease]">
-              <div className="mb-4 flex flex-wrap items-center gap-2.5">
-                <div className="min-w-[220px] flex-1"><SearchBox value={oq} onChange={setOq} placeholder="شماره سفارش، خریدار یا تأمین‌کننده…" /></div>
-                <Segmented<"all" | "active" | "done"> options={[{ v: "all", label: "همه" }, { v: "active", label: "در جریان" }, { v: "done", label: "بسته‌شده" }]} value={of} onChange={setOf} />
-              </div>
-              <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-                {[["در انتظار تأیید تأمین‌کننده", allSubs.filter((i) => i.sub.status === "pending_supplier").length], ["منتظر پرداخت", awaitingPay.length], ["آماده‌سازی و ارسال", allSubs.filter((i) => ["paid", "preparing", "shipped"].includes(i.sub.status)).length], ["رد/لغو شده", allSubs.filter((i) => i.sub.status === "rejected" || i.sub.status === "cancelled").length]].map(([l, n]) => (
-                  <Card key={l as string} className="p-3.5"><p className="text-lg font-extrabold tabular-nums">{fmtNum(n as number)}</p><p className="text-xs text-[var(--kv-muted)]">{l as string}</p></Card>
-                ))}
-              </div>
-              {filteredOrders.length === 0 ? <Empty title="سفارشی پیدا نشد" desc="عبارت یا فیلتر دیگری را امتحان کنید." /> : (
-                <div className="space-y-3">
-                  {filteredOrders.map((o, i) => (
-                    <ParentOrderCard key={o.id} order={o} perspective="admin" defaultOpen={i === 0} onCancelSub={(sid) => { transitionSub(o.id, sid, "cancelled", "کلبه (ادمین)", { note: "لغو توسط پشتیبانی کلبه" }); flash(`${sid} لغو شد و به خریدار و تأمین‌کننده اطلاع داده شد`); }} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          {/* wproducts/mreview consolidated into WMS → انبار عمده → محصولات و بازبینی (§2) */}
+          {tab === "supplier-docs" && moduleBoundary("اسناد و صورت‌حساب", <InvoiceDocumentsPanel flash={flash} />)}
 
-          {/* ---------- Kolbe ops desk ---------- */}
-          {tab === "kolbe" && (
-            <div className="animate-[fadeUp_0.35s_ease]">
-              <div className="mb-4 flex flex-wrap items-center gap-3 rounded-[14px] border border-[var(--kv-line)] bg-[var(--kv-surface-2)]/50 px-4 py-3 text-[12.5px] leading-6 text-[var(--kv-muted)]">
-                <SupplierChip id={KOLBE.id} name={KOLBE.name} />برای محصولات خود کلبه، تیم عملیات نقش تأمین‌کننده را دارد: تأیید امکان تأمین ← (پرداخت خریدار) ← آماده‌سازی ← ارسال.
-              </div>
-              <SubOrderDesk items={kolbeSubs} actor="تیم عملیات کلبه" onTransition={kolbeTransition} emptyTitle="زیرسفارشی برای کلبه نیست" emptyDesc="سفارش‌های محصولات کلبه وینتیج اینجا مدیریت می‌شود." />
-            </div>
-          )}
-
-          {/* ---------- Wholesale products / review ---------- */}
-          {tab === "wproducts" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_340px]">
-              <Card className="overflow-hidden">
-                <div className="kv-scroll overflow-x-auto">
-                  <table className="kv-table min-w-[760px]">
-                    <thead><tr><th>محصول</th><th>مالک</th><th>قیمت سری از</th><th>حداقل</th><th>موجودی</th><th>وضعیت</th><th></th></tr></thead>
-                    <tbody>
-                      {[...pending, ...products.filter((p) => p.status !== "pending")].map((p) => (
-                        <tr key={p.id} className={cn(side === p.id && "bg-[var(--kv-accent)]/[0.05]")}>
-                          <td><span className="flex items-center gap-2.5"><img src={p.images[0]} alt="" className="h-10 w-9 rounded-lg object-cover" /><b className="whitespace-nowrap">{p.name}</b></span></td>
-                          <td><SupplierChip id={p.supplierId} name={p.supplier} /></td>
-                          <td className="font-bold tabular-nums">{fmtMoney(p.wholesaleFrom)}</td>
-                          <td className="tabular-nums">{fmtNum(p.moq)} سری</td>
-                          <td className="tabular-nums">{fmtNum(p.stock)}</td>
-                          <td><Status value={p.status === "published" ? "فعال" : STATUS_LABEL[p.status ?? "published"]} /></td>
-                          <td><button onClick={() => setSide(p.id)} className="inline-flex items-center gap-1 text-[12.5px] font-bold text-[var(--kv-accent)] hover:underline"><Eye size={13} />بازبینی</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="flex items-center justify-between border-t border-[var(--kv-line)] px-5 py-3 text-xs text-[var(--kv-muted)]">
-                  <span>{fmtNum(products.length)} محصول · {fmtNum(pending.length)} در صف بازبینی</span>
-                  <Btn variant="soft" size="sm" disabled={pending.length === 0} onClick={() => { pending.forEach((p) => setStatus(p.id, "published")); flash(`${fmtNum(pending.length)} محصول تأیید و در بازارچه منتشر شد`); }}>تأیید همه موارد صف</Btn>
-                </div>
-              </Card>
-              <Card className="h-fit p-5">
-                {!side ? <Empty title="محصولی انتخاب نشده" desc="روی «بازبینی» هر سطر بزنید." /> : (() => {
-                  const p = products.find((x) => x.id === side);
-                  if (!p) return <Empty title="محصولی انتخاب نشده" desc="روی «بازبینی» هر سطر بزنید." />;
-                  return (
-                    <div>
-                      <img src={p.images[0]} alt="" className="aspect-[16/10] w-full rounded-[12px] object-cover" />
-                      <h3 className="mt-3 text-[15px] font-extrabold">{p.name}</h3>
-                      <p className="text-xs text-[var(--kv-muted)]">{p.sku} · {p.supplier}</p>
-                      <div className="mt-3 space-y-1.5 text-[12.5px]">
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">قیمت سری</span><b className="tabular-nums">{fmtMoney(p.wholesaleFrom)}</b></div>
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">حداقل سفارش</span><b className="tabular-nums">{fmtNum(p.moq)} سری</b></div>
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تعداد سری</span><b className="tabular-nums">{fmtNum(p.series.length)}</b></div>
-                        <div className="flex justify-between"><span className="text-[var(--kv-muted)]">وضعیت</span><Status value={p.status === "published" ? "فعال" : STATUS_LABEL[p.status ?? "published"]} /></div>
-                      </div>
-                      <div className="mt-3 space-y-2 border-t border-[var(--kv-line)] pt-3">{p.series.map((series) => <div key={series.id} className="rounded-[10px] bg-[var(--kv-surface-2)]/60 p-3 text-[11.5px]"><p className="font-bold">{series.name} · {fmtNum(series.pieces)} تکه · {series.available ? "فعال" : "غیرفعال"}</p><p className="mt-1 text-[var(--kv-muted)]">{Object.entries(series.composition).filter(([, n]) => n > 0).map(([s, n]) => `${s}×${fmtNum(n)}`).join("، ")}</p><p className="mt-1 font-semibold">{fmtMoney(series.pricePerSeries)} / سری · حداقل {fmtNum(series.moqSeries)} سری</p><p className="mt-1 text-[var(--kv-muted)]">رنگ‌های مجاز: {(series.colorIds ?? p.colors.map((c) => c.id)).map((id) => p.colors.find((c) => c.id === id)?.name ?? id).join("، ")}</p></div>)}</div>
-                      <p className="mt-3 text-[12px] leading-6 text-[var(--kv-muted)]">{p.desc}</p>
-                      <div className="mt-4 grid grid-cols-2 gap-2">
-                        {p.status === "published" ? (
-                          <Btn variant="soft" size="sm" className="col-span-2" onClick={() => { setStatus(p.id, "draft"); flash("محصول از بازارچه عمده خارج شد"); }} icon={<Ban size={14} />}>توقف نمایش در بازارچه</Btn>
-                        ) : (
-                          <>
-                            <Btn variant="accent" size="sm" onClick={() => { setStatus(p.id, "published"); flash(`«${p.name}» تأیید و در بازارچه عمده منتشر شد`); }} icon={<Check size={14} />}>تأیید و انتشار</Btn>
-                            <Btn variant="soft" size="sm" disabled={p.status === "rejected"} onClick={() => { setStatus(p.id, "rejected"); flash("به تأمین‌کننده برگشت خورد"); }} icon={<X size={14} />}>رد</Btn>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </Card>
-            </div>
-          )}
-
-          {/* ---------- Suppliers ---------- */}
-          {tab === "suppliers" && (
-            <div className="grid gap-4 animate-[fadeUp_0.35s_ease] sm:grid-cols-2">
-              {SUPPLIERS.map((s) => {
-                const st = supStatus[s.id] ?? s.status;
-                const subs = allSubs.filter((i) => i.sub.supplierId === s.id);
-                const prods = products.filter((p) => p.supplierId === s.id);
-                return (
-                  <Card key={s.id} className="p-5">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="flex h-11 w-11 items-center justify-center rounded-[12px] bg-[#1B2A4A] text-[15px] font-bold text-[#E8D9C3]">{s.name[0]}</span>
-                        <div><p className="text-[15px] font-extrabold">{s.name}</p><p className="text-xs text-[var(--kv-muted)]">{s.city} · از {s.since} · امتیاز {s.rating.toLocaleString("fa-IR")}</p></div>
-                      </div>
-                      <Status value={st} />
-                    </div>
-                    <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                      {[["محصول در بازارچه", prods.filter((p) => p.status === "published").length], ["زیرسفارش باز", subs.filter((i) => !isTerminal(i.sub.status)).length], ["نیازمند تأیید", subs.filter((i) => i.sub.status === "pending_supplier").length]].map(([l, n]) => (
-                        <div key={l as string} className="rounded-[10px] bg-[var(--kv-surface-2)]/70 px-2 py-2"><p className="text-[14px] font-extrabold tabular-nums">{fmtNum(n as number)}</p><p className="text-[10.5px] text-[var(--kv-muted)]">{l as string}</p></div>
-                      ))}
-                    </div>
-                    <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                      <span className="flex items-center gap-2 text-[12.5px]"><span className="text-[var(--kv-muted)]">کارمزد:</span><input defaultValue="8" className="h-8 w-14 rounded-[8px] border border-[var(--kv-line)] bg-[var(--kv-surface)] text-center text-[13px] font-bold outline-none focus:border-[var(--kv-accent)]" aria-label="درصد کارمزد" /><span className="text-[var(--kv-muted)]">٪</span></span>
-                      <div className="flex gap-2">
-                        {st === "در انتظار تأیید" ? (
-                          <>
-                            <Btn variant="accent" size="sm" onClick={() => { setSupStatus({ ...supStatus, [s.id]: "فعال" }); flash(`${s.name} تأیید شد و به مرکز تأمین‌کنندگان دسترسی گرفت`); }} icon={<Check size={14} />}>تأیید</Btn>
-                            <Btn variant="soft" size="sm" onClick={() => { setSupStatus({ ...supStatus, [s.id]: "مسدود" }); flash("رد شد"); }} icon={<Ban size={14} />}>رد</Btn>
-                          </>
-                        ) : st === "مسدود"
-                          ? <Btn variant="soft" size="sm" onClick={() => { setSupStatus({ ...supStatus, [s.id]: "فعال" }); flash(`${s.name} دوباره فعال شد`); }}>رفع مسدودی</Btn>
-                          : <Btn variant="soft" size="sm" onClick={() => { setSupStatus({ ...supStatus, [s.id]: "مسدود" }); flash(`${s.name} مسدود شد؛ محصولاتش از بازارچه پنهان می‌شود`); }} icon={<Ban size={14} />}>مسدودسازی</Btn>}
-                      </div>
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          )}
-
-          {/* ---------- Buyers ---------- */}
-          {tab === "buyers" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_340px]">
-              <Card className="overflow-hidden">
-                <div className="kv-scroll overflow-x-auto">
-                  <table className="kv-table min-w-[760px]">
-                    <thead><tr><th>خریدار</th><th>شهر</th><th>پلن</th><th>سفارش‌ها</th><th>ارزش خرید</th><th>وضعیت</th><th></th></tr></thead>
-                    <tbody>
-                      {buyers.map((b) => (
-                        <tr key={b.id} className={cn(buyerSel === b.id && "bg-[var(--kv-accent)]/[0.05]")}>
-                          <td><b>{b.name}</b><span className="block text-[11px] text-[var(--kv-muted)]">از {b.since} · {b.contact}</span></td><td>{b.city}</td>
-                          <td><span className="rounded-full bg-[var(--kv-surface-2)] px-2.5 py-1 text-[11px] font-bold">{plans.find((p) => p.id === b.planId)?.name ?? b.planId}</span></td>
-                          <td className="tabular-nums">{fmtNum(orders.filter((o) => o.buyer === b.name).length)}</td>
-                          <td className="font-bold tabular-nums">{fmtMoney(b.spent)}</td>
-                          <td><Status value={b.status} /></td>
-                          <td><button onClick={() => setBuyerSel(b.id)} className="text-[12.5px] font-bold text-[var(--kv-accent)] hover:underline">مدیریت</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-              <Card className="h-fit p-5">
-                {(() => {
-                  const b = buyers.find((x) => x.id === buyerSel);
-                  if (!b) return <Empty title="خریداری انتخاب نشده" desc="روی «مدیریت» بزنید تا پرونده باز شود." />;
-                  const bo = orders.filter((o) => o.buyer === b.name);
-                  return (
-                    <div>
-                      <p className="text-[15px] font-extrabold">{b.name}</p>
-                      <p className="text-xs text-[var(--kv-muted)]">{b.city} · {b.contact}</p>
-                      {b.accountId && <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">مرتبط با همان حساب مشتری: {accounts.find((a) => a.id === b.accountId)?.name ?? b.accountId}</p>}
-                      <div className="mt-3"><Status value={b.status} /></div>
-                      <div className="mt-4 space-y-3">
-                        <Field label="پلن عضویت"><Select options={plans.map((p) => p.name)} value={plans.find((p) => p.id === b.planId)?.name} onChange={(v) => { const p = plans.find((x) => x.name === v); if (p) { setBuyer(b.id, { planId: p.id }); flash(`پلن ${b.name} به ${p.name} تغییر کرد`); } }} /></Field>
-                        {b.tradeCode && <p className="text-[12px] text-[var(--kv-muted)]">شناسه صنفی: <b className="text-[var(--kv-ink)]">{b.tradeCode}</b> · ثبت: {b.submittedAt}</p>}
-                        <div className="rounded-[12px] bg-[var(--kv-surface-2)]/60 px-3.5 py-3 text-[12.5px]"><p className="flex justify-between"><span className="text-[var(--kv-muted)]">سفارش‌ها</span><b className="tabular-nums">{fmtNum(bo.length)}</b></p><p className="mt-1 flex justify-between"><span className="text-[var(--kv-muted)]">زیرسفارش باز</span><b className="tabular-nums">{fmtNum(bo.flatMap((o) => o.subOrders).filter((s) => !isTerminal(s.status)).length)}</b></p></div>
-                        {b.status === "در انتظار تأیید" ? (
-                          <div className="grid grid-cols-2 gap-2">
-                            <Btn variant="accent" size="sm" icon={<Check size={14} />} onClick={() => { setBuyer(b.id, { status: "فعال" }); flash(`عضویت عمده ${b.name} تأیید شد؛ قیمت‌ها برایش فعال است`); }}>تأیید عضویت</Btn>
-                            <Btn variant="soft" size="sm" icon={<X size={14} />} onClick={() => { setBuyer(b.id, { status: "مسدود" }); flash("درخواست رد شد"); }}>رد</Btn>
-                          </div>
-                        ) : b.status === "فعال"
-                          ? <Btn variant="soft" size="sm" className="w-full" icon={<Ban size={14} />} onClick={() => { setBuyer(b.id, { status: "مسدود" }); flash(`${b.name} مسدود شد`); }}>مسدودسازی حساب</Btn>
-                          : <Btn variant="soft" size="sm" className="w-full" onClick={() => { setBuyer(b.id, { status: "فعال" }); flash(`${b.name} فعال شد`); }}>فعال‌سازی مجدد</Btn>}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </Card>
-            </div>
-          )}
-
+          {/* buyers demo desk consolidated into CRM → خریداران VIP (§1) */}
           {/* ---------- Plans ---------- */}
           {tab === "plans" && <PlansCenter flash={flash} />}
-          {tab === "series" && <div className="animate-[fadeUp_0.35s_ease]"><SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /></div>}
           {tab === "applications" && <ApplicationsCenter flash={flash} />}
-          {tab === "promo" && <PromoCenter flash={flash} />}
-          {tab === "sms" && <SmsCenter flash={flash} />}
           {tab === "restrictions" && <RestrictionsCenter flash={flash} />}
-          {tab === "support" && <SupportHub />}
-          {tab === "plans-legacy" && (
-            <div className="animate-[fadeUp_0.35s_ease]">
-              <div className="mb-4 flex items-center justify-between">
-                <p className="text-[13px] text-[var(--kv-muted)]">این پلن‌ها در صفحه عضویت بازارچه عمده به خریداران نمایش داده می‌شود.</p>
-                <Btn variant="accent" size="sm" icon={<Plus size={15} />} onClick={() => setPlanEdit({ id: `plan-${Date.now()}`, name: "", yearly: 0, creditLimit: 0, features: [], active: true })}>پلن جدید</Btn>
-              </div>
-              <div className="grid gap-4 md:grid-cols-3">
-                {plans.map((p) => (
-                  <Card key={p.id} className={cn("flex flex-col p-5", !p.active && "opacity-60")}>
-                    <div className="flex items-center justify-between"><p className="text-[16px] font-extrabold">{p.name}</p><div className="flex items-center gap-2">{p.recommended && <span className="rounded-full bg-[var(--kv-accent)]/12 px-2 py-0.5 text-[10.5px] font-bold text-[var(--kv-accent)]">پیشنهادی</span>}<Switch on={p.active} onToggle={() => { upsertPlan({ ...p, active: !p.active }); flash(`پلن ${p.name} ${p.active ? "غیرفعال" : "فعال"} شد`); }} /></div></div>
-                    <p className="mt-2 text-[18px] font-extrabold tabular-nums">{p.yearly === 0 ? "رایگان" : fmtMoney(p.yearly)}{p.yearly > 0 && <span className="text-[11px] font-medium text-[var(--kv-muted)]"> / سال</span>}</p>
-                    <p className="text-xs text-[var(--kv-muted)]">اعتبار: {p.creditLimit ? fmtMoney(p.creditLimit) : "—"} · {fmtNum(buyers.filter((b) => b.planId === p.id).length)} عضو</p>
-                    <ul className="mt-3 flex-1 space-y-1.5 text-[12.5px]">{p.features.map((f) => <li key={f} className="flex items-center gap-1.5"><Check size={13} className="text-[var(--kv-success)]" />{f}</li>)}</ul>
-                    <div className="mt-4 flex gap-2"><Btn variant="soft" size="sm" icon={<Pencil size={13} />} onClick={() => setPlanEdit(p)}>ویرایش</Btn><Btn variant="ghost" size="sm" icon={<Trash2 size={13} />} disabled={buyers.some((b) => b.planId === p.id)} onClick={() => { removePlan(p.id); flash("پلن حذف شد"); }}>حذف</Btn></div>
-                  </Card>
-                ))}
-              </div>
-              <Drawer open={!!planEdit} onClose={() => setPlanEdit(null)} title={planEdit?.name ? `ویرایش پلن ${planEdit.name}` : "پلن جدید"}>
-                {planEdit && (
-                  <div className="space-y-4">
-                    <Field label="نام پلن"><Input value={planEdit.name} onChange={(v) => setPlanEdit({ ...planEdit, name: v })} /></Field>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <Field label="هزینه سالانه (تومان)" hint="۰ = رایگان"><Input value={String(planEdit.yearly)} onChange={(v) => setPlanEdit({ ...planEdit, yearly: Number(v.replace(/\D/g, "")) || 0 })} /></Field>
-                      <Field label="سقف اعتبار"><Input value={String(planEdit.creditLimit)} onChange={(v) => setPlanEdit({ ...planEdit, creditLimit: Number(v.replace(/\D/g, "")) || 0 })} /></Field>
-                    </div>
-                    <Field label="قابلیت‌ها" hint="هر خط یک قابلیت"><Textarea rows={5} value={planEdit.features.join("\n")} onChange={(v) => setPlanEdit({ ...planEdit, features: v.split("\n").map((x) => x.trim()).filter(Boolean) })} /></Field>
-                    <Checkbox checked={!!planEdit.recommended} onChange={(v) => setPlanEdit({ ...planEdit, recommended: v })} label="نمایش به‌عنوان پیشنهاد کلبه" />
-                    <Btn variant="accent" className="w-full" disabled={!planEdit.name.trim()} onClick={() => { upsertPlan(planEdit); setPlanEdit(null); flash(`پلن ${planEdit.name} ذخیره شد`); }}>ذخیره پلن</Btn>
-                  </div>
-                )}
-              </Drawer>
-            </div>
-          )}
+          {/* پشتیبانی و مرجوعی: دو زیرسیستم مجزا (تیکت‌ها / صف مرجوعی خرده با بازرسی و بازگشت موجودی) */}
+          {tab === "support" && moduleBoundary("پشتیبانی و مرجوعی", <SupportHub />)}
+          {/* plans-legacy demo block removed (dead code — nav/redirects never reach it; real plans = PlansCenter) */}
 
           {/* ---------- Retail modules ---------- */}
-          {tab === "rorders" && <RetailOrders flash={flash} />}
-          {tab === "rproducts" && <ProductStudio flash={flash} />}
+          {tab === "structure" && moduleBoundary("ساختار محصولات و سری‌ها", <HubTabs tabs={[
+            { v: "structure", label: "ساختار محصولات", node: <ProductStructurePanel flash={flash} /> },
+            { v: "series", label: "قالب‌های سری کلبه", node: <SeriesTemplateManager ownerId={KOLBE.id} ownerLabel="کلبه وینتیج" /> },
+          ]} />)}
+          {tab === "imports" && moduleBoundary("مرکز ورود داده", <ImportCenterPanel flash={flash} />)}
+          {tab === "wms" && hubSub === "goods" && moduleBoundary("استودیو محصول", <CatalogHub flash={flash} />)}
           {tab === "cstyles" && <CuratedStyleStudio flash={flash} />}
-          {tab === "shipping" && <ShippingAdmin flash={flash} />}
-          {tab === "crm" && <CrmCenter flash={flash} />}
-          {tab === "cms" && <CmsCenter flash={flash} />}
-          {tab === "notifs" && <NotifAdmin flash={flash} />}
-          {tab === "finance" && <FinanceCenter flash={flash} />}
-          {tab === "integrations" && <IntegrationsAdmin flash={flash} />}
+          {tab === "wms" && hubSub !== "goods" && moduleBoundary("انبار و موجودی (WMS)", <WarehouseHub flash={flash} initial={hubSub} />)}
+          {/* CRM production IA: relationship-first. Core commerce remains outside CRM. */}
+          {tab === "crm" && moduleBoundary("مرکز CRM", <HubTabs initial={hubSub?.startsWith("contacts:") ? "contacts" : hubSub} tabs={[
+            { v: "overview", label: "نمای کلی", node: <CrmRelationshipCenter mode="overview" flash={flash} /> },
+            { v: "contacts", label: "مخاطبان", node: <HubTabs initial={hubSub?.startsWith("contacts:") ? hubSub.split(":")[1] : undefined} tabs={[
+              { v: "all", label: "همه", node: <CrmRelationshipCenter mode="contacts" flash={flash} /> },
+              { v: "customers", label: "مشتریان خرده", node: <CrmRetailPanel onNavigate={go} /> },
+              { v: "vip", label: "خریداران VIP", node: <Buyer360Panel flash={flash} onNavigate={go} /> },
+              { v: "suppliers", label: "تأمین‌کنندگان", node: <CrmSuppliersHub flash={flash} onNavigate={go} /> },
+            ]} /> },
+            { v: "followups", label: "پیگیری‌ها", node: <CrmRelationshipCenter mode="followups" flash={flash} /> },
+            { v: "marketing", label: "بازاریابی", node: <CrmCenter flash={flash} /> },
+          ]} />)}
+          {tab === "automation" && moduleBoundary("اتوماسیون و n8n", <AutomationCenter flash={flash} />)}
+          {tab === "reviews" && moduleBoundary("نظرات و امتیازها", <ReviewsCenter flash={flash} />)}
+          {tab === "recs" && moduleBoundary("توصیه‌گر هوشمند", <RecommendationsPanel flash={flash} />)}
+          {tab === "cms" && moduleBoundary("محتوا", <CmsCenter flash={flash} />)}
+          {tab === "notifs" && moduleBoundary("اعلان‌ها", <NotificationsPanel />)}
+          {/* Prompt 4 §15: one Finance Center with the final 6-domain IA. Legacy sibling
+              tabs (دفتر کل → حسابداری، کیف پول demo → removed: duplicated real settlement/bank flows). */}
+          {tab === "finance" && moduleBoundary("مرکز مالی", <FinanceOpsPanel flash={flash} />)}
+          {tab === "cashback" && moduleBoundary("کیف پول کش‌بک", <CashbackCenter flash={flash} />)}
+          {tab === "integrations" && moduleBoundary("یکپارچه‌سازی‌ها", <HubTabs initial={hubSub} tabs={[
+            { v: "connections", label: "اتصال‌ها", node: <IntegrationsPanel /> },
+            { v: "sms", label: "پنل پیامک", node: <SmsCenter flash={flash} /> },
+          ]} />)}
+          {tab === "promo" && moduleBoundary("کوپن و جشنواره", <HubTabs tabs={[
+            { v: "promo", label: "کوپن و جشنواره", node: <PromoPanel /> },
+            { v: "safety", label: "ایمنی تخفیف و کوپن شخصی", node: <PromoSafetyPanel flash={flash} /> },
+            { v: "server-rules", label: "پروموشن‌های سرور", node: <AdminServerOrders request={request} only="server-promotions" /> },
+          ]} />)}
+          {tab === "seo" && moduleBoundary("مرکز SEO", <SEOCenter flash={flash} request={request} />)}
+          {tab === "media" && moduleBoundary("مرکز رسانه", <ContentMediaCenter flash={flash} request={request} />)}
 
           {/* ---------- Support ---------- */}
-          {tab === "support-legacy" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] lg:grid-cols-[1fr_360px]">
-              <Card className="overflow-hidden">
-                <div className="kv-scroll overflow-x-auto">
-                  <table className="kv-table min-w-[640px]">
-                    <thead><tr><th>تیکت</th><th>موضوع</th><th>کاربر</th><th>کانال</th><th>اولویت</th><th>وضعیت</th><th>اقدام / SLA</th></tr></thead>
-                    <tbody>
-                      {customerTickets.map(({ account, ticket }) => <tr key={ticket.id}>
-                        <td className="font-bold tabular-nums">{ticket.id}</td><td><b>{ticket.subject}</b><p className="max-w-[240px] truncate text-[11px] text-[var(--kv-muted)]">{ticket.message}</p></td><td>{account.name}</td><td>حساب مشتری</td><td>عادی</td><td><Status value={ticket.status} /></td>
-                        <td>{ticket.status === "در انتظار" ? <button onClick={() => { setTicketStatus(account.id, ticket.id, "در حال بررسی"); flash("تیکت به کارشناس ارجاع شد"); }} className="text-[12px] font-bold text-[var(--kv-accent)]">شروع بررسی</button> : ticket.status === "در حال بررسی" ? <button onClick={() => { setTicketStatus(account.id, ticket.id, "تأیید شد"); flash("تیکت بسته شد"); }} className="text-[12px] font-bold text-[var(--kv-success)]">بستن تیکت</button> : <span className="text-[var(--kv-muted)]">بسته</span>}</td>
-                      </tr>)}
-                      {[
-                        ["#4412", "تأخیر باربری زیرسفارش WO-1004-2", "پوشاک رادین", "عمده", "بالا", "در حال بررسی", "۲ ساعت"],
-                        ["#4410", "اعتراض به رد زیرسفارش WO-1003-3", "بوتیک آوا", "عمده", "بالا", "در انتظار", "۴ ساعت"],
-                        ["#4408", "درخواست مرجوعی KV-88176", "امیر رضایی", "خرده", "متوسط", "در حال بررسی", "۸ ساعت"],
-                        ["#4405", "خطای آپلود تصویر محصول", "فراسو", "تأمین‌کننده", "پایین", "در انتظار", "۱۲ ساعت"],
-                        ["#4399", "درخواست ارتقا به پلاتینیوم", "پوشاک رادین", "عمده", "پایین", "تأیید شد", "—"],
-                      ].map((r) => (
-                        <tr key={r[0]}>
-                          <td className="font-bold tabular-nums" dir="ltr">{r[0]}</td><td><b>{r[1]}</b></td><td>{r[2]}</td><td><span className="rounded-full bg-[var(--kv-surface-2)] px-2 py-0.5 text-[11px] font-bold">{r[3]}</span></td>
-                          <td><span className={cn("rounded-full px-2.5 py-1 text-[11px] font-bold", r[4] === "بالا" ? "bg-[#A8483C]/10 text-[#8A3B30] dark:text-[#D07A6A]" : "bg-[var(--kv-surface-2)] text-[var(--kv-muted)]")}>{r[4]}</span></td>
-                          <td><Status value={r[5]} /></td><td className="tabular-nums text-[var(--kv-muted)]">{r[6]}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-              <Card className="h-fit p-5">
-                <p className="text-[14px] font-extrabold">عملکرد SLA</p>
-                <p className="mt-2 text-3xl font-extrabold tabular-nums">۹۴٪ <span className="text-[13px] font-medium text-[var(--kv-muted)]">پاسخ در مهلت</span></p>
-                <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--kv-surface-3)]"><div className="h-full w-[94%] rounded-full bg-[var(--kv-success)]" /></div>
-                <div className="mt-4 space-y-2 text-[12.5px]">
-                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">میانگین پاسخ</span><b className="tabular-nums">۴۷ دقیقه</b></div>
-                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">تیکت باز</span><b className="tabular-nums">{fmtNum(18)}</b></div>
-                  <div className="flex justify-between"><span className="text-[var(--kv-muted)]">رضایت</span><b className="tabular-nums">۴.۷ / ۵</b></div>
-                </div>
-              </Card>
-            </div>
-          )}
+          {tab === "audit" && <AuditLogPanel />}
+          {/* support-legacy demo block removed (dead code with fake SLA numbers; real support = SupportHub) */}
 
           {/* ---------- Settings ---------- */}
           {tab === "settings" && (
-            <div className="grid gap-5 animate-[fadeUp_0.35s_ease] xl:grid-cols-[1fr_360px]">
+            <div className="space-y-5 animate-[fadeUp_0.35s_ease]">
+            {/* §1.3: shipping CONFIGURATION (methods/rules) lives in settings — operational tracking lives in مرکز سفارشات. */}
+            {moduleBoundary("پیکربندی حمل‌ونقل", <ShippingAdmin flash={flash} />)}
+            {/* §109: real system-user directory (migrated from CRM hub) — server-backed, RBAC-aware. */}
+            {moduleBoundary("کاربران سیستم", <UsersDirectoryPanel flash={flash} />)}
+            <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
               <Card className="overflow-hidden">
                 <p className="p-5 pb-3 text-[14px] font-extrabold">نقش‌ها و دسترسی‌ها</p>
                 <div className="kv-scroll overflow-x-auto">
@@ -610,8 +533,26 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
               <div className="space-y-4">
                 <Card className="p-5">
                   <p className="text-sm font-bold">انبارها</p>
-                  {[["انبار مرکزی — تهران", "جاده قدیم کرج · پیش‌فرض"], ["انبار اصفهان", "شهرک صنعتی جی"]].map(([n, a]) => <div key={n} className="mt-2 flex items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2.5 text-[12.5px]"><Warehouse size={15} className="text-[var(--kv-muted)]" /><span><b>{n}</b><span className="block text-[11px] text-[var(--kv-muted)]">{a}</span></span></div>)}
-                  <Btn variant="ghost" size="sm" className="mt-2" onClick={() => flash("انبار جدید افزوده شد")}>+ انبار جدید</Btn>
+                  <p className="mt-1 text-[11.5px] text-[var(--kv-muted)]">فهرست واقعی انبارهای ثبت‌شده روی سرور؛ تعریف و موجودی در بخش «انبار و موجودی» انجام می‌شود.</p>
+                  {settingsWarehouses === null ? (
+                    <p className="mt-3 text-[12.5px] text-[var(--kv-muted)]">در حال خواندن انبارها از سرور…</p>
+                  ) : settingsWarehouses.length === 0 ? (
+                    <p className="mt-3 text-[12.5px] text-[var(--kv-muted)]">هنوز انباری ثبت نشده است.</p>
+                  ) : (
+                    settingsWarehouses.map((warehouse) => (
+                      <div key={warehouse.id} className="mt-2 flex items-center gap-2 rounded-[10px] border border-[var(--kv-line)] px-3 py-2.5 text-[12.5px]">
+                        <Warehouse size={15} className="text-[var(--kv-muted)]" />
+                        <span>
+                          <b>{warehouse.name}</b>
+                          <span className="block text-[11px] text-[var(--kv-muted)]" dir="ltr">{warehouse.code}</span>
+                        </span>
+                        {shippingSettings?.defaultWarehouseId === warehouse.id && (
+                          <span className="mr-auto rounded-full bg-[var(--kv-accent)]/12 px-2 py-0.5 text-[10.5px] font-bold text-[var(--kv-accent)]">انبار پیش‌فرض ارسال</span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                  <Btn variant="ghost" size="sm" className="mt-2" onClick={() => go("wms")}>مدیریت انبارها</Btn>
                 </Card>
                 <Card className="p-5">
                   <p className="text-sm font-bold">اطلاعات فروشگاه</p>
@@ -624,7 +565,9 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
                 </Card>
               </div>
             </div>
+            </div>
           )}
+          </ModuleBoundary>
         </div>
       </div>
 
@@ -634,6 +577,25 @@ function AdminConsole({ dark, setDark, request, onLogout }: { dark: boolean; set
         </div>
       )}
       <span className="hidden"><AlertTriangle size={8} /></span>
+    </div>
+  );
+}
+
+
+/** §68 (corrective): CRM suppliers tab — list with an always-available «پروفایل ۳۶۰°» per row
+ *  (centered WorkspaceModal) + the unique change-request review capability, no duplicate panels. */
+function CrmSuppliersHub({ flash,onNavigate }: { flash: (message: string) => void; onNavigate:(domain:string)=>void }) {
+  const [open360, setOpen360] = useState<string | null>(null);
+  return (
+    <div className="space-y-5">
+      <CrmSuppliersPanel onOpen360={setOpen360} />
+      <section className="rounded-[14px] border border-[var(--kv-line)] p-4">
+        <h3 className="mb-4 text-[12.5px] font-bold">درخواست‌های تغییر پروفایل تأمین‌کننده</h3>
+        <SupplierChangeReview flash={flash} />
+      </section>
+      {open360 && (
+        <SupplierCrmWorkspace onNavigate={onNavigate} supplierId={open360} onClose={() => setOpen360(null)} />
+      )}
     </div>
   );
 }
