@@ -152,6 +152,38 @@ migration capability must not be deleted); the supplier portal's own child-order
 admin order centre); the buyer list's aggregate counters, which are the reviewed Prompt-4 projection used by
 the VIP coverage strip — they contain counts only, no supplier identity, no ids and no topology.
 
+## 7b. OMS-IA-001…011 → evidence map
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| OMS-IA-001 | ONE canonical primary wholesale surface named «سفارشات عمده / VIP» | `orders-hub.tsx:757` tab + `:774` single mount of `WholesaleOrderCenter`; live: one list, `total=1` |
+| OMS-IA-002 | No separate «سفارشات عمده کلبه» / «سفارشات عمده تأمین‌کنندگان» primary tabs — removed, not renamed | `grep -rn 'سفارشات عمده کلبه\|سفارشات عمده تأمین‌کنندگان' src/` → 0; `WholesaleTab|MasterOrdersStrip` → 0 (components deleted) |
+| OMS-IA-003 | Top-level order IA = مرکز سفارشات → خرده + عمده / VIP | one sidebar entry `server-orders` (`admin.tsx:287`, description `:319`) containing exactly the two tabs |
+| OMS-IA-004 | ONE Master Order list; **source type is not an order type** | single endpoint `GET /api/v1/wholesale/masters`; live: `all/kolbe/supplier_at_kolbe/supply_required/mixed` → the SAME single `MV-2000` row |
+| OMS-IA-005 | Source visibility = FILTERS on that same list (5 values) | `COVERAGE_FILTERS` (`wholesale-order-center.tsx:123–129`) ↔ server Zod enum `coverage` with the PO comment on the list route |
+| OMS-IA-006 | Mixed sources shown INSIDE one order | detail panel «موجودی کلبه (رزروشده)» `:540`, «تأمین‌کننده نزد کلبه» `:541`, «نیازمند تأمین» `:542`; live MV-2000 = 2/2/2 with 3 children of different sources |
+| OMS-IA-007 | Children only inside «تخصیص و تأمین»; no child-level authority | `MasterChildOrders` imported/rendered only at `wholesale-order-center.tsx:24,533`; the per-seller tooling moved there from the deleted tabs |
+| OMS-IA-008 | Legacy routes redirect; cold deep links safe; no hidden duplicate authority | `TAB_REDIRECT` table (§3) applied on click **and** deep-link (`admin.tsx:245,257,270–271`); legacy keys are aliases only, no component mounts them |
+| OMS-IA-009 | Buyer projection hides topology; admin authority server-side | live: buyer payload leak scan **clean**, `?scope=all` → **403**, supplier reading a buyer master → **403**; masking happens server-side (`wholesale-oms.ts` buyer/ops projections) |
+| OMS-IA-010 | Customer-facing status separate from operational readiness | the list returns `customer_status` and `readiness` as independent derived columns; readiness is ops-only |
+| OMS-IA-011 | Supplier supply tasks are not a second order centre; a supplier sees only its own queues | supplier portal queue is a separate portal, legacy `supporders` route redirects to the unified tab; live: supplier queue `rows=1`, leak scan (buyer id / master id / address / allocation) **clean** |
+
+## 7c. Additional live end-to-end auth verification (through the preview proxy)
+
+Full transcript appended to `/home/user/kolbe-ia-evidence.txt` (§12/§12b/§13/§13b/§14). Highlights:
+
+* signup OTP request for a brand-new number → `{challengeId, phoneMasked, purpose:'signup', deliveryHint:'sms_queued', devCode (non-production only)}`; register → `201`, `linking:'new'`, access token + 900 s expiry.
+* re-requesting a signup code for the same number → `409 CONFLICT «این شماره همراه قبلاً ثبت شده است؛ وارد شوید.»`
+* that fresh account: `roles:["customer"]`, `isWholesaleMember:false`, `membership:null`, `supplier:null` — a real account with no invented entitlement.
+* password recovery: `forgot` → identical `{delivered:true}` for a known and an unknown identity (no enumeration); `set-password {token,newPassword}` → `200 {activated:true}`; the **same token twice → 400** (single-use); the new password signs in; **the pre-recovery session is revoked (401)** because `set-password` bumps `token_version`.
+* role forging: `register` schemas are `.strict()`, so a `roles` field is rejected by validation, and the handler grants exactly `customer` (`auth.ts:230`); the embedded AUTH-014 test asserts `roles === ["customer"]`, no `users:manage` permission and `403` on admin routes.
+* supplier isolation: the supplier queue returns only its own supply tasks and exposes no buyer identity, master id, address or allocation.
+
+**UAT note — intentional rate limits** (per process, reset when the local stack restarts):
+`/auth/register` 5/hour, `/auth/otp/request` 5/5 min, `/auth/login` 10/min,
+`/auth/password/forgot` 5/15 min, `/auth/set-password` 10/hour. During Browser UAT, if the 5-registration
+budget is exhausted, restart `npm run demo:stack` (in-memory counters reset) — do not read `429` as a bug.
+
 ## 8. Exact test counts — frozen after the LAST code change
 
 | Gate | Result |
