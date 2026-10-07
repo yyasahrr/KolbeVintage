@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ShoppingBag, Heart, User, Crown, ArrowLeft, LogOut, Package, Store,
-  ShieldCheck, Home, LayoutGrid,
+  ShieldCheck, Home, LayoutGrid, Shirt,
 } from "lucide-react";
 import RetailExperience, { type CartLine, type RetailView, type ShopSeed } from "./portals/retail";
 import VipExperience from "./portals/vip";
 import SupplierApp from "./portals/supplier";
 import AdminApp from "./portals/admin";
-import StudioExperience, { AuthScreens } from "./portals/studio";
+import StudioExperience, { AuthScreens, type StudioSurface } from "./portals/studio";
+import type { BuilderEntry } from "./portals/style-builder";
 import { Modal } from "./components/primitives";
 import { digitsOnly } from "./data/customer";
 import { StoreProvider, useStore } from "./data/store";
+import { publicCuratedStyles, type CuratedStyle } from "./data/curated";
 import { OpsProvider, useOps } from "./data/ops";
+import { OutfitProvider } from "./data/outfit";
+import { validateRetailLines } from "./data/cart";
 import { AnnouncementBar, type NavTarget } from "./components/cms-render";
 import { FloatingSupport } from "./components/support";
 import type { AccountTab } from "./portals/account";
@@ -72,7 +76,9 @@ type Session = { accountId: string } | null;
 type Section = "retail" | "vip" | "studio" | "auth";
 
 function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) => void }) {
-  const { accounts, buyers, products, ensureAccount, updateAccount, plans, shipping } = useStore();
+  const { accounts, buyers, products, ensureAccount, updateAccount, plans, shipping, curatedStyles, variantRelations } = useStore();
+  /* the ONLY public lens on curated styles — drafts never leave the admin boundary */
+  const publicStyles = useMemo(() => publicCuratedStyles(curatedStyles), [curatedStyles]);
   const ops = useOps();
   const [session, setSession] = useState<Session>(() => {
     try {
@@ -98,12 +104,17 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const [cartOpen, setCartOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
-  const [studioProductId, setStudioProductId] = useState<string | undefined>(undefined);
+  /* Studio surfaces are separate customer jobs: try-on («how does this look on
+     me») and the style builder («what works together as an outfit»). The entry
+     carries the product/colour context the shopper came from; a nonce makes
+     every «+ استایل» click a fresh preload even for the same product. */
+  const [studioSurface, setStudioSurface] = useState<StudioSurface>("tryon");
+  const [studioEntry, setStudioEntry] = useState<BuilderEntry>(null);
   /* Demo-only shortcuts (panel previews) exist for development and the sandbox
      preview build. They are never part of production storefront navigation. */
   const demoEnabled = import.meta.env.DEV;
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [studioTab, setStudioTab] = useState("tryon");
+  const [styleSlug, setStyleSlug] = useState<string | null>(null);
   const [shopSeed, setShopSeed] = useState<ShopSeed>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const announceRef = useRef<HTMLDivElement>(null);
@@ -143,10 +154,67 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   };
 
   const openAccount = (tab: AccountTab = "overview") => { setAccountTab(tab); go("retail", "account"); };
+  /* Curated style navigation — a sibling of the product detail, reachable from
+     the homepage «استایل‌های آماده» section (§43) */
+  const openStyle = (slug: string) => { setStyleSlug(slug); go("retail"); setView("style"); window.scrollTo({ top: 0 }); };
+  const personalizeStyle = (style: CuratedStyle) => {
+    openStudio("builder", undefined, undefined,
+      [...style.items].sort((a, b) => a.sortOrder - b.sortOrder).map((item) => ({ productId: item.productId, colorId: item.colorId })));
+  };
+  /* a curated style open in the reader gets its own document title (§68 SEO) */
+  useEffect(() => {
+    if (!styleSlug) return;
+    const style = publicStyles.find((s) => s.slug === styleSlug);
+    if (style) document.title = `${style.title} | استایل آمادهٔ کلبه`;
+  }, [styleSlug, publicStyles]);
+
   const toggleWish = (id: string) => {
     const next = wishlist.includes(id) ? wishlist.filter((x) => x !== id) : [...wishlist, id];
     if (account) updateAccount(account.id, { wishlist: next });
     else setGuestWishlist(next);
+  };
+  /* studio entry — one door for both surfaces, carrying shopper context (§10) */
+  const openStudio = (surface: StudioSurface, productId?: string, colorId?: string, preload?: { productId: string; colorId?: string }[]) => {
+    setStudioSurface(surface);
+    setStudioEntry(productId || preload ? { productId, colorId, nonce: Date.now(), preload } : null);
+    go("studio");
+  };
+  /* Style Builder → cart: the SAME lines and rules as a single add, extended to
+     all-or-nothing batches (§19). Checkout keeps revalidating in place. */
+  const addOutfitLines = (lines: { productId: string; size: string; color: string; qty: number }[]) => {
+    const incoming: CartLine[] = lines.map((line) => ({ id: line.productId, qty: line.qty, size: line.size, color: line.color }));
+    const check = validateRetailLines(products, cart, incoming);
+    if (!check.ok) return check;
+    const merged = [...cart];
+    for (const line of incoming) {
+      const index = merged.findIndex((m) => m.id === line.id && m.size === line.size && m.color === line.color);
+      if (index >= 0) merged[index] = { ...merged[index], qty: merged[index].qty + line.qty };
+      else merged.push(line);
+    }
+    setCart(merged);
+    return check;
+  };
+  /* Curated style → cart (§64–§66): the SAME retail validation as a single
+     add and as the builder outfit, extended with the style/group metadata.
+     Totals on screen are previews — lines revalidate as they land and the
+     store recomputes the style snapshot again at order time. */
+  const addStyleToCart = (style: CuratedStyle, adds: { productId: string; colorId: string; size: string; qty: number }[]) => {
+    const groupId = `sg-${style.id}-${Date.now()}`;
+    const incoming: CartLine[] = adds.map((add) => {
+      const product = products.find((p) => p.id === add.productId);
+      const colorName = product?.colors.find((c) => c.id === add.colorId)?.name ?? add.colorId;
+      return { id: add.productId, qty: add.qty, size: add.size, color: colorName, curatedStyleId: style.id, stylePurchaseGroupId: groupId };
+    });
+    const check = validateRetailLines(products, cart, incoming);
+    if (!check.ok) return check;
+    const merged = [...cart];
+    for (const line of incoming) {
+      const index = merged.findIndex((m) => m.id === line.id && m.size === line.size && m.color === line.color);
+      if (index >= 0) merged[index] = { ...merged[index], qty: merged[index].qty + line.qty, curatedStyleId: merged[index].curatedStyleId ?? line.curatedStyleId, stylePurchaseGroupId: merged[index].stylePurchaseGroupId ?? line.stylePurchaseGroupId };
+      else merged.push(line);
+    }
+    setCart(merged);
+    return check;
   };
   const cartCount = cart.reduce((s, l) => s + l.qty, 0);
   const cartTotal = cart.reduce((s, l) => s + (products.find((p) => p.id === l.id)?.retailPrice ?? 0) * l.qty, 0);
@@ -177,13 +245,14 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const links: HeaderLink[] = [
     { id: "home", label: "خانه", active: section === "retail" && view === "home" && !selectedId, onClick: () => go("retail", "home") },
     { id: "shop", label: "فروشگاه", active: section === "retail" && (view === "shop" || !!selectedId), onClick: () => go("retail", "shop") },
-    { id: "studio", label: "پرو مجازی", active: section === "studio", onClick: () => { setStudioTab("tryon"); go("studio"); } },
+    { id: "studio", label: "پرو مجازی", active: section === "studio" && studioSurface === "tryon", onClick: () => openStudio("tryon") },
     { id: "journal", label: "مجله", active: section === "retail" && view === "journal", onClick: () => go("retail", "journal") },
     { id: "vip", label: "بازارچه عمده", active: section === "vip", onClick: () => go("vip"), vip: true },
   ];
 
   const menuItems: HeaderMenuItem[] = [
     ...(role === "vip" ? [{ id: "vip-orders", label: "سفارش‌های عمده و سبد عمده", icon: <Crown size={15} />, onClick: () => go("vip") }] : []),
+    { id: "builder", label: "ساخت استایل", icon: <Shirt size={15} />, onClick: () => openStudio("builder") },
     { id: "account", label: "پنل حساب من", icon: <Package size={15} />, onClick: () => openAccount() },
     { id: "orders", label: "سفارش‌های خرده", icon: <ShoppingBag size={15} />, onClick: () => openAccount("orders") },
     { id: "membership", label: "عضویت عمده", icon: <Crown size={15} />, onClick: () => openAccount("membership") },
@@ -200,7 +269,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   ];
 
   const cmsNav = (t: NavTarget) =>
-    t === "vip" ? go("vip") : t === "tryon" ? (setStudioTab("tryon"), go("studio")) : go("retail", t === "journal" ? "journal" : "shop");
+    t === "vip" ? go("vip") : t === "tryon" ? openStudio("tryon") : go("retail", t === "journal" ? "journal" : "shop");
 
   const isHome = section === "retail" && view === "home" && !selectedId;
   /* The PDP's fixed purchase bar exists below 1024px; while it is on screen the
@@ -252,6 +321,13 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               account={account} buyer={buyer} accountTab={accountTab} setAccountTab={setAccountTab}
               shopSeed={shopSeed}
               categories={categories}
+              styles={publicStyles}
+              relations={variantRelations}
+              styleSlug={styleSlug}
+              openStyle={openStyle}
+              personalizeStyle={personalizeStyle}
+              addStyleToCart={addStyleToCart}
+              onOpenProductFromStyle={(id) => { setView("shop"); setSelectedId(id); window.scrollTo({ top: 0 }); }}
               onWholesale={() => go("vip")}
               onLogout={logout}
               onLogin={() => openAuth({ section: "retail", view: "account" })}
@@ -260,7 +336,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
                 openAuth({ section: "retail", view: "checkout" });
                 return false;
               }}
-              onStudio={(t, productId) => { setStudioProductId(productId); setStudioTab(t); go("studio"); }}
+              onStudio={openStudio}
             />
           )}
           {section === "vip" && (
@@ -275,7 +351,20 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               }}
             />
           )}
-          {section === "studio" && <StudioExperience tab={studioTab} setTab={setStudioTab} accountId={account?.id} productId={studioProductId} onLogin={() => openAuth({ section: "studio", view })} />}
+          {section === "studio" && (
+            <OutfitProvider>
+              <StudioExperience
+                surface={studioSurface}
+                accountId={account?.id}
+                catalogue={retailProducts}
+                entry={studioEntry}
+                onEntryConsumed={() => setStudioEntry(null)}
+                onLogin={() => openAuth({ section: "studio", view })}
+                onAddOutfit={addOutfitLines}
+                onOpenProduct={(id) => { setSection("retail"); setSelectedId(id); window.scrollTo({ top: 0 }); }}
+              />
+            </OutfitProvider>
+          )}
           {section === "auth" && (
             <AuthScreens portal="retail" onDone={(phone) => {
               const id = ensureAccount(phone);
@@ -306,7 +395,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           <StorefrontFooter
             onShop={() => go("retail", "shop")}
             onJournal={() => go("retail", "journal")}
-            onStudio={() => { setStudioTab("tryon"); go("studio"); }}
+            onStudio={() => openStudio("tryon")}
             onVip={() => go("vip")}
             onDemo={demoEnabled ? () => setDemoOpen(true) : undefined}
             dark={dark}

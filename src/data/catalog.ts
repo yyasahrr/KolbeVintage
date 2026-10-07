@@ -22,6 +22,15 @@ export const STATUS_LABEL: Record<ProductStatus, string> = {
 export type Product = {
   status?: ProductStatus;
   video?: string;
+  /**
+   * Virtual try-on capability flag (Non-Core styling workstream). Optional and
+   * additive: when absent, eligibility is derived from the product category
+   * (garments yes, accessories no — see `tryOnEligible` in data/styling.ts).
+   * When present it is the single authority, so an unsupported garment can be
+   * switched off and a future supported accessory switched on without code
+   * changes. Wholesale-only records are never eligible regardless of this flag.
+   */
+  tryOn?: boolean;
   cutout?: { status: "none" | "queued" | "processing" | "ready" | "failed"; src?: string; source?: "n8n" | "local"; note?: string };
   id: string;
   sku: string;

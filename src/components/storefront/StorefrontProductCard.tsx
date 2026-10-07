@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Heart, ScanFace, ShoppingBag, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Heart, ScanFace, Shirt, ShoppingBag, X } from "lucide-react";
 import { fmtMoney, type Colorway, type Product } from "../../data/catalog";
+import { tryOnEligible } from "../../data/styling";
 import { Swatches } from "./Swatches";
 import { useCartToast } from "./CartToast";
 import { SizeRow, hasOwnMedia, mediaForColor, sizesOf } from "./shared";
@@ -19,7 +20,7 @@ const EXPAND_EVENT = "kv-sf-card-expand";
  * Price, stock and cart validation always come from the product record and the
  * store state; nothing is recomputed here.
  */
-export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd, onTryOn }: {
+export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd, onTryOn, onAddToStyle }: {
   p: Product;
   wished: boolean;
   onWish: () => void;
@@ -31,9 +32,18 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
    * point and the studio keeps login and usage rules authoritative. Rendered as
    * a quiet text action inside the already-expanded purchase area, so the
    * collapsed card keeps its approved geometry and no second CTA is added.
+   * Whether the action appears at all is business logic (`tryOnEligible`) —
+   * unsupported products never show a dead entry point.
    */
   onTryOn?: () => void;
+  /**
+   * Retail only. Opens the existing Style Builder with this product preloaded
+   * (colour context preserved). Same quiet placement as the try-on action.
+   */
+  onAddToStyle?: (colorId?: string) => void;
 }) {
+  /* eligibility is business logic (data/styling.ts), never a CSS hide */
+  const tryOnOffered = !!onTryOn && tryOnEligible(p);
   const [color, setColor] = useState<Colorway | undefined>(undefined);
   const [expanded, setExpanded] = useState(false);
   const [size, setSize] = useState("");
@@ -247,10 +257,19 @@ export default function StorefrontProductCard({ p, wished, onWish, onOpen, onAdd
                   : "سایز را انتخاب کنید"}
             </button>
             {notice && <p className="kv-sf-cell-notice" role="status">{notice}</p>}
-            {onTryOn && (
-              <button type="button" onClick={onTryOn} className="kv-sf-cell-tryon">
-                <ScanFace size={13} aria-hidden="true" /> پرو مجازی
-              </button>
+            {(tryOnOffered || onAddToStyle) && (
+              <div className="kv-sf-cell-secondary">
+                {tryOnOffered && (
+                  <button type="button" onClick={onTryOn} className="kv-sf-cell-tryon">
+                    <ScanFace size={13} aria-hidden="true" /> پرو مجازی
+                  </button>
+                )}
+                {onAddToStyle && (
+                  <button type="button" onClick={() => onAddToStyle(color?.id)} className="kv-sf-cell-tryon">
+                    <Shirt size={13} aria-hidden="true" /> + استایل
+                  </button>
+                )}
+              </div>
             )}
           </div>
         ) : (

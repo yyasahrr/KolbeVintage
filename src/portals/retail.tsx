@@ -9,6 +9,8 @@ import { useStore } from "../data/store";
 import AccountExperience, { type AccountTab } from "./account";
 import { useOps } from "../data/ops";
 import { BlockRenderer, type NavTarget } from "../components/cms-render";
+import { CuratedStyleDetail, CuratedStyleGrid } from "./style-storefront";
+import type { CuratedStyle, VariantRelation } from "../data/curated";
 import { Btn, Card, Empty, Field, Input } from "../components/primitives";
 import EditorialHero from "../components/storefront/EditorialHero";
 import ProductDetail from "../components/storefront/ProductDetail";
@@ -18,7 +20,12 @@ import { CategoryRail } from "../components/storefront/CategoryCircles";
 import { lineThumbnail, sizesOf } from "../components/storefront/shared";
 import { cn } from "../utils/cn";
 
-export type CartLine = { id: string; qty: number; size: string; color: string };
+/** Cart lines are real product-variant lines; style metadata only groups them (§66). */
+export type CartLine = {
+  id: string; qty: number; size: string; color: string;
+  curatedStyleId?: string;
+  stylePurchaseGroupId?: string;
+};
 /** Navigation seed handed down by the storefront shell (search / category medallions). */
 export type ShopSeed = { cat?: string; q?: string; nonce: number } | null;
 
@@ -69,14 +76,14 @@ function JournalCard({ entry, onOpen }: { entry: typeof JOURNAL[number]; onOpen?
 }
 
 /* ============ MAIN RETAIL ============ */
-export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success";
+export type RetailView = "home" | "shop" | "checkout" | "journal" | "wishlist" | "account" | "success" | "style";
 
-export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [] }: {
+export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [], styles = [], relations = [], styleSlug, openStyle, personalizeStyle, addStyleToCart, onOpenProductFromStyle }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
-  /** `productId` lets the studio open on the product the shopper came from */
-  onStudio: (tab: string, productId?: string) => void;
+  /** open a studio surface; `productId`/`colorId` preload the context the shopper came from */
+  onStudio: (surface: "tryon" | "builder", productId?: string, colorId?: string) => void;
   view: RetailView; setView: (v: RetailView) => void;
   requireLogin?: () => boolean;
   account: CustomerAccount | null; buyer?: Buyer;
@@ -84,6 +91,14 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   onWholesale: () => void; onLogout: () => void; onLogin: () => void;
   shopSeed?: ShopSeed;
   categories?: { name: string; count: number; image: string }[];
+  /* curated styles (published only reach here through publicCuratedStyles) */
+  styles?: CuratedStyle[];
+  relations?: VariantRelation[];
+  styleSlug?: string | null;
+  openStyle?: (slug: string) => void;
+  personalizeStyle?: (style: CuratedStyle) => void;
+  addStyleToCart?: (style: CuratedStyle, adds: { productId: string; colorId: string; size: string; qty: number }[]) => { ok: boolean; failures?: { productId: string; reason: "not_found" | "not_retail" | "out_of_stock" | "insufficient_stock" }[] };
+  onOpenProductFromStyle?: (productId: string) => void;
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
   /* the shell hands over a category or query picked from search / category medallions */
@@ -250,13 +265,14 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           onAddProduct={(id, size, color) => addToCart(id, size, color)}
           onOpenProduct={(id) => { setSelectedId(id); window.scrollTo({ top: 0 }); }}
           onTryOn={() => onStudio("tryon", selected.id)}
+          onAddToStyle={(colorId) => onStudio("builder", selected.id, colorId)}
           shipping={retailShipping}
         />
         <div className="kv-sf-shell mt-20">
           <Section title="شاید بپسندید" latin="You may also like" />
           <ProductGrid>
             {relatedList.map((p) => (
-              <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
+              <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} onAddToStyle={(colorId) => onStudio("builder", p.id, colorId)} />
             ))}
           </ProductGrid>
         </div>
@@ -388,13 +404,34 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   }
 
   /* ----- WISHLIST / ACCOUNT / JOURNAL ----- */
+  if (view === "style" && styleSlug) {
+    const style = styles.find((s) => s.slug === styleSlug);
+    if (!style) {
+      return (
+        <div className="kv-sf-shell py-24 text-center">
+          <p className="kvaf-h2 text-[var(--kv-ink)]">این استایل پیدا نشد.</p>
+          <Btn variant="accent" className="mt-6" onClick={() => setView("home")}>بازگشت به خانه</Btn>
+        </div>
+      );
+    }
+    return (
+      <CuratedStyleDetail
+        style={style} catalogue={retailProducts} relations={relations}
+        onBack={() => { setView("home"); window.scrollTo({ top: 0 }); }}
+        onOpenProduct={(productId) => onOpenProductFromStyle?.(productId)}
+        onPersonalize={() => personalizeStyle?.(style)}
+        onAddToCart={(adds) => addStyleToCart?.(style, adds) ?? { ok: false }}
+      />
+    );
+  }
+
   if (view === "wishlist") {
     const items = retailProducts.filter((p) => wishlist.includes(p.id));
     return (
       <div className="kv-sf-shell pb-20">
         <Section title="علاقه‌مندی‌ها" latin="Saved" desc="چیزهایی که چشم‌تان را گرفته؛ هر وقت آماده بودید به سبد اضافه کنید." />
         {items.length === 0 ? <Empty title="هنوز چیزی ذخیره نکرده‌اید" desc="روی قلب هر محصول بزنید تا اینجا ذخیره شود." action={<Btn variant="accent" size="sm" onClick={() => setView("shop")}>کشف محصولات</Btn>} /> : (
-          <ProductGrid>{items.map((p) => <StorefrontProductCard key={p.id} p={p} wished onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />)}</ProductGrid>
+          <ProductGrid>{items.map((p) => <StorefrontProductCard key={p.id} p={p} wished onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} onAddToStyle={(colorId) => onStudio("builder", p.id, colorId)} />)}</ProductGrid>
         )}
       </div>
     );
@@ -508,7 +545,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           <div className="mt-8">
             <ProductGrid>
               {filtered.map((p) => (
-                <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
+                <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} onAddToStyle={(colorId) => onStudio("builder", p.id, colorId)} />
               ))}
             </ProductGrid>
           </div>
@@ -557,10 +594,26 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         />
         <ProductGrid>
           {latestDrop.map((p) => (
-            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
+            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} onAddToStyle={(colorId) => onStudio("builder", p.id, colorId)} />
           ))}
         </ProductGrid>
       </section>
+
+      {/* ready-made styles — admin-curated compositions of real products */}
+      {styles.length > 0 && (
+        <section className="kv-sf-shell pt-16 md:pt-24">
+          <Section
+            title="استایل‌های آماده" latin="Ready styles"
+            desc="ست‌هایی که تیم کلبه از همین قفسه چیده است؛ رنگ‌ها ثابت‌اند، سایز دست شماست."
+            action={<LinkToShop onClick={() => setView("shop")}>فروشگاه</LinkToShop>}
+          />
+          <CuratedStyleGrid
+            styles={styles} catalogue={retailProducts} relations={relations}
+            onOpen={(slug) => openStyle?.(slug)}
+            onPersonalize={(style) => personalizeStyle?.(style)}
+          />
+        </section>
+      )}
 
       {/* CMS-driven editorial content */}
       {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").length > 0 && (
@@ -600,7 +653,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         />
         <ProductGrid>
           {featured.map((p) => (
-            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} />
+            <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} onAddToStyle={(colorId) => onStudio("builder", p.id, colorId)} />
           ))}
         </ProductGrid>
       </section>

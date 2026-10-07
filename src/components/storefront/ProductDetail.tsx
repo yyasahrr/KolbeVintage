@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronLeft, Heart, Plus, ScanFace, Star } from "lucide-react";
+import { Check, ChevronLeft, Heart, Plus, ScanFace, Shirt, Star } from "lucide-react";
 import { JOURNAL, fmtMoney, fmtNum, type Colorway, type Product } from "../../data/catalog";
+import { tryOnEligible } from "../../data/styling";
 import type { ShippingMethod } from "../../data/platform";
 import { Swatches } from "./Swatches";
 import StorefrontProductCard from "./StorefrontProductCard";
@@ -26,7 +27,7 @@ import { complementsOf, similarTo } from "./recommendations";
  * The page recomputes no price and no stock; it calls the cart rules it is
  * handed and reports what they returned.
  */
-export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalogue = [], wishlist = [], onToggleWish, onAddProduct, onOpenProduct, onTryOn, shipping = [] }: {
+export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalogue = [], wishlist = [], onToggleWish, onAddProduct, onOpenProduct, onTryOn, onAddToStyle, shipping = [] }: {
   p: Product;
   wished: boolean;
   onWish: () => void;
@@ -41,9 +42,13 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
   onOpenProduct?: (id: string) => void;
   /** virtual try-on entry; eligibility and usage rules stay in the studio */
   onTryOn?: () => void;
+  /** opens the existing Style Builder with this product preloaded */
+  onAddToStyle?: (colorId?: string) => void;
   /** active retail shipping methods, straight from the store */
   shipping?: ShippingMethod[];
 }) {
+  /* try-on eligibility is business logic (data/styling.ts), never a CSS hide */
+  const tryOnOffered = !!onTryOn && tryOnEligible(p);
   const [color, setColor] = useState<Colorway | undefined>(p.colors[0]);
   const sizes = useMemo(() => sizesOf(p), [p]);
   /** the gallery follows the chosen colourway only when that colour was photographed */
@@ -236,13 +241,24 @@ export default function ProductDetail({ p, wished, onWish, onAdd, onBack, catalo
             </button>
           </div>
 
-          {/* try-on stays secondary: a quiet button below the primary action,
-              rendered once for every width. Eligibility, login and usage rules
-              live in the studio, which is where this hands off. */}
-          {onTryOn && (
-            <button onClick={onTryOn} className="kv-sf-action kv-sf-action-quiet mt-2.5 w-full">
-              <ScanFace size={17} /> پرو مجازی
-            </button>
+          {/* try-on and «+ استایل» stay secondary: quiet buttons below the
+              primary action, rendered once for every width. Whether try-on
+              appears is business logic (`tryOnEligible`) — unsupported products
+              never show a dead entry point. Both hand off to their own studio
+              surfaces, where login and usage rules stay authoritative. */}
+          {(tryOnOffered || onAddToStyle) && (
+            <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
+              {tryOnOffered && (
+                <button onClick={onTryOn} className="kv-sf-action kv-sf-action-quiet w-full">
+                  <ScanFace size={17} /> پرو مجازی
+                </button>
+              )}
+              {onAddToStyle && (
+                <button onClick={() => onAddToStyle(color?.id)} className="kv-sf-action kv-sf-action-quiet w-full">
+                  <Shirt size={17} /> + استایل
+                </button>
+              )}
+            </div>
           )}
         </div>
 
