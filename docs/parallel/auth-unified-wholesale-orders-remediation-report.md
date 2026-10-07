@@ -110,7 +110,9 @@ a second authority, and the unified hash target (`server-orders:wholesale`) surv
 
 ## 5. Live verification (same requests the browser makes, through the preview proxy)
 
-Static + live evidence file: **`/home/user/kolbe-ia-evidence.txt`**. Highlights:
+Static + live evidence file: **`docs/parallel/evidence/auth-unified-wholesale-orders-remediation-evidence.txt`**
+(in-repo copy; regenerated from the seeded local stack — a workspace copy also lives at
+`/home/user/kolbe-ia-evidence.txt`). Highlights:
 
 ```
 coverage=all               total=1 | MV-2000 | کلبه 2 | تأمین‌کننده نزد کلبه 2 | نیازمند تأمین 2 | partial | awaiting_payment
@@ -170,7 +172,7 @@ the VIP coverage strip — they contain counts only, no supplier identity, no id
 
 ## 7c. Additional live end-to-end auth verification (through the preview proxy)
 
-Full transcript appended to `/home/user/kolbe-ia-evidence.txt` (§12/§12b/§13/§13b/§14). Highlights:
+Full transcript in the evidence file above (§10–§14). Highlights:
 
 * signup OTP request for a brand-new number → `{challengeId, phoneMasked, purpose:'signup', deliveryHint:'sms_queued', devCode (non-production only)}`; register → `201`, `linking:'new'`, access token + 900 s expiry.
 * re-requesting a signup code for the same number → `409 CONFLICT «این شماره همراه قبلاً ثبت شده است؛ وارد شوید.»`

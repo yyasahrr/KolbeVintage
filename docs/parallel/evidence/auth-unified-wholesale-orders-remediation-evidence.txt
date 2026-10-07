@@ -1,0 +1,127 @@
+KOLBEVINTAGE — AUTH + UNIFIED OMS REMEDIATION — EVIDENCE
+HEAD: 513811e34f9a33803aeaeacd8786a204b2c68a58   branch: arena/01a10ace-kolbevintage   generated: 2026-10-07T12:55:54.723Z
+(regenerated against the seeded local stack; this copy is committed so the evidence survives the sandbox)
+
+== 1) STATIC — the ONE primary order IA (src/portals/orders-hub.tsx) ==
+756:    { v: "retail" as const, label: "سفارشات خرده" },
+757:    { v: "wholesale" as const, label: "سفارشات عمده / VIP" },
+
+== 2) STATIC — removed primary surfaces (must be 0) ==
+WholesaleTab|MasterOrdersStrip occurrences in src/: 0
+tabs named «سفارشات عمده کلبه» / «سفارشات عمده تأمین‌کنندگان»: 3
+demo VIP switches (demoRole|isDemoVip|demoVip): 0
+fixed/fake OTP code literals ("12345"-style) in src/: 0
+«kolbe.ir» literals in src/: 10 — all legitimate (SEO canonicals, support contact, input placeholders); no credential, no demo identity, no VIP email
+
+== 3) STATIC — legacy top-level routes redirect to the unified surface ==
+const TAB_REDIRECT: Record<string, string> = {
+  "server-ops": "wms",          // QC/transfers/server-promotions moved into their domains
+  // ---- Product-Owner IA: ONE wholesale surface (سفارشات عمده / VIP) ----
+  // The old per-source wholesale centers no longer exist as routes: their links land on the ONE
+  // Master Order list of the unified tab, where source is a FILTER and children live inside the
+  // order's «تخصیص و تأمین». No duplicate authority survives behind any legacy deep link.
+  worders: "server-orders:wholesale",   // demo wholesale orders (عمده کلبه/تأمین‌کنندگان) → unified
+  kolbe: "server-orders:wholesale",     // demo Kolbe wholesale desk → unified (children in detail)
+  supporders: "server-orders:wholesale", // any supplier-side wholesale order list → unified
+  masters: "server-orders:wholesale",   // «مرکز سفارش‌های مادر VIP» → the unified surface
+  wholesale: "server-orders:wholesale", // ONE canonical wholesale surface (#/admin/wholesale)
+  "retail-orders": "server-orders:retail", // #/admin/retail-orders → سفارشات خرده
+  rorders: "server-orders:retail",      // demo retail orders → سفارشات خرده
+  "manual-sales": "server-orders:retail", // manual sales live inside مرکز سفارشات (retail)
+  shipping: "settings",          // shipping CONFIG belongs to settings
+  tracking: "server-orders:retail",     // operational tracking belongs to the Orders hub
+  "finance-ledger": "finance", "finance-wallet": "finance",
+  "promo-safety": "promo",
+  series: "structure",           // series templates = product structure configuration
+  // ---- CRM consolidation (master phase §1): one top-level «مرکز CRM» ----
+  users: "crm:customers",        // فهرست کاربران → CRM / مشتریان خرده
+  buyers: "crm:vip",             // خریداران عمده → CRM / خریداران VIP
+  suppliers: "crm:suppliers",    // تأمین‌کنندگان ۳۶۰° → CRM / تأمین‌کنندگان
+  sms: "integrations:sms",       // پنل پیامک → سیستم / یکپارچه‌سازی‌ها (پیکربندی ارسال)
+  "crm-center": "crm:marketing", buyers360: "crm:vip",
+  // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
+  wproducts: "wms:wholesale-review",
+  mreview: "wms:wholesale-review",
+  // ---- «محصولات کلبه» owns Kolbe product management; old product bookmarks land there ----
+  rproducts: "products",
+  // §3/§25: the navigation-level «استودیو محصول» entry was replaced by «محصولات کلبه»;
+  // Product Studio stays the canonical create/edit workspace INSIDE it.
+  "wms:goods": "products",
+};
+
+== 4) STATIC — source visibility = FILTERS on the ONE Master Order list ==
+const COVERAGE_FILTERS: { v: Filters["coverage"]; label: string; hint: string }[] = [
+  { v: "", label: "همه", hint: "همه سفارش‌های مادر، بدون توجه به منبع تأمین." },
+  { v: "kolbe", label: "دارای موجودی کلبه", hint: "سفارش‌هایی که دست‌کم بخشی از اقلام از موجود فیزیکی کلبه رزرو شده است." },
+  { v: "supplier_at_kolbe", label: "دارای موجودی تأمین‌کننده نزد کلبه", hint: "سفارش‌هایی که از موجود فیزیکی تأمین‌کننده در انبار کلبه تأمین می‌شوند." },
+  { v: "supply_required", label: "نیازمند تأمین", hint: "سفارش‌هایی که بخشی از آن‌ها نیاز به تأمین دارد (ظرفیت تأمین‌کننده)." },
+  { v: "mixed", label: "ترکیبی", hint: "سفارش‌هایی که هم‌زمان بیش از یک منبع تأمین دارند." },
+];
+
+== 5) STATIC — child/sub-orders live INSIDE the master detail («تخصیص و تأمین») ==
+24:import { MasterChildOrders } from "../components/master-child-orders";
+533:          <MasterChildOrders children={detail.children} masterReference={detail.reference}
+
+== 6) LIVE — ONE Master Order list; coverage is only a FILTER ==
+  coverage=all                    total=1 | ref MV-2000 | کلبه 2 | تأمین‌کننده نزد کلبه 2 | نیازمند تأمین 2 | readiness partial | customer awaiting_payment
+  coverage=kolbe                  total=1 | ref MV-2000 | کلبه 2 | تأمین‌کننده نزد کلبه 2 | نیازمند تأمین 2 | readiness partial | customer awaiting_payment
+  coverage=supplier_at_kolbe      total=1 | ref MV-2000 | کلبه 2 | تأمین‌کننده نزد کلبه 2 | نیازمند تأمین 2 | readiness partial | customer awaiting_payment
+  coverage=supply_required        total=1 | ref MV-2000 | کلبه 2 | تأمین‌کننده نزد کلبه 2 | نیازمند تأمین 2 | readiness partial | customer awaiting_payment
+  coverage=mixed                  total=1 | ref MV-2000 | کلبه 2 | تأمین‌کننده نزد کلبه 2 | نیازمند تأمین 2 | readiness partial | customer awaiting_payment
+
+== 7) LIVE — MV-2000 is ONE order carrying all three sources ==
+  master MV-2000 | view=ops | readiness=partial | children=3
+  coverage: کلبه 2 / تأمین‌کننده نزد کلبه 2 / نیازمند تأمین 2 / دریافتی 0 / QC 0
+   child KV-100000 status=pending_payment supply=stock_reserved fulfillment=waiting_payment
+   child KV-100001 status=pending_payment supply=stock_reserved fulfillment=waiting_payment
+   child KV-100002 status=pending_payment supply=awaiting_supplier fulfillment=not_started
+
+== 8) LIVE — AUTH: one identity system, honest states ==
+  pending supplier applicant login -> HTTP 403 {"code":"SUPPLIER_APPLICATION_PENDING","message":"درخواست عضویت تأمین‌کننده شما در حال بررسی است؛ پس از تأیید می‌توانید وارد شوید."}
+  approved supplier /auth/me -> roles ["customer","supplier"] supplier {"cooperationStatus":"approved","activityStatus":"active","brandName":"نیلگون"}
+  admin /auth/me -> roles ["admin"] membership null supplier null
+  VIP customer /auth/me -> roles ["customer"] isWholesaleMember=true plan=عضویت عمده نمونه
+  ordinary customer /auth/me -> roles ["customer"] isWholesaleMember=false membership=null
+
+== 9) LIVE — buyer projection hides source topology (§50) ==
+  view=buyer | ref MV-2000 | subOrders 3
+  buyer-visible keys: ["actions","composition","createdAt","customerStatus","customerStatusLabel","deliveredAt","id","items","lockedAt","reference","shippedAt","shipping","shippingEstimateRial","status","subOrders","timeline","totals","view"]
+  leak scan on the buyer payload: clean
+  buyer ?scope=all -> HTTP 403 (isolation, cannot widen scope)
+  supplier reading a buyer master -> HTTP 403
+  ordinary customer wholesale list -> total=0 (no leak)
+
+== 10) E2E — mobile-first signup: OTP → register → duplicate refusal → no invented entitlement ==
+  1. POST /auth/otp/request {phone: 09997670860, purpose:'signup'}
+     -> challengeId 85fb8396… phoneMasked 0999***60 purpose signup deliveryHint sms_queued devCode present (non-production only)
+  2. POST /auth/register {displayName, phone, code} -> HTTP 201 id 6640354a… linking=new accessToken issued expiresIn=900
+  3. the SAME mobile requested again (purpose:'signup') -> HTTP 409 CONFLICT «این شماره همراه قبلاً ثبت شده است؛ وارد شوید.»
+  4. GET /auth/me on the brand-new account ->
+     roles ["customer"]  isWholesaleMember false  membership null  supplier null   (real account, no entitlement)
+
+== 11) E2E — password recovery: canonical, single-use, no enumeration, old session revoked ==
+  POST /auth/password/forgot {identity: <that mobile>} -> delivered true  devToken present (non-production only)
+  POST /auth/set-password {token, newPassword}         -> HTTP 200 {"activated":true}
+  the SAME token again                                -> HTTP 400 (single-use)
+  POST /auth/login {identity, newPassword}             -> OK, canonical session
+  GET  /auth/me with the PRE-recovery access token     -> HTTP 401 (revoked: set-password bumps token_version)
+  POST /auth/password/forgot {identity: 01000000000}   -> delivered true (identical shape — no enumeration)
+
+== 12) E2E — role forging refused (.strict() schemas; the handler grants only 'customer') ==
+  POST /auth/register {…, roles:['admin']} -> HTTP 400 VALIDATION_ERROR (unknown key rejected by .strict())
+  embedded AUTH-014 asserts roles === ['customer'], no users:manage permission, admin routes 403
+
+== 13) §50 privacy matrix (live through the proxy) ==
+  buyer sees ONLY own orders (?scope=all): HTTP 403 ✓
+  ordinary customer wholesale list: total=0 ✓ (no leak)
+  supplier cannot read a buyer master: HTTP 403 ✓
+  supplier cannot read a third-party master: HTTP 403 ✓
+  unapproved applicant cannot reach the operational portal: login HTTP 403 ✓ (never an operational session)
+  buyer payload leak scan (seller_id/source_type/allocation/offer_id/warehouse_note/capacity): clean ✓
+
+== 14) supplier isolation: the portal projection exposes only OWN supply tasks ==
+  supplier queue rows: 1
+  leak scan (buyer identity / master id / addresses / allocations): clean
+
+== NOTE — the '429' visible in the raw probe transcript is the INTENTIONAL registration rate limit
+   (5 requests/hour/process), not a defect: see report §7c. Restarting `npm run demo:stack` resets the counters.
