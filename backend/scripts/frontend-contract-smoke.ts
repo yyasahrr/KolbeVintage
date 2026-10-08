@@ -10,7 +10,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
@@ -816,7 +816,11 @@ try {
     hubSrc.includes('WmsInboundOperations') && hubSrc.includes('master-inbound') &&
     hubSrc.includes('دریافت و تجمیع سفارش‌های مادر') &&
     (hubHead.match(/\{ v: "/g) ?? []).length === 4 &&
-    adminSrc.includes('"wms:inbound-ops": "wms:master-inbound"'));
+    adminSrc.includes('"wms:inbound-ops": "wms:master-inbound"') &&
+    // The route regex only accepts `[a-z-]+` URL keys, so the BOOKMARKABLE form must exist too —
+    // a colon-only redirect is unreachable from a cold deep link (found by real-browser UAT).
+    adminSrc.includes('"inbound-ops": "wms:master-inbound"') &&
+    adminSrc.includes('"master-inbound": "wms:master-inbound"'));
   check('receiving/QC/consolidation actions are SERVER-derived (actions[] from the API), never guessed by the UI',
     inboundOpsSrc.includes('detail?.actions.includes("receive")') &&
     inboundOpsSrc.includes('detail?.actions.includes("inspect")') &&
@@ -840,6 +844,12 @@ try {
       '/admin/wms/masters/'].every((route) => apiSrc.includes(route)) &&
     !/wms-?v2|inbound-?v2|oms-?v2|shipment-?center/i.test(apiSrc) &&
     !/wms-?v2|inbound-?v2|oms-?v2/i.test(inboundOpsSrc));
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const smokeSrc = readFileSync(join(scriptsDir, 'browser-admin-smoke.mjs'), 'utf8');
+  check('the real-browser warehouse sweep is wired into the browser gate (structural + interactive UAT)',
+    smokeSrc.includes('wmsInboundSmoke') && smokeSrc.includes('./wms-inbound-browser.mjs') &&
+    existsSync(join(scriptsDir, 'wms-inbound-browser.mjs')) && existsSync(join(scriptsDir, 'wms-inbound-uat-flow.ts')));
+
   // The WMS surface is an INTERNAL operator surface: sign in as the admin (earlier blocks leave a
   // customer/supplier session in the client) exactly like the OMS checks below do.
   await authApi.login({ identity: adminEmail, password: adminPassword });

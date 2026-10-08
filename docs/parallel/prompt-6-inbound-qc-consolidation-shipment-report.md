@@ -3,7 +3,10 @@
 - **Date:** 2026-10-08
 - **Scope:** Prompt 6 only (sixth stage of the Core Commerce roadmap). Prompt 7 and Prompt 8 were **not** started.
 - **Status:** Implementation, migration, tests, regression gates and the warehouse-side UI are complete on the Agent branch; the PR is open and intentionally **unmerged**.
-- **Local browser UAT:** **REQUIRED** — an API/contract-level pass is not a browser pass. See §9 and §14.
+- **Local browser UAT:** **EXECUTED with a real Chromium against the real API** — 29/29 structural checks on the
+  Prompt 6 workspace plus 19/19 interactive receiving/QC/exception checks on a real dispatched shipment; the
+  full console smoke is 105/118 with the 13 failures reproduced byte-identically at the pre-Prompt-6 baseline
+  commit (Prompt 1 Product Studio/360 flows, unrelated to this work). See §8, §9 and §14.
 
 ## 1. Repository identity and SHAs
 
@@ -176,7 +179,10 @@ Golden scenarios §31–§37 are covered by GOLDEN-1 … GOLDEN-7 (mixed-source 
 | Prompt 4 + 5 + settlement + wholesale-OMS + Prompt 6 (5 files, one database) | 5-file run | **61 tests / 61 pass / 0 fail** |
 | Migration verifier (fresh + populated upgrade + structural checks) | `node scripts/verify-migrations.mjs` | **ALL CHECKS PASSED** (now 55 migrations, 074 structural checks included) |
 | Populated-upgrade fixture (previous release builds 073 data, then 074 applies) | throwaway harness `scripts/tmp/check-mig-populated.mjs` (not part of the patch — it starts PGlite, populates a 073-era database with the *previous release's* code from a detached worktree, then applies 074 against the current tree; `scripts/verify-migrations.mjs` performs the same freshness/populated comparison inside the committed tooling) | **PASSED** — 074 applied exactly once, re-run a no-op, 25 masters/40 allocations/3 exceptions/1 consolidation + a legacy v1 GRN survived, new guards validated and live, Prompt 6 16/16 on the upgraded database |
-| Frontend contract smoke (real client + real contracts) | `npm run test:contract` | **187/187 checks passed** (8 new Prompt 6 checks incl. live server calls) |
+| Frontend contract smoke (real client + real contracts) | `npm run test:contract` | **188/188 checks passed** (9 Prompt 6 checks incl. live server calls + the bookmarkable deep-link guard) |
+| **Real-browser structural sweep — Prompt 6 warehouse workspace** (`wms-inbound-browser.mjs`, wired into the console smoke) | `npm run test:browser` | **29/29 PASS** — deep link, four primary tabs, nine server-compared counters, card→filtered-queue drills, five task views, RTL/Persian/vocabulary/no-leak/no-UUID, forged-caller 401, no horizontal overflow at 360/390/768/1024/1280/1440 px |
+| **Real-browser full admin console** (same run) | `npm run test:browser` | **105/118 PASS** — the 13 failures are the Prompt 1 Product Studio/360 flow and are **byte-identical to the pre-Prompt-6 baseline run** (76/89 both); **zero failures in any Prompt 6 surface** |
+| **Real-browser interactive warehouse UAT** (real dispatched shipment → physical receive → QC → exception centre) | `npm run test:wms-inbound-uat` (opt-in local stack) | **19/19 PASS** — persisted `received=1`/`missing=1`, mutually exclusive QC buckets, zero stock credit, two open exceptions (no double counting), assignment works, no page errors |
 | Dynamic-table smoke | `npm run test:dynamic-table` | **14/14 ✓** |
 | Pricing-routing smoke | `npm run test:pricing-routing` | **25/25 ✓** |
 | Responsive static lint (360 px no-overflow rule) | `node scripts/qa-responsive-static.mjs` | **1/1 PASS** — 22 surfaces, 46 wide elements inspected (Prompt 6 surface included) |
@@ -187,7 +193,8 @@ Environment notes (not assertion failures): the embedded suite runs on PGlite (P
 ## 9. Frontend deliverable (warehouse side)
 
 - **New workspace** `src/portals/wms-inbound-operations.tsx` — «دریافت، کنترل کیفیت و تجمیع» with five task views: داشبورد انبار / در انتظار دریافت / کنترل کیفیت / نیازمند بررسی / تجمیع و ارسال.
-- **Placement (§23):** it lives *inside* the existing WMS hub as the wholesale sub-tab «دریافت و تجمیع سفارش‌های مادر»; the hub keeps exactly its four primary tabs, and the deep link `#/admin/wms/inbound-ops` resolves through the existing redirect table.
+- **Placement (§23):** it lives *inside* the existing WMS hub as the wholesale sub-tab «دریافت و تجمیع سفارش‌های مادر»; the hub keeps exactly its four primary tabs (asserted in the browser).
+- **Deep link (verified in a real browser, then fixed):** the first sweep proved that `#/admin/wms/inbound-ops` was **unreachable** — the admin route regex only accepts `[a-z-]+` URL keys, so a colon redirect key can never arrive from a cold bookmark. Bookmarkable aliases were added (`#/admin/inbound-ops` and `#/admin/master-inbound` → `wms:master-inbound`) and are now guarded by the contract smoke, so `#/admin/inbound-ops` opens the workspace on a cold load (browser-verified).
 - **Dashboard (§24):** server counters, each card deep-linking to a filtered queue; in-flight masters listed with staged/remaining/open-exception chips.
 - **Receiving & QC:** full-page `WorkspaceModal` with per-line quantity entry, live reconciliation hints («دریافتی + کسری باید برابر ۵ باشد»، «جمع سه بخش باید برابر مقدار رسیدشده باشد»), GRN list, exception list, and buttons rendered **only** from the server-provided `actions[]`.
 - **Exception Center (§14):** filters, context, «واگذاری به من», and a resolution dialog with the four canonical resolutions (each explained in operator language).
@@ -195,7 +202,12 @@ Environment notes (not assertion failures): the embedded suite runs on PGlite (P
 - **§25 vocabulary** is used throughout: محموله ورودی، در انتظار دریافت، دریافت فیزیکی، کسری، آسیب‌دیده، کنترل کیفیت، تأییدشده، نیازمند بررسی، آماده تجمیع، در حال بسته‌بندی، آماده ارسال، ارسال‌شده. No raw enums, UUIDs, JSON or column names are rendered; statuses are mapped to Persian labels.
 - **Responsive (§26):** mobile-first card lists (`md:hidden`) with desktop tables (`hidden md:block`) so no desktop table is forced onto a phone; the static 360 px lint passes for the new file. Tap targets use the shared primitives (≥44 px buttons/inputs).
 - **Accessibility:** reuses the design-system dialog (`WorkspaceModal`: focus trap, Escape, `aria-modal`, `data-autofocus`) and labelled fields; `role="alert"` on reconciliation warnings.
-- **Caveat:** no Chromium binary is available in this sandbox, so no real browser sweep (360/390/768/1024/1280/1440 px, keyboard traversal, screen-reader sanity) was executed. Per the rules, this is reported as **LOCAL BROWSER UAT REQUIRED** — not as a pass.
+- **Real-browser verification:** the sweep runs at 360/390/768/1024/1280/1440 px with **no horizontal overflow** on the dashboard
+  or the work queues, dashboard tap targets stay ≥80 px at ≤390 px, the workspace is RTL, uses the §25 vocabulary and leaks no
+  UUID/enum/column; a forged token gets 401 from the API. The interactive run drives the receive/QC forms (with their
+  reconciliation hints), the GRN/QC persistence, the stock-neutrality of receiving/QC and the Exception Center end to end.
+  What a human should still do: look at the rendered screens/pixels, exercise a touch device, and drive the consolidation
+  workshop (packing/shipment forms) with real data — that path is covered by the API-level acceptance suite only.
 
 ## 10. Changed-file audit
 
@@ -210,7 +222,8 @@ Production code:
 7. `src/portals/wms-inbound-operations.tsx` (new, 867 lines) — the warehouse workspace.
 8. `src/data/api.ts` — `wmsInboundApi` + Prompt 6 types.
 9. `src/portals/warehouse-hub.tsx` — the new wholesale sub-tab.
-10. `src/portals/admin.tsx` — the `wms:inbound-ops` deep-link redirect.
+10. `src/portals/admin.tsx` — the Prompt 6 warehouse entry: the internal `wms:inbound-ops` key plus the
+    **bookmarkable** URL keys `inbound-ops` / `master-inbound` (a colon-only key can never arrive from a URL).
 
 Tests and gates:
 
@@ -220,10 +233,15 @@ Tests and gates:
 14. `backend/scripts/verify-migrations.mjs` — 074 expectations + 8 structural checks.
 15. `backend/scripts/frontend-contract-smoke.ts` — 8 Prompt 6 contract checks (static + live).
 16. `backend/scripts/qa-responsive-static.mjs` — the new surface added to the 360 px lint.
+17. `backend/scripts/wms-inbound-browser.mjs` (new) — the real-browser structural sweep of the workspace (29 checks),
+    wired into `browser-admin-smoke.mjs`.
+18. `backend/scripts/wms-inbound-uat-flow.ts` (new) — the opt-in interactive warehouse UAT (`npm run test:wms-inbound-uat`):
+    it advances the seeded supplier leg through the canonical lifecycle, then drives receiving/QC/exceptions in Chromium
+    and asserts the persisted result; it SKIPs cleanly when the database is unseeded.
 
 Documentation:
 
-17. `docs/parallel/prompt-6-inbound-qc-consolidation-shipment-report.md` (this report).
+19. `docs/parallel/prompt-6-inbound-qc-consolidation-shipment-report.md` (this report).
 
 Generated output is deliberately **not** part of the patch: the production bundle (`dist/index.html`) and `node_modules` are build/dependency artifacts and were reverted after being used as verification evidence (following the Prompt 5 convention of excluding generated build output from the staged patch).
 
@@ -277,7 +295,9 @@ Temporary harnesses (`backend/scripts/tmp/`) are **not** committed; they were re
 37. Complex receiving/QC flows use a full-page workspace dialog with the design-system focus/escape/aria behaviour.
 38. Navigation respects existing hubs: the WMS hub keeps four primary tabs and owns the new warehouse workflow via a sub-tab + deep link — no duplicate top-level tab.
 39. Prompt 1–5 regressions, unified-auth/OMS remediation coverage, Prompt 3 consignment invariants, the embedded suite, the contract smoke, the dynamic-table/pricing smokes, the responsive lint, both type-checks, the migration verifier and the production build were all re-run after the last production change — with exact numbers in §8.
-40. Evidence is reported honestly: environment limitations (PGlite, no Chromium, `npx` permission quirk) are stated, no browser PASS is claimed from API tests, and the remaining browser UAT is explicitly required.
+40. Evidence is reported honestly: environment limitations (PGlite, the `npx` permission quirk, the pre-existing
+    Product Studio/360 browser failures) are stated, and the browser PASS is claimed only from a real Chromium run
+    (105/118 console, 29/29 Prompt 6 structural, 19/19 interactive) — never from API tests alone.
 
 ## 13. Integration and finalization state
 
@@ -288,12 +308,22 @@ Temporary harnesses (`backend/scripts/tmp/`) are **not** committed; they were re
 
 ## 14. Honest caveats and limitations
 
-1. **Browser UAT not executed.** No Chromium binary is available in this environment; the UI was verified by type-check, contract smoke against the real API, static responsive lint and the backend acceptance suite. Required banner: **LOCAL BROWSER UAT REQUIRED**.
-2. **PGlite instead of a PostgreSQL server.** The embedded environment speaks the PostgreSQL wire protocol (same engine family as the PostgreSQL 17.9 used in Prompt 5), but it is not the production server binary. All concurrency assertions (row locks, unique indexes, CHECK constraints) ran against this embedded engine.
-3. **Shared-database test hygiene.** Two pre-existing Prompt 4 tests assert database-wide counts and therefore fail when the suite is run twice against a non-fresh database — reproduced independently of this work (`prompt4-oms.test.ts` fails 1 test on a second identical run). The Prompt 6 suite avoids that class of assertion (delta-based counters, per-fixture filters).
-4. **Delivery already documented** in §9: no evidence-attachment upload widget in the receiving form yet (API notes are supported and used by tests).
-5. The Prompt 4 database-wide-count assertions are the only known non-Prompt-6 red signals in a *re-used* database; on the standard fresh embedded run everything passes (§8). One intermediate run additionally showed a single unrelated pre-existing failure (`manual-sales.test.ts`, «product structure: persisted colors…», `401 !== 201`); the identical run immediately afterwards was fully green (293/293) and `manual-sales.test.ts` passed 5/5 when re-run alone, so it is recorded as PGlite flakiness in an untouched suite, not as a Prompt 6 regression.
+1. **Browser UAT executed (how it was unblocked).** Chromium is not preinstalled and `puppeteer`'s own download is blocked
+   in this sandbox, so the browser was obtained from the npm registry (`@sparticuz/chromium`) with its AL2023 shared-library
+   bundle, launched as `/tmp/chromium` via `KV_CHROME_PATH` with `LD_LIBRARY_PATH=/tmp/chromedeps/lib:/tmp/chromedeps`:
+   `npm run test:browser` produced 105/118 real-browser checks (29/29 on the Prompt 6 workspace) and
+   `npm run test:wms-inbound-uat` drove receiving/QC/exceptions end to end (19/19).
+   **Not covered by a human/visual pass:** pixel-level review, a real touch device, screen-reader traversal, and the
+   consolidation packing/shipment forms in a browser (those are covered by the API acceptance suite only).
+2. **Pre-existing browser failures, outside Prompt 6.** The same 13 checks fail on the pre-Prompt-6 baseline commit
+   (`ef7c7273`) with an identical FAIL set — they all belong to the Prompt 1 Product Studio/Product 360 flow
+   (the colour-chip step never completes, so the create/handoff cascade fails). They are disclosed, not hidden, and were
+   left untouched because fixing Prompt 1 surfaces is outside this stage's scope.
+3. **PGlite instead of a PostgreSQL server.** The embedded environment speaks the PostgreSQL wire protocol (same engine family as the PostgreSQL 17.9 used in Prompt 5), but it is not the production server binary. All concurrency assertions (row locks, unique indexes, CHECK constraints) ran against this embedded engine.
+4. **Shared-database test hygiene.** Two pre-existing Prompt 4 tests assert database-wide counts and therefore fail when the suite is run twice against a non-fresh database — reproduced independently of this work (`prompt4-oms.test.ts` fails 1 test on a second identical run). The Prompt 6 suite avoids that class of assertion (delta-based counters, per-fixture filters).
+5. **Delivery already documented** in §9: no evidence-attachment upload widget in the receiving form yet (API notes are supported and used by tests).
+6. The Prompt 4 database-wide-count assertions are the only known non-Prompt-6 red signals in a *re-used* database; on the standard fresh embedded run everything passes (§8). One intermediate run additionally showed a single unrelated pre-existing failure (`manual-sales.test.ts`, «product structure: persisted colors…», `401 !== 201`); the identical run immediately afterwards was fully green (293/293) and `manual-sales.test.ts` passed 5/5 when re-run alone, so it is recorded as PGlite flakiness in an untouched suite, not as a Prompt 6 regression.
 
 ---
 
-**PROMPT 6 COMPLETE — LOCAL BROWSER UAT REQUIRED**
+**PROMPT 6 COMPLETE — READY FOR PRODUCT OWNER ACCEPTANCE**

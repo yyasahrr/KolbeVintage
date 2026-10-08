@@ -18,6 +18,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import puppeteer from 'puppeteer-core';
 import { warehouseUxSmoke } from './warehouse-ux-browser.mjs';
+import { wmsInboundSmoke } from './wms-inbound-browser.mjs';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const chromePath = process.env.KV_CHROME_PATH ?? '/tmp/chromium';
 const stopProcessTree = (child, signal = 'SIGTERM') => {
@@ -555,6 +556,10 @@ try {
   await openTab('انبار و موجودی (WMS)');
   await warehouseUxSmoke({ page, check, apiPort, clickByText, setInput, text, waitForText });
   await shot('09-wms-seeded');
+
+  // ------------------- pass 2b: Prompt 6 inbound / QC / consolidation workspace -------------------
+  await wmsInboundSmoke({ page, check, base, text, clickByText });
+  await shot('09b-wms-inbound-prompt6');
 
   // Canonical cross-surface acceptance fixture: exact variant discounts, canonical Festival record,
   // and a deliberately stackable definition (the Resolver must still make Festival exclusive).

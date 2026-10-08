@@ -19,7 +19,8 @@
     "test:pricing-routing": "tsx scripts/pricing-routing-smoke.ts",
     "seed:local": "tsx src/seed-local.ts",
     "demo:stack": "node scripts/demo-stack.mjs",
-    "test:browser": "node scripts/browser-admin-smoke.mjs"
+    "test:browser": "node scripts/browser-admin-smoke.mjs",
+    "test:wms-inbound-uat": "tsx scripts/wms-inbound-uat-flow.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1142.0",
