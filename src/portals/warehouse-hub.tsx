@@ -8,6 +8,7 @@ import { AdminServerOrders } from "./admin-server-orders";
 import { CHANNEL_LABEL } from "../components/manual-sales-panel";
 import { SeriesStockPanel, SupplyOpsPanel, SupplyWizard } from "../components/series-stock-panel";
 import { WarehouseSettings, type LowStock } from "../components/warehouse-settings";
+import { WmsInboundOperations } from "./wms-inbound-operations";
 import { siteApi } from "../data/experience-api";
 import { adjustmentPreview, pendingForRows } from "../data/warehouse-ux";
 import { formatPersianDateTimeFull } from "../data/persian-date";
@@ -114,10 +115,10 @@ type F = (msg: string) => void;
 export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | null }) {
   // §2 deep link: legacy wproducts/mreview routes land on انبار عمده → محصولات و بازبینی.
   const [tab, setTab] = useState<"retail" | "transfers" | "wholesale" | "settings">(
-    initial === "wholesale-review" ? "wholesale" : "retail",
+    initial === "wholesale-review" || initial === "master-inbound" ? "wholesale" : "retail",
   );
   useEffect(() => {
-    if (initial === "wholesale-review") setTab("wholesale");
+    if (initial === "wholesale-review" || initial === "master-inbound") setTab("wholesale");
   }, [initial]);
   const [lowStockReport, setLowStockReport] = useState<LowStock[] | null>(null);
   return (
@@ -135,7 +136,8 @@ export function WarehouseHub({ flash, initial }: { flash: F; initial?: string | 
       </div>
       {tab === "retail" && <RetailInventoryTab flash={flash} />}
       {tab === "transfers" && <TransfersOpsCenter flash={flash} />}
-      {tab === "wholesale" && <WholesaleCenter flash={flash} initialSub={initial === "wholesale-review" ? "review" : undefined} />}
+      {tab === "wholesale" && <WholesaleCenter flash={flash}
+        initialSub={initial === "wholesale-review" ? "review" : initial === "master-inbound" ? "master-inbound" : undefined} />}
       {tab === "settings" && (
         <Card className="p-4">
           <div className="mb-4 flex items-center gap-2 border-b border-[var(--kv-line)] pb-3">
@@ -1375,8 +1377,8 @@ function ReverseModal({ transfer, onClose, onDone, flash }: { transfer: Transfer
 
 /* ------------------------------ wholesale center (C3/I/J/QC) ------------------------------ */
 
-function WholesaleCenter({ flash, initialSub }: { flash: F; initialSub?: "review" }) {
-  const [sub, setSub] = useState<"inventory" | "supplier-stock" | "review" | "requests" | "inbound">(initialSub ?? "inventory");
+function WholesaleCenter({ flash, initialSub }: { flash: F; initialSub?: "review" | "master-inbound" }) {
+  const [sub, setSub] = useState<"inventory" | "supplier-stock" | "review" | "requests" | "inbound" | "master-inbound">(initialSub ?? "inventory");
   useEffect(() => { if (initialSub) setSub(initialSub); }, [initialSub]);
   return (
     <div className="space-y-4">
@@ -1387,6 +1389,8 @@ function WholesaleCenter({ flash, initialSub }: { flash: F; initialSub?: "review
           { v: "review", label: "محصولات و بازبینی" },
           { v: "requests", label: "درخواست‌های تأمین‌کنندگان" },
           { v: "inbound", label: "ورودی انبار و QC" },
+          // Prompt 6: order-bound inbound shipments (محموله ورودی) + QC + exceptions + consolidation/shipment.
+          { v: "master-inbound", label: "دریافت و تجمیع سفارش‌های مادر" },
         ]}
         value={sub} onChange={setSub}
       />
@@ -1396,6 +1400,7 @@ function WholesaleCenter({ flash, initialSub }: { flash: F; initialSub?: "review
       {/* §2 + §55: the ONE canonical wholesale product review queue (ex wproducts + ex بازبینی بازارچه). */}
       {sub === "review" && <MarketplaceReviewPanel flash={flash} />}
       {sub === "requests" && <SupplierRequestsAdmin flash={flash} />}
+      {sub === "master-inbound" && <WmsInboundOperations flash={flash} />}
       {sub === "inbound" && (
         <div className="space-y-5">
           {/* §1.2 + §21: supplier inbound shipments / QC inspections — Central WHOLESALE warehouse only. */}

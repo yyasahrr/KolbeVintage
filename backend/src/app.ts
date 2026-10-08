@@ -54,6 +54,7 @@ import { registerTrackingRoutes } from './tracking.js';
 import { registerShippingLabelRoutes } from './shipping-labels.js';
 import { registerSupplierOfferRoutes } from './supplier-offers.js';
 import { registerWholesaleOmsRoutes } from './wholesale-oms.js';
+import { registerWorkInboundRoutes } from './work-inbound.js';
 import { registerSettlementCoreRoutes } from './settlement-routes.js';
 import { registerCashbackRoutes } from './cashback.js';
 import { registerSupplierConsignmentRoutes } from './supplier-consignment.js';
@@ -156,6 +157,8 @@ if (process.env.DEBUG_ERRORS === '1') app.log.error(error);
   registerShippingLabelRoutes(app, pool, config);
   registerSupplierOfferRoutes(app, pool, config);
   registerWholesaleOmsRoutes(app, pool, config);
+  // Prompt 6: warehouse inbound/receiving/QC/exception/dashboard + consolidation work queues.
+  registerWorkInboundRoutes(app, pool, config);
   registerSettlementCoreRoutes(app, pool, config);
   registerCashbackRoutes(app, pool, config);
   registerSupplierConsignmentRoutes(app, pool, config);
