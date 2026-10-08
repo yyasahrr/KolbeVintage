@@ -171,8 +171,8 @@ Golden scenarios §31–§37 are covered by GOLDEN-1 … GOLDEN-7 (mixed-source 
 | --- | --- | --- |
 | Backend type-check | `node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | **CLEAN** |
 | Frontend type-check | `node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` (repo root) | **CLEAN** |
-| Full embedded backend suite (all 41 files, fresh PGlite) | `npm run test:embedded` | **303 tests / 303 pass / 0 fail**, 21 suites (see §14 for the exact figures of the final run) |
-| Prompt 6 acceptance suite (isolated) | `node scripts/tmp/run-one.mjs src/prompt6-inbound-qc-consolidation.test.ts` | **16 tests / 16 pass / 0 fail** (~24 s) |
+| Full embedded backend suite (all 41 files, fresh PGlite, migrations 001→074 applied from scratch) | `npm run test:embedded` | **293 tests / 293 pass / 0 fail**, 21 suites, 208 s (`/tmp/embedded-full3.log`) — the final run after the last production change |
+| Prompt 6 acceptance suite (isolated) | `node --import tsx --test --test-concurrency=1 src/prompt6-inbound-qc-consolidation.test.ts` against the embedded PGlite socket started by `scripts/run-embedded-tests.mjs` | **16 tests / 16 pass / 0 fail** (~24 s). `scripts/run-embedded-tests.mjs` runs `npm test`, so the focused run was driven through a temporary harness script that starts the same PGlite socket and points `node --test` at the single file; that throwaway script is deliberately **not** part of the patch |
 | Prompt 4 + 5 + settlement + wholesale-OMS + Prompt 6 (5 files, one database) | 5-file run | **61 tests / 61 pass / 0 fail** |
 | Migration verifier (fresh + populated upgrade + structural checks) | `node scripts/verify-migrations.mjs` | **ALL CHECKS PASSED** (now 55 migrations, 074 structural checks included) |
 | Populated-upgrade fixture (previous release builds 073 data, then 074 applies) | `node scripts/tmp/check-mig-populated.mjs` | **PASSED** — 074 applied exactly once, re-run a no-op, 25 masters/40 allocations/3 exceptions/1 consolidation + a legacy v1 GRN survived, new guards validated and live, Prompt 6 16/16 on the upgraded database |
@@ -292,7 +292,7 @@ Temporary harnesses (`backend/scripts/tmp/`) are **not** committed; they were re
 2. **PGlite instead of a PostgreSQL server.** The embedded environment speaks the PostgreSQL wire protocol (same engine family as the PostgreSQL 17.9 used in Prompt 5), but it is not the production server binary. All concurrency assertions (row locks, unique indexes, CHECK constraints) ran against this embedded engine.
 3. **Shared-database test hygiene.** Two pre-existing Prompt 4 tests assert database-wide counts and therefore fail when the suite is run twice against a non-fresh database — reproduced independently of this work (`prompt4-oms.test.ts` fails 1 test on a second identical run). The Prompt 6 suite avoids that class of assertion (delta-based counters, per-fixture filters).
 4. **Delivery already documented** in §9: no evidence-attachment upload widget in the receiving form yet (API notes are supported and used by tests).
-5. The two Prompt 4 failures above are the only known non-Prompt-6 red signals in a *re-used* database; on the standard fresh embedded run everything passes (§8).
+5. The Prompt 4 database-wide-count assertions are the only known non-Prompt-6 red signals in a *re-used* database; on the standard fresh embedded run everything passes (§8). One intermediate run additionally showed a single unrelated pre-existing failure (`manual-sales.test.ts`, «product structure: persisted colors…», `401 !== 201`); the identical run immediately afterwards was fully green (293/293) and `manual-sales.test.ts` passed 5/5 when re-run alone, so it is recorded as PGlite flakiness in an untouched suite, not as a Prompt 6 regression.
 
 ---
 
