@@ -30,6 +30,9 @@ async function makeUser(pool: Pool, roles: string[], label: string) {
   await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
     [id, email, await argon2.hash('TestPassword123456!'), label]);
   for (const role of roles) await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, role]);
+  // OMS supplier actors model the real approved/active Supplier state enforced by Prompt 5.
+  if (roles.includes('supplier')) await pool.query(
+    "INSERT INTO supplier_profiles(user_id,brand_name,cooperation_status) VALUES ($1,$2,'approved')", [id, label]);
   return { id, email };
 }
 
@@ -365,12 +368,17 @@ test('hybrid 6+4, counter→accept with revalidation, MOQ, reject independence (
       [[childD.id, childE.id]]);
     const rowD = siblings.rows.find((r) => r.id === childD.id)!;
     const rowE = siblings.rows.find((r) => r.id === childE.id)!;
-    assert.equal(rowD.status, 'cancelled');
-    assert.equal(rowD.composition_state, 'removed'); // §43: out of the consolidation denominator
+    assert.equal(rowD.status, 'pending_payment', 'rejection does not erase the unpaid OMS child');
+    assert.equal(rowD.composition_state, 'included', 'unresolved demand remains in the Master Order');
+    assert.equal(rowD.payment_eligibility, 'not_ready');
     assert.equal(rowE.payment_eligibility, 'ready'); // sibling unaffected
-    // the master can be locked now — the rejected child is excluded.
+    const pendingDemand = await pool.query(
+      "SELECT quantity,status FROM order_source_allocations WHERE child_order_id=$1 AND source_type='supplier_external'", [childD.id]);
+    assert.deepEqual(pendingDemand.rows, [{ quantity: 2, status: 'pending' }]);
+    // The Master Order cannot lock while the rejected demand still needs explicit reassignment.
     const lock2 = await app.inject({ method: 'POST', url: `/api/v1/wholesale/masters/${master2.id}/lock`, headers: buyerHeaders });
-    assert.equal(lock2.statusCode, 200, lock2.body);
+    assert.equal(lock2.statusCode, 409, lock2.body);
+    assert.equal(lock2.json().code, 'SUPPLIER_CONFIRMATION_REQUIRED');
   } finally { await app.close(); await pool.end(); }
 });
 
@@ -444,6 +452,11 @@ test('order-bound external fulfillment: dispatch→receive 4/5→QC 3/1 → exce
     const confirm = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/lines/${line.rows[0].id}/respond`,
       headers: fHeaders, payload: { action: 'confirm' } });
     assert.equal(confirm.statusCode, 200, confirm.body);
+    const external = await pool.query<{ id: string }>(
+      "SELECT id FROM order_source_allocations WHERE child_order_id=$1 AND source_type='supplier_external'", [child.id]);
+    const commit = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/supply-requests/${external.rows[0]!.id}/commit`,
+      headers: fHeaders, payload: { note: 'تعهد در آزمون OMS' } });
+    assert.equal(commit.statusCode, 200, commit.body);
 
     // dispatch before payment is blocked.
     const earlyDispatch = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/children/${child.id}/dispatch`,
@@ -454,6 +467,9 @@ test('order-bound external fulfillment: dispatch→receive 4/5→QC 3/1 → exce
     const intent = await app.inject({ method: 'POST', url: `/api/v1/wholesale/children/${child.id}/payment-intent`, headers: buyerHeaders });
     assert.equal(intent.statusCode, 201, intent.body);
     await payIntent(pool, intent.json().intentId as string, intent.json().amountRial as string);
+    const ready = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/supply-requests/${external.rows[0]!.id}/ready`,
+      headers: fHeaders, payload: { note: 'آماده برای انبار کلبه' } });
+    assert.equal(ready.statusCode, 200, ready.body);
 
     // §137: the supplier cannot steer the destination — strict schema rejects it.
     const spoofDestination = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/children/${child.id}/dispatch`,

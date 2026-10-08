@@ -28,9 +28,7 @@ test('published catalog media and canonical series projection do not expose priv
   try {
     const admin = await makeUser(pool, ['admin', 'operations'], 'رسانه محصول');
     const supplier = await makeUser(pool, ['supplier'], 'مالک رسانه');
-    // Ensure the attack reaches the media ownership check, not the missing-profile gate.
-    await pool.query("INSERT INTO supplier_profiles(user_id,brand_name,cooperation_status) VALUES ($1,$2,'approved')",
-      [supplier.id, 'مالک رسانه']);
+    // makeUser creates the approved/active profile needed to reach the media ownership check.
     const headers = await login(app, admin.email); const supplierHeaders = await login(app, supplier.email);
     const uploaded = await app.inject({ method: 'POST', url: '/api/v1/files', headers, payload: {
       originalName: 'pixel.png', mime: 'image/png', dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7WQAAAAASUVORK5CYII=',
@@ -72,6 +70,9 @@ async function makeUser(pool: Pool, roles: string[], label: string) {
   await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
     [id, email, await argon2.hash('TestPassword123456!'), label]);
   for (const role of roles) await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, role]);
+  // Operational Supplier fixtures must use the approved profile state required by the real portal.
+  if (roles.includes('supplier')) await pool.query(
+    "INSERT INTO supplier_profiles(user_id,brand_name,cooperation_status) VALUES ($1,$2,'approved')", [id, label]);
   return { id, email };
 }
 

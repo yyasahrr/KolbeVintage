@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, claimIdempotency, completeIdempotency, notifyByPermission, notifyUser, outbox, requestHash } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
@@ -130,7 +130,7 @@ export function registerSupplierRequestRoutes(app: FastifyInstance, pool: DbPool
   // Create (supplier)
   app.post('/api/v1/supplier-requests', async (request, reply) => {
     const user = await principal(request, pool, config);
-    if (!user.roles.includes('supplier')) throw forbidden('فقط تأمین‌کنندگان می‌توانند درخواست تأمین ثبت کنند.');
+    await requireApprovedSupplier(pool, user);
     const body = createBody.parse(request.body);
     if (body.items.length > MAX_ITEMS_PER_REQUEST) {
       throw badRequest(`حداکثر ${MAX_ITEMS_PER_REQUEST} قلم در هر درخواست مجاز است.`);
@@ -169,7 +169,7 @@ export function registerSupplierRequestRoutes(app: FastifyInstance, pool: DbPool
   app.get('/api/v1/supplier-requests', async (request) => {
     const user = await principal(request, pool, config);
     const privileged = user.permissions.includes('wholesale:ops') || user.permissions.includes('inventory:read');
-    if (!privileged && !user.roles.includes('supplier')) throw forbidden();
+    if (!privileged) await requireApprovedSupplier(pool, user);
     const query = z.object({
       status: z.string().max(40).optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -195,6 +195,7 @@ export function registerSupplierRequestRoutes(app: FastifyInstance, pool: DbPool
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const detail = await loadRequest(pool, id);
     const privileged = user.permissions.includes('wholesale:ops') || user.permissions.includes('inventory:read');
+    if (!privileged) await requireApprovedSupplier(pool, user);
     if (!privileged && detail.supplier_id !== user.id) throw forbidden();
     return detail;
   });
@@ -260,7 +261,7 @@ export function registerSupplierRequestRoutes(app: FastifyInstance, pool: DbPool
   // Supplier revision + resubmit (history preserved).
   app.post('/api/v1/supplier-requests/:id/revise', async (request) => {
     const user = await principal(request, pool, config);
-    if (!user.roles.includes('supplier')) throw forbidden();
+    await requireApprovedSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = createBody.parse(request.body);
     if (body.items.length > MAX_ITEMS_PER_REQUEST) {
@@ -315,6 +316,7 @@ export function registerSupplierRequestRoutes(app: FastifyInstance, pool: DbPool
         client, 'SELECT * FROM supplier_requests WHERE id = $1 FOR UPDATE', [id]);
       if (!req) throw notFound();
       const privileged = user.permissions.includes('wholesale:ops');
+      if (!privileged) await requireApprovedSupplier(client, user);
       if (!privileged && req.supplier_id !== user.id) throw forbidden();
       if (req.status !== 'approved') throw conflict('فقط درخواست‌های تأییدشده قابل ارسال هستند.');
 

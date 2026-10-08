@@ -4,7 +4,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { one, transaction, type DbPool } from './db.js';
+import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { ApiError, badRequest, conflict, forbidden, notFound, unauthorized } from './errors.js';
 import { audit } from './operations.js';
 import { recordLoginAttempt, touchSession, verifyTotp } from './profile.js';
@@ -169,6 +169,31 @@ export async function principal(request: FastifyRequest, pool: DbPool, config: C
 
 export function requirePermission(user: Principal, permission: string) {
   if (!user.permissions.includes(permission)) throw forbidden();
+}
+
+/** Operational Supplier routes require an approved cooperation profile. Application submission/review
+ *  remains on its separate existing public/admin workflow; action-level restrictions stay in Supplier 360. */
+export async function requireApprovedSupplier(db: DbPool | DbClient, user: Principal) {
+  if (!user.roles.includes('supplier')) throw forbidden();
+  const profile = await one<{ cooperation_status: string; activity_status: string; brand_name: string }>(db,
+    'SELECT cooperation_status, activity_status, brand_name FROM supplier_profiles WHERE user_id = $1', [user.id]);
+  if (!profile) throw forbidden('پروفایل تأمین‌کننده یافت نشد؛ ابتدا درخواست همکاری را تکمیل کنید.');
+  if (profile.cooperation_status !== 'approved' || profile.activity_status === 'pending_review') {
+    throw forbidden('درخواست همکاری تأمین‌کننده در انتظار بررسی است.');
+  }
+  if (!['active', 'restricted'].includes(profile.activity_status)) {
+    throw forbidden('دسترسی عملیاتی فقط برای تأمین‌کنندهٔ فعال فراهم است.');
+  }
+  return profile;
+}
+
+/** Portal/OMS operations require the profile to be both approved and currently active. */
+export async function requireApprovedActiveSupplier(db: DbPool | DbClient, user: Principal) {
+  const profile = await requireApprovedSupplier(db, user);
+  if (profile.activity_status !== 'active') {
+    throw forbidden('دسترسی عملیاتی فقط برای تأمین‌کنندهٔ تأییدشده و فعال فراهم است.');
+  }
+  return profile;
 }
 
 export function registerAuthRoutes(app: FastifyInstance, pool: DbPool, config: Config) {

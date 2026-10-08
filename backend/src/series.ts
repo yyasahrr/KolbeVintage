@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
@@ -177,9 +177,11 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
     const user = await principal(request, pool, config);
     const supplier = user.roles.includes('supplier') && !user.permissions.includes('products:write');
     if (!supplier) requirePermission(user, 'products:write');
+    else await requireApprovedSupplier(pool, user);
     const body = createBody.parse(request.body);
 
     const response = await transaction(pool, async (client) => {
+      if (supplier) await requireApprovedSupplier(client, user);
       const product = await one<{ id: string; supplier_id: string | null }>(
         client, 'SELECT id, supplier_id FROM products WHERE id = $1', [body.productId]);
       if (!product) throw notFound();
@@ -308,6 +310,7 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
     const user = await principal(request, pool, config);
     const supplier = user.roles.includes('supplier') && !user.permissions.includes('products:write');
     if (!supplier) requirePermission(user, 'products:write');
+    else await requireApprovedSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = z.object({
       name: z.string().trim().min(2).max(120).optional(),
@@ -320,6 +323,7 @@ export function registerSeriesTemplateRoutes(app: FastifyInstance, pool: DbPool,
     }).parse(request.body);
 
     return transaction(pool, async (client) => {
+      if (supplier) await requireApprovedSupplier(client, user);
       const template = await one<{ id: string; product_id: string; supplier_id: string | null }>(
         client,
         `SELECT t.id, t.product_id, p.supplier_id FROM series_templates t JOIN products p ON p.id = t.product_id

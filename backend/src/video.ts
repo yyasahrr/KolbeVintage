@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { audit, outbox } from './operations.js';
 import { badRequest, forbidden, notFound } from './errors.js';
@@ -169,6 +169,7 @@ export function registerVideoRoutes(app: FastifyInstance, pool: DbPool, config: 
     }
     // Union permission: supplier owners / products:write (Agent C) or media:manage (Agent D1).
     const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
+    if (isOwner) await requireApprovedSupplier(pool, user);
     if (!isOwner && !user.permissions.includes('products:write') && !user.permissions.includes('media:manage')) throw forbidden();
     if (body.variantId) {
       const variant = await one(pool, 'SELECT id FROM product_variants WHERE id = $1 AND product_id = $2', [body.variantId, id]);

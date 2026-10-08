@@ -42,6 +42,8 @@ async function makeUser(app: App, pool: Pool, role: string, suffix: string) {
   await pool.query('INSERT INTO users(id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
     [id, email, await argon2.hash('Prompt3Password123456!'), `P3 ${role} ${suffix}`]);
   await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2)', [id, role]);
+  if (role === 'supplier') await pool.query(
+    "INSERT INTO supplier_profiles(user_id,brand_name,cooperation_status) VALUES ($1,$2,'approved')", [id, `P3 Supplier ${suffix}`]);
   const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login',
     payload: { identity: email, password: 'Prompt3Password123456!' } });
   assert.equal(login.statusCode, 200, login.body);

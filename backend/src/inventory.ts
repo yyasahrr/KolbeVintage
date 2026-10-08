@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, notifyByPermission, outbox, requestHash } from './operations.js';
@@ -114,10 +114,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     const id = randomUUID();
     try {
       await transaction(pool, async (client) => {
-        if (supplier) {
-          const profile = await one<{ cooperation_status: string }>(client, 'SELECT cooperation_status FROM supplier_profiles WHERE user_id = $1', [user.id]);
-          if (profile?.cooperation_status !== 'approved') throw forbidden();
-        }
+        if (supplier) await requireApprovedSupplier(client, user);
         await client.query('INSERT INTO warehouses(id,owner_id,code,name) VALUES ($1,$2,$3,$4)', [id, supplier ? user.id : null, body.code, body.name]);
         await audit(client, user.id, 'warehouse.created', 'warehouse', id, undefined, body, request.ip);
       });
@@ -130,6 +127,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
   app.get('/api/v1/warehouses', async (request) => {
     const user = await principal(request, pool, config);
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
     const privileged = user.permissions.includes('inventory:read');
     const supplierOnly = user.roles.includes('supplier') && !privileged;
     const rows = await pool.query(
@@ -143,6 +141,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
   app.get('/api/v1/warehouses/:id', async (request) => {
     const user = await principal(request, pool, config);
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const row = await one<{ id: string; owner_id: string | null }>(pool, 'SELECT id, owner_id FROM warehouses WHERE id = $1', [id]);
     if (!row) throw notFound();
@@ -168,6 +167,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     return transaction(pool, async (client) => {
       const wh = await one<{ owner_id: string | null }>(client, 'SELECT owner_id FROM warehouses WHERE id = $1', [id]);
       if (!wh) throw notFound();
+      if (user.roles.includes('supplier')) await requireApprovedSupplier(client, user);
       if (!privileged) {
         if (supplier) {
           if (wh.owner_id !== user.id) throw forbidden();
@@ -188,6 +188,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
   app.get('/api/v1/warehouses/:id/locations', async (request) => {
     const user = await principal(request, pool, config);
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const wh = await one<{ owner_id: string | null }>(pool, 'SELECT owner_id FROM warehouses WHERE id = $1', [id]);
     if (!wh) throw notFound();
@@ -200,7 +201,8 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
   // Inventory balances: available = on_hand - reserved - damaged, incoming not sellable
   app.get('/api/v1/inventory', async (request) => {
     const user = await principal(request, pool, config);
-    if (!user.roles.includes('supplier')) requirePermission(user, 'inventory:read');
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
+    else requirePermission(user, 'inventory:read');
     const query = z.object({
       variantId: z.uuid().optional(),
       warehouseId: z.uuid().optional(),
@@ -304,6 +306,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
   // Server-computed over ALL balances of the domain — never a client-side sum of one page.
   app.get('/api/v1/inventory/summary', async (request) => {
     const user = await principal(request, pool, config);
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
     requirePermission(user, 'inventory:read');
     const query = z.object({
       inventoryDomain: z.enum(['retail', 'wholesale']).optional(),
@@ -332,7 +335,8 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
   app.get('/api/v1/inventory/variants/:variantId', async (request) => {
     const user = await principal(request, pool, config);
-    if (!user.roles.includes('supplier')) requirePermission(user, 'inventory:read');
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
+    else requirePermission(user, 'inventory:read');
     const params = z.object({ variantId: z.uuid() }).parse(request.params);
     const variant = await one<{
       id: string;
@@ -407,6 +411,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
   app.get('/api/v1/inventory/low-stock', async (request) => {
     const user = await principal(request, pool, config);
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
     requirePermission(user, 'inventory:read');
     const query = z.object({ threshold: z.coerce.number().int().min(0).max(100000).default(10), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(request.query);
     const privileged = user.permissions.includes('inventory:read');
@@ -447,6 +452,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
         [body.warehouseId, body.variantId]);
       if (!target) throw notFound();
       const isSupplierOnly = user.roles.includes('supplier') && !user.permissions.includes('inventory:adjust');
+      if (user.roles.includes('supplier')) await requireApprovedSupplier(client, user);
       if (isSupplierOnly) {
         if (target.owner_id !== user.id || target.supplier_id !== user.id) throw forbidden();
         if (body.inventoryDomain === 'retail') {
@@ -946,6 +952,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
   // Official Stock Transfer (Supports both Mode A: 3-step Domain/Warehouse transfer with ownership checks, and Mode B: Multi-line WMS warehouse transfer)
   app.post('/api/v1/inventory/transfers', async (request, reply) => {
     const user = await principal(request, pool, config);
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
     const needPerm = user.permissions.includes('inventory:transfer') || user.permissions.includes('inventory:adjust');
     if (!needPerm && !user.roles.includes('supplier')) throw forbidden('شما مجوز ثبت انتقال موجودی را ندارید.');
 
@@ -963,6 +970,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
       }
 
       const response = await transaction(pool, async (client) => {
+        if (user.roles.includes('supplier')) await requireApprovedSupplier(client, user);
         const claim = await claimIdempotency(client, user.id, 'inventory.transfer.create', key, requestHash(body));
         if (claim.previous) return claim.previous;
         const result = await createDomainTransferCore(client, user.id, body, request.ip);
@@ -976,6 +984,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
     const body = multiLineTransferBody.parse(request.body);
     const domain: InventoryDomain = body.inventoryDomain ?? 'retail';
     const result = await transaction(pool, async (client) => {
+      if (user.roles.includes('supplier')) await requireApprovedSupplier(client, user);
       const from = await one<{ owner_id: string | null }>(client, 'SELECT owner_id FROM warehouses WHERE id = $1', [body.fromWarehouseId]);
       const to = await one<{ owner_id: string | null }>(client, 'SELECT owner_id FROM warehouses WHERE id = $1', [body.toWarehouseId]);
       if (!from || !to) throw notFound();
@@ -1822,6 +1831,7 @@ export function registerInventoryRoutes(app: FastifyInstance, pool: DbPool, conf
 
   app.get('/api/v1/inventory/movements', async (request) => {
     const user = await principal(request, pool, config);
+    if (user.roles.includes('supplier')) await requireApprovedSupplier(pool, user);
     const query = z.object({
       variantId: z.uuid().optional(),
       productId: z.uuid().optional(),

@@ -171,18 +171,24 @@ test('end-to-end §207: delivered child → explainable payable (settle 3 not 5)
     const confirm = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/lines/${line.rows[0].id}/respond`,
       headers: supplierHeaders, payload: { action: 'confirm' } });
     assert.equal(confirm.statusCode, 200, confirm.body);
+    const alloc = await pool.query(
+      `SELECT id FROM order_source_allocations WHERE child_order_id = $1 AND source_type = 'supplier_external'`, [childId]);
+    const commit = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/supply-requests/${alloc.rows[0]!.id}/commit`,
+      headers: supplierHeaders, payload: { note: 'تعهد پیش از پرداخت' } });
+    assert.equal(commit.statusCode, 200, commit.body);
     const intent = await app.inject({ method: 'POST', url: `/api/v1/wholesale/children/${childId}/payment-intent`, headers: buyerHeaders });
     assert.equal(intent.statusCode, 201, intent.body);
     await applyVerifiedPayment(pool, { provider: 'nextpay', providerEventId: `evt-${randomUUID()}`,
       providerReference: `ref-${randomUUID().slice(0, 12)}`, intentId: intent.json().intentId as string,
       amountRial: intent.json().amountRial as string, paidAt: new Date() });
+    const ready = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/supply-requests/${alloc.rows[0]!.id}/ready`,
+      headers: supplierHeaders, payload: { note: 'آماده برای تحویل به کلبه' } });
+    assert.equal(ready.statusCode, 200, ready.body);
 
     // dispatch 5 → receive 4 → QC 3 pass / 1 reject → resolve exceptions → accepted 3 (§15).
     const dispatch = await app.inject({ method: 'POST', url: `/api/v1/wholesale/supplier/children/${childId}/dispatch`,
       headers: supplierHeaders, payload: {} });
     assert.equal(dispatch.statusCode, 200, dispatch.body);
-    const alloc = await pool.query(
-      `SELECT id FROM order_source_allocations WHERE child_order_id = $1 AND source_type = 'supplier_external'`, [childId]);
     const receive = await app.inject({ method: 'POST', url: `/api/v1/wholesale/children/${childId}/receive`,
       headers: adminHeaders, payload: { allocations: [{ allocationId: alloc.rows[0].id, receivedSeries: 4 }] } });
     assert.equal(receive.statusCode, 200, receive.body);

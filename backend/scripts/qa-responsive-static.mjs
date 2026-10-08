@@ -1,4 +1,4 @@
-/* STATIC RESPONSIVE LINT — Prompt-1 product surfaces.
+/* STATIC RESPONSIVE LINT — Prompt-1/Prompt-4 and Prompt-5 supplier surfaces.
    Complements (does NOT replace) the browser sweep in qa-product-studio.mjs §40: when no
    Chromium binary is available in the environment, this gate still catches the single most
    common cause of document horizontal overflow at 360px — a fixed/minimum width that is NOT
@@ -33,6 +33,14 @@ const FILES = [
   'src/portals/wholesale-order-center.tsx',
   'src/portals/orders-hub.tsx',
   'src/portals/vip.tsx',
+  /* Prompt-5: the RTL Supplier workspace, OMS request cards, catalog editor and owned sections. */
+  'src/portals/supplier.tsx',
+  'src/portals/supplier-portal-workspace.tsx',
+  'src/components/supplier-supply-requests-panel.tsx',
+  'src/components/supplier-product-series-authoring.tsx',
+  'src/components/supplier-wholesale-panel.tsx',
+  'src/components/supplier-requests-portal.tsx',
+  'src/portals/supplier-profile-settings.tsx',
 ];
 const LOOKBACK = 6;
 const MIN_PX = 320;
@@ -59,7 +67,7 @@ for (const rel of FILES) {
   });
 }
 
-console.log(`static responsive lint — ${FILES.length} Prompt-1/Prompt-4 surfaces, ${scanned} fixed/min widths ≥ ${MIN_PX}px inspected`);
+console.log(`static responsive lint — ${FILES.length} Prompt-1/Prompt-4/Prompt-5 surfaces, ${scanned} fixed/min widths ≥ ${MIN_PX}px inspected`);
 if (findings.length === 0) {
   console.log('PASS  every wide element is inside a horizontal scroll container or clamps with w-full/max-w');
 } else {

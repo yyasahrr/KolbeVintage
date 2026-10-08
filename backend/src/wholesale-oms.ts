@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, type Principal } from './auth.js';
+import { principal, requireApprovedActiveSupplier, type Principal } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
 import type { PoolClient } from 'pg';
 import { rial } from './money.js';
@@ -88,6 +88,8 @@ type LineRow = {
   pieces_per_series: number; unit_series_price_rial: string; line_total_rial: string;
   commercial_snapshot: Record<string, unknown>; snapshot_locked_at: Date | null;
   status: string; negotiation_history: Array<Record<string, unknown>>;
+  supplier_response_status: string; supplier_response_note: string | null; supplier_responded_at: Date | null;
+  supplier_committed_series: number; supplier_committed_at: Date | null; supplier_ready_at: Date | null;
 };
 
 type AllocationRow = {
@@ -98,6 +100,8 @@ type AllocationRow = {
   disposition: string; dispatched_series: number; received_series: number;
   qc_passed_series: number; qc_rejected_series: number;
   reserved_at?: Date | null; created_at?: Date;
+  supplier_response_status?: string; supplier_response_note?: string | null; supplier_committed_series?: number;
+  supplier_responded_at?: Date | null; supplier_committed_at?: Date | null; supplier_ready_at?: Date | null;
 };
 
 /* ----------------------------- warehouse resolution (§80) ----------------------------- */
@@ -110,10 +114,11 @@ export async function centralWholesaleWarehouse(client: DbClient): Promise<strin
   if (preferred) return preferred.id;
   const id = randomUUID();
   await client.query(
-    "INSERT INTO warehouses(id, owner_id, code, name, active) VALUES ($1, NULL, 'KOLBE-CENTRAL', 'انبار مرکزی کلبه', true) ON CONFLICT (code) DO NOTHING",
+    "INSERT INTO warehouses(id, owner_id, code, name, purpose, active) VALUES ($1, NULL, 'KOLBE-CENTRAL', 'انبار مرکزی کلبه', 'wholesale', true) ON CONFLICT (code) DO NOTHING",
     [id]);
   const found = await one<{ id: string }>(client,
-    'SELECT id FROM warehouses WHERE owner_id IS NULL AND active = true ORDER BY created_at ASC LIMIT 1');
+    `SELECT id FROM warehouses WHERE owner_id IS NULL AND active = true AND purpose IN ('wholesale','mixed')
+     ORDER BY (purpose = 'wholesale') DESC, created_at ASC LIMIT 1`);
   return found!.id;
 }
 
@@ -233,40 +238,52 @@ export async function recomputeChild(client: DbClient, childOrderId: string, pol
 
 /* ----------------------------- reservation release helpers ----------------------------- */
 
-/** Release every active physical/external hold of ONE line (counter-reject/remove/expiry paths). */
-export async function releaseLineHolds(client: DbClient, line: LineRow, actorId: string, note: string): Promise<void> {
+/** Release one allocation only; reassignment must never free sibling allocations. */
+async function releaseAllocationHold(client: DbClient, alloc: AllocationRow, line: LineRow,
+  actorId: string, note: string, preserveUnresolvedDemand = false): Promise<void> {
+  if (alloc.status !== 'reserved' && alloc.status !== 'pending') return;
+  if (alloc.source_type === 'supplier_external') {
+    if (alloc.capacity_reservation_id) {
+      await settleSupplierCapacityReservation(client, alloc.capacity_reservation_id, 'released');
+    }
+  } else if (alloc.status === 'reserved' && alloc.warehouse_id) {
+    const reservation = await one<{ id: string; series_count: number; recipe_snapshot: unknown }>(client,
+      `SELECT id, series_count, recipe_snapshot FROM order_series_reservations
+       WHERE order_id = $1 AND series_template_id = $2 AND status = 'active' FOR UPDATE`,
+      [line.child_order_id, line.series_template_id]);
+    if (reservation) {
+      await applySeriesMovement(client, {
+        templateId: line.series_template_id, warehouseId: alloc.warehouse_id,
+        owner: { ownerType: alloc.source_type === 'kolbe_stock' ? 'kolbe' : 'supplier', supplierId: alloc.owner_supplier_id },
+        movementType: 'release', reservedDelta: -alloc.quantity,
+        referenceType: 'order', referenceId: line.child_order_id, actorId,
+        note, idempotencyKey: `oms-release:${alloc.id}`,
+      });
+      if (reservation.series_count <= alloc.quantity) {
+        await client.query("UPDATE order_series_reservations SET status = 'released', updated_at = now() WHERE id = $1", [reservation.id]);
+      } else {
+        await client.query('UPDATE order_series_reservations SET series_count = series_count - $2, updated_at = now() WHERE id = $1',
+          [reservation.id, alloc.quantity]);
+      }
+    }
+  }
+  await client.query(
+    preserveUnresolvedDemand
+      ? `UPDATE order_source_allocations SET status = 'pending', capacity_reservation_id = NULL,
+           reservation_expires_at = NULL, reserved_at = NULL, updated_at = now() WHERE id = $1`
+      : `UPDATE order_source_allocations SET status = 'released', capacity_reservation_id = NULL,
+           reservation_expires_at = NULL, updated_at = now() WHERE id = $1`,
+    [alloc.id]);
+}
+
+/** Release every active physical/external hold of ONE line. Optional demand preservation keeps the
+ *  canonical allocations pending so staff can reassign the same quantity instead of losing demand. */
+export async function releaseLineHolds(client: DbClient, line: LineRow, actorId: string, note: string,
+  preserveUnresolvedDemand = false): Promise<void> {
   const allocations = await client.query<AllocationRow>(
     'SELECT * FROM order_source_allocations WHERE line_id = $1 FOR UPDATE', [line.id]);
-  for (const alloc of allocations.rows) {
-    if (alloc.status === 'reserved' || alloc.status === 'pending') {
-      if (alloc.source_type === 'supplier_external') {
-        if (alloc.capacity_reservation_id) {
-          await settleSupplierCapacityReservation(client, alloc.capacity_reservation_id, 'released');
-        }
-      } else if (alloc.status === 'reserved' && alloc.warehouse_id) {
-        // owner-scoped series release through the Prompt-1 engine.
-        const reservation = await one<{ id: string; series_count: number; recipe_snapshot: unknown }>(client,
-          `SELECT id, series_count, recipe_snapshot FROM order_series_reservations
-           WHERE order_id = $1 AND series_template_id = $2 AND status = 'active' FOR UPDATE`,
-          [line.child_order_id, line.series_template_id]);
-        if (reservation) {
-          await applySeriesMovement(client, {
-            templateId: line.series_template_id, warehouseId: alloc.warehouse_id,
-            owner: { ownerType: alloc.source_type === 'kolbe_stock' ? 'kolbe' : 'supplier', supplierId: alloc.owner_supplier_id },
-            movementType: 'release', reservedDelta: -alloc.quantity,
-            referenceType: 'order', referenceId: line.child_order_id, actorId,
-            note, idempotencyKey: `oms-release:${alloc.id}`,
-          });
-          if (reservation.series_count <= alloc.quantity) {
-            await client.query("UPDATE order_series_reservations SET status = 'released', updated_at = now() WHERE id = $1", [reservation.id]);
-          } else {
-            await client.query('UPDATE order_series_reservations SET series_count = series_count - $2, updated_at = now() WHERE id = $1',
-              [reservation.id, alloc.quantity]);
-          }
-        }
-      }
-      await client.query("UPDATE order_source_allocations SET status = 'released', updated_at = now() WHERE id = $1", [alloc.id]);
-    }
+  for (const allocation of allocations.rows) {
+    await releaseAllocationHold(client, allocation, line, actorId, note, preserveUnresolvedDemand);
   }
 }
 
@@ -1345,7 +1362,10 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
 
     /* ------------------------------- operations projection (§21-§23/§56-§61) ------------------------------ */
     const allocations = await pool.query<AllocationRow>(
-      `SELECT * FROM order_source_allocations WHERE master_order_id = $1 ORDER BY created_at`, [id]);
+      `SELECT a.*, l.supplier_response_status, l.supplier_response_note, l.supplier_committed_series,
+              l.supplier_responded_at, l.supplier_committed_at, l.supplier_ready_at
+         FROM order_source_allocations a JOIN child_order_lines l ON l.id = a.line_id
+        WHERE a.master_order_id = $1 ORDER BY a.created_at`, [id]);
     const exceptions = await pool.query(
       `SELECT id, child_order_id, exception_type, quantity, status, resolution, note, created_at
          FROM fulfillment_exceptions WHERE master_order_id = $1 ORDER BY created_at DESC`, [id]);
@@ -1416,6 +1436,12 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
             warehouse_id: allocation.warehouse_id, received_series: allocation.received_series,
             qc_passed_series: allocation.qc_passed_series, qc_rejected_series: allocation.qc_rejected_series,
             reservation_expires_at: allocation.reservation_expires_at,
+            supplier_response_status: allocation.supplier_response_status ?? 'unanswered',
+            supplier_response_note: allocation.supplier_response_note ?? null,
+            supplier_committed_series: allocation.supplier_committed_series ?? 0,
+            supplier_responded_at: allocation.supplier_responded_at,
+            supplier_committed_at: allocation.supplier_committed_at,
+            supplier_ready_at: allocation.supplier_ready_at,
           })),
         })),
       })),
@@ -1589,8 +1615,14 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
     }).strict().parse(request.body ?? {});
     if (!body.toOfferId && !body.toSource) throw badRequest('مقصد بازتخصیص (پیشنهاد تأمین‌کننده یا نوع منبع) لازم است.');
     const policy = await omsPolicy(pool);
+    const idemPayload = { allocationId: id, ...body };
+    const rawIdempotencyKey = request.headers['idempotency-key'];
+    const idempotencyKey = typeof rawIdempotencyKey === 'string' && rawIdempotencyKey.length >= 8 && rawIdempotencyKey.length <= 120
+      ? rawIdempotencyKey : `oms-reassign:${id}:${requestHash(idemPayload)}`;
 
     const result = await transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, 'wholesale_allocation.reassign', idempotencyKey, requestHash(idemPayload));
+      if (claim.previous) return claim.previous as Record<string, unknown>;
       const allocation = await one<AllocationRow>(client,
         'SELECT * FROM order_source_allocations WHERE id = $1 FOR UPDATE', [id]);
       if (!allocation) throw notFound();
@@ -1691,17 +1723,16 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       }
 
       const releaseReason = `بازتخصیص منبع — ${body.reason}`;
-      // ---- release A (idempotent, canonical paths only) ----
-      if (allocation.status === 'reserved' && allocation.source_type === 'supplier_external') {
-        await settleSupplierCapacityReservation(client, allocation.capacity_reservation_id!, 'released');
-      } else if (allocation.status === 'reserved') {
-        await releaseLineHolds(client, line, user.id, releaseReason);
+      // Release only allocation A; never free siblings from this line/master.
+      if (allocation.status === 'pending' || allocation.status === 'reserved') {
+        await releaseAllocationHold(client, allocation, line, user.id, releaseReason);
+      } else {
+        await client.query(
+          `UPDATE order_source_allocations SET status = 'released', capacity_reservation_id = NULL,
+             reservation_expires_at = NULL, updated_at = now() WHERE id = $1`, [allocation.id]);
       }
-      await client.query(
-        `UPDATE order_source_allocations SET status = 'released', updated_at = now()
-          WHERE id = $1`, [allocation.id]);
 
-      // ---- assign B through the ONE canonical allocation primitive (same rulebook as order creation) ----
+      // ---- assign B through the ONE canonical allocation primitive ----
       const replacement = await createOrderAllocation(client, {
         lineId: line.id, childId: child.id, masterId: allocation.master_order_id, templateId: line.series_template_id,
         sourceType: targetSource, quantity: allocation.quantity, warehouseId: targetWarehouseId,
@@ -1709,18 +1740,29 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         physicalTtlMinutes: policy.physicalReservationTtlMinutes,
       });
 
-      // ---- re-point the commercial line (supplier identity only; demand + price + history untouched) ----
+      // A changed/reassigned external source always re-enters supplier review. Physical stock-at-Kolbe
+      // is immediately reserved; no supplier response is required unless another external allocation remains.
+      const externalLeft = await one<{ n: string }>(client,
+        `SELECT count(*)::text AS n FROM order_source_allocations
+         WHERE line_id = $1 AND source_type = 'supplier_external' AND status IN ('pending','reserved')`, [line.id]);
+      const awaitingExternal = Number(externalLeft?.n ?? 0) > 0;
+      const lineState = targetSource === 'supplier_external' || awaitingExternal ? 'awaiting_supplier' : 'stock_reserved';
       const supplierChanged = Boolean(targetSupplierId) && targetSupplierId !== allocation.owner_supplier_id;
-      if (supplierChanged) {
-        await client.query(
-          `UPDATE child_order_lines SET seller_id = $2, offer_id = $3, status = 'awaiting_supplier', updated_at = now()
-            WHERE id = $1`, [line.id, targetSupplierId, targetOfferId]);
-        await client.query(
-          `UPDATE orders SET seller_id = $2, seller_type = 'supplier', supply_status = 'awaiting_supplier',
-             payment_eligibility = CASE WHEN payment_eligibility = 'paid' THEN 'paid' ELSE 'blocked_supply_pending' END,
-             updated_at = now() WHERE id = $1`, [child.id, targetSupplierId]);
-        await client.query('UPDATE orders SET supplier_respond_by = now() + ($2::int * interval \'1 hour\') WHERE id = $1',
+      await client.query(
+        `UPDATE child_order_lines SET seller_id = $2, offer_id = $3, status = $4,
+           confirmed_series = CASE WHEN $4 = 'stock_reserved' THEN requested_series ELSE NULL END,
+           proposed_series = NULL, supplier_response_status = 'unanswered', supplier_response_note = NULL,
+           supplier_responded_at = NULL, supplier_committed_series = 0, supplier_committed_at = NULL,
+           supplier_ready_at = NULL, responded_at = NULL, updated_at = now() WHERE id = $1`,
+        [line.id, targetSupplierId, targetOfferId, lineState]);
+      await client.query(
+        `UPDATE orders SET seller_id = $2, seller_type = 'supplier', updated_at = now() WHERE id = $1`,
+        [child.id, targetSupplierId]);
+      if (awaitingExternal) {
+        await client.query("UPDATE orders SET supplier_respond_by = now() + ($2::int * interval '1 hour') WHERE id = $1",
           [child.id, policy.supplierRespondHours]);
+      } else {
+        await client.query('UPDATE orders SET supplier_respond_by = NULL WHERE id = $1', [child.id]);
       }
       await appendNegotiation(client, line.id, {
         type: 'reassigned', fromAllocationId: allocation.id, toAllocationId: replacement.id,
@@ -1728,7 +1770,7 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         toOfferId: targetOfferId, fromSupplierId: allocation.owner_supplier_id, toSupplierId: targetSupplierId,
         quantity: allocation.quantity, reason: body.reason, actorId: user.id, at: new Date().toISOString(),
       });
-      if (supplierChanged) await recomputeChild(client, child.id, policy);
+      await recomputeChild(client, child.id, policy);
       const history = await one<{ negotiation_history: unknown[] }>(client,
         'SELECT negotiation_history FROM child_order_lines WHERE id = $1', [line.id]);
       await audit(client, user.id, 'wholesale_allocation.reassigned', 'order_source_allocation', allocation.id,
@@ -1738,12 +1780,14 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       await outbox(client, 'wholesale_allocation.reassigned', 'order_source_allocation', allocation.id,
         { allocationId: allocation.id, replacementAllocationId: replacement.id, masterOrderId: allocation.master_order_id,
           quantity: allocation.quantity, from: allocation.source_type, to: targetSource, supplierChanged });
-      return {
+      const response = {
         allocationId: allocation.id, replacementAllocationId: replacement.id, replacementStatus: replacement.status,
         source: targetSource, supplierChanged, quantity: allocation.quantity,
         supplierConfirmationRequired: targetSource === 'supplier_external',
         history: (history?.negotiation_history ?? []).length,
       };
+      await completeIdempotency(client, user.id, 'wholesale_allocation.reassign', idempotencyKey, response);
+      return response;
     });
     return reply.code(201).send(result);
   });
@@ -1752,7 +1796,7 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
 
   app.get('/api/v1/wholesale/supplier/child-orders', async (request) => {
     const user = await principal(request, pool, config);
-    if (!user.roles.includes('supplier')) throw forbidden();
+    await requireApprovedActiveSupplier(pool, user);
     const query = z.object({
       limit: z.coerce.number().int().min(1).max(100).default(30),
       before: z.iso.datetime().optional(),
@@ -1774,7 +1818,7 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
                                      WHERE a.line_id = l.id AND a.source_type = 'supplier_stock_at_kolbe'
                                        AND a.status IN ('reserved','consumed'))
                 ) ORDER BY l.created_at)
-                FROM child_order_lines l WHERE l.child_order_id = o.id), '[]'::json) AS lines
+                FROM child_order_lines l WHERE l.child_order_id = o.id AND l.seller_id = $1), '[]'::json) AS lines
        FROM orders o JOIN master_orders m ON m.id = o.master_order_id
        WHERE o.seller_id = $1 AND o.master_order_id IS NOT NULL
          AND ($2::timestamptz IS NULL OR o.created_at < $2)
@@ -1787,20 +1831,37 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
   const respondSchema = z.object({
     action: z.enum(['confirm', 'counter', 'reject']),
     proposedSeries: z.number().int().min(1).optional(),
-    note: z.string().max(400).optional(),
+    note: z.string().trim().max(400).optional(),
   }).strict();
+  type SupplierResponseBody = z.infer<typeof respondSchema>;
 
-  app.post('/api/v1/wholesale/supplier/lines/:lineId/respond', async (request) => {
-    const user = await principal(request, pool, config);
-    if (!user.roles.includes('supplier')) throw forbidden();
-    const { lineId } = z.object({ lineId: z.uuid() }).parse(request.params);
-    const body = respondSchema.parse(request.body);
+  const idempotencyFor = (request: import('fastify').FastifyRequest, scope: string, payload: unknown) => {
+    const header = request.headers['idempotency-key'];
+    if (typeof header === 'string' && header.length >= 8 && header.length <= 120) return header;
+    // Backward-compatible clients still get server-enforced, actor-scoped, payload-bound replay safety.
+    return `p5:${scope}:${requestHash(payload)}`;
+  };
+
+  async function performSupplierResponse(request: import('fastify').FastifyRequest, user: Principal,
+    lineId: string, body: SupplierResponseBody, allocationId?: string) {
     const policy = await omsPolicy(pool);
-
+    const payload = { lineId, allocationId: allocationId ?? null, ...body };
+    const key = idempotencyFor(request, lineId, payload);
     return transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, 'wholesale_supplier.respond', key, requestHash(payload));
+      if (claim.previous) return claim.previous;
+
       const line = await one<LineRow>(client, 'SELECT * FROM child_order_lines WHERE id = $1 FOR UPDATE', [lineId]);
       if (!line) throw notFound();
-      if (line.seller_id !== user.id) throw forbidden(); // IDOR guard (§133)
+      if (line.seller_id !== user.id) throw forbidden();
+      if (allocationId) {
+        const scoped = await one<{ id: string }>(client,
+          `SELECT id FROM order_source_allocations
+           WHERE id = $1 AND line_id = $2 AND owner_supplier_id = $3
+             AND source_type = 'supplier_external' AND status = 'pending' FOR UPDATE`,
+          [allocationId, lineId, user.id]);
+        if (!scoped) throw notFound();
+      }
       if (line.status !== 'awaiting_supplier') {
         throw code(409, 'SUPPLIER_CONFIRMATION_REQUIRED', 'این ردیف در وضعیت انتظار پاسخ تأمین‌کننده نیست.');
       }
@@ -1808,23 +1869,26 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       if (!child || child.status !== 'pending_payment') throw code(409, 'CHILD_ALREADY_PAID', 'زیرسفارش قابل تغییر نیست.');
 
       const externalAllocs = await client.query<AllocationRow>(
-        `SELECT * FROM order_source_allocations WHERE line_id = $1 AND source_type = 'supplier_external' AND status = 'pending' FOR UPDATE`,
-        [lineId]);
-      const externalQty = externalAllocs.rows.reduce((sum, a) => sum + a.quantity, 0);
-      const physicalQty = line.requested_series - externalQty;
+        `SELECT * FROM order_source_allocations
+         WHERE line_id = $1 AND owner_supplier_id = $2 AND source_type = 'supplier_external' AND status = 'pending'
+         ORDER BY created_at FOR UPDATE`, [lineId, user.id]);
+      if (!externalAllocs.rows.length) throw conflict('نیاز بیرونی فعالی برای این ردیف وجود ندارد.');
+      const externalQty = externalAllocs.rows.reduce((sum, allocation) => sum + allocation.quantity, 0);
+      const physicalQty = Math.max(0, line.requested_series - externalQty);
+      let responseStatus: string;
+      let lineStatus: string;
 
       if (body.action === 'confirm') {
-        // §32-§33: confirmation = atomic capacity reservation; failure means NOT confirmed.
-        for (const alloc of externalAllocs.rows) {
-          if (!alloc.offer_id) throw code(409, 'CAPACITY_RESERVATION_FAILED', 'پیشنهاد مرتبط با این تخصیص یافت نشد.');
+        // Acceptance atomically reserves declared capacity; OMS holds are durable and have no standalone TTL.
+        for (const allocation of externalAllocs.rows) {
+          if (!allocation.offer_id) throw code(409, 'CAPACITY_RESERVATION_FAILED', 'پیشنهاد مرتبط با این تخصیص یافت نشد.');
           let reservationId: string;
           try {
             const reserved = await reserveSupplierCapacity(client, {
-              offerId: alloc.offer_id, quantity: alloc.quantity,
-              ttlMinutes: policy.externalReservationTtlMinutes,
-              referenceType: 'order_source_allocation', referenceId: alloc.id,
-              note: `تأیید تأمین زیرسفارش ${child.reference}`, actorId: user.id,
-              idempotencyKey: `oms-capacity:${alloc.id}`,
+              offerId: allocation.offer_id, quantity: allocation.quantity, ttlMinutes: null,
+              referenceType: 'order_source_allocation', referenceId: allocation.id,
+              note: `پذیرش تأمین زیرسفارش ${child.reference}`, actorId: user.id,
+              idempotencyKey: `oms-capacity:${allocation.id}`,
             });
             reservationId = reserved.reservationId;
           } catch {
@@ -1832,55 +1896,206 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
           }
           await client.query(
             `UPDATE order_source_allocations SET status = 'reserved', capacity_reservation_id = $2,
-               reservation_expires_at = $3, reserved_at = now(), updated_at = now() WHERE id = $1`,
-            [alloc.id, reservationId, new Date(Date.now() + policy.externalReservationTtlMinutes * 60_000)]);
+               reservation_expires_at = NULL, reserved_at = now(), updated_at = now() WHERE id = $1`,
+            [allocation.id, reservationId]);
         }
+        responseStatus = 'accepted';
+        lineStatus = 'confirmed';
         await client.query(
           `UPDATE child_order_lines SET status = 'confirmed', confirmed_series = requested_series,
-             responded_at = now(), updated_at = now() WHERE id = $1`, [lineId]);
-        await appendNegotiation(client, lineId, { type: 'supplier_confirmed', series: line.requested_series, by: user.id });
+             supplier_response_status = 'accepted', supplier_response_note = $2,
+             supplier_responded_at = now(), supplier_committed_series = 0,
+             supplier_committed_at = NULL, supplier_ready_at = NULL,
+             responded_at = now(), updated_at = now() WHERE id = $1`, [lineId, body.note ?? null]);
+        await appendNegotiation(client, lineId, { type: 'supplier_confirmed', series: line.requested_series, by: user.id, note: body.note ?? '' });
       } else if (body.action === 'counter') {
         const proposed = body.proposedSeries;
-        if (!proposed || proposed >= line.requested_series) {
-          throw badRequest('پیشنهاد جایگزین باید کمتر از تعداد درخواستی باشد.');
-        }
-        if (proposed < physicalQty) {
-          throw badRequest('پیشنهاد جایگزین نمی‌تواند از سهم موجودی تأییدشده نزد کلبه کمتر باشد.');
-        }
+        if (!proposed || proposed >= line.requested_series) throw badRequest('پیشنهاد جایگزین باید کمتر از تعداد درخواستی باشد.');
+        if (proposed < physicalQty) throw badRequest('پیشنهاد جایگزین نمی‌تواند از سهم موجودی تأییدشده نزد کلبه کمتر باشد.');
+        responseStatus = 'revised';
+        lineStatus = 'awaiting_buyer';
         await client.query(
           `UPDATE child_order_lines SET status = 'awaiting_buyer', proposed_series = $2,
-             responded_at = now(), updated_at = now() WHERE id = $1`, [lineId, proposed]);
+             supplier_response_status = 'revised', supplier_response_note = $3,
+             supplier_responded_at = now(), supplier_committed_series = 0,
+             supplier_committed_at = NULL, supplier_ready_at = NULL,
+             responded_at = now(), updated_at = now() WHERE id = $1`, [lineId, proposed, body.note ?? null]);
         await appendNegotiation(client, lineId, {
           type: 'supplier_counter', requested: line.requested_series, proposed, by: user.id, note: body.note ?? '',
         });
       } else {
-        // reject: whole line out; physical holds released; siblings unaffected (§40).
-        await releaseLineHolds(client, line, user.id, 'رد تأمین توسط تأمین‌کننده');
+        // Rejection releases any physical holds but preserves every series of OMS demand as reassignable pending allocations.
+        await releaseLineHolds(client, line, user.id, 'رد نیاز تأمین توسط تأمین‌کننده', true);
         await removeLinePieces(client, line, user.id);
+        responseStatus = 'rejected';
+        lineStatus = 'timed_out';
         await client.query(
-          `UPDATE child_order_lines SET status = 'rejected', responded_at = now(), updated_at = now() WHERE id = $1`, [lineId]);
+          `UPDATE child_order_lines SET status = 'timed_out', proposed_series = NULL, confirmed_series = NULL,
+             supplier_response_status = 'rejected', supplier_response_note = $2, supplier_responded_at = now(),
+             supplier_committed_series = 0, supplier_committed_at = NULL, supplier_ready_at = NULL,
+             responded_at = now(), updated_at = now() WHERE id = $1`, [lineId, body.note ?? null]);
         await appendNegotiation(client, lineId, { type: 'supplier_rejected', by: user.id, note: body.note ?? '' });
-        await recomputeChildTotals(client, line.child_order_id);
       }
 
       const updated = await recomputeChild(client, line.child_order_id, policy);
-      if (updated.supply_status === 'rejected') {
-        // every line rejected → child drops out of the consolidation denominator (§43).
-        await client.query(
-          `UPDATE orders SET status = 'cancelled', composition_state = 'removed', updated_at = now() WHERE id = $1`,
-          [line.child_order_id]);
-        await client.query(
-          `INSERT INTO order_events(id, order_id, from_status, to_status, actor_id, note)
-           VALUES ($1,$2,'pending_payment','cancelled',$3,'رد کامل تأمین — زیرسفارش از تجمیع خارج شد')`,
-          [randomUUID(), line.child_order_id, user.id]);
-      }
-      await audit(client, user.id, `wholesale_line.${body.action}`, 'child_order_line', lineId, undefined,
-        { childOrderId: line.child_order_id, proposedSeries: body.proposedSeries ?? null }, request.ip);
+      await audit(client, user.id, `wholesale_supplier.${body.action}`, 'child_order_line', lineId,
+        undefined, { childOrderId: line.child_order_id, allocationId: allocationId ?? null,
+          proposedSeries: body.proposedSeries ?? null, responseStatus }, request.ip);
       await outbox(client, `child_order.supplier_${body.action}`, 'order', line.child_order_id,
-        { lineId, action: body.action, proposedSeries: body.proposedSeries ?? null });
-      return { ok: true, lineStatus: body.action === 'confirm' ? 'confirmed' : body.action === 'counter' ? 'awaiting_buyer' : 'rejected', child: { id: updated.id, supplyStatus: updated.supply_status, paymentEligibility: updated.payment_eligibility } };
+        { lineId, action: body.action, proposedSeries: body.proposedSeries ?? null, responseStatus });
+      const result = { ok: true, lineStatus, responseStatus,
+        child: { id: updated.id, supplyStatus: updated.supply_status, paymentEligibility: updated.payment_eligibility } };
+      await completeIdempotency(client, user.id, 'wholesale_supplier.respond', key, result);
+      return result;
     });
+  }
+
+  app.get('/api/v1/wholesale/supplier/supply-requests', async (request) => {
+    const user = await principal(request, pool, config);
+    await requireApprovedActiveSupplier(pool, user);
+    const query = z.object({
+      state: z.enum(['open', 'history', 'all']).default('open'),
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+    }).parse(request.query ?? {});
+    const rows = await pool.query(
+      `SELECT a.id AS "allocationId", l.id AS "lineId", o.id AS "childOrderId", o.reference AS "orderReference",
+              o.status AS "childStatus", o.payment_eligibility AS "paymentEligibility",
+              o.child_fulfillment AS "childFulfillment", p.name AS "productName", t.name AS "seriesName",
+              t.color_label AS "colorLabel", l.requested_series AS "requestedSeries",
+              a.quantity AS "externalSeries", l.proposed_series AS "proposedSeries",
+              l.confirmed_series AS "confirmedSeries", l.status AS "lineStatus",
+              a.status AS "allocationStatus", l.supplier_response_status AS "responseStatus",
+              l.supplier_response_note AS "responseNote", l.supplier_committed_series AS "committedSeries",
+              l.supplier_responded_at AS "respondedAt", l.supplier_committed_at AS "committedAt",
+              l.supplier_ready_at AS "readyAt", a.created_at AS "createdAt", a.updated_at AS "updatedAt"
+       FROM order_source_allocations a
+       JOIN child_order_lines l ON l.id = a.line_id AND l.seller_id = $1
+       JOIN orders o ON o.id = a.child_order_id AND o.master_order_id IS NOT NULL
+       JOIN products p ON p.id = l.product_id
+       JOIN series_templates t ON t.id = l.series_template_id
+       WHERE a.owner_supplier_id = $1 AND a.source_type = 'supplier_external'
+         AND ($2::text = 'all'
+              OR ($2::text = 'open' AND a.status IN ('pending','reserved')
+                  AND l.supplier_response_status IN ('unanswered','revised','accepted','committed','ready'))
+              OR ($2::text = 'history' AND (a.status NOT IN ('pending','reserved')
+                  OR l.supplier_response_status IN ('rejected','cancelled'))))
+       ORDER BY a.created_at DESC LIMIT $3`, [user.id, query.state, query.limit]);
+    return { items: rows.rows };
   });
+
+  app.post('/api/v1/wholesale/supplier/supply-requests/:allocationId/respond', async (request) => {
+    const user = await principal(request, pool, config);
+    await requireApprovedActiveSupplier(pool, user);
+    const { allocationId } = z.object({ allocationId: z.uuid() }).parse(request.params);
+    const body = respondSchema.parse(request.body);
+    const scoped = await one<{ line_id: string }>(pool,
+      `SELECT line_id FROM order_source_allocations
+       WHERE id = $1 AND owner_supplier_id = $2 AND source_type = 'supplier_external'`, [allocationId, user.id]);
+    if (!scoped) throw notFound();
+    return performSupplierResponse(request, user, scoped.line_id, body, allocationId);
+  });
+
+  app.post('/api/v1/wholesale/supplier/lines/:lineId/respond', async (request) => {
+    const user = await principal(request, pool, config);
+    await requireApprovedActiveSupplier(pool, user);
+    const { lineId } = z.object({ lineId: z.uuid() }).parse(request.params);
+    const body = respondSchema.parse(request.body);
+    return performSupplierResponse(request, user, lineId, body);
+  });
+
+  async function transitionSupplierAllocation(request: import('fastify').FastifyRequest,
+    user: Principal, allocationId: string, action: 'commit' | 'ready' | 'cancel', note: string) {
+    const policy = await omsPolicy(pool);
+    const payload = { allocationId, action, note };
+    const key = idempotencyFor(request, allocationId, payload);
+    return transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, `wholesale_supplier.${action}`, key, requestHash(payload));
+      if (claim.previous) return claim.previous;
+      const current = await one<AllocationRow & {
+        seller_id: string; line_status: string; response_status: string; child_status: string;
+        payment_eligibility: string; child_fulfillment: string | null;
+      }>(client,
+        `SELECT a.*, l.seller_id, l.status AS line_status, l.supplier_response_status AS response_status,
+                o.status AS child_status, o.payment_eligibility, o.child_fulfillment
+         FROM order_source_allocations a
+         JOIN child_order_lines l ON l.id = a.line_id
+         JOIN orders o ON o.id = a.child_order_id
+         WHERE a.id = $1 FOR UPDATE OF a,l,o`, [allocationId]);
+      if (!current || current.owner_supplier_id !== user.id || current.seller_id !== user.id
+        || current.source_type !== 'supplier_external') throw notFound();
+      const line = await one<LineRow>(client, 'SELECT * FROM child_order_lines WHERE id = $1 FOR UPDATE', [current.line_id]);
+      if (!line) throw notFound();
+      if (current.child_status === 'cancelled') throw conflict('سفارش مادر یا زیرسفارش لغو شده است.');
+      let result: Record<string, unknown>;
+
+      if (action === 'commit') {
+        if (current.status !== 'reserved' || current.response_status !== 'accepted'
+          || current.child_status !== 'pending_payment'
+          || !['ready','paid'].includes(current.payment_eligibility)) {
+          throw conflict('فقط تأمین پذیرفته‌شده و رزروشده، پیش از ارسال، قابل تعهد نهایی است.');
+        }
+        const committed = await one<{ quantity: number }>(client,
+          `SELECT COALESCE(sum(quantity),0)::int AS quantity FROM order_source_allocations
+           WHERE line_id = $1 AND owner_supplier_id = $2 AND source_type = 'supplier_external' AND status = 'reserved'`,
+          [line.id, user.id]);
+        await client.query(
+          `UPDATE child_order_lines SET supplier_response_status = 'committed',
+             supplier_response_note = COALESCE(NULLIF($2,''), supplier_response_note),
+             supplier_committed_series = $3, supplier_committed_at = now(), updated_at = now() WHERE id = $1`,
+          [line.id, note, committed?.quantity ?? current.quantity]);
+        await appendNegotiation(client, line.id, { type: 'supplier_committed', series: committed?.quantity ?? current.quantity,
+          by: user.id, note, at: new Date().toISOString() });
+        result = { allocationId, responseStatus: 'committed', committedSeries: committed?.quantity ?? current.quantity };
+      } else if (action === 'ready') {
+        if (current.status !== 'reserved' || current.response_status !== 'committed'
+          || current.payment_eligibility !== 'paid' || current.line_status !== 'confirmed') {
+          throw conflict('آماده‌بودن فقط پس از تعهد نهایی و پرداخت خریدار قابل ثبت است.');
+        }
+        await client.query(
+          `UPDATE child_order_lines SET supplier_response_status = 'ready', supplier_ready_at = now(),
+             supplier_response_note = COALESCE(NULLIF($2,''), supplier_response_note), updated_at = now() WHERE id = $1`,
+          [line.id, note]);
+        await appendNegotiation(client, line.id, { type: 'supplier_ready_for_kolbe', series: line.supplier_committed_series,
+          by: user.id, note, at: new Date().toISOString() });
+        result = { allocationId, responseStatus: 'ready', readyAt: new Date().toISOString(), inventoryChanged: false };
+      } else {
+        if (current.status !== 'reserved' || !['accepted','committed'].includes(current.response_status)
+          || current.child_status !== 'pending_payment' || current.payment_eligibility === 'paid'
+          || current.payment_eligibility === 'expired' || current.line_status !== 'confirmed') {
+          throw conflict('لغو تعهد فقط پیش از پرداخت و پیش از آماده‌سازی/ارسال مجاز است.');
+        }
+        await releaseLineHolds(client, line, user.id, note || 'لغو تعهد تأمین‌کننده — حفظ نیاز سفارش', true);
+        await removeLinePieces(client, line, user.id);
+        await client.query(
+          `UPDATE child_order_lines SET status = 'timed_out', proposed_series = NULL, confirmed_series = NULL,
+             supplier_response_status = 'cancelled', supplier_response_note = $2, supplier_responded_at = now(),
+             supplier_committed_series = 0, supplier_committed_at = NULL, supplier_ready_at = NULL,
+             responded_at = now(), updated_at = now() WHERE id = $1`, [line.id, note || 'لغو تعهد توسط تأمین‌کننده']);
+        await client.query('UPDATE orders SET supplier_respond_by = NULL, updated_at = now() WHERE id = $1', [line.child_order_id]);
+        await appendNegotiation(client, line.id, { type: 'supplier_cancelled', by: user.id, note, at: new Date().toISOString() });
+        const updated = await recomputeChild(client, line.child_order_id, policy);
+        result = { allocationId, responseStatus: 'cancelled', preservedDemandSeries: line.requested_series,
+          child: { id: updated.id, supplyStatus: updated.supply_status, paymentEligibility: updated.payment_eligibility } };
+      }
+      await audit(client, user.id, `wholesale_supplier.${action}`, 'order_source_allocation', allocationId,
+        { status: current.status, responseStatus: current.response_status }, result, request.ip);
+      await outbox(client, `child_order.supplier_${action}`, 'order', line.child_order_id,
+        { allocationId, lineId: line.id, ...result });
+      await completeIdempotency(client, user.id, `wholesale_supplier.${action}`, key, result);
+      return result;
+    });
+  }
+
+  const transitionBody = z.object({ note: z.string().trim().max(400).optional() }).strict();
+  for (const action of ['commit', 'ready', 'cancel'] as const) {
+    app.post(`/api/v1/wholesale/supplier/supply-requests/:allocationId/${action}`, async (request) => {
+      const user = await principal(request, pool, config);
+      await requireApprovedActiveSupplier(pool, user);
+      const { allocationId } = z.object({ allocationId: z.uuid() }).parse(request.params);
+      const body = transitionBody.parse(request.body ?? {});
+      return transitionSupplierAllocation(request, user, allocationId, action, body.note ?? '');
+    });
+  }
 
   /* ============================ buyer decisions (§36-§39) ============================ */
 
@@ -1937,8 +2152,7 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
           let reservationId: string;
           try {
             const reserved = await reserveSupplierCapacity(client, {
-              offerId: offer.id, quantity: newExternal,
-              ttlMinutes: policy.externalReservationTtlMinutes,
+              offerId: offer.id, quantity: newExternal, ttlMinutes: null,
               referenceType: 'order_source_allocation', referenceId: alloc.id,
               note: `پذیرش پیشنهاد جایگزین ${child.reference}`, actorId: user.id,
               idempotencyKey: `oms-capacity-accept:${alloc.id}`,
@@ -1949,8 +2163,8 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
           }
           await client.query(
             `UPDATE order_source_allocations SET quantity = $2, status = 'reserved', capacity_reservation_id = $3,
-               reservation_expires_at = $4, reserved_at = now(), updated_at = now() WHERE id = $1`,
-            [alloc.id, newExternal, reservationId, new Date(Date.now() + policy.externalReservationTtlMinutes * 60_000)]);
+               reservation_expires_at = NULL, reserved_at = now(), updated_at = now() WHERE id = $1`,
+            [alloc.id, newExternal, reservationId]);
         }
 
         // shrink piece lines from requested → proposed (pre-payment commercial resize).
@@ -1965,7 +2179,9 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         }
         await client.query(
           `UPDATE child_order_lines SET status = 'confirmed', confirmed_series = $2::int,
-             line_total_rial = unit_series_price_rial * $2::bigint, decided_at = now(), updated_at = now() WHERE id = $1`,
+             line_total_rial = unit_series_price_rial * $2::bigint, supplier_response_status = 'accepted',
+             supplier_responded_at = now(), supplier_committed_series = 0, supplier_committed_at = NULL,
+             supplier_ready_at = NULL, decided_at = now(), updated_at = now() WHERE id = $1`,
           [lineId, proposed]);
         await appendNegotiation(client, lineId, { type: 'buyer_accepted_counter', series: proposed, by: user.id });
         await recomputeChildTotals(client, line.child_order_id);
@@ -2047,7 +2263,7 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
       const blocked = await one<{ count: string }>(client,
         `SELECT count(*)::text AS count FROM orders
          WHERE master_order_id = $1 AND composition_state = 'included'
-           AND supply_status IN ('unresolved', 'awaiting_supplier', 'partially_confirmed', 'awaiting_buyer', 'exception')`, [id]);
+           AND supply_status IN ('unresolved', 'awaiting_supplier', 'partially_confirmed', 'awaiting_buyer', 'timed_out', 'exception')`, [id]);
       if (Number(blocked?.count ?? 0) > 0) {
         throw code(409, 'SUPPLIER_CONFIRMATION_REQUIRED', 'هنوز زیرسفارش‌هایی با تأمین نامشخص وجود دارد — ابتدا تعیین تکلیف کنید.');
       }
@@ -2305,33 +2521,47 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
     });
   });
 
-  /** Supplier dispatch of ORDER-BOUND external goods → ALWAYS to the central wholesale warehouse (§79-§80). */
+  /** Supplier dispatch of ORDER-BOUND external goods → ALWAYS to Kolbe, never the VIP buyer. */
   app.post('/api/v1/wholesale/supplier/children/:id/dispatch', async (request) => {
     const user = await principal(request, pool, config);
-    if (!user.roles.includes('supplier')) throw forbidden();
+    await requireApprovedActiveSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    // §137: destination is NOT accepted from the client — strict schema rejects any attempt.
-    const body = z.object({ trackingNote: z.string().max(400).optional() }).strict().parse(request.body ?? {});
+    // Destination is server-resolved; the body cannot name a buyer or warehouse.
+    const body = z.object({ trackingNote: z.string().trim().max(400).optional() }).strict().parse(request.body ?? {});
+    const idemPayload = { childOrderId: id, trackingNote: body.trackingNote ?? null };
+    const key = idempotencyFor(request, id, idemPayload);
     return transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, 'wholesale_supplier.dispatch', key, requestHash(idemPayload));
+      if (claim.previous) return claim.previous;
       const child = await one<ChildRow>(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
-      if (!child || child.seller_id !== user.id) throw forbidden(); // IDOR guard
+      if (!child || child.seller_id !== user.id) throw notFound();
       if (child.payment_eligibility !== 'paid') throw code(409, 'PAYMENT_NOT_READY', 'زیرسفارش هنوز پرداخت نشده است — ارسال مجاز نیست.');
       const destination = await centralWholesaleWarehouse(client);
-      const allocations = await client.query<AllocationRow>(
-        `SELECT * FROM order_source_allocations
-         WHERE child_order_id = $1 AND source_type = 'supplier_external' AND status = 'reserved' AND dispatched_series = 0
-         ORDER BY created_at FOR UPDATE`, [id]);
-      if (!allocations.rows.length) throw conflict('تخصیص خارجی آماده ارسال وجود ندارد.');
-      for (const alloc of allocations.rows) {
+      const allocations = await client.query<AllocationRow & { supplier_response_status: string; supplier_committed_series: number }>(
+        `SELECT a.*, l.supplier_response_status, l.supplier_committed_series
+         FROM order_source_allocations a JOIN child_order_lines l ON l.id = a.line_id
+         WHERE a.child_order_id = $1 AND a.owner_supplier_id = $2 AND l.seller_id = $2
+           AND a.source_type = 'supplier_external' AND a.status = 'reserved' AND a.dispatched_series = 0
+           AND l.supplier_response_status = 'ready'
+         ORDER BY a.created_at FOR UPDATE OF a,l`, [id, user.id]);
+      if (!allocations.rows.length) throw conflict('تخصیص خارجی تعهدشده و آماده ارسال وجود ندارد.');
+      for (const allocation of allocations.rows) {
         await client.query(
           `UPDATE order_source_allocations SET dispatched_series = quantity, warehouse_id = $2, updated_at = now() WHERE id = $1`,
-          [alloc.id, destination]);
+          [allocation.id, destination]);
         await client.query(
-          `UPDATE child_order_lines SET dispatched_series = dispatched_series + $2, updated_at = now() WHERE id = $1`,
-          [alloc.line_id, alloc.quantity]);
-        // capacity is now truly used — consume the reservation (never returns to availableToRequest).
-        if (alloc.capacity_reservation_id) {
-          await settleSupplierCapacityReservation(client, alloc.capacity_reservation_id, 'consumed');
+          `UPDATE child_order_lines SET dispatched_series = dispatched_series + $2,
+             supplier_response_status = 'ready', supplier_committed_series = GREATEST(supplier_committed_series,$2),
+             supplier_committed_at = COALESCE(supplier_committed_at,now()),
+             supplier_ready_at = COALESCE(supplier_ready_at,now()), updated_at = now() WHERE id = $1`,
+          [allocation.line_id, allocation.quantity]);
+        if (allocation.supplier_response_status !== 'ready') {
+          await appendNegotiation(client, allocation.line_id, { type: 'supplier_dispatch_implied_ready',
+            series: allocation.quantity, by: user.id, at: new Date().toISOString() });
+        }
+        // Capacity becomes consumed at actual dispatch; this does not increase physical WMS stock.
+        if (allocation.capacity_reservation_id) {
+          await settleSupplierCapacityReservation(client, allocation.capacity_reservation_id, 'consumed');
         }
       }
       await client.query(
@@ -2343,7 +2573,9 @@ export function registerWholesaleOmsRoutes(app: FastifyInstance, pool: DbPool, c
         { destinationWarehouseId: destination, allocations: allocations.rows.map((a) => a.id) }, request.ip);
       await outbox(client, 'child_order.supplier_dispatched', 'order', id,
         { childOrderId: id, masterOrderId: child.master_order_id, destinationWarehouseId: destination });
-      return { ok: true, destinationWarehouseId: destination, childFulfillment: 'dispatched' };
+      const result = { ok: true, destinationWarehouseId: destination, childFulfillment: 'dispatched' };
+      await completeIdempotency(client, user.id, 'wholesale_supplier.dispatch', key, result);
+      return result;
     });
   });
 

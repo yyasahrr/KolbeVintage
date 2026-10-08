@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission, type Principal } from './auth.js';
+import { principal, requireApprovedActiveSupplier, requirePermission, type Principal } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
@@ -108,6 +108,7 @@ export async function expireSupplierCapacityReservations(client: DbClient): Prom
   const due = await client.query<{ id: string }>(
     `SELECT id FROM supplier_capacity_reservations
      WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < now()
+       AND reference_type IS DISTINCT FROM 'order_source_allocation'
      ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT 200`);
   for (const row of due.rows) await settleSupplierCapacityReservation(client, row.id, 'expired');
   return due.rows.length;
@@ -190,12 +191,10 @@ async function assertSupplierOwnsProduct(db: DbPool | DbClient, user: Principal,
 }
 
 export function registerSupplierOfferRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
-  const isSupplier = (user: Principal) => user.roles.includes('supplier');
-
   /** Supplier creates/updates its own offer (upsert on the exact scope). */
   app.post('/api/v1/supplier/offers', async (request, reply) => {
     const user = await principal(request, pool, config);
-    if (!isSupplier(user)) throw forbidden();
+    await requireApprovedActiveSupplier(pool, user);
     const body = offerBody.parse(request.body);
     if (body.maxOrderSeries != null && body.maxOrderSeries < body.minOrderSeries) {
       throw badRequest('حداکثر سفارش نمی‌تواند از حداقل سفارش کمتر باشد.');
@@ -251,7 +250,7 @@ export function registerSupplierOfferRoutes(app: FastifyInstance, pool: DbPool, 
       offset: z.coerce.number().int().min(0).default(0),
     }).parse(request.query ?? {});
     const admin = user.permissions.includes('suppliers:manage');
-    if (!admin && !isSupplier(user)) throw forbidden();
+    if (!admin) await requireApprovedActiveSupplier(pool, user);
     const supplierId = admin ? (query.supplierId ?? null) : user.id; // IDOR: suppliers never cross scope
     const where: string[] = []; const params: unknown[] = [];
     if (supplierId) { params.push(supplierId); where.push(`o.supplier_id = $${params.length}`); }
@@ -268,7 +267,7 @@ export function registerSupplierOfferRoutes(app: FastifyInstance, pool: DbPool, 
   /** §31/§32: supplier declares capacity (or just re-confirms the current number). */
   app.post('/api/v1/supplier/offers/:id/capacity', async (request) => {
     const user = await principal(request, pool, config);
-    if (!isSupplier(user)) throw forbidden();
+    await requireApprovedActiveSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = z.object({
       declaredCapacity: z.number().int().min(0).max(100000).optional(),
@@ -305,11 +304,12 @@ export function registerSupplierOfferRoutes(app: FastifyInstance, pool: DbPool, 
     const user = await principal(request, pool, config);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const { status } = z.object({ status: z.enum(['active', 'paused', 'archived']) }).parse(request.body);
+    const admin = user.permissions.includes('suppliers:manage');
+    if (!admin) await requireApprovedActiveSupplier(pool, user);
     return transaction(pool, async (client) => {
       const offer = await one<{ id: string; supplier_id: string; status: string }>(client,
         'SELECT id, supplier_id, status FROM supplier_offers WHERE id = $1 FOR UPDATE', [id]);
       if (!offer) throw notFound();
-      const admin = user.permissions.includes('suppliers:manage');
       if (!admin && offer.supplier_id !== user.id) throw forbidden();
       await client.query(`UPDATE supplier_offers SET status = $2, version = version + 1, updated_at = now() WHERE id = $1`, [id, status]);
       await audit(client, user.id, 'supplier_offer.status_changed', 'supplier_offer', id,

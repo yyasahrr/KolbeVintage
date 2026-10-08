@@ -288,6 +288,15 @@ try {
   check('catalog exposes persisted server file reference (no data URL)',
     published?.metadata.images?.[0]?.fileId === uploaded.id);
 
+  {
+    const supplierAuthoring = await readFile(new URL('../../src/components/supplier-product-series-authoring.tsx', import.meta.url), 'utf8');
+    check('P5 supplier product creation retains real image upload and attaches server file references',
+      supplierAuthoring.includes('filesApi.upload(file)')
+      && supplierAuthoring.includes('افزودن تصاویر محصول')
+      && supplierAuthoring.includes('metadata: { images: productImages.map(({ fileId, url }) => ({ fileId, url })) }'),
+      'Supplier form uploads to /files and submits fileId-backed product metadata');
+  }
+
   // =================== Product Studio remediation (Prompt-1) ===================
   // Static contract checks on the single canonical Studio source: the 8-step nav, the explicit
   // publish control, the absence of template binding, and the merged specs + size-guide step.
@@ -825,6 +834,8 @@ try {
   const adminSrcForIa = readFileSync(join(repoRoot, 'src/portals/admin.tsx'), 'utf8');
   const studioSrcForAuth = readFileSync(join(repoRoot, 'src/portals/studio.tsx'), 'utf8');
   const supplierSrcForAuth = readFileSync(join(repoRoot, 'src/portals/supplier.tsx'), 'utf8');
+  const supplierWorkspaceSrcForAuth = readFileSync(join(repoRoot, 'src/portals/supplier-portal-workspace.tsx'), 'utf8');
+  const supplierNotificationsSrcForAuth = readFileSync(join(repoRoot, 'src/components/supplier-notifications-panel.tsx'), 'utf8');
   const appSrcForAuth = readFileSync(join(repoRoot, 'src/App.tsx'), 'utf8');
   const childPanelSrc = readFileSync(join(repoRoot, 'src/components/master-child-orders.tsx'), 'utf8');
   check('orders hub has exactly TWO tabs: سفارشات خرده / سفارشات عمده / VIP',
@@ -857,11 +868,30 @@ try {
   check('VIP is NEVER a frontend/demo role: no demo VIP shortcut, no hardcoded demo password',
     !appSrcForAuth.includes('KolbeDemo123456!') && !appSrcForAuth.includes('ورود آزمایشی VIP') &&
     appSrcForAuth.includes('isWholesaleMember') && appSrcForAuth.includes('DEMO_MODE'));
-  check('the supplier portal gates on the SERVER cooperation state and shows the real pending/rejected state',
-    (supplierSrcForAuth.match(/me\.supplier\?\.cooperationStatus/g) ?? []).length >= 2 &&
-    supplierSrcForAuth.includes('status === "approved"') &&
-    supplierSrcForAuth.includes('درخواست عضویت تأمین‌کننده در حال بررسی است') &&
-    supplierSrcForAuth.includes('درخواست عضویت تأمین‌کننده تأیید نشد'));
+  check('the supplier portal gates on the server cooperation/activity state and shows real pending/inactive/rejected states',
+    supplierSrcForAuth.includes('const identity = await authApi.me()') &&
+    supplierSrcForAuth.includes('identity.supplier?.cooperationStatus') &&
+    supplierSrcForAuth.includes('identity.supplier?.activityStatus') &&
+    supplierSrcForAuth.includes('status === "approved"') && supplierSrcForAuth.includes('activity === "active"') &&
+    supplierSrcForAuth.includes('درخواست همکاری شما هنوز تأیید نشده است') &&
+    supplierSrcForAuth.includes('درخواست همکاری تأیید نشده است') &&
+    supplierSrcForAuth.includes('حساب تأمین‌کننده تأیید شده، اما در حال حاضر غیرفعال است'));
+  check('Supplier product review history and safe resubmission remain reachable beside the scoped catalogue',
+    supplierWorkspaceSrcForAuth.includes('import { SupplierReviewPanel }')
+    && supplierWorkspaceSrcForAuth.includes('<SupplierReviewPanel flash={flash} />')
+    && supplierWorkspaceSrcForAuth.includes('supplierPortalApi.products()'),
+    'server review decisions/resubmit + Supplier-owned catalogue');
+  check('Supplier support tickets and notification inbox are reachable and bound to the authenticated Supplier',
+    supplierWorkspaceSrcForAuth.includes('<TicketCenter perspective="owner" ownerId={supplierId} ownerName={supplierName} ownerType="supplier" />')
+    && supplierWorkspaceSrcForAuth.includes('<SupplierNotificationsPanel />')
+    && supplierWorkspaceSrcForAuth.includes('title: "پشتیبانی و تیکت‌ها"')
+    && supplierWorkspaceSrcForAuth.includes('title: "اعلان‌ها"')
+    && supplierSrcForAuth.includes('supplierId={session.id}')
+    && supplierNotificationsSrcForAuth.includes('notificationsApi.list({ limit: "100" })')
+    && supplierNotificationsSrcForAuth.includes('notificationsApi.unreadCount()')
+    && supplierNotificationsSrcForAuth.includes('notificationsApi.readAll()')
+    && supplierNotificationsSrcForAuth.includes('notificationsApi.read(id)'),
+    'TicketCenter owner + user-scoped notification list/unread/read/read-all');
   check('the auth surface exposes BOTH real login methods and only one set of inputs at a time',
     studioSrcForAuth.includes('setLoginMethod') && studioSrcForAuth.includes('شماره موبایل و کد یکبارمصرف') &&
     studioSrcForAuth.includes('ایمیل و رمز عبور') && studioSrcForAuth.includes('autoComplete="one-time-code"') &&
@@ -883,11 +913,12 @@ try {
     appSrcForAuth.includes('authUser.isWholesaleMember || authUser.roles.includes("vip")') &&
     appSrcForAuth.includes('DEMO_MODE && buyer?.status'));
   check('supplier portal auth is SERVER-derived (JWT + /auth/me roles) with no client-side bypass left',
-    supplierSrcForAuth.includes('const me = await authApi.me()') &&
-    supplierSrcForAuth.includes('me.roles.includes("supplier")') &&
+    supplierSrcForAuth.includes('const identity = await authApi.me()') &&
+    supplierSrcForAuth.includes('identity.roles.includes("supplier")') &&
+    supplierSrcForAuth.includes('status === "approved"') && supplierSrcForAuth.includes('activity === "active"') &&
     !supplierSrcForAuth.includes('kolbe-supplier') && !supplierSrcForAuth.includes('demo-session') &&
     !/if\s*\(\s*demo\s*\)\s*\{\s*setAuthed/.test(supplierSrcForAuth) &&
-    supplierSrcForAuth.includes('authApi.logout'));
+    supplierSrcForAuth.includes('authApi.logout') && supplierWorkspaceSrcForAuth.includes('dir="rtl"'));
   check('the retired inline 2FA modal is gone — OTP lives in the canonical auth screens',
     !appSrcForAuth.includes('setTwoFactor(') && !appSrcForAuth.includes('ورود دومرحله‌ای'));
 

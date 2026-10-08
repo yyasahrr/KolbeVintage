@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 
+const backendRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const port = Number(process.env.VERIFY_PG_PORT ?? 55461);
 const db = await PGlite.create();
 const server = new PGLiteSocketServer({ db, port, host: '127.0.0.1', maxConnections: 20 });
@@ -21,7 +22,7 @@ const env = {
   JWT_SECRET: 'verify-secret-at-least-thirty-two-characters', PUBLIC_ORIGIN: 'http://127.0.0.1:5173', PG_POOL_MAX: '2',
 };
 const run = (args, overrides = {}, { silent = false } = {}) => new Promise((resolve) => {
-  const child = spawn('npm', args, { env: { ...env, ...overrides },
+  const child = spawn('npm', args, { cwd: backendRoot, env: { ...env, ...overrides },
     stdio: silent ? ['ignore', 'pipe', 'pipe'] : 'inherit', shell: process.platform === 'win32' });
   let captured = '';
   if (silent) {
@@ -57,17 +58,17 @@ try {
   check(rows.length === new Set(names).size, 'no duplicate migration rows (one file = one row)');
 
   // Integration (Agent 6): the merged inventory is the union of every agent's migrations.
-  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql','064_wholesale_master_oms.sql','065_supplier_settlement_core.sql','066_tryon_monetization.sql','067_cashback_wallet.sql','068_transfer_discrepancy.sql','069_catalog_category_authority.sql','070_series_commercial_pricing.sql','071_wholesale_child_cancellation.sql','072_customer_otp_login.sql'];
+  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql','064_wholesale_master_oms.sql','065_supplier_settlement_core.sql','066_tryon_monetization.sql','067_cashback_wallet.sql','068_transfer_discrepancy.sql','069_catalog_category_authority.sql','070_series_commercial_pricing.sql','071_wholesale_child_cancellation.sql','072_customer_otp_login.sql','073_supplier_oms_lifecycle.sql'];
   check(JSON.stringify(names) === JSON.stringify(expectedAll),
     'full merged inventory applied in name order', names.length === expectedAll.length ? '' : `got ${names.length} files`);
   const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '../src/migrations');
   const migrationFiles = readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
   const migrationIds = migrationFiles.map((name) => name.match(/^(\d{3}[a-z]?)/)?.[1] ?? '');
-  check(migrationFiles.length === 53 && JSON.stringify(migrationFiles) === JSON.stringify(expectedAll)
+  check(migrationFiles.length === 54 && JSON.stringify(migrationFiles) === JSON.stringify(expectedAll)
     && migrationIds.every(Boolean) && migrationIds.length === new Set(migrationIds).size,
-    '53 migration files have unique version identifiers (050z is a distinct recovery-snapshot id)');
-  check(names.slice(-2).join(',') === '071_wholesale_child_cancellation.sql,072_customer_otp_login.sql',
-    '071 wholesale child cancellation and 072 customer OTP login are the final unique migrations');
+    '54 migration files have unique version identifiers (050z is a distinct recovery-snapshot id)');
+  check(names.slice(-2).join(',') === '072_customer_otp_login.sql,073_supplier_oms_lifecycle.sql',
+    '072 customer OTP login and 073 Supplier OMS lifecycle are the final unique migrations');
   const reserved = names.filter((name) => /^02[5-9]_/.test(name));
   check(reserved.join(',') === '025_supplier360.sql,026_invoice_engine.sql,027_finance_operations.sql',
     '025 → 026 → 027 order preserved');
@@ -108,6 +109,10 @@ try {
     'orders child-order columns added (064)');
   check(await count("SELECT count(*)::int AS count FROM pg_constraint WHERE conrelid='payment_intents'::regclass AND conname='payment_intents_target_check' AND pg_get_constraintdef(oid) LIKE '%<= 1%'") === 1,
     'payment_intents target CHECK relaxed to at-most-one (064)');
+  check(await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name='child_order_lines' AND column_name IN ('supplier_response_status','supplier_response_note','supplier_responded_at','supplier_committed_series','supplier_committed_at','supplier_ready_at')") === 6,
+    '073 Supplier response/commit/readiness lifecycle extends the canonical OMS line');
+  check(await count("SELECT count(*)::int AS count FROM pg_indexes WHERE indexname IN ('child_order_lines_supplier_response_idx','order_source_allocations_supplier_demand_idx')") === 2,
+    '073 Supplier OMS list indexes installed');
 
   // Upgrade from the last pre-dedupe schema with conflicting size mappings and
   // products. 050z must snapshot dependents before the published 051 deletes.
@@ -167,10 +172,11 @@ try {
     check(await run(['run', '--silent', 'migrate'], { ...upgradeEnv, MIGRATION_STOP_AFTER: '' }) === 0,
       'upgrade applies 069/070 after the populated 068 fixture');
     const upgradedVersions = (await upgradeDb.query('SELECT version FROM schema_migrations ORDER BY version')).rows.map((row) => row.version);
-    check(upgradedVersions.length === 53 && upgradedVersions.includes('069_catalog_category_authority.sql')
+    check(upgradedVersions.length === 54 && upgradedVersions.includes('069_catalog_category_authority.sql')
       && upgradedVersions.includes('070_series_commercial_pricing.sql')
-      && upgradedVersions.includes('071_wholesale_child_cancellation.sql') && upgradedVersions.includes('072_customer_otp_login.sql'),
-      'populated upgrade records 069/070/071/072 exactly once in the 53-file sequence');
+      && upgradedVersions.includes('071_wholesale_child_cancellation.sql') && upgradedVersions.includes('072_customer_otp_login.sql')
+      && upgradedVersions.includes('073_supplier_oms_lifecycle.sql'),
+      'populated upgrade records 069/070/071/072/073 exactly once in the 54-file sequence');
 
     const badProductCategories = Number((await upgradeDb.query(`SELECT count(*)::int AS n FROM products p
       LEFT JOIN cms_categories c ON c.id = p.category_id WHERE c.id IS NULL OR c.name <> p.category`)).rows[0].n);

@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission, type Principal } from './auth.js';
+import { principal, requireApprovedActiveSupplier, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { audit, notifyByPermission, outbox } from './operations.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
@@ -82,12 +82,10 @@ async function inboundForUpdate(client: DbClient, id: string): Promise<InboundRo
 /* ----------------------------- routes ----------------------------- */
 
 export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: DbPool, config: Config) {
-  const isSupplier = (user: Principal) => user.roles.includes('supplier');
-
   /** §26 step 1 — supplier requests to send stock to Kolbe (series unit). */
   app.post('/api/v1/supplier/inbounds', async (request, reply) => {
     const user = await principal(request, pool, config);
-    if (!isSupplier(user)) throw forbidden();
+    await requireApprovedSupplier(pool, user);
     const body = z.object({
       productId: z.uuid(),
       seriesTemplateId: z.uuid(),
@@ -142,7 +140,7 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
       offset: z.coerce.number().int().min(0).default(0),
     }).parse(request.query ?? {});
     const admin = user.permissions.includes('wholesale:ops');
-    if (!admin && !isSupplier(user)) throw forbidden();
+    if (!admin) await requireApprovedSupplier(pool, user);
     const supplierId = admin ? (query.supplierId ?? null) : user.id;
     const where: string[] = []; const params: unknown[] = [];
     if (supplierId) { params.push(supplierId); where.push(`i.supplier_id = $${params.length}`); }
@@ -207,6 +205,7 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
     return transaction(pool, async (client) => {
       const inbound = await inboundForUpdate(client, id);
       const privileged = user.permissions.includes('wholesale:ops');
+      if (!privileged) await requireApprovedSupplier(client, user);
       if (!privileged && inbound.supplier_id !== user.id) throw forbidden(); // IDOR guard
       if (inbound.status !== 'approved') throw conflict('فقط درخواست تأییدشده قابل ارسال است.');
       await applySeriesMovement(client, {
@@ -327,6 +326,7 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
     return transaction(pool, async (client) => {
       const inbound = await inboundForUpdate(client, id);
       const privileged = user.permissions.includes('wholesale:ops');
+      if (!privileged) await requireApprovedSupplier(client, user);
       if (!privileged && inbound.supplier_id !== user.id) throw forbidden();
       if (!['requested', 'approved'].includes(inbound.status)) {
         throw conflict('پس از ارسال فیزیکی، لغو ممکن نیست؛ مسیر دریافت/QC را کامل کنید.');
@@ -350,8 +350,9 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
       offset: z.coerce.number().int().min(0).default(0),
     }).parse(request.query ?? {});
     const admin = user.permissions.includes('wholesale:ops') || user.permissions.includes('inventory:read');
-    // Suppliers may read ONLY their own consigned stock.
-    const supplierScope = admin ? (query.supplierId ?? null) : (user.roles.includes('supplier') ? user.id : null);
+    // Supplier stock is a P5 portal surface: active approved suppliers may read only their own stock.
+    if (!admin) await requireApprovedActiveSupplier(pool, user);
+    const supplierScope = admin ? (query.supplierId ?? null) : user.id;
     if (!admin && !supplierScope) throw forbidden();
     const where: string[] = ["b.owner_type = 'supplier'"]; const params: unknown[] = [];
     if (supplierScope) { params.push(supplierScope); where.push(`b.supplier_id = $${params.length}`); }
@@ -359,7 +360,7 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
     params.push(query.limit, query.offset);
     const rows = await pool.query(
       `SELECT b.series_template_id, b.warehouse_id, b.supplier_id, b.on_hand, b.reserved, b.damaged,
-              (b.on_hand - b.reserved) AS available, b.updated_at,
+              GREATEST(0, b.on_hand - b.reserved - b.damaged) AS available, b.updated_at,
               t.name AS series_template_name, t.color_label, p.id AS product_id, p.name AS product_name,
               u.display_name AS supplier_name, w.name AS warehouse_name,
               (SELECT max(m.created_at) FROM series_stock_movements m
@@ -379,7 +380,7 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
 
   app.post('/api/v1/supplier/stock-returns', async (request, reply) => {
     const user = await principal(request, pool, config);
-    if (!isSupplier(user)) throw forbidden();
+    await requireApprovedSupplier(pool, user);
     const body = z.object({
       seriesTemplateId: z.uuid(),
       warehouseId: z.uuid(),
@@ -396,7 +397,7 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
       // Validate against the supplier's OWN available (on_hand - reserved) — reserved is never returnable.
       const balance = await seriesBalanceForUpdate(client, body.seriesTemplateId, body.warehouseId,
         { ownerType: 'supplier', supplierId: user.id });
-      const available = balance.on_hand - balance.reserved;
+      const available = balance.on_hand - balance.reserved - balance.damaged;
       if (body.seriesCount > available) {
         throw conflict(`حداکثر ${available} سری قابل بازپس‌گیری است (رزروشده‌ها قابل بازپس‌گیری نیستند).`);
       }
@@ -426,7 +427,7 @@ export function registerSupplierConsignmentRoutes(app: FastifyInstance, pool: Db
       limit: z.coerce.number().int().min(1).max(100).default(50), offset: z.coerce.number().int().min(0).default(0),
     }).parse(request.query ?? {});
     const admin = user.permissions.includes('wholesale:ops');
-    if (!admin && !isSupplier(user)) throw forbidden();
+    if (!admin) await requireApprovedSupplier(pool, user);
     const supplierId = admin ? (query.supplierId ?? null) : user.id;
     const where: string[] = []; const params: unknown[] = [];
     if (supplierId) { params.push(supplierId); where.push(`r.supplier_id = $${params.length}`); }
