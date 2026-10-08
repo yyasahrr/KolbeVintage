@@ -19,7 +19,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import {
   apiClient, authApi, getAccessToken, setAccessToken, setApiBaseUrl, ticketsApi, productsApi, filesApi,
-  omsApi, ordersApi, seriesTemplatesApi, wholesaleOmsApi, AdminApiError,
+  omsApi, ordersApi, seriesTemplatesApi, wholesaleOmsApi, wmsInboundApi, AdminApiError,
 } from '../../src/data/api.ts';
 import {
   TICKET_STATUSES, adaptCmsHero, adaptSitePage, buildProductCreatePayload, buildShippingMethodPayload, buildTicketCreatePayload,
@@ -726,6 +726,7 @@ try {
 
   // =================== VIP / warehouse-hub UI contract (static source assertions) ===================
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
+  const apiSrc = readFileSync(join(repoRoot, 'src/data/api.ts'), 'utf8');
   const vipSrc = readFileSync(join(repoRoot, 'src/portals/vip.tsx'), 'utf8');
   const hubSrc = readFileSync(join(repoRoot, 'src/portals/warehouse-hub.tsx'), 'utf8');
   check('VIP UI renders no total piece/pair counts (business rule: series only)',
@@ -808,6 +809,57 @@ try {
     product360Src.includes('مدیریت قیمت‌گذاری') && product360Src.includes('نتیجهٔ نهایی سرور') &&
     !product360Src.includes('Pricing Resolver') && !product360Src.includes('Resolver') &&
     product360Src.includes('view="inventory"') && product360Src.includes('view="history"'));
+  /* ---------------- Prompt 6 — inbound receiving / QC / exceptions / consolidation ---------------- */
+  const inboundOpsSrc = readFileSync(join(repoRoot, 'src/portals/wms-inbound-operations.tsx'), 'utf8');
+  const inboundOpsUi = userFacing(inboundOpsSrc);
+  check('Prompt 6 warehouse workspace lives inside the WMS hub as the «دریافت و تجمیع سفارش‌های مادر» sub-tab (four primary tabs unchanged)',
+    hubSrc.includes('WmsInboundOperations') && hubSrc.includes('master-inbound') &&
+    hubSrc.includes('دریافت و تجمیع سفارش‌های مادر') &&
+    (hubHead.match(/\{ v: "/g) ?? []).length === 4 &&
+    adminSrc.includes('"wms:inbound-ops": "wms:master-inbound"'));
+  check('receiving/QC/consolidation actions are SERVER-derived (actions[] from the API), never guessed by the UI',
+    inboundOpsSrc.includes('detail?.actions.includes("receive")') &&
+    inboundOpsSrc.includes('detail?.actions.includes("inspect")') &&
+    inboundOpsSrc.includes('actions.includes("start_consolidation")') &&
+    inboundOpsSrc.includes('actions.includes("verify_item")') &&
+    inboundOpsSrc.includes('actions.includes("pack")') &&
+    inboundOpsSrc.includes('actions.includes("ship")'));
+  check('the Prompt 6 UI never mutates stock or derives availability itself (no inventory writes, no on-hand math)',
+    !inboundOpsSrc.includes('inventoryApi') && !inboundOpsSrc.includes('on_hand') &&
+    !inboundOpsSrc.includes('stock_balances') && !inboundOpsSrc.includes('series_stock_balances') &&
+    inboundOpsSrc.includes('wmsInboundApi'));
+  check('the operational vocabulary is Persian and task-oriented (محموله ورودی، کسری، آسیب‌دیده، کنترل کیفیت، تجمیع، ارسال)',
+    ['محموله ورودی', 'در انتظار دریافت فیزیکی', 'کسری', 'آسیب‌دیده', 'کنترل کیفیت', 'تأییدشده', 'نیازمند بررسی',
+      'آماده تجمیع', 'آماده ارسال', 'ارسال‌شده'].every((label) => inboundOpsUi.includes(label)));
+  check('receiving and QC are presented as two separate facts with explicit reconciliation hints',
+    inboundOpsUi.includes('دریافت فیزیکی (رسید انبار)') && inboundOpsUi.includes('کنترل کیفیت کالای دریافتی') &&
+    inboundOpsSrc.includes('received + missing !== line.dispatched_series') &&
+    inboundOpsSrc.includes('qcTotal !== line.received_series'));
+  check('the prompt-6 API client targets the canonical endpoints only — no parallel inbound/WMS/OMS centre',
+    ['/admin/wms/inbound-shipments', '/admin/wms/exceptions', '/admin/wms/dashboard', '/admin/wms/consolidation-queue',
+      '/admin/wms/masters/'].every((route) => apiSrc.includes(route)) &&
+    !/wms-?v2|inbound-?v2|oms-?v2|shipment-?center/i.test(apiSrc) &&
+    !/wms-?v2|inbound-?v2|oms-?v2/i.test(inboundOpsSrc));
+  // The WMS surface is an INTERNAL operator surface: sign in as the admin (earlier blocks leave a
+  // customer/supplier session in the client) exactly like the OMS checks below do.
+  await authApi.login({ identity: adminEmail, password: adminPassword });
+  const dashboard = await wmsInboundApi.dashboard();
+  check('GET /admin/wms/dashboard returns SERVER counters that match the live queues',
+    typeof dashboard.counters.awaiting_receiving === 'number' &&
+    typeof dashboard.counters.open_exceptions === 'number' && dashboard.counters.open_exceptions >= 0 &&
+    Array.isArray(dashboard.masters));
+  const inboundQueue = await wmsInboundApi.shipments({ limit: 5 });
+  check('GET /admin/wms/inbound-shipments is the one inbound work queue (rows carry operator labels, not UUIDs)',
+    Array.isArray(inboundQueue.items) && inboundQueue.items.every((row) => typeof row.reference === 'string' &&
+      typeof row.master_reference === 'string' && typeof row.supplier_label === 'string'));
+  const exceptionFeed = await wmsInboundApi.exceptions({ status: 'open', limit: 5 });
+  check('GET /admin/wms/exceptions is the Exception Centre feed (open count + per-item context)',
+    Array.isArray(exceptionFeed.items) && typeof exceptionFeed.openCount === 'number' &&
+    exceptionFeed.items.every((item) => typeof item.exception_type === 'string' && typeof item.child_reference === 'string'));
+  const consolidationQueue = await wmsInboundApi.consolidationQueue({ limit: 5 });
+  check('GET /admin/wms/consolidation-queue is the one consolidation work queue (operator + buyer labels, no UUID-only rows)',
+    Array.isArray(consolidationQueue.items) && consolidationQueue.items.every((row) => typeof row.master_reference === 'string' &&
+      typeof row.master_order_id === 'string' && typeof row.ordered_series === 'number'));
   const supplierChildPanelSrc = readFileSync(join(repoRoot, 'src/components/supplier-child-orders-panel.tsx'), 'utf8');
   check('supplier wholesale panel offers exactly the §71 actions (تأیید کامل/پیشنهاد کمتر/عدم امکان) + server-resolved dispatch',
     ['تأیید کامل', 'پیشنهاد کمتر', 'عدم امکان'].every((t) => supplierChildPanelSrc.includes(t)) &&

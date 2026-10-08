@@ -154,6 +154,9 @@ const TAB_REDIRECT: Record<string, string> = {
   // ---- Wholesale product review consolidation (§2): inside WMS → انبار عمده ----
   wproducts: "wms:wholesale-review",
   mreview: "wms:wholesale-review",
+  // Prompt 6: the canonical warehouse entry for order-bound inbound receiving, QC, exceptions and
+  // consolidation/shipment. It lives INSIDE the WMS hub (four primary tabs stay unchanged).
+  "wms:inbound-ops": "wms:master-inbound",
   // ---- «محصولات کلبه» owns Kolbe product management; old product bookmarks land there ----
   rproducts: "products",
   // §3/§25: the navigation-level «استودیو محصول» entry was replaced by «محصولات کلبه»;

@@ -1663,6 +1663,34 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         throw conflict('هیچ ردیف کالایی برای این درخواست تأمین یافت نشد.');
       }
 
+      // ==========================================================================
+      // PROMPT 6 — single inbound authority.
+      // A master/OMS child (this table is the CHILD order, §18 of migration 064) owns its inbound
+      // leg through `oms_inbound_shipments` + `order_source_allocations`. The legacy path below is
+      // kept ONLY for legacy non-OMS wholesale orders: running both would post `incoming` twice for
+      // the same physical goods (the legacy route credits piece-level `stock_balances.incoming`, the
+      // OMS route credits ordered series). Whichever route reaches the goods first wins; the second
+      // gets a deterministic conflict instead of a duplicate receipt.
+      // ==========================================================================
+      const omsChild = await one<{ master_order_id: string | null; seller_type: string | null }>(
+        client, 'SELECT master_order_id, seller_type FROM orders WHERE id = $1', [fulfillment.order_id]);
+      if (omsChild?.master_order_id) {
+        throw conflict(
+          'این سفارش زیرمجموعه یک سفارش مادر (OMS) است؛ محموله ورودی آن فقط از مسیر محموله‌های ورودی OMS ثبت می‌شود.',
+        );
+      }
+      const omsExternalLeg = await one<{ id: string }>(
+        client,
+        `SELECT a.id FROM order_source_allocations a
+         WHERE a.child_order_id = $1 AND a.source_type = 'supplier_external'
+           AND a.status NOT IN ('released','cancelled','expired') LIMIT 1`,
+        [fulfillment.order_id]);
+      if (omsExternalLeg) {
+        throw conflict(
+          'این درخواست تأمین در OMS ثبت شده است؛ دریافت فیزیکی آن از مسیر OMS انجام می‌شود و مسیر قدیمی مجاز نیست.',
+        );
+      }
+
       const shipmentId = randomUUID();
       const sSeq = await one<{ num: string }>(client, "SELECT nextval('inbound_shipment_seq')::text AS num");
       const shipmentNumber = `INB-${sSeq!.num}`;
@@ -1818,6 +1846,12 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
         status: string;
       }>(client, 'SELECT * FROM inbound_shipments WHERE id = $1 FOR UPDATE', [id]);
       if (!shipment) throw notFound();
+      // Prompt 6: an OMS child never owns a legacy inbound shipment; refuse rather than diverge.
+      const orderScope = await one<{ master_order_id: string | null }>(
+        client, 'SELECT master_order_id FROM orders WHERE id = $1', [shipment.order_id]);
+      if (orderScope?.master_order_id) {
+        throw conflict('این محموله متعلق به یک سفارش مادر OMS است؛ مسیر دریافت آن مسیر محموله‌های ورودی OMS است.');
+      }
 
       await client.query(
         'UPDATE inbound_shipments SET status = $2, arrived_at = COALESCE(arrived_at, now()), updated_at = now() WHERE id = $1',
@@ -2267,6 +2301,13 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
   });
 
   // 8. Dispatch Consolidated Order from Kolbe Warehouse to VIP Buyer
+  //
+  // PROMPT 6 — single final-shipment authority. A master-flow child (orders.master_order_id IS NOT NULL)
+  // is dispatched ONLY through POST /api/v1/wholesale/masters/:id/ship, which re-derives the whole
+  // gate (composition locked, all children paid, consolidation verified+packed, no blocking exception)
+  // and refuses to deduct stock a second time. This legacy endpoint therefore refuses master-flow
+  // children outright: it both deducted piece stock again AND set a per-child 'shipped' status that
+  // contradicts the single customer-facing Master Order shipment (Prompt 6 §21, Golden Scenario 5).
   app.post('/api/v1/wholesale/orders/:id/dispatch-vip', async (request) => {
     const user = await principal(request, pool, config);
     if (!user.permissions.includes('wholesale:ops')) requirePermission(user, 'orders:transition');
@@ -2281,6 +2322,15 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     return transaction(pool, async (client) => {
       const claim = await claimIdempotency(client, user.id, 'wholesale.dispatch_vip', key, requestHash({ orderId, ...body }));
       if (claim.previous) return claim.previous;
+
+      const masterScope = await one<{ master_order_id: string | null }>(
+        client, 'SELECT master_order_id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+      if (!masterScope) throw notFound();
+      if (masterScope.master_order_id) {
+        throw conflict(
+          'این زیرسفارش بخشی از یک سفارش مادر است؛ ارسال نهایی فقط از مسیر ارسال سفارش مادر (Master Shipment) انجام می‌شود.',
+        );
+      }
 
       await assertWholesaleReadyForVipDispatch(client, orderId);
 

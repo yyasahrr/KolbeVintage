@@ -58,17 +58,17 @@ try {
   check(rows.length === new Set(names).size, 'no duplicate migration rows (one file = one row)');
 
   // Integration (Agent 6): the merged inventory is the union of every agent's migrations.
-  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql','064_wholesale_master_oms.sql','065_supplier_settlement_core.sql','066_tryon_monetization.sql','067_cashback_wallet.sql','068_transfer_discrepancy.sql','069_catalog_category_authority.sql','070_series_commercial_pricing.sql','071_wholesale_child_cancellation.sql','072_customer_otp_login.sql','073_supplier_oms_lifecycle.sql'];
+  const expectedAll = ['001_core.sql','002_notifications.sql','003_sms.sql','004_invoices.sql','005_wallet.sql','006_suppliers.sql','007_plans_marketplace.sql','008_crm_promo.sql','009_integrations.sql','010_cms.sql','011_access_tickets.sql','012_wms_wishlist.sql','013_shipping_returns_files.sql','014_console_domains.sql','015_user_preferences.sql','016_commerce_product.sql','017_specs_sizeguides.sql','018_imports_shipping_rules.sql','025_supplier360.sql','026_invoice_engine.sql','027_finance_operations.sql','035_cms_style_profile_356.sql','036_seo_domain_media_variants.sql','037_cms_audit_round3.sql','045_membership_buyer.sql','046_crm_intelligence.sql','047_automation_tracking.sql','048_reviews_recommendations.sql','049_video_permissions_promo_growth_hardening.sql','050_seo_search_media.sql','050z_product_type_recovery_snapshot.sql','051_product_types_name_dedupe.sql','052_review_purchase_scope.sql','053_product_type_dependents.sql','054_accounting_period_dates.sql','055_wholesale_inventory_promotions.sql','056_manual_sales_product_colors.sql','057_variant_price_override.sql','058_wms_core.sql','059_supplier_requests.sql','060_series_templates.sql','061_promotion_festival_exclusivity.sql','062_series_inventory.sql','063_product_wms_foundation.sql','064_wholesale_master_oms.sql','065_supplier_settlement_core.sql','066_tryon_monetization.sql','067_cashback_wallet.sql','068_transfer_discrepancy.sql','069_catalog_category_authority.sql','070_series_commercial_pricing.sql','071_wholesale_child_cancellation.sql','072_customer_otp_login.sql','073_supplier_oms_lifecycle.sql','074_prompt6_inbound_qc_consolidation.sql'];
   check(JSON.stringify(names) === JSON.stringify(expectedAll),
     'full merged inventory applied in name order', names.length === expectedAll.length ? '' : `got ${names.length} files`);
   const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '../src/migrations');
   const migrationFiles = readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
   const migrationIds = migrationFiles.map((name) => name.match(/^(\d{3}[a-z]?)/)?.[1] ?? '');
-  check(migrationFiles.length === 54 && JSON.stringify(migrationFiles) === JSON.stringify(expectedAll)
+  check(migrationFiles.length === 55 && JSON.stringify(migrationFiles) === JSON.stringify(expectedAll)
     && migrationIds.every(Boolean) && migrationIds.length === new Set(migrationIds).size,
-    '54 migration files have unique version identifiers (050z is a distinct recovery-snapshot id)');
-  check(names.slice(-2).join(',') === '072_customer_otp_login.sql,073_supplier_oms_lifecycle.sql',
-    '072 customer OTP login and 073 Supplier OMS lifecycle are the final unique migrations');
+    '55 migration files have unique version identifiers (050z is a distinct recovery-snapshot id)');
+  check(names.slice(-3).join(',') === '072_customer_otp_login.sql,073_supplier_oms_lifecycle.sql,074_prompt6_inbound_qc_consolidation.sql',
+    '074 Prompt 6 inbound/QC/consolidation is the final unique migration after 072/073');
   const reserved = names.filter((name) => /^02[5-9]_/.test(name));
   check(reserved.join(',') === '025_supplier360.sql,026_invoice_engine.sql,027_finance_operations.sql',
     '025 → 026 → 027 order preserved');
@@ -113,6 +113,35 @@ try {
     '073 Supplier response/commit/readiness lifecycle extends the canonical OMS line');
   check(await count("SELECT count(*)::int AS count FROM pg_indexes WHERE indexname IN ('child_order_lines_supplier_response_idx','order_source_allocations_supplier_demand_idx')") === 2,
     '073 Supplier OMS list indexes installed');
+
+  // Prompt 6 (074): ONE inbound lifecycle document, receiving/QC buckets on the canonical allocation,
+  // the GRN gains an OMS scope, and the exception catalogue + warehouse permissions are widened.
+  check(await count("SELECT count(*)::int AS count FROM information_schema.tables WHERE table_name = 'oms_inbound_shipments'") === 1,
+    '074 oms_inbound_shipments is the single inbound lifecycle document (no quantities, no second authority)');
+  check(await count(`SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name='order_source_allocations'
+      AND column_name IN ('inbound_shipment_id','received_missing_series','received_damaged_series','qc_damaged_series','receipt_note','qc_note','received_by','received_at','qc_by','qc_at')`) === 10,
+    '074 receiving/QC buckets extend the canonical allocation (one quantity authority)');
+  check(await count(`SELECT count(*)::int AS count FROM pg_constraint WHERE conname IN
+      ('order_source_allocations_receipt_buckets_check','order_source_allocations_qc_buckets_check')
+      AND convalidated`) === 2,
+    '074 server-side receipt/QC reconciliation guards are installed and validated');
+  check(await count(`SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name='warehouse_receipts'
+      AND column_name IN ('oms_inbound_shipment_id','shortage_series','damaged_series','inspected_by','inspected_at')`) === 5
+      && await count("SELECT count(*)::int AS count FROM pg_constraint WHERE conname='warehouse_receipts_scope_check' AND convalidated") === 1,
+    '074 the existing GRN table gains an OMS scope with an exactly-one-scope rule (no second receipts table)');
+  check(await count(`SELECT count(*)::int AS count FROM pg_indexes WHERE indexname IN
+      ('warehouse_receipts_oms_shipment_uniq','oms_inbound_shipments_live_uniq','fulfillment_exceptions_open_idx')`) === 3,
+    '074 duplicate-receipt / duplicate-live-leg uniqueness + open-exception index installed');
+  check(await count(`SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name='master_consolidations'
+      AND column_name IN ('package_count','total_series','total_pieces','weight_grams','dimensions','packaging_note')`) === 6
+      && await count("SELECT count(*)::int AS count FROM information_schema.columns WHERE table_name='consolidation_items' AND column_name='scan_reference'") === 1,
+    '074 packing/verification metadata extends the existing consolidation tables (nothing fabricated, NULL by default)');
+  check(await count(`SELECT count(*)::int AS count FROM pg_constraint WHERE conname='fulfillment_exceptions_exception_type_check' AND convalidated AND pg_get_constraintdef(oid) LIKE '%over_receipt%' AND pg_get_constraintdef(oid) LIKE '%reconciliation_failed%'`) === 1,
+    '074 widens the exception catalogue instead of creating a second exception store');
+  check(await count("SELECT count(*)::int AS count FROM permissions WHERE code IN ('wms:receive','wms:qc','wms:consolidate','wms:ship')") === 4
+      && await count(`SELECT count(*)::int AS count FROM role_permissions
+         WHERE permission_code IN ('wms:receive','wms:qc','wms:consolidate','wms:ship')`) >= 4,
+    '074 installs the warehouse duties (receive/qc/consolidate/ship) and grants them to the operator roles');
 
   // Upgrade from the last pre-dedupe schema with conflicting size mappings and
   // products. 050z must snapshot dependents before the published 051 deletes.
@@ -172,11 +201,12 @@ try {
     check(await run(['run', '--silent', 'migrate'], { ...upgradeEnv, MIGRATION_STOP_AFTER: '' }) === 0,
       'upgrade applies 069/070 after the populated 068 fixture');
     const upgradedVersions = (await upgradeDb.query('SELECT version FROM schema_migrations ORDER BY version')).rows.map((row) => row.version);
-    check(upgradedVersions.length === 54 && upgradedVersions.includes('069_catalog_category_authority.sql')
+    check(upgradedVersions.length === 55 && upgradedVersions.includes('069_catalog_category_authority.sql')
       && upgradedVersions.includes('070_series_commercial_pricing.sql')
       && upgradedVersions.includes('071_wholesale_child_cancellation.sql') && upgradedVersions.includes('072_customer_otp_login.sql')
-      && upgradedVersions.includes('073_supplier_oms_lifecycle.sql'),
-      'populated upgrade records 069/070/071/072/073 exactly once in the 54-file sequence');
+      && upgradedVersions.includes('073_supplier_oms_lifecycle.sql')
+      && upgradedVersions.includes('074_prompt6_inbound_qc_consolidation.sql'),
+      'populated upgrade records 069/070/071/072/073/074 exactly once in the 55-file sequence');
 
     const badProductCategories = Number((await upgradeDb.query(`SELECT count(*)::int AS n FROM products p
       LEFT JOIN cms_categories c ON c.id = p.category_id WHERE c.id IS NULL OR c.name <> p.category`)).rows[0].n);

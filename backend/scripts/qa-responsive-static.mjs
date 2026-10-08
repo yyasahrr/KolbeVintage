@@ -41,6 +41,9 @@ const FILES = [
   'src/components/supplier-wholesale-panel.tsx',
   'src/components/supplier-requests-portal.tsx',
   'src/portals/supplier-profile-settings.tsx',
+  /* Prompt-6: the warehouse receiving/QC/exception/consolidation workspaces (mobile-first cards plus
+     desktop tables) must not push the document wider than a 360px viewport either. */
+  'src/portals/wms-inbound-operations.tsx',
 ];
 const LOOKBACK = 6;
 const MIN_PX = 320;

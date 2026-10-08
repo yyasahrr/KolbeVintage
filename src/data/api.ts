@@ -2083,3 +2083,102 @@ export const wholesaleOmsApi = {
   deliver: (masterId: string) =>
     authFetch<Record<string, unknown>>(`/wholesale/masters/${masterId}/deliver`, { method: "POST", body: "{}" }),
 };
+
+/* ------------------------------------------------------------------------------------------------
+ * Prompt 6 — Warehouse inbound / QC / consolidation / shipment workspace.
+ * All counts, queues and permitted actions come from the SERVER; the UI never derives state.
+ * ---------------------------------------------------------------------------------------------- */
+
+export type WmsInboundLine = {
+  id: string; line_id: string; product_name: string; series_name: string; pieces_per_series: number;
+  ordered_series: number; confirmed_series: number | null; dispatched_series: number; received_series: number;
+  received_missing_series: number; received_damaged_series: number; qc_passed_series: number;
+  qc_rejected_series: number; qc_damaged_series: number; receipt_note: string | null; qc_note: string | null;
+  received_at: string | null; qc_at: string | null; status: string; receipt_number: string;
+};
+export type WmsInboundRow = {
+  id: string; reference: string; status: string; carrier: string | null; tracking_code: string | null;
+  dispatched_at: string | null; arrived_at: string | null; received_at: string | null; qc_completed_at: string | null;
+  destination_warehouse_name: string; child_order_id: string; child_reference: string;
+  master_order_id: string; master_reference: string; master_status: string; supplier_label: string;
+  dispatched_series: number; received_series: number; missing_series: number; qc_passed_series: number;
+  qc_rejected_series: number; damaged_series: number; open_exceptions: number;
+};
+export type WmsInboundDetail = {
+  shipment: WmsInboundRow & { note: string; child_fulfillment: string; destination_warehouse_id: string };
+  lines: WmsInboundLine[];
+  receipts: { receipt_number: string; qc_status: string; shortage_series: number; damaged_series: number;
+    notes: string | null; received_at: string; inspected_at: string | null }[];
+  exceptions: { id: string; exception_type: string; quantity: number | null; status: string; note: string;
+    created_at: string; resolved_at: string | null; resolution: string | null }[];
+  actions: string[];
+};
+export type WmsExceptionRow = {
+  id: string; exception_type: string; quantity: number | null; status: string; note: string; resolution: string | null;
+  created_at: string; resolved_at: string | null; master_order_id: string | null; master_reference: string | null;
+  child_order_id: string; child_reference: string; child_fulfillment: string; payment_eligibility: string;
+  series_name: string | null; product_name: string | null; assigned_to: string | null; assigned_label: string | null;
+  shipment_reference: string | null;
+};
+export type WmsDashboard = {
+  counters: Record<string, number>;
+  masters: { id: string; reference: string; status: string; composition: string; shipped_at: string | null;
+    delivered_at: string | null; consolidation_reference: string | null; consolidation_status: string | null;
+    ordered_series: number; staged_series: number; open_exceptions: number }[];
+  policy: { inboundDelayHours: number };
+  generatedAt: string;
+};
+export type WmsConsolidationDetail = {
+  master: { id: string; reference: string; composition: string; status: string; shipping_address: Record<string, unknown> };
+  children: { id: string; reference: string; seller_type: string; payment_eligibility: string; child_fulfillment: string;
+    composition_state: string; seller_label: string; ordered_series: number; staged_series: number;
+    kolbe_series: number; supplier_at_kolbe_series: number; external_series: number; external_staged_series: number;
+    external_missing_series: number; open_exceptions: number; open_inbounds: number }[];
+  consolidation: { id: string; reference: string; status: string; expected_children: number; started_at: string | null;
+    consolidated_at: string | null; packed_at: string | null; package_count: number | null; total_series: number | null;
+    total_pieces: number | null; weight_grams: number | null; dimensions: string | null; packaging_note: string | null } | null;
+  items: { id: string; line_id: string; expected_series: number; verified_series: number; verified_at: string | null;
+    scan_reference: string | null; child_order_id: string; child_reference: string; series_name: string;
+    product_name: string; pieces_per_series: number }[];
+  actions: string[];
+};
+
+export type WmsConsolidationQueueRow = {
+  master_order_id: string; master_reference: string; master_status: string; composition: string;
+  consolidation_id: string | null; consolidation_reference: string | null; consolidation_status: string | null;
+  packed_at: string | null; package_count: number | null; children: number; paid_children: number; ready_children: number;
+  ordered_series: number; staged_series: number; external_pending_series: number; open_exceptions: number;
+  buyer_label: string | null;
+};
+
+export const wmsInboundApi = {
+  dashboard: () => authFetch<WmsDashboard>("/admin/wms/dashboard"),
+  shipments: (params?: Record<string, string | number | boolean | undefined>) =>
+    authFetch<{ items: WmsInboundRow[] }>(`/admin/wms/inbound-shipments${query(params)}`),
+  shipment: (id: string) => authFetch<WmsInboundDetail>(`/admin/wms/inbound-shipments/${id}`),
+  /** Physical receipt (GRN). Server-side reconciliation: received + missing = dispatched. */
+  receive: (id: string, payload: { lines: { allocationId: string; receivedSeries: number; missingSeries?: number;
+    damagedSeries?: number; note?: string }[]; note?: string }, key: string) =>
+    authFetch<Record<string, unknown>>(`/admin/wms/inbound-shipments/${id}/receive`,
+      { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
+  /** QC is a separate fact from receiving; passed + rejected + damaged = received. */
+  qc: (id: string, payload: { lines: { allocationId: string; passedSeries: number; rejectedSeries: number;
+    damagedSeries?: number; note?: string }[]; note?: string }, key: string) =>
+    authFetch<Record<string, unknown>>(`/admin/wms/inbound-shipments/${id}/qc`,
+      { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) }),
+  exceptions: (params?: { status?: "open" | "resolved" | "cancelled"; type?: string; masterId?: string; limit?: number }) =>
+    authFetch<{ items: WmsExceptionRow[]; openCount: number; overdueCount: number }>(`/admin/wms/exceptions${query(params)}`),
+  assignException: (id: string, assignedTo: string | null) =>
+    authFetch<{ ok: boolean }>(`/admin/wms/exceptions/${id}/assign`, { method: "POST", body: JSON.stringify({ assignedTo }) }),
+  resolveException: (id: string, payload: { resolution: "accept_short" | "refund_pending" | "supplier_redelivery" | "written_off"; note?: string }) =>
+    authFetch<{ ok: boolean; childFulfillment: string }>(`/admin/wms/exceptions/${id}/resolve`,
+      { method: "POST", body: JSON.stringify(payload) }),
+  consolidationQueue: (params?: { status?: string; q?: string; limit?: number }) =>
+    authFetch<{ items: WmsConsolidationQueueRow[] }>(`/admin/wms/consolidation-queue${query(params)}`),
+  consolidationDetail: (masterId: string) =>
+    authFetch<WmsConsolidationDetail>(`/admin/wms/masters/${masterId}/consolidation-detail`),
+  /** Packing records REAL operator-entered values only — nothing is ever fabricated. */
+  pack: (consolidationId: string, payload: { packageCount?: number; weightGrams?: number; dimensions?: string; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/consolidations/${consolidationId}/pack`,
+      { method: "POST", body: JSON.stringify(payload) }),
+};
