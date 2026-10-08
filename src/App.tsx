@@ -14,7 +14,7 @@ import { Btn, Modal } from "./components/primitives";
 import { authApi, onAuthExpired } from "./data/api";
 import { useSavedCart } from "./data/saved-cart";
 import { CmsPageView } from "./components/cms-blocks";
-import { useSiteExperience, useThemeTokens } from "./components/site-chrome";
+import { ServerAnnouncementBar, ServerFooter, useSiteExperience, useThemeTokens } from "./components/site-chrome";
 import { siteApi } from "./data/experience-api";
 import { digitsOnly } from "./data/customer";
 import { StoreProvider, useStore } from "./data/store";
@@ -153,7 +153,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   const [twoFactor, setTwoFactor] = useState<{ challengeId: string; devCode?: string; code: string; error: string } | null>(null);
   const [shopCategory, setShopCategory] = useState<{ name: string; nonce: number } | null>(null);
   const [navTaxonomy, setNavTaxonomy] = useState<{ categories: { slug: string; name: string }[]; vibes: { slug: string; name: string }[] } | null>(null);
-  const { layout, theme } = useSiteExperience();
+  const { layout, theme, homePage: cmsHome } = useSiteExperience();
   useThemeTokens(theme, dark);
   /* Mobile navigation lists live categories when the server header config asks for them. */
   useEffect(() => {
@@ -235,6 +235,15 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
   /* Curated style navigation — a sibling of the product detail, reachable from
      the homepage «استایل‌های آماده» section (§43) */
   const openStyle = (slug: string) => { setStyleSlug(slug); go("retail"); setView("style"); window.scrollTo({ top: 0 }); };
+  /* Quick add for CMS-resolved commerce products (homepage + /page routes share
+     this ONE rule: first available variant wins, cart merges identical lines). */
+  const cmsQuickAdd = (cp: { id: string; variants: { available: number; size?: string | null; color?: string | null }[] }): boolean => {
+    const variant = cp.variants.find((v) => v.available > 0);
+    if (!variant) return false;
+    const existing = cart.find((l) => l.id === cp.id && l.size === (variant.size ?? "") && l.color === (variant.color ?? ""));
+    setCart(existing ? cart.map((l) => (l === existing ? { ...l, qty: l.qty + 1 } : l)) : [...cart, { id: cp.id, qty: 1, size: variant.size ?? "", color: variant.color ?? "" }]);
+    return true;
+  };
   const personalizeStyle = (style: CuratedStyle) => {
     openStudio("builder", undefined, undefined,
       [...style.items].sort((a, b) => a.sortOrder - b.sortOrder).map((item) => ({ productId: item.productId, colorId: item.colorId })));
@@ -410,9 +419,21 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
     <div ref={rootRef} className="kv-storefront min-h-screen">
       <a href="#kv-sf-main" className="kv-sf-skip">پرش به محتوای اصلی</a>
 
-      {/* CMS announcement — fixed so the floating header offset stays exact */}
+      {/* Demo sessions run on seeded sample data, never the live CMS — they
+          must be unmistakable (audit §2.3). */}
+      {isDemo && (
+        <div data-demo-badge="" role="status" className="fixed bottom-4 left-4 z-40 rounded-full bg-stone-900/90 px-4 py-1.5 text-[11.5px] font-bold text-stone-100 shadow-lg">
+          حالت نمایشی · داده‌های نمونه
+        </div>
+      )}
+
+      {/* CMS announcement — fixed so the floating header offset stays exact.
+          The CMS announcement system (اجزای سایت → /site/layout) is the owner;
+          the legacy ops bar renders only when no server announcement exists. */}
       <div ref={announceRef} className="kv-sf-announce">
-        <AnnouncementBar block={ops.blocks.find((b) => b.type === "announcement")} onNav={cmsNav} />
+        {layout?.announcements?.length
+          ? <ServerAnnouncementBar announcements={layout.announcements} onNav={siteNav} />
+          : <AnnouncementBar block={ops.blocks.find((b) => b.type === "announcement")} onNav={cmsNav} />}
       </div>
 
       <CartToastProvider onViewCart={() => setCartOpen(true)}>
@@ -450,6 +471,9 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
               openStyle={openStyle}
               personalizeStyle={personalizeStyle}
               addStyleToCart={addStyleToCart}
+              cmsHome={cmsHome}
+              onCmsNav={siteNav}
+              onCmsQuickAdd={cmsQuickAdd}
               onOpenProductFromStyle={(id) => { setView("shop"); setSelectedId(id); window.scrollTo({ top: 0 }); }}
               onWholesale={() => go("vip")}
               onLogout={logout}
@@ -492,13 +516,7 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
           {section === "page" && (
           <CmsPageView code={pageCode} onNav={siteNav}
             onOpenProduct={(id) => { go("retail", "shop"); setSelectedId(id); }}
-            onQuickAdd={(cp) => {
-              const variant = cp.variants.find((v) => v.available > 0);
-              if (!variant) return false;
-              const existing = cart.find((l) => l.id === cp.id && l.size === (variant.size ?? "") && l.color === (variant.color ?? ""));
-              setCart(existing ? cart.map((l) => (l === existing ? { ...l, qty: l.qty + 1 } : l)) : [...cart, { id: cp.id, qty: 1, size: variant.size ?? "", color: variant.color ?? "" }]);
-              return true;
-            }} />
+            onQuickAdd={cmsQuickAdd} />
         )}
         {section === "auth" && (
             <AuthScreens portal="retail" onDone={async (phone) => {
@@ -548,7 +566,12 @@ function Storefront({ dark, setDark }: { dark: boolean; setDark: (v: boolean) =>
         </main>
 
         {/* ======= FOOTER ======= */}
-        {section !== "auth" && (
+        {/* The CMS footer (اجزای سایت) owns the footer when configured; the
+            accepted static footer stays the fallback so the shell never breaks. */}
+        {section !== "auth" && layout?.footer && (
+          <ServerFooter footer={layout.footer} onNav={siteNav} />
+        )}
+        {section !== "auth" && !layout?.footer && (
           <StorefrontFooter
             onShop={() => go("retail", "shop")}
             onJournal={() => go("retail", "journal")}

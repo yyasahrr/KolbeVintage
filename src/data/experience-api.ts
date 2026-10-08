@@ -109,7 +109,7 @@ export const seoApi = {
   save: (type: SeoEntityType, key: string, payload: SeoWrite) => apiClient.put<{ id: string; version: number; warnings: string[]; resolved: ResolvedSeo }>(`/admin/seo/${type}/${encodeURIComponent(key)}`, payload),
 };
 
-export type SitePage = { id: string; code: string; title: string; path: string; page_type: string; status: string; seo: ResolvedSeo | null; sections: PageSection[] };
+export type SitePage = { id: string; code: string; title: string; /** snapshot path may be absent (resolved via seo/aliases instead) */ path?: string; page_type: string; status: string; seo: ResolvedSeo | null; publishedVersion?: number; sections: PageSection[] };
 
 /* ------------------------------- public site ------------------------------- */
 

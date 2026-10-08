@@ -3,7 +3,7 @@ import path from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 
 /** jsdom has no layout engine: geometry is not measurable here, DOM is. */
-export function makeDom({ mobile = false } = {}) {
+export function makeDom({ mobile = false, url = "https://kolbe.test/?demo", fetch: fetchImpl } = {}) {
   const virtualConsole = new VirtualConsole();
   const errors = [];
   virtualConsole.on("jsdomError", (error) => errors.push(String(error.message ?? error)));
@@ -11,9 +11,11 @@ export function makeDom({ mobile = false } = {}) {
 
   const dom = new JSDOM(
     `<!doctype html><html dir="rtl" lang="fa"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>`,
-    { url: "https://kolbe.test/?demo", pretendToBeVisual: true, runScripts: "outside-only", virtualConsole },
+    { url, pretendToBeVisual: true, runScripts: "outside-only", virtualConsole },
   );
   const { window } = dom;
+  /* Server-backed E2E boots: bridge the app's fetch to the real network. */
+  if (fetchImpl) window.fetch = (input, init) => fetchImpl(String(input), init);
   /* capability detection only — the desktop bundle is the pointer/min-1024 one */
   window.matchMedia = (query) => ({
     matches: !mobile && !/prefers-reduced-motion/.test(query) && /min-width:\s*1024px/.test(query),

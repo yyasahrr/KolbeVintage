@@ -11,6 +11,9 @@ import { useOps } from "../data/ops";
 import { BlockRenderer, type NavTarget } from "../components/cms-render";
 import { CuratedStyleDetail, CuratedStyleGrid } from "./style-storefront";
 import { publicCuratedStyles, styleMedia } from "../data/curated";
+import { cmsHeroToEditorial, isHeroSection } from "../components/home-cms";
+import { CmsSection, sectionWrapAttrs, type QuickAdd } from "../components/cms-blocks";
+import type { PageSection, SitePage } from "../data/experience-api";
 import type { CuratedStyle, VariantRelation } from "../data/curated";
 import { Btn, Card, Empty, Field, Input } from "../components/primitives";
 import EditorialHero from "../components/storefront/EditorialHero";
@@ -79,7 +82,7 @@ function JournalCard({ entry, onOpen }: { entry: typeof JOURNAL[number]; onOpen?
 /* ============ MAIN RETAIL ============ */
 export type RetailView = "home" | "shop" | "styles" | "checkout" | "journal" | "wishlist" | "account" | "success" | "style";
 
-export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [], styles = [], relations = [], styleSlug, openStyle, personalizeStyle, addStyleToCart, onOpenProductFromStyle, shopCategory }: {
+export default function RetailExperience({ selectedId, setSelectedId, cart, setCart, wishlist, toggleWish, onStudio, view, setView, requireLogin, account, buyer, accountTab, setAccountTab, onWholesale, onLogout, onLogin, shopSeed, categories = [], styles = [], relations = [], styleSlug, openStyle, personalizeStyle, addStyleToCart, onOpenProductFromStyle, shopCategory, cmsHome, onCmsNav, onCmsQuickAdd }: {
   selectedId: string | null; setSelectedId: (id: string | null) => void;
   cart: CartLine[]; setCart: (c: CartLine[]) => void;
   wishlist: string[]; toggleWish: (id: string) => void;
@@ -102,6 +105,12 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   onOpenProductFromStyle?: (productId: string) => void;
   /** CMS `category:<slug>` targets preselect the shop category (shell-resolved display name). */
   shopCategory?: { name: string; nonce: number } | null;
+  /** published CMS `home` page — the presentation authority when present */
+  cmsHome?: SitePage | null;
+  /** full CMS nav grammar (shop/vip/tryon/journal/collection:/page:/…) */
+  onCmsNav?: (target: string) => void;
+  /** CMS quick add for commerce-resolved products (shared with /page routes) */
+  onCmsQuickAdd?: QuickAdd;
 }) {
   useEffect(() => { window.scrollTo({ top: 0 }); }, [view, selectedId]);
   /* the shell hands over a category or query picked from search / category medallions */
@@ -635,6 +644,83 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
   }
 
   /* ----- HOME ----- */
+  /* The PUBLISHED CMS `home` page (siteApi.page("home") → App → cmsHome) is the
+     composition authority for this homepage: the hero payload drives the
+     accepted EditorialHero, and every other published section renders — in
+     published order, honoring visibility, variant, theme, padding/background/
+     width and hide-per-breakpoint — either as a storefront band (products,
+     categories: the accepted cards and rails with their real wishlist/try-on/
+     quick-add actions) or through the shared CmsSection preview component.
+     Nothing local silently overrides a published section. The accepted local
+     composition below only runs when NOTHING is published (fresh install,
+     demo, offline), so the homepage is never blank. */
+  const cmsHomeSections = (cmsHome?.sections ?? []).filter((sec) => sec.visible);
+  const cmsHeroSection = cmsHomeSections.find(isHeroSection);
+  const cmsHero = cmsHeroSection ? cmsHeroToEditorial(cmsHeroSection) : null;
+  const cmsBody = cmsHomeSections.filter((sec) => !isHeroSection(sec));
+  const homePublished = cmsHomeSections.length > 0;
+  const homeNav = onCmsNav ?? ((t: string) => cmsNav((["shop", "vip", "tryon", "journal"].includes(t) ? t : "shop") as NavTarget));
+
+  /* products selected by a published commerce section, mapped onto the real
+     storefront catalogue (same product ids — no copies, no mock data) */
+  const homeSectionProducts = (section: PageSection, fallback: Product[]): Product[] => {
+    const pl = (section.payload ?? {}) as Record<string, unknown>;
+    const limit = typeof pl.limit === "number" && pl.limit > 0 ? Math.min(Math.floor(pl.limit), 16) : 8;
+    const codes = Array.isArray(pl.productCodes) ? (pl.productCodes as string[])
+      : Array.isArray(pl.productIds) ? (pl.productIds as string[])
+      : Array.isArray(pl.products) ? (pl.products as string[]) : [];
+    const byCodes = codes.map((id) => retailProducts.find((rp) => rp.id === id)).filter((x): x is Product => !!x);
+    const byResolved = (section.resolved?.products ?? []).map((cp) => retailProducts.find((rp) => rp.id === cp.id)).filter((x): x is Product => !!x);
+    return (byCodes.length ? byCodes : byResolved.length ? byResolved : fallback).slice(0, limit);
+  };
+  const homeBandAttrs = (section: PageSection) => sectionWrapAttrs(section);
+  const homeBand = (section: PageSection, className: string, node: React.ReactNode) => (
+    <section key={section.id} {...homeBandAttrs(section)} className={cn(className, homeBandAttrs(section).className)}>
+      {node}
+    </section>
+  );
+  /* one published section → one homepage band (storefront-native where the
+     accepted homepage has an equivalent, CmsSection everywhere else) */
+  const homeCmsBand = (section: PageSection, index: number) => {
+    const pl = (section.payload ?? {}) as Record<string, unknown>;
+    const heading = (typeof pl.title === "string" && pl.title) || (typeof pl.heading === "string" && pl.heading) || section.title;
+    const subtitle = typeof pl.subtitle === "string" ? pl.subtitle : "";
+    const viewAll = <LinkToShop onClick={() => { setView("shop"); window.scrollTo({ top: 0 }); }}>مشاهده همه</LinkToShop>;
+    switch (section.component_code) {
+      case "product_slider": case "product_grid": case "product_carousel": {
+        const items = homeSectionProducts(section, latestDrop);
+        if (!items.length) return null;
+        return homeBand(section, "kv-sf-shell pt-16 md:pt-24",
+          <>
+            <Section
+              title={heading} latin={section.component_code === "product_grid" ? "Latest drop" : "Selected"}
+              desc={subtitle || undefined} action={viewAll}
+            />
+            <ProductGrid>
+            {items.map((p) => (
+                <StorefrontProductCard key={p.id} p={p} wished={wishlist.includes(p.id)} onWish={() => toggleWish(p.id)} onOpen={() => setSelectedId(p.id)} onAdd={quickAdd(p)} onTryOn={() => onStudio("tryon", p.id)} onAddToStyle={(colorId) => onStudio("builder", p.id, colorId)} />
+              ))}
+            </ProductGrid>
+          </>);
+      }
+      case "category_card":
+        return homeBand(section, "kv-sf-shell pt-14 md:pt-20",
+          <>
+            <Section title={heading} latin="Categories" desc={subtitle || undefined} />
+            <CategoryRail
+              items={categories}
+              onPick={(name) => { setCat(name); setView("shop"); window.scrollTo({ top: 0 }); }}
+            />
+          </>);
+      default:
+        return (
+          <section key={section.id} className="pt-4 md:pt-6">
+            <CmsSection section={section} index={index} pageCode={cmsHome!.code} onNav={homeNav} onOpenProduct={(id) => setSelectedId(id)} onQuickAdd={onCmsQuickAdd} />
+          </section>
+        );
+    }
+  };
+
   const latestDrop = [
     ...retailProducts.filter((p) => p.badge === "جدید"),
     ...retailProducts.filter((p) => p.badge !== "جدید"),
@@ -643,8 +729,13 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
 
   return (
     <div>
-      <EditorialHero h={ops.hero} onNav={cmsNav} />
+      {/* accepted hero look; PUBLISHED CMS payload owns the content (audit §4) */}
+      {homePublished && <div data-cms-home={cmsHome?.code} data-cms-home-version={cmsHome?.publishedVersion} className="hidden" aria-hidden="true" />}
+      <EditorialHero h={cmsHero ?? ops.hero} onNav={cmsNav} />
 
+      {homePublished && cmsBody.map((sec, i) => homeCmsBand(sec, i))}
+
+      {!homePublished && (<>
       {/* circular categories — real catalogue data, swipe rail on touch */}
       <section className="kv-sf-shell pt-14 md:pt-20">
         <Section title="از کدام قفسه شروع کنیم؟" latin="Categories" desc="هر دایره یک دسته از آرشیو کلبه است؛ تصویرها از خود محصولات انتخاب شده‌اند." />
@@ -667,6 +758,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           ))}
         </ProductGrid>
       </section>
+      </>)}
 
       {/* ready-made styles — admin-curated compositions of real products */}
       {styles.length > 0 && (
@@ -684,8 +776,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         </section>
       )}
 
-      {/* CMS-driven editorial content */}
-      {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").length > 0 && (
+      {/* legacy ops editorial blocks — fallback composition only (never a
+          double render next to published CMS sections) */}
+      {!homePublished && ops.blocks.filter((b) => b.enabled && b.type !== "announcement").length > 0 && (
         <section className="kv-sf-shell space-y-14 pt-16 md:pt-24">
           {ops.blocks.filter((b) => b.enabled && b.type !== "announcement").map((b) => (
             <BlockRenderer key={b.id} block={b} onNav={cmsNav} products={retailProducts} onOpenProduct={setSelectedId} />
@@ -693,7 +786,9 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
         </section>
       )}
 
-      {/* editorial story */}
+      {/* editorial story — fallback composition; on a published homepage the
+          CMS story_hero/text sections replace it (documented in the audit) */}
+      {!homePublished && (
       <section className="pt-16 md:pt-24">
         <div className="grid gap-0 md:grid-cols-2">
           <div className="relative min-h-[320px] overflow-hidden bg-[var(--kvaf-sand)] md:min-h-[560px]">
@@ -713,8 +808,10 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           </div>
         </div>
       </section>
+      )}
 
-      {/* featured */}
+      {/* featured — fallback composition only (CMS product sections replace it) */}
+      {!homePublished && (
       <section className="kv-sf-shell pt-16 md:pt-24">
         <Section
           title="منتخب هفته" latin="Selected"
@@ -726,6 +823,7 @@ export default function RetailExperience({ selectedId, setSelectedId, cart, setC
           ))}
         </ProductGrid>
       </section>
+      )}
 
       {/* service information — from the live shipping configuration */}
       <section className="kv-sf-shell pt-16 md:pt-24">

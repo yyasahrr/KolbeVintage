@@ -18,7 +18,9 @@
     "test:contract": "tsx scripts/frontend-contract-smoke.ts",
     "seed:local": "tsx src/seed-local.ts",
     "demo:stack": "node scripts/demo-stack.mjs",
-    "test:browser": "node scripts/browser-admin-smoke.mjs"
+    "test:browser": "node scripts/browser-admin-smoke.mjs",
+    "test:cms-home": "node --import tsx --test --test-concurrency=1 src/cms-home-integration.test.ts",
+    "test:cms-home:e2e": "node --import tsx scripts/cms-home-e2e.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1142.0",

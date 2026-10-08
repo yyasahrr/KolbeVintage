@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Crown, Mail, MapPin, Phone, ShieldCheck, Sparkles, Truck, X } from "lucide-react";
-import { siteApi, type Announcement, type FooterConfig, type HeaderConfig, type SiteLayout, type SiteTheme } from "../data/experience-api";
+import { siteApi, type Announcement, type FooterConfig, type HeaderConfig, type SiteLayout, type SitePage, type SiteTheme } from "../data/experience-api";
 import { cn } from "../utils/cn";
 
 /* Server-driven site chrome. Business logic stays in code; composition/theme/content come from CMS (Req 280). */
@@ -13,14 +13,18 @@ const isDemo = () => typeof window !== "undefined" && new URLSearchParams(window
 export function useSiteExperience() {
   const [layout, setLayout] = useState<SiteLayout | null>(null);
   const [theme, setTheme] = useState<SiteTheme | null>(null);
+  /* Published snapshot of the CMS `home` page (null when draft/unpublished or
+     offline). It is the presentation authority for the storefront homepage. */
+  const [homePage, setHomePage] = useState<SitePage | null>(null);
   useEffect(() => {
     if (isDemo()) return;
     let alive = true;
     siteApi.layout().then((res) => { if (alive) setLayout(res); }).catch(() => undefined);
     siteApi.theme().then((res) => { if (alive) setTheme(res.theme); }).catch(() => undefined);
+    siteApi.page("home").then((res) => { if (alive) setHomePage(res); }).catch(() => { if (alive) setHomePage(null); });
     return () => { alive = false; };
   }, []);
-  return { layout, theme };
+  return { layout, theme, homePage };
 }
 
 const TOKEN_TO_VAR: Record<string, string[]> = {
