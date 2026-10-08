@@ -161,7 +161,7 @@ The implementation commit contains only Prompt 5 production/UI, its migration, r
 
 35. `docs/parallel/prompt-5-supplier-portal-supply-requests-report.md`
 
-No source/production changes were made after the final regression/browser evidence; subsequent work is the report and Git integration only.
+At this implementation snapshot, no source/production changes followed its final regression/browser evidence. The later follow-up media, review, support, and notification corrections—and their fresh checks—are recorded in the final-audit addendum below.
 
 ## 9. Explicitly deferred — Prompt 6 and out of scope
 
@@ -173,3 +173,54 @@ No source/production changes were made after the final regression/browser eviden
 ## 10. Integration and finalization state
 
 The Prompt 5 implementation is pushed to the existing working branch, and PR #10 is prepared against the verified canonical Core Commerce base. The PR is open, clean/mergeable at the time checked, and intentionally unmerged. The report-only commit is the only remaining branch update at this report-authoring point; it must be pushed normally and the resulting remote HEAD/PR head verified before declaring the entire branch final. No force-push, history rewrite, main-branch push, or automatic merge is authorized.
+
+## 11. Final audit addendum — 2026-10-08
+
+This addendum supersedes the earlier merge-gate snapshot above. It records the bounded final checks on PR #10 and the small genuine Supplier catalog regression restored during the audit.
+
+### Supplier feature-reachability findings
+
+- The old Supplier product table did not expose a general product-detail edit action; its row action was **series management**. The extracted list still exposes series editing, so the absence of editing for base product fields was not newly introduced.
+- The old new-product editor did offer a real image upload. The extracted authoring form had no media path. Restored PNG/JPEG/WebP upload through the existing authenticated `/files` endpoint, preview/removal, and file-ID-backed `metadata.images` on canonical product creation. Images remain optional and do not create stock. Added frontend contract coverage and a P5 integration assertion for Supplier-owned file attachment, private access before review, and non-public pending media.
+- Reattached the server-backed `SupplierReviewPanel` to the Supplier product workspace so review decisions/history and safe resubmission of rejected/draft products remain reachable.
+- The former draft/published switch was a real API action, not demo-only. It was not re-exposed: the generic product-status endpoint does not provide an adequately tenant-scoped Supplier transition for draft/unpublish, and direct Supplier publication would bypass the review workflow. The review/resubmission flow remains available; a self-service visibility toggle would require a dedicated audited, owner-scoped transition.
+- The extracted workspace had removed the legacy Supplier support and notification inbox surfaces. Restored dedicated **Support/Tickets** and **Notifications** tabs. `TicketCenter` receives the authenticated Supplier ID and `ownerType="supplier"`; the notification inbox uses the principal-scoped list/unread/read/read-all endpoints. Server ticket/notification queries remain scoped to the caller, so neither tab exposes another Supplier's records. Both tabs are inside the same approved-and-active Supplier workspace gate.
+- Offers/capacity, read-only stock-at-Kolbe, replenishment requests, account settings, and approved/active portal gating remain reachable. Pending and inactive denial remain explicitly covered by the server tests.
+
+### Test-coverage audit
+
+- Compared the modified existing regression tests against the accepted starting commit `177e529`. No weakened coverage was found. The only three removed assertions in the examined test diffs (`wholesale-oms.test.ts`) were replaced by stronger expectations that a rejected child/allocation stay pending/included and Master Order lock returns `409 SUPPLIER_CONFIRMATION_REQUIRED`.
+- New Prompt 5 product-media assertions were additive. No test failures were skipped, caught-and-ignored, or suppressed.
+
+### Fresh post-correction evidence
+
+| Gate | Fresh result |
+|---|---|
+| Full backend regression on clean database `kolbe_p5_final`, PostgreSQL **17.9**, UTF8, migrations applied twice (second run no-op) | **277 tests; 21 suites; 277 passed; 0 failed; 0 skipped**. `/tmp/p5-real-pg-final-suite.log` |
+| P5-SUP targeted test after adding Supplier-owned image assertions | **26 passed; 0 failed; 0 skipped**. `/tmp/p5-prompt5-targeted-after-image-test.log` |
+| Frontend contract smoke, including Supplier image metadata, review-panel, Support/Tickets, and notification reachability | **177/177 PASS** |
+| Supplier product-authoring browser smoke on a disposable PostgreSQL-backed test DB | **PASS**: real file upload, preview, private owner download, and cancel without product creation |
+| Supplier support/notification browser UAT on a disposable PostgreSQL 17.9 DB | **PASS**: own notification visible, other-user notification hidden, read-all persisted; Supplier TicketCenter created `TK-10001` under the authenticated Supplier, and a different account received 404 for its detail; no page errors |
+| Vite production build | **PASS; 2,018 modules transformed** |
+| Frontend TypeScript (`tsc --noEmit`) | **PASS** |
+| Backend TypeScript build | **PASS** |
+| Responsive static lint | **1/1 PASS; 21 surfaces and 44 fixed/min widths inspected** |
+| `git diff --check` | **PASS** |
+
+The PGlite protocol error remains a diagnosed test-transport flake and was not hidden or patched by weakening assertions. The clean full backend suite was independently verified against native PostgreSQL 17.9, satisfying the stable-environment merge gate.
+
+### Operational OMS browser UAT on the safe disposable database
+
+The browser workflow used the disposable `kolbe_p5_uat` database. Supplier actions and the Admin Master Order were checked; inventory snapshots were compared before/after. The outcome was:
+
+| Master / child | Supplier action and Admin projection | Demand/capacity outcome |
+|---|---|---|
+| `MV-2001` / `KV-100006` | Accepted 3, committed 3, paid, and marked ready; Admin Master Order showed ready/paid. | Receipt and QC remained 0; no physical WMS write. |
+| `MV-2002` / `KV-100007` | Proposed 2 against 4 requested; buyer decision required in Admin Master Order. | Confirmed quantity remained null; allocation quantity **4** stayed pending with no capacity reservation; payment remained blocked. The unresolved remainder of **2** was not silently dropped. |
+| `MV-2003` / `KV-100008` | Rejected; Admin Master Order showed rejection/reassignment state. | Allocation remained pending for reassignment; no capacity reservation. |
+
+Physical stock comparison returned **0 series-stock rows and 0 wholesale piece-balance rows** before and after the workflow. The operational UAT preceded only the later Supplier product-authoring/review/support/notification UI restoration; no OMS lifecycle or WMS code changed afterward.
+
+### Final branch/Git note
+
+The final-audit follow-up touched the existing Prompt 5 media authoring, portal workspace/session, contract smoke, targeted test, and report files, and adds `src/components/supplier-notifications-panel.tsx`. It is limited to Supplier functionality and verification; no Storefront or Prompt 6 work was started. The final correction is committed and normally pushed only to `arena/e69b89c7-kolbevintage`; PR #10 remains unmerged. The current PR head SHA and mergeability are verified at finalization in the session report. Generated build output, dependencies, browser files, and test databases are excluded from the staged patch.

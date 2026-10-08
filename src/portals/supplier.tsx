@@ -8,6 +8,7 @@ import { useOps } from "../data/ops";
 import { cn } from "../utils/cn";
 
 type SupplierSession = {
+  id: string;
   identity: string;
   cooperationStatus: string;
   activityStatus: string;
@@ -105,7 +106,7 @@ export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; 
       const isSupplier = identity.roles.includes("supplier");
       const status = identity.supplier?.cooperationStatus ?? "not_submitted";
       const activity = identity.supplier?.activityStatus ?? "inactive";
-      setSession({ identity: identity.supplier?.brandName?.trim() || identity.displayName, cooperationStatus: status, activityStatus: activity });
+      setSession({ id: identity.id, identity: identity.supplier?.brandName?.trim() || identity.displayName, cooperationStatus: status, activityStatus: activity });
       setSignedIn(isSupplier && status === "approved" && activity === "active");
     } catch {
       setSession(null);
@@ -117,7 +118,7 @@ export default function SupplierApp({ dark, setDark, onExit }: { dark: boolean; 
   useEffect(() => { void verify(); }, []);
 
   if (loading) return <div dir="rtl" className="min-h-screen"><div className="mx-auto flex max-w-[1200px] items-center justify-between px-4 py-4"><SupplierBrand /><button onClick={() => setDark(!dark)} aria-label="تغییر تم" className="flex h-10 w-10 items-center justify-center rounded-[11px] border border-[var(--kv-line)]">{dark ? <Sun size={17} /> : <Moon size={17} />}</button></div><div className="mx-auto max-w-[1200px] px-4 py-12"><LoadingState label="در حال بررسی مجوز عملیاتی تأمین‌کننده با سرور…" /></div></div>;
-  if (signedIn && session) return <SupplierPortalWorkspace dark={dark} setDark={setDark} supplierName={session.identity} onLogout={async () => { await authApi.logout().catch(() => undefined); setSession(null); setSignedIn(false); }} />;
+  if (signedIn && session) return <SupplierPortalWorkspace dark={dark} setDark={setDark} supplierId={session.id} supplierName={session.identity} onLogout={async () => { await authApi.logout().catch(() => undefined); setSession(null); setSignedIn(false); }} />;
 
   const statusMessage = session?.cooperationStatus === "rejected"
     ? "درخواست همکاری تأیید نشده است. برای پیگیری با پشتیبانی کلبه تماس بگیرید."

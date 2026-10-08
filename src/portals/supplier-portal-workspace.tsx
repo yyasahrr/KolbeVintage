@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
-  Archive, Boxes, ClipboardList, History as HistoryIcon, LayoutDashboard, Layers3, LogOut, Moon, Package, Plus,
+  Archive, Bell, Boxes, ClipboardList, Headset, History as HistoryIcon, LayoutDashboard, Layers3, LogOut, Moon, Package, Plus,
   RefreshCw, Settings, ShieldCheck, Sun, Warehouse,
 } from "lucide-react";
 import { Btn, Card, Empty, ErrorState, LoadingState } from "../components/primitives";
@@ -8,12 +8,15 @@ import { SupplierOffersPanel } from "../components/supplier-wholesale-panel";
 import { SupplierRequestsPortal } from "../components/supplier-requests-portal";
 import { SupplierSupplyRequestsPanel } from "../components/supplier-supply-requests-panel";
 import { SupplierProductSeriesAuthoring } from "../components/supplier-product-series-authoring";
+import { SupplierReviewPanel } from "../components/supplier-review-panel";
+import { SupplierNotificationsPanel } from "../components/supplier-notifications-panel";
+import { TicketCenter } from "../components/support";
 import { supplierConsignmentApi, supplierPortalApi, type SupplierPortalDashboard, type SupplierPortalHistoryItem, type SupplierPortalProduct } from "../data/api";
 import { SupplierProfileSettings } from "./supplier-profile-settings";
 import { cn } from "../utils/cn";
 
-type Tab = "dashboard" | "supply" | "products" | "stock" | "capacity" | "requests" | "history" | "account";
-type Props = { dark: boolean; setDark: (value: boolean) => void; supplierName: string; onLogout: () => void };
+type Tab = "dashboard" | "supply" | "products" | "stock" | "capacity" | "requests" | "history" | "support" | "notifications" | "account";
+type Props = { dark: boolean; setDark: (value: boolean) => void; supplierId: string; supplierName: string; onLogout: () => void };
 type StockRow = Record<string, unknown>;
 type Flash = (message: string) => void;
 
@@ -45,6 +48,8 @@ const tabs: { id: Tab; title: string; icon: ReactNode }[] = [
   { id: "capacity", title: "ظرفیت اعلامی", icon: <Layers3 size={17} /> },
   { id: "requests", title: "درخواست‌های قبلی", icon: <Archive size={17} /> },
   { id: "history", title: "تاریخچه تأمین", icon: <HistoryIcon size={17} /> },
+  { id: "support", title: "پشتیبانی و تیکت‌ها", icon: <Headset size={17} /> },
+  { id: "notifications", title: "اعلان‌ها", icon: <Bell size={17} /> },
   { id: "account", title: "حساب و پروفایل", icon: <Settings size={17} /> },
 ];
 
@@ -128,6 +133,7 @@ function ProductsAndSeries({ onNavigate, supplierName, flash }: { onNavigate: (t
           <Btn size="sm" variant="accent" onClick={() => setAuthoring({})} icon={<Plus size={14} />}>ثبت محصول و سری</Btn>
         </div>
       </div>
+      <SupplierReviewPanel flash={flash} />
       {authoring && <SupplierProductSeriesAuthoring key={authoring.product?.id ?? "new-supplier-product"}
         supplierName={supplierName} initialProduct={authoring.product} onCancel={() => setAuthoring(null)} onSaved={() => void saved()} flash={flash} />}
       {!items.length && <Empty title="هنوز محصولی برای حساب شما ثبت نشده" desc="برای ساخت کاتالوگ عمده و تعریف سری، محصول جدید ثبت کنید." action={<Btn size="sm" variant="soft" onClick={() => onNavigate("requests")}>مشاهده درخواست‌های قبلی</Btn>} />}
@@ -211,7 +217,7 @@ function History({ flash }: { flash: Flash }) {
   );
 }
 
-export function SupplierPortalWorkspace({ dark, setDark, supplierName, onLogout }: Props) {
+export function SupplierPortalWorkspace({ dark, setDark, supplierId, supplierName, onLogout }: Props) {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [toast, setToast] = useState<string | null>(null);
   const flash: Flash = (message) => { setToast(message); window.setTimeout(() => setToast(null), 4000); };
@@ -261,6 +267,8 @@ export function SupplierPortalWorkspace({ dark, setDark, supplierName, onLogout 
             {tab === "capacity" && <div className="space-y-3"><div className="rounded-[12px] bg-[var(--kv-surface-2)] px-4 py-3 text-[11.5px] leading-6 text-[var(--kv-muted)]">ظرفیت یک تعهد در منبع بیرونی است، نه موجودی انبار. رزروهای متصل به سفارش مادر تا تصمیم OMS (لغو معتبر، بازتخصیص یا مرحله بعدی تحقق) دوام دارند و با sweep مستقل منقضی نمی‌شوند.</div><SupplierOffersPanel flash={flash} /></div>}
             {tab === "requests" && <SupplierRequestsPortal flash={flash} />}
             {tab === "history" && <History flash={flash} />}
+            {tab === "support" && <TicketCenter perspective="owner" ownerId={supplierId} ownerName={supplierName} ownerType="supplier" />}
+            {tab === "notifications" && <SupplierNotificationsPanel />}
             {tab === "account" && <SupplierProfileSettings flash={flash} />}
           </section>
         </main>

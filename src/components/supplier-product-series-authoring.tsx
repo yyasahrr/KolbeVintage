@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Save, ShieldCheck, X } from "lucide-react";
 import { Btn, Card, Field, Input, Textarea } from "./primitives";
 import { ProductSeriesEditor, productSeriesPayload } from "./product-series-editor";
 import { COLORS, type Colorway, type SeriesDef } from "../data/catalog";
 import { rialFromToman, tomanFromRial } from "../data/contracts";
-import { catalogOpsApi, productsApi, type SupplierPortalProduct } from "../data/api";
+import { catalogOpsApi, filesApi, productsApi, type SupplierPortalProduct } from "../data/api";
 import { cn } from "../utils/cn";
 
 type Flash = (message: string) => void;
@@ -16,6 +16,7 @@ type Props = {
   flash: Flash;
 };
 type CategoryField = { code: string; label: string; type: string; unit: string | null; required: boolean; options: { value: string; label: string }[] };
+type ProductImage = { fileId: string; url: string; previewUrl: string };
 
 function colorsForProduct(product?: SupplierPortalProduct): Colorway[] {
   if (!product) return Object.values(COLORS);
@@ -81,7 +82,15 @@ export function SupplierProductSeriesAuthoring({ supplierName, initialProduct, o
   const [schemaLoading, setSchemaLoading] = useState(false);
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [specifications, setSpecifications] = useState<Record<string, unknown>>({});
+  const [productImages, setProductImages] = useState<ProductImage[]>([]);
+  const [mediaBusy, setMediaBusy] = useState(false);
+  const previewUrls = useRef(new Set<string>());
   const [series, setSeries] = useState<SeriesDef[]>(() => seriesForProduct(initialProduct, colors));
+
+  useEffect(() => () => {
+    for (const url of previewUrls.current) URL.revokeObjectURL(url);
+    previewUrls.current.clear();
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [idempotencyNonce, setIdempotencyNonce] = useState(() => crypto.randomUUID());
@@ -142,6 +151,44 @@ export function SupplierProductSeriesAuthoring({ supplierName, initialProduct, o
     setError(null);
   };
 
+  const uploadImages = async (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    if (!files.length) return;
+    setMediaBusy(true);
+    try {
+      for (const file of files) {
+        if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+          throw new Error("فقط تصویر PNG، JPEG یا WebP قابل بارگذاری است.");
+        }
+        if (file.size > 5 * 1024 * 1024) throw new Error("حداکثر حجم هر تصویر ۵ مگابایت است.");
+        const uploaded = await filesApi.upload(file);
+        const previewUrl = URL.createObjectURL(file);
+        previewUrls.current.add(previewUrl);
+        setProductImages((current) => [...current, {
+          fileId: uploaded.id, url: `/api/v1/product-media/${uploaded.id}`, previewUrl,
+        }]);
+      }
+      setIdempotencyNonce(crypto.randomUUID());
+      setError(null);
+    } catch (cause) {
+      flash(cause instanceof Error ? cause.message : "بارگذاری تصویر انجام نشد.");
+    } finally {
+      setMediaBusy(false);
+    }
+  };
+
+  const removeImage = (fileId: string) => {
+    const image = productImages.find((row) => row.fileId === fileId);
+    if (image) {
+      URL.revokeObjectURL(image.previewUrl);
+      previewUrls.current.delete(image.previewUrl);
+    }
+    setProductImages((current) => current.filter((row) => row.fileId !== fileId));
+    setIdempotencyNonce(crypto.randomUUID());
+  };
+
   const toggleColor = (colorId: string) => {
     const next = selectedColorIds.includes(colorId)
       ? selectedColorIds.filter((id) => id !== colorId) : [...selectedColorIds, colorId];
@@ -171,7 +218,7 @@ export function SupplierProductSeriesAuthoring({ supplierName, initialProduct, o
     || !row.colorIds?.[0] || !selectedColors.some((color) => color.id === row.colorIds?.[0])
     || !Object.values(row.composition).some((quantity) => quantity > 0)
   ));
-  const cannotSave = busy || schemaLoading || (!editing && (!category.trim() || Boolean(schemaError)))
+  const cannotSave = busy || mediaBusy || schemaLoading || (!editing && (!category.trim() || Boolean(schemaError)))
     || !brand.trim() || name.trim().length < 2 || !sizes.length || !selectedColors.length
     || !activeSeries.length || activeSeries.some((row) => malformedSeries.includes(row))
     || missingSpecs.length > 0 || sizes.length > 60 || maxQuantity > 100 || series.length > 50;
@@ -205,6 +252,7 @@ export function SupplierProductSeriesAuthoring({ supplierName, initialProduct, o
           wholesaleMoq: Math.min(...activeSeries.map((row) => row.moqSeries)),
           retailEnabled: false, wholesaleEnabled: true, installmentEnabled: false,
           installmentPolicy: "disabled", specifications, variants, wholesaleSeries,
+          metadata: { images: productImages.map(({ fileId, url }) => ({ fileId, url })) },
         }, `supplier-product-${idempotencyNonce}`);
         flash(`محصول «${name.trim()}» با ${result.variants.length} واریانت برای بازبینی کلبه ثبت شد؛ وضعیت فعلی در انتظار بررسی است.`);
       }
@@ -229,7 +277,7 @@ export function SupplierProductSeriesAuthoring({ supplierName, initialProduct, o
             {editing ? "سری‌ها و قیمت‌های محصول متعلق به حساب شما ویرایش می‌شوند؛ محدودیت ترکیب موجودی‌دار را سرور اعمال می‌کند." : "محصول و سری‌ها به کاتالوگ سرور ارسال و برای بازبینی کلبه ثبت می‌شوند. این فرم هیچ موجودی فیزیکی ایجاد نمی‌کند."}
           </p>
         </div>
-        <Btn size="sm" variant="ghost" disabled={busy} icon={<X size={14} />} onClick={onCancel}>بستن</Btn>
+        <Btn size="sm" variant="ghost" disabled={busy || mediaBusy} icon={<X size={14} />} onClick={onCancel}>بستن</Btn>
       </div>
 
       {!editing && <div className="space-y-4 border-t border-[var(--kv-line)] pt-4">
@@ -245,6 +293,23 @@ export function SupplierProductSeriesAuthoring({ supplierName, initialProduct, o
           </div>
         </div>
         <Field label="توضیح کوتاه"><Textarea rows={3} value={description} onChange={(value) => setChanged(setDescription, value)} /></Field>
+        <div className="space-y-3 rounded-[12px] border border-[var(--kv-line)] p-3 sm:p-4">
+          <div>
+            <h4 className="text-[12px] font-bold">تصاویر محصول</h4>
+            <p className="mt-1 text-[10.5px] leading-5 text-[var(--kv-muted)]">تصاویر واقعی به فایل سرور بارگذاری و همراه محصول برای بازبینی کلبه ثبت می‌شوند؛ تصویر، موجودی ایجاد نمی‌کند.</p>
+          </div>
+          {!!productImages.length && <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {productImages.map((image) => <div key={image.fileId} className="space-y-1.5">
+              <img src={image.previewUrl} alt="پیش‌نمایش تصویر محصول" className="aspect-square w-full rounded-[10px] object-cover" />
+              <Btn size="sm" variant="ghost" disabled={mediaBusy} onClick={() => removeImage(image.fileId)}>حذف تصویر</Btn>
+            </div>)}
+          </div>}
+          <Field label="افزودن تصاویر محصول" hint="PNG، JPEG یا WebP؛ حداکثر ۵ مگابایت برای هر تصویر.">
+            <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={mediaBusy}
+              onChange={(event) => void uploadImages(event)} className="block w-full text-[11px]" />
+          </Field>
+          {mediaBusy && <p role="status" className="text-[11px] text-[var(--kv-muted)]">در حال بارگذاری تصاویر…</p>}
+        </div>
         {categoryFields.length > 0 && <div className="space-y-3 rounded-[12px] border border-[var(--kv-line)] p-3 sm:p-4">
           <p className="text-[12px] font-bold">مشخصات فنی دسته‌بندی</p>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -319,7 +384,7 @@ export function SupplierProductSeriesAuthoring({ supplierName, initialProduct, o
         <ShieldCheck size={14} className="mt-0.5 shrink-0" />تعریف یا ویرایش محصول و سری، موجودی فیزیکی، ظرفیت تأمین یا رسید WMS ایجاد نمی‌کند. محصول جدید پس از ثبت در صف بازبینی کلبه قرار می‌گیرد.
       </p>}
       <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--kv-line)] pt-4">
-        <Btn size="sm" variant="ghost" disabled={busy} onClick={onCancel}>انصراف</Btn>
+        <Btn size="sm" variant="ghost" disabled={busy || mediaBusy} onClick={onCancel}>انصراف</Btn>
         <Btn size="sm" variant="accent" disabled={cannotSave} icon={busy ? undefined : <Save size={14} />} onClick={() => void submit()}>
           {busy ? "در حال ذخیره…" : editing ? "ذخیره سری‌ها" : "ثبت محصول برای بازبینی"}
         </Btn>

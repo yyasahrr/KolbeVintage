@@ -265,10 +265,17 @@ test('P5-SUP-001…025 — approved Supplier portal, canonical OMS lifecycle, pr
 
       // Approved Suppliers can create scoped wholesale products/series through the canonical catalog writer.
       const category = `دسته آزمایشی P5 ${randomUUID().slice(0, 6)}`;
+      const supplierImage = await app.inject({ method: 'POST', url: '/api/v1/files', headers: aHeaders, payload: {
+        originalName: 'p5-supplier-product.png', mime: 'image/png',
+        dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+      } });
+      assert.equal(supplierImage.statusCode, 201, supplierImage.body);
+      const supplierImageId = supplierImage.json().id as string;
       const createKey = key('p5-supplier-product');
       const productPayload = {
         saveIntent: 'draft', brand: 'برند تأمین P5', name: `محصول جدید ${randomUUID().slice(0, 6)}`,
         category, description: 'ثبت محصول برای بازبینی', cashPriceRial: '0', wholesalePriceRial: '10000000',
+        metadata: { images: [{ fileId: supplierImageId, url: 'blob:temporary-preview' }] },
         retailEnabled: false, wholesaleEnabled: true,
         variants: [{ color: 'بنفش', size: 'M' }, { color: 'بنفش', size: 'L' }],
         wholesaleSeries: [{ name: 'سری بنفش', color: 'بنفش', active: true, pricingMode: 'series_total',
@@ -287,6 +294,15 @@ test('P5-SUP-001…025 — approved Supplier portal, canonical OMS lifecycle, pr
         'SELECT status,owner_type,supplier_id,retail_enabled,wholesale_enabled FROM products WHERE id=$1', [authoredId]);
       assert.deepEqual(authored.rows[0], { status: 'pending', owner_type: 'supplier', supplier_id: supplierA.id,
         retail_enabled: false, wholesale_enabled: true });
+      const persistedImage = await pool.query<{ metadata: { images: { fileId: string; url: string }[] } }>(
+        'SELECT metadata FROM products WHERE id=$1', [authoredId]);
+      assert.deepEqual(persistedImage.rows[0]!.metadata.images, [{
+        fileId: supplierImageId, url: `/api/v1/product-media/${supplierImageId}`,
+      }], 'Supplier product creation attaches the Supplier-owned server file, never the temporary preview URL');
+      const unpublishedMedia = await app.inject({ method: 'GET', url: `/api/v1/product-media/${supplierImageId}` });
+      assert.equal(unpublishedMedia.statusCode, 404, 'pending product media is not public before catalog review');
+      const privateMedia = await app.inject({ method: 'GET', url: `/api/v1/files/${supplierImageId}`, headers: aHeaders });
+      assert.equal(privateMedia.statusCode, 200, privateMedia.body);
       const template = await pool.query<{ id: string }>('SELECT id FROM series_templates WHERE product_id=$1', [authoredId]);
       assert.equal(template.rows.length, 1);
       const updateKey = key('p5-supplier-series-update');
