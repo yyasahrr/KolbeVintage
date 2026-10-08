@@ -825,6 +825,7 @@ try {
   const adminSrcForIa = readFileSync(join(repoRoot, 'src/portals/admin.tsx'), 'utf8');
   const studioSrcForAuth = readFileSync(join(repoRoot, 'src/portals/studio.tsx'), 'utf8');
   const supplierSrcForAuth = readFileSync(join(repoRoot, 'src/portals/supplier.tsx'), 'utf8');
+  const supplierWorkspaceSrcForAuth = readFileSync(join(repoRoot, 'src/portals/supplier-portal-workspace.tsx'), 'utf8');
   const appSrcForAuth = readFileSync(join(repoRoot, 'src/App.tsx'), 'utf8');
   const childPanelSrc = readFileSync(join(repoRoot, 'src/components/master-child-orders.tsx'), 'utf8');
   check('orders hub has exactly TWO tabs: سفارشات خرده / سفارشات عمده / VIP',
@@ -857,11 +858,14 @@ try {
   check('VIP is NEVER a frontend/demo role: no demo VIP shortcut, no hardcoded demo password',
     !appSrcForAuth.includes('KolbeDemo123456!') && !appSrcForAuth.includes('ورود آزمایشی VIP') &&
     appSrcForAuth.includes('isWholesaleMember') && appSrcForAuth.includes('DEMO_MODE'));
-  check('the supplier portal gates on the SERVER cooperation state and shows the real pending/rejected state',
-    (supplierSrcForAuth.match(/me\.supplier\?\.cooperationStatus/g) ?? []).length >= 2 &&
-    supplierSrcForAuth.includes('status === "approved"') &&
-    supplierSrcForAuth.includes('درخواست عضویت تأمین‌کننده در حال بررسی است') &&
-    supplierSrcForAuth.includes('درخواست عضویت تأمین‌کننده تأیید نشد'));
+  check('the supplier portal gates on the server cooperation/activity state and shows real pending/inactive/rejected states',
+    supplierSrcForAuth.includes('const identity = await authApi.me()') &&
+    supplierSrcForAuth.includes('identity.supplier?.cooperationStatus') &&
+    supplierSrcForAuth.includes('identity.supplier?.activityStatus') &&
+    supplierSrcForAuth.includes('status === "approved"') && supplierSrcForAuth.includes('activity === "active"') &&
+    supplierSrcForAuth.includes('درخواست همکاری شما هنوز تأیید نشده است') &&
+    supplierSrcForAuth.includes('درخواست همکاری تأیید نشده است') &&
+    supplierSrcForAuth.includes('حساب تأمین‌کننده تأیید شده، اما در حال حاضر غیرفعال است'));
   check('the auth surface exposes BOTH real login methods and only one set of inputs at a time',
     studioSrcForAuth.includes('setLoginMethod') && studioSrcForAuth.includes('شماره موبایل و کد یکبارمصرف') &&
     studioSrcForAuth.includes('ایمیل و رمز عبور') && studioSrcForAuth.includes('autoComplete="one-time-code"') &&
@@ -883,11 +887,12 @@ try {
     appSrcForAuth.includes('authUser.isWholesaleMember || authUser.roles.includes("vip")') &&
     appSrcForAuth.includes('DEMO_MODE && buyer?.status'));
   check('supplier portal auth is SERVER-derived (JWT + /auth/me roles) with no client-side bypass left',
-    supplierSrcForAuth.includes('const me = await authApi.me()') &&
-    supplierSrcForAuth.includes('me.roles.includes("supplier")') &&
+    supplierSrcForAuth.includes('const identity = await authApi.me()') &&
+    supplierSrcForAuth.includes('identity.roles.includes("supplier")') &&
+    supplierSrcForAuth.includes('status === "approved"') && supplierSrcForAuth.includes('activity === "active"') &&
     !supplierSrcForAuth.includes('kolbe-supplier') && !supplierSrcForAuth.includes('demo-session') &&
     !/if\s*\(\s*demo\s*\)\s*\{\s*setAuthed/.test(supplierSrcForAuth) &&
-    supplierSrcForAuth.includes('authApi.logout'));
+    supplierSrcForAuth.includes('authApi.logout') && supplierWorkspaceSrcForAuth.includes('dir="rtl"'));
   check('the retired inline 2FA modal is gone — OTP lives in the canonical auth screens',
     !appSrcForAuth.includes('setTwoFactor(') && !appSrcForAuth.includes('ورود دومرحله‌ای'));
 

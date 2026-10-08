@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { addRial, asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
@@ -1528,6 +1528,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     const isOps = user.permissions.includes('orders:read') || user.permissions.includes('wholesale:ops');
     const isSupplier = user.roles.includes('supplier');
     if (!isOps && !isSupplier) throw forbidden();
+    if (isSupplier) await requireApprovedSupplier(pool, user);
 
     const rows = await pool.query(
       `SELECT sf.id, sf.reference, sf.order_id, o.reference AS order_reference, o.status AS order_status,
@@ -1563,6 +1564,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     const body = prepareFulfillmentBody.parse(request.body ?? {});
 
     return transaction(pool, async (client) => {
+      if (user.roles.includes('supplier')) await requireApprovedSupplier(client, user);
       const f = await one<{
         id: string;
         reference: string;
@@ -1615,6 +1617,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     if (typeof key !== 'string' || key.length < 8 || key.length > 120) throw badRequest('Idempotency-Key معتبر لازم است.');
 
     const shipment = await transaction(pool, async (client) => {
+      if (user.roles.includes('supplier')) await requireApprovedSupplier(client, user);
       const claim = await claimIdempotency(client, user.id, 'inbound_shipment.create', key, requestHash(body));
       if (claim.previous) return claim.previous;
 
@@ -1765,6 +1768,7 @@ export function registerOrderRoutes(app: FastifyInstance, pool: DbPool, config: 
     const isOps = user.permissions.includes('orders:read') || user.permissions.includes('wholesale:ops');
     const isSupplier = user.roles.includes('supplier');
     if (!isOps && !isSupplier) throw forbidden();
+    if (isSupplier) await requireApprovedSupplier(pool, user);
 
     const rows = await pool.query(
       `SELECT s.*, o.reference AS order_reference, sp.brand_name, w.name AS destination_warehouse_name,

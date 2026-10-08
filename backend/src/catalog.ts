@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { one, transaction, type DbPool } from './db.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { asRial, rial } from './money.js';
 import { audit, claimIdempotency, completeIdempotency, outbox, requestHash } from './operations.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from './errors.js';
@@ -562,13 +562,8 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
 
     const isSupplier = user.roles.includes('supplier');
     if (isSupplierOnly) {
-      const supplier = await one<{ activity_status: string; cooperation_status: string }>(
-        pool,
-        'SELECT activity_status, cooperation_status FROM supplier_profiles WHERE user_id = $1',
-        [user.id],
-      );
-      if (!supplier) throw forbidden('پروفایل تأمین‌کننده یافت نشد؛ ابتدا درخواست همکاری تکمیل کنید.');
       await assertSupplierMay(pool, user.id, 'product_create', { resource: 'product', ip: request.ip });
+      await requireApprovedSupplier(pool, user);
       const violation = await transaction(pool, (client) => supplierCapViolation(client, user.id, 'product_limit'));
       if (violation) throw forbidden(violation);
       if (body.retailEnabled === true || body.wholesaleEnabled === false)
@@ -624,6 +619,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     const seasons = [...new Set(body.seasons)];
 
     const result = await transaction(pool, async (client) => {
+      if (isSupplierOnly) await requireApprovedSupplier(client, user);
       if (idemKey) {
         const claim = await claimIdempotency(client, user.id, 'product.create', idemKey, requestHash({ body, isSupplierOnly }));
         if (claim.previous) return claim.previous;
@@ -735,6 +731,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       if (!product) throw notFound();
       const isSupplierOnly = user.roles.includes('supplier') && !user.permissions.includes('products:write');
       if (isSupplierOnly) {
+        await requireApprovedSupplier(client, user);
         if (product.supplier_id !== user.id) throw forbidden();
       } else {
         requirePermission(user, 'products:write');
@@ -809,8 +806,17 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
     if (!owned) throw notFound();
     const isSupplierOwner = owned.supplier_id === user.id && user.roles.includes('supplier');
     if (!isSupplierOwner) requirePermission(user, 'products:write');
-    else await assertSupplierMay(pool, user.id, 'product_edit', { resource: 'product', resourceId: id, ip: request.ip });
+    else {
+      await requireApprovedSupplier(pool, user);
+      await assertSupplierMay(pool, user.id, 'product_edit', { resource: 'product', resourceId: id, ip: request.ip });
+    }
+    const rawIdempotencyKey = request.headers['idempotency-key'];
+    const idempotencyKey = typeof rawIdempotencyKey === 'string' && rawIdempotencyKey.length >= 8 && rawIdempotencyKey.length <= 120
+      ? rawIdempotencyKey : `product-update:${id}:${requestHash(body).slice(0, 32)}`;
+    const payloadHash = requestHash({ productId: id, body });
     return transaction(pool, async (client) => {
+      const claim = await claimIdempotency(client, user.id, 'product.update', idempotencyKey, payloadHash);
+      if (claim.previous) return claim.previous as { id: string; updated: string[] };
       const before = await one<{ supplier_id: string | null; status: string; product_type_code: string | null; owner_type: string;
         category: string; specifications: Record<string, unknown>; cash_price_rial: string; installment_price_rial: string | null;
         wholesale_price_rial: string | null; installment_enabled: boolean; installment_policy: string }>(client,
@@ -831,6 +837,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       }
       const isSupplierOwner = before.supplier_id === user.id && user.roles.includes('supplier');
       if (!isSupplierOwner) requirePermission(user, 'products:write');
+      else await requireApprovedSupplier(client, user);
       if (isSupplierOwner && (body.retailEnabled === true || body.wholesaleEnabled === false))
         throw new ApiError(403, 'FORBIDDEN', 'محصول تأمین‌کننده فقط در کانال عمده مجاز است.');
       if (body.cashPriceRial !== undefined) rial(body.cashPriceRial);
@@ -913,7 +920,9 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       await audit(client, user.id, 'product.updated', 'product', id, before,
         { fields: Object.keys(body) }, request.ip);
       await outbox(client, 'product.updated', 'product', id, { productId: id });
-      return { id, updated: Object.keys(body) };
+      const response = { id, updated: Object.keys(body) };
+      await completeIdempotency(client, user.id, 'product.update', idempotencyKey, response);
+      return response;
     });
   });
 
@@ -1212,6 +1221,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: DbPool, config
       if (!product) throw notFound();
       const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
       if (!isOwner) requirePermission(user, 'products:write');
+      else await requireApprovedSupplier(client, user);
       const variant = await one<{ id: string; weight_grams: number | null; active: boolean; price_override_rial: string | null }>(client,
         'SELECT id, weight_grams, active, price_override_rial::text FROM product_variants WHERE id = $1 AND product_id = $2 FOR UPDATE', [params.variantId, params.id]);
       if (!variant) throw notFound();

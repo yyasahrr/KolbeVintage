@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbClient, type DbPool } from './db.js';
 import { audit } from './operations.js';
 import { badRequest, conflict, notFound } from './errors.js';
@@ -530,6 +530,7 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
         if (!owner) throw notFound();
         const isOwner = owner.supplier_id === user.id && user.roles.includes('supplier');
         if (!isOwner) requirePermission(user, 'products:write');
+        else await requireApprovedSupplier(client, user);
         const tables = await writeTable(client, id, 'specs', body.table ?? null);
         await audit(client, user.id, 'product.specs_table_saved', 'product', id, undefined,
           { columns: body.table?.columns.length ?? 0, rows: body.table?.rows.length ?? 0 }, request.ip);
@@ -542,6 +543,7 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
       if (!product) throw notFound();
       const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
       if (!isOwner) requirePermission(user, 'products:write');
+      else await requireApprovedSupplier(client, user);
       const variantIds = new Set((await client.query('SELECT id FROM product_variants WHERE product_id = $1', [id])).rows.map((row: { id: string }) => row.id));
       const warnings: string[] = [];
       let templateId: string | null = null;
@@ -862,6 +864,7 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
         if (!owner) throw notFound();
         const isOwner = owner.supplier_id === user.id && user.roles.includes('supplier');
         if (!isOwner) requirePermission(user, 'products:write');
+        else await requireApprovedSupplier(client, user);
         const tables = await writeTable(client, id, 'sizeGuide', body.table ?? null);
         await audit(client, user.id, 'product.size_guide_table_saved', 'product', id, undefined,
           { columns: body.table?.columns.length ?? 0, rows: body.table?.rows.length ?? 0 }, request.ip);
@@ -873,6 +876,7 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
       if (!product) throw notFound();
       const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
       if (!isOwner) requirePermission(user, 'products:write');
+      else await requireApprovedSupplier(client, user);
       const guide = await fullGuide(client as unknown as DbPool, body.guideId);
       if (!guide) throw badRequest('راهنمای سایز انتخاب‌شده یافت نشد.');
       const snapshot = body.mode === 'detached' ? guide : null;
@@ -892,6 +896,7 @@ export function registerSpecRoutes(app: FastifyInstance, pool: DbPool, config: C
     if (!product) throw notFound();
     const isOwner = product.supplier_id === user.id && user.roles.includes('supplier');
     if (!isOwner) requirePermission(user, 'products:write');
+    else await requireApprovedSupplier(pool, user);
     await pool.query('DELETE FROM product_size_guides WHERE product_id = $1', [id]);
     await transaction(pool, (client) => audit(client, user.id, 'product.size_guide_detached', 'product', id, undefined, undefined, request.ip));
     return { productId: id, guide: null };

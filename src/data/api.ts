@@ -1902,6 +1902,8 @@ export type OpsAllocation = {
   quantity: number; status: string; owner_supplier_id: string | null; offer_id: string | null;
   warehouse_id: string | null; received_series: number; qc_passed_series: number; qc_rejected_series: number;
   reservation_expires_at: string | null;
+  supplier_response_status: string; supplier_response_note: string | null; supplier_committed_series: number;
+  supplier_responded_at: string | null; supplier_committed_at: string | null; supplier_ready_at: string | null;
 };
 /** §59-§61: the THREE allocatable buckets are always separate numbers, never one merged stock figure. */
 export type OpsLineSupply = {
@@ -1956,6 +1958,44 @@ export type SupplierChildOrder = {
   child_fulfillment: string | null; supplier_respond_by: string | null; created_at: string;
   master_reference: string; lines: SupplierChildLine[];
 };
+export type SupplierSupplyRequest = {
+  allocationId: string; lineId: string; childOrderId: string; orderReference: string;
+  childStatus: string; paymentEligibility: string; childFulfillment: string | null;
+  productName: string; seriesName: string; colorLabel: string | null;
+  requestedSeries: number; externalSeries: number; proposedSeries: number | null;
+  confirmedSeries: number | null; lineStatus: string; allocationStatus: string;
+  responseStatus: "unanswered" | "accepted" | "revised" | "rejected" | "committed" | "ready" | "cancelled" | string;
+  responseNote: string | null; committedSeries: number; respondedAt: string | null;
+  committedAt: string | null; readyAt: string | null; createdAt: string; updatedAt: string;
+};
+export type SupplierPortalDashboard = {
+  supplier: { id: string; brandName: string; cooperationStatus: string; activityStatus: string };
+  products: { published: number; pending: number; total: number; series: number };
+  supplyRequests: { open: number; committedSeries: number; readySeries: number; history: number };
+  capacity: { declared: number; reserved: number; availableToRequest: number };
+  stockAtKolbeSeries: number;
+};
+export type SupplierPortalProduct = {
+  id: string; brand: string; name: string; category: string; status: string; wholesale_enabled: boolean;
+  created_at: string; colors: string[]; sizes: string[];
+  series: { id: string; name: string; colorLabel: string | null; active: boolean;
+    pricingMode: string; minOrderSeries: number; seriesCount: number; pricePerSeriesRial: string | null;
+    items: { size: string; quantityPerSeries: number; unitPriceRial: string | null }[] }[];
+};
+export type SupplierPortalHistoryItem = SupplierSupplyRequest & { orderStatus: string };
+
+const supplierActionKey = (scope: string, payload: unknown) => {
+  const text = JSON.stringify(payload) ?? String(payload);
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+  return `${scope}-${(hash >>> 0).toString(36)}`;
+};
+
+export const supplierPortalApi = {
+  dashboard: () => authFetch<SupplierPortalDashboard>("/supplier/portal/dashboard"),
+  products: (limit = 100) => authFetch<{ items: SupplierPortalProduct[] }>(`/supplier/portal/products${query({ limit })}`),
+  history: (limit = 50) => authFetch<{ items: SupplierPortalHistoryItem[] }>(`/supplier/portal/history${query({ limit })}`),
+};
 
 export const wholesaleOmsApi = {
   /** VIP checkout → ONE master + one child per seller; server expands series recipes and reserves atomically. */
@@ -1981,7 +2021,8 @@ export const wholesaleOmsApi = {
   reassignAllocation: (allocationId: string, payload: { toOfferId?: string; toSource?: "supplier_external" | "supplier_stock_at_kolbe"; reason: string }) =>
     authFetch<{ allocationId: string; replacementAllocationId: string; replacementStatus: string;
       source: string; supplierChanged: boolean; quantity: number; supplierConfirmationRequired: boolean; history: number }>(
-      `/wholesale/allocations/${allocationId}/reassign`, { method: "POST", body: JSON.stringify(payload) }),
+      `/wholesale/allocations/${allocationId}/reassign`, { method: "POST",
+        headers: { "Idempotency-Key": supplierActionKey(`oms-reassign-${allocationId}`, payload) }, body: JSON.stringify(payload) }),
   lock: (id: string) => authFetch<Record<string, unknown>>(`/wholesale/masters/${id}/lock`, { method: "POST", body: "{}" }),
   removeChild: (childId: string) =>
     authFetch<Record<string, unknown>>(`/wholesale/children/${childId}/remove`, { method: "POST", body: "{}" }),
@@ -1998,10 +2039,29 @@ export const wholesaleOmsApi = {
   /** §71-§72: supplier panel — child orders only; buyer identity is never exposed. */
   supplierChildOrders: (params?: Record<string, string | number>) =>
     authFetch<{ items: SupplierChildOrder[] }>(`/wholesale/supplier/child-orders${query(params)}`),
+  supplierSupplyRequests: (params?: { state?: "open" | "history" | "all"; limit?: number }) =>
+    authFetch<{ items: SupplierSupplyRequest[] }>(`/wholesale/supplier/supply-requests${query(params)}`),
+  supplierRespondAllocation: (allocationId: string, payload: { action: "confirm" | "counter" | "reject"; proposedSeries?: number; note?: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/supply-requests/${allocationId}/respond`, {
+      method: "POST", headers: { "Idempotency-Key": supplierActionKey(`sup-alloc-${allocationId}`, payload) }, body: JSON.stringify(payload) }),
+  supplierCommit: (allocationId: string, payload: { note?: string } = {}) =>
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/supply-requests/${allocationId}/commit`, {
+      method: "POST", headers: { "Idempotency-Key": supplierActionKey(`sup-commit-${allocationId}`, payload) }, body: JSON.stringify(payload) }),
+  supplierReady: (allocationId: string, payload: { note?: string } = {}) =>
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/supply-requests/${allocationId}/ready`, {
+      method: "POST", headers: { "Idempotency-Key": supplierActionKey(`sup-ready-${allocationId}`, payload) }, body: JSON.stringify(payload) }),
+  supplierCancelCommitment: (allocationId: string, payload: { note?: string }) =>
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/supply-requests/${allocationId}/cancel`, {
+      method: "POST", headers: { "Idempotency-Key": supplierActionKey(`sup-cancel-${allocationId}`, payload) }, body: JSON.stringify(payload) }),
+  /** Backward-compatible line response path used by existing Supplier clients. */
   supplierRespond: (lineId: string, payload: { action: "confirm" | "counter" | "reject"; proposedSeries?: number; note?: string }) =>
-    authFetch<Record<string, unknown>>(`/wholesale/supplier/lines/${lineId}/respond`, { method: "POST", body: JSON.stringify(payload) }),
-  supplierDispatch: (childId: string, payload?: { trackingNote?: string }) =>
-    authFetch<Record<string, unknown>>(`/wholesale/supplier/children/${childId}/dispatch`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+    authFetch<Record<string, unknown>>(`/wholesale/supplier/lines/${lineId}/respond`, {
+      method: "POST", headers: { "Idempotency-Key": supplierActionKey(`sup-line-${lineId}`, payload) }, body: JSON.stringify(payload) }),
+  supplierDispatch: (childId: string, payload?: { trackingNote?: string }) => {
+    const body = payload ?? {};
+    return authFetch<Record<string, unknown>>(`/wholesale/supplier/children/${childId}/dispatch`, {
+      method: "POST", headers: { "Idempotency-Key": supplierActionKey(`sup-dispatch-${childId}`, body) }, body: JSON.stringify(body) });
+  },
   /** Warehouse/ops fulfillment + consolidation (§77-§103). */
   pick: (childId: string) => authFetch<Record<string, unknown>>(`/wholesale/children/${childId}/pick`, { method: "POST", body: "{}" }),
   receive: (childId: string, payload: { allocations: { allocationId: string; receivedSeries: number }[] }) =>

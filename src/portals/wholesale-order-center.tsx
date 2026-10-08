@@ -102,6 +102,16 @@ const ALLOC_STATUS: Record<string, string> = {
   exception: "نیازمند بررسی",
 };
 
+const SUPPLIER_RESPONSE: Record<string, { label: string; cls: string }> = {
+  unanswered: { label: "در انتظار پاسخ تأمین‌کننده", cls: "bg-amber-100 text-amber-800" },
+  accepted: { label: "تأمین پذیرفته‌شده", cls: "bg-sky-100 text-sky-800" },
+  revised: { label: "پیشنهاد اصلاحی؛ منتظر خریدار", cls: "bg-violet-100 text-violet-800" },
+  rejected: { label: "رد شده؛ نیازمند بازتخصیص", cls: "bg-red-100 text-red-700" },
+  committed: { label: "تعهد نهایی تأمین", cls: "bg-indigo-100 text-indigo-800" },
+  ready: { label: "آماده ارسال به انبار کلبه", cls: "bg-emerald-100 text-emerald-800" },
+  cancelled: { label: "لغو تعهد؛ نیاز حفظ شد", cls: "bg-red-100 text-red-700" },
+};
+
 const SOURCE: Record<string, { label: string; short: string; cls: string; hint: string }> = {
   kolbe_stock: { label: "موجودی کلبه", short: "موجودی کلبه", cls: "bg-emerald-100 text-emerald-800",
     hint: "کالای فیزیکی متعلق به کلبه در انبار کلبه — رزرو واقعی WMS." },
@@ -300,6 +310,7 @@ function AllocationRow({ allocation, onChanged, flash }: {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const source = SOURCE[allocation.source_type] ?? SOURCE.kolbe_stock!;
+  const supplierResponse = SUPPLIER_RESPONSE[allocation.supplier_response_status] ?? SUPPLIER_RESPONSE.unanswered!;
   const canReassign = ["pending", "reserved"].includes(allocation.status)
     && allocation.received_series === 0 && allocation.qc_passed_series === 0;
 
@@ -307,7 +318,7 @@ function AllocationRow({ allocation, onChanged, flash }: {
     setBusy(true);
     try {
       await wholesaleOmsApi.reassignAllocation(allocation.id, {
-        ...(target === "supplier_external" ? { toSourceType: "supplier_external" as const } : { toSourceType: "supplier_stock_at_kolbe" as const }),
+        toSource: target === "supplier_external" ? "supplier_external" : "supplier_stock_at_kolbe",
         reason: reason.trim(),
       });
       flash("بازتخصیص ثبت شد؛ رزرو قبلی آزاد و منبع جدید ثبت شد.");
@@ -324,6 +335,8 @@ function AllocationRow({ allocation, onChanged, flash }: {
         <Chip label={source.label} cls={source.cls} title={source.hint} />
         <span className="text-[11.5px] tabular-nums">{num(allocation.quantity)} سری</span>
         <Chip label={ALLOC_STATUS[allocation.status] ?? "نامشخص"} cls={allocation.status === "reserved" ? "bg-emerald-100 text-emerald-800" : "bg-[var(--kv-surface-2)] text-[var(--kv-fg)]"} />
+        {allocation.source_type === "supplier_external" && <Chip label={supplierResponse.label} cls={supplierResponse.cls} />}
+        {allocation.source_type === "supplier_external" && allocation.supplier_committed_series > 0 && <Chip label={`تعهد ${num(allocation.supplier_committed_series)} سری`} cls="bg-indigo-50 text-indigo-800" />}
         {allocation.received_series > 0 && <Chip label={`ورود ${num(allocation.received_series)}`} cls="bg-sky-100 text-sky-800" />}
         {allocation.qc_passed_series > 0 && <Chip label={`QC تأیید ${num(allocation.qc_passed_series)}`} cls="bg-emerald-100 text-emerald-800" />}
         {allocation.qc_rejected_series > 0 && <Chip label={`QC مردود ${num(allocation.qc_rejected_series)}`} cls="bg-red-100 text-red-700" />}
@@ -332,6 +345,14 @@ function AllocationRow({ allocation, onChanged, flash }: {
         )}
       </div>
       <p className="mt-1.5 text-[11px] leading-5 text-[var(--kv-muted)]">{source.hint}</p>
+      {allocation.source_type === "supplier_external" && (allocation.supplier_response_note || allocation.supplier_responded_at || allocation.supplier_committed_at || allocation.supplier_ready_at) && (
+        <p className="mt-1 text-[10.5px] leading-5 text-[var(--kv-muted)]">
+          {allocation.supplier_responded_at && <>پاسخ: {new Date(allocation.supplier_responded_at).toLocaleDateString("fa-IR")} · </>}
+          {allocation.supplier_committed_at && <>تعهد: {new Date(allocation.supplier_committed_at).toLocaleDateString("fa-IR")} · </>}
+          {allocation.supplier_ready_at && <>آمادگی: {new Date(allocation.supplier_ready_at).toLocaleDateString("fa-IR")} · </>}
+          {allocation.supplier_response_note && <>یادداشت: {allocation.supplier_response_note}</>}
+        </p>
+      )}
       <Modal open={open} onClose={() => setOpen(false)} title="بازتخصیص منبع تخصیص" max="max-w-[520px]">
         <div className="space-y-3 p-1">
           <p className="text-[12px] leading-6">

@@ -65,6 +65,14 @@ test('supplier 360: lifecycle, granular restrictions and financial drill-down (i
     assert.equal(activated.statusCode, 200, activated.body);
     assert.equal(activated.json().label, 'فعال');
 
+    // Activity activation is not application approval: pending cooperation cannot enter operations.
+    const stillPending = await app.inject({ method: 'POST', url: '/api/v1/products', headers: supplierHeaders, payload: productPayload });
+    assert.equal(stillPending.statusCode, 403, stillPending.body);
+    assert.match(stillPending.json().message as string, /در انتظار بررسی/);
+    const approved = await app.inject({ method: 'POST', url: `/api/v1/admin/suppliers/${supplierId}/status`, headers: adminHeaders,
+      payload: { status: 'approved', note: 'بررسی درخواست همکاری تکمیل شد' } });
+    assert.equal(approved.statusCode, 200, approved.body);
+
     const created = await app.inject({ method: 'POST', url: '/api/v1/products', headers: supplierHeaders, payload: productPayload });
     assert.equal(created.statusCode, 201, created.body);
     const productId = created.json().id as string;

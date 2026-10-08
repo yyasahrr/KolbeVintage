@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { principal, requirePermission } from './auth.js';
+import { principal, requireApprovedSupplier, requirePermission } from './auth.js';
 import { one, transaction, type DbPool } from './db.js';
 import { asRial } from './money.js';
 import { audit, outbox } from './operations.js';
@@ -210,6 +210,7 @@ export function registerMarketplaceRoutes(app: FastifyInstance, pool: DbPool, co
   // ---------- Supplier self-service: own products, review reasons, resubmit ----------
   app.get('/api/v1/supplier/products', async (request) => {
     const user = await principal(request, pool, config);
+    await requireApprovedSupplier(pool, user);
     const query = z.object({
       status: z.enum(['draft', 'pending', 'published', 'rejected', 'archived']).optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -234,6 +235,7 @@ export function registerMarketplaceRoutes(app: FastifyInstance, pool: DbPool, co
 
   app.get('/api/v1/supplier/products/:id', async (request) => {
     const user = await principal(request, pool, config);
+    await requireApprovedSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const product = await one<Record<string, unknown>>(pool,
       'SELECT * FROM products WHERE id = $1 AND supplier_id = $2', [id, user.id]);
@@ -258,6 +260,7 @@ export function registerMarketplaceRoutes(app: FastifyInstance, pool: DbPool, co
   /** After fixing a rejection the supplier resubmits the product for review. */
   app.post('/api/v1/supplier/products/:id/resubmit', async (request) => {
     const user = await principal(request, pool, config);
+    await requireApprovedSupplier(pool, user);
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     return transaction(pool, async (client) => {
       const product = await one<{ id: string; status: string; name: string }>(client,

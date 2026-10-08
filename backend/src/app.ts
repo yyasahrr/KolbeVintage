@@ -70,6 +70,7 @@ import { registerOmsRoutes } from './oms.js';
 import { registerSupplierRequestRoutes } from './supplier-requests.js';
 import { registerSeriesTemplateRoutes } from './series.js';
 import { registerSeriesInventoryRoutes } from './series-inventory.js';
+import { registerSupplierPortalRoutes } from './supplier-portal.js';
 
 export async function buildApp(config: Config, paymentAdapters: Record<string, PaymentProviderAdapter> = {}) {
   const app = Fastify({ logger: config.NODE_ENV === 'test' ? false : { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie'] },
@@ -171,6 +172,7 @@ if (process.env.DEBUG_ERRORS === '1') app.log.error(error);
   registerSupplierRequestRoutes(app, pool, config);
   registerSeriesTemplateRoutes(app, pool, config);
   registerSeriesInventoryRoutes(app, pool, config);
+  registerSupplierPortalRoutes(app, pool, config);
   app.addHook('onClose', async () => {
     if (redis) redis.disconnect();
     await pool.end();

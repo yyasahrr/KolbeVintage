@@ -33,6 +33,9 @@ async function makeUser(pool: Pool, roles: string[], label: string) {
   for (const role of roles) {
     await pool.query('INSERT INTO user_roles(user_id,role_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, role]);
   }
+  // Supplier principals used by OMS scenarios are approved/active operational accounts.
+  if (roles.includes('supplier')) await pool.query(
+    "INSERT INTO supplier_profiles(user_id,brand_name,cooperation_status) VALUES ($1,$2,'approved')", [id, label]);
   return { id, email };
 }
 
